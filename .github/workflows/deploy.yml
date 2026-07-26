@@ -15,4 +15,4 @@ jobs:
           cd ~/gesicomm/gesicomm-backend
           git pull https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Gesicomm/gesicomm-backend.git main
           cd ~/gesicomm
-          docker-compose up -d --build backend
+          docker compose up -d --build backend
