@@ -1,4 +1,4 @@
-name: Test Backend Runner
+name: Deploy Backend
 
 on:
   push:
@@ -6,13 +6,13 @@ on:
       - main
 
 jobs:
-  test:
+  deploy:
     runs-on: self-hosted
 
     steps:
-      - name: Test runner
+      - name: Pull latest code and Deploy
         run: |
-          echo "Runner de Backend funcionando"
-          hostname
-          whoami
-          docker --version
+          cd ~/gesicomm/gesicomm-backend
+          git pull origin main
+          cd ~/gesicomm
+          docker-compose up -d --build backend
