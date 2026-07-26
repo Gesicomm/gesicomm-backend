@@ -1,0 +1,18 @@
+name: Test Backend Runner
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: self-hosted
+
+    steps:
+      - name: Test runner
+        run: |
+          echo "Runner de Backend funcionando"
+          hostname
+          whoami
+          docker --version
