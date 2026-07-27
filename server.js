@@ -86,7 +86,8 @@ app.use((err, req, res, next) => {
 
 // ============================================================
 // 7. Base de Datos y Servidor
-// ============================================================
+const { sequelize } = require('./src/models');
+
 // ⚠️ PRECAUCIÓN: En producción NUNCA se debe usar { alter: true } ni { force: true }.
 // Las modificaciones al esquema deben hacerse mediante Migraciones (Sequelize CLI).
 sequelize.sync().then(() => {
