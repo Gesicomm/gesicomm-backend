@@ -1,0 +1,17 @@
+# Dependencias
+node_modules/
+dist/
+
+# Variables de entorno (NUNCA subir al repositorio)
+.env
+.env.local
+.env.production
+.env.development
+
+# Logs
+*.log
+logs/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
