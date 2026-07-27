@@ -15,7 +15,7 @@ const rateLimit = require('express-rate-limit');
 const { validar, esquemaLogin, esquemaRegistro, esquemaRecuperarPassword } = require('../middleware/validacion');
 const { verificarToken } = require('../middleware/autenticacion');
 const { auditoria } = require('../utils/logger');
-const { Usuario, Inquilino, Rol, sequelize } = require('../models');
+const { Usuario, Inquilino, Rol, Permiso, sequelize } = require('../models');
 
 const router = express.Router();
 
@@ -58,7 +58,10 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
 
     const usuario = await Usuario.findOne({ 
       where: { correo_electronico: email },
-      include: [{ model: Rol }]
+      include: [{ 
+        model: Rol,
+        include: [{ model: Permiso }]
+      }]
     });
     
     if (!usuario) {
@@ -77,7 +80,7 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
       id: usuario.id,
       email: usuario.correo_electronico,
       rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
-      permisos: usuario.Rol ? usuario.Rol.permisos : [],
+      permisos: usuario.Rol && usuario.Rol.Permisos ? usuario.Rol.Permisos.map(p => p.nombre) : [],
       tenantId: usuario.inquilino_id,
     };
 
@@ -132,18 +135,12 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
       transaction: t 
     });
 
-    // Nos aseguramos de que existan los roles básicos
-    const [rolUsuario] = await Rol.findOrCreate({
-      where: { nombre: 'usuario' },
-      defaults: { permisos: ['ver_dashboard'] },
-      transaction: t
-    });
-
-    await Rol.findOrCreate({
-      where: { nombre: 'administrador' },
-      defaults: { permisos: ['ver_dashboard', 'gestionar_usuarios', 'configurar_sistema'] },
-      transaction: t
-    });
+    // Buscar el rol básico de usuario (debe haber sido creado por el script seed-permissions)
+    const rolUsuario = await Rol.findOne({ where: { nombre: 'usuario' }, transaction: t });
+    if (!rolUsuario) {
+      await t.rollback();
+      return res.status(500).json({ message: 'Error de configuración del servidor: Roles no inicializados.' });
+    }
 
     const contrasena_hash = await bcrypt.hash(password, 12);
 
@@ -194,7 +191,10 @@ router.post('/refresh', async (req, res) => {
     const payload = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
 
     const usuario = await Usuario.findByPk(payload.id, {
-      include: [{ model: Rol }]
+      include: [{ 
+        model: Rol,
+        include: [{ model: Permiso }]
+      }]
     });
     
     if (!usuario) {
@@ -205,7 +205,7 @@ router.post('/refresh', async (req, res) => {
       id: usuario.id,
       email: usuario.correo_electronico,
       rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
-      permisos: usuario.Rol ? usuario.Rol.permisos : [],
+      permisos: usuario.Rol && usuario.Rol.Permisos ? usuario.Rol.Permisos.map(p => p.nombre) : [],
       tenantId: usuario.inquilino_id,
     };
 
