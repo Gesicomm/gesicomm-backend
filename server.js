@@ -84,9 +84,9 @@ app.use((err, req, res, next) => {
 // ============================================================
 // 7. Base de Datos y Servidor
 // ============================================================
-const { sequelize } = require('./src/models');
-
-sequelize.sync({ alter: true }).then(() => {
+// ⚠️ PRECAUCIÓN: En producción NUNCA se debe usar { alter: true } ni { force: true }.
+// Las modificaciones al esquema deben hacerse mediante Migraciones (Sequelize CLI).
+sequelize.sync().then(() => {
   logger.info('Modelos sincronizados con la base de datos.');
   app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
