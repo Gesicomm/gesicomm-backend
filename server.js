@@ -82,10 +82,17 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// 7. Inicio del servidor
+// 7. Base de Datos y Servidor
 // ============================================================
-app.listen(PORT, () => {
-  logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
+const { sequelize } = require('./src/models');
+
+sequelize.sync({ alter: true }).then(() => {
+  logger.info('Modelos sincronizados con la base de datos.');
+  app.listen(PORT, () => {
+    logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
+  });
+}).catch(err => {
+  logger.error('Error al sincronizar la base de datos:', err);
 });
 
 module.exports = app;

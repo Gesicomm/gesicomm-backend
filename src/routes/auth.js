@@ -15,6 +15,7 @@ const rateLimit = require('express-rate-limit');
 const { validar, esquemaLogin, esquemaRegistro, esquemaRecuperarPassword } = require('../middleware/validacion');
 const { verificarToken } = require('../middleware/autenticacion');
 const { auditoria } = require('../utils/logger');
+const { Usuario, Inquilino, sequelize } = require('../models');
 
 const router = express.Router();
 
@@ -55,33 +56,25 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // TODO: Buscar usuario en DB
-    // const usuario = await Usuario.findOne({ where: { email } });
-    // if (!usuario) { ... }
+    const usuario = await Usuario.findOne({ where: { correo_electronico: email } });
+    
+    if (!usuario) {
+      auditoria('LOGIN_FALLIDO', { email, ip: req.ip, razon: 'Usuario no encontrado' });
+      return res.status(401).json({ message: 'Credenciales inválidas.' });
+    }
 
-    // Simulación de usuario (reemplazar con DB real)
-    const usuarioEjemplo = {
-      id: 1,
-      nombre: 'Admin',
-      email,
-      passwordHash: await bcrypt.hash('Admin1234', 12), // Solo para demo
-      rol: 'TENANT_ADMIN',
-      tenantId: 1,
-    };
-
-    const passwordValida = await bcrypt.compare(password, usuarioEjemplo.passwordHash);
+    const passwordValida = await bcrypt.compare(password, usuario.contrasena_hash);
 
     if (!passwordValida) {
-      auditoria('LOGIN_FALLIDO', { email, ip: req.ip });
-      // ⚠️ Mensaje genérico: no revelamos si el email existe o no
+      auditoria('LOGIN_FALLIDO', { email, ip: req.ip, razon: 'Contraseña incorrecta' });
       return res.status(401).json({ message: 'Credenciales inválidas.' });
     }
 
     const payload = {
-      id: usuarioEjemplo.id,
-      email: usuarioEjemplo.email,
-      rol: usuarioEjemplo.rol,
-      tenantId: usuarioEjemplo.tenantId,
+      id: usuario.id,
+      email: usuario.correo_electronico,
+      rol: usuario.rol,
+      tenantId: usuario.inquilino_id,
     };
 
     const accessToken = jwt.sign(payload, process.env.JWT_SECRET, {
@@ -89,26 +82,26 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
     });
 
     const refreshToken = jwt.sign(
-      { id: usuarioEjemplo.id },
+      { id: usuario.id },
       process.env.REFRESH_TOKEN_SECRET,
       { expiresIn: process.env.REFRESH_TOKEN_EXPIRATION || '7d' }
     );
 
     enviarCookieToken(res, accessToken, refreshToken);
 
-    auditoria('LOGIN', { usuarioId: usuarioEjemplo.id, email, ip: req.ip });
+    auditoria('LOGIN', { usuarioId: usuario.id, email, ip: req.ip });
 
     return res.json({
       message: 'Sesión iniciada correctamente.',
       usuario: {
-        id: usuarioEjemplo.id,
-        nombre: usuarioEjemplo.nombre,
-        email: usuarioEjemplo.email,
-        rol: usuarioEjemplo.rol,
+        id: usuario.id,
+        nombre: usuario.nombre,
+        email: usuario.correo_electronico,
+        rol: usuario.rol,
       },
     });
   } catch (err) {
-    // ❌ Nunca enviamos detalles del error interno al cliente
+    console.error(err);
     return res.status(500).json({ message: 'Error interno del servidor.' });
   }
 });
@@ -117,18 +110,44 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
 // POST /api/auth/register
 // ============================================================
 router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) => {
+  // Usamos una transacción para garantizar que se crea el Inquilino y el Usuario, o ninguno.
+  const t = await sequelize.transaction();
+
   try {
     const { nombre, email, password } = req.body;
 
-    // Hash de contraseña con bcrypt (nunca guardar en texto plano)
-    const passwordHash = await bcrypt.hash(password, 12); // costo 12 = buen balance seguridad/velocidad
+    // Verificar si el usuario ya existe
+    const existe = await Usuario.findOne({ where: { correo_electronico: email }, transaction: t });
+    if (existe) {
+      await t.rollback();
+      return res.status(400).json({ message: 'El correo ya está registrado.' });
+    }
 
-    // TODO: Crear usuario en DB con passwordHash (no password)
-    auditoria('USUARIO_CREADO', { email, ip: req.ip });
+    // 1. Crear Inquilino por defecto para este nuevo usuario
+    const nombreEmpresa = `Empresa de ${nombre}`;
+    const inquilino = await Inquilino.create({ nombre: nombreEmpresa }, { transaction: t });
+
+    // 2. Hash de contraseña
+    const contrasena_hash = await bcrypt.hash(password, 12);
+
+    // 3. Crear el Usuario como TENANT_ADMIN
+    await Usuario.create({
+      inquilino_id: inquilino.id,
+      nombre,
+      correo_electronico: email,
+      contrasena_hash,
+      rol: 'TENANT_ADMIN',
+    }, { transaction: t });
+
+    await t.commit();
+
+    auditoria('USUARIO_CREADO', { email, ip: req.ip, inquilinoId: inquilino.id });
 
     return res.status(201).json({ message: 'Cuenta creada. Por favor inicia sesión.' });
   } catch (err) {
-    return res.status(500).json({ message: 'Error interno del servidor.' });
+    await t.rollback();
+    console.error(err);
+    return res.status(500).json({ message: 'Error interno del servidor al crear cuenta.' });
   }
 });
 
@@ -146,9 +165,8 @@ router.post('/logout', verificarToken, (req, res) => {
 
 // ============================================================
 // POST /api/auth/refresh
-// Renueva el access token usando el refresh token de la cookie
 // ============================================================
-router.post('/refresh', (req, res) => {
+router.post('/refresh', async (req, res) => {
   const refreshToken = req.cookies?.refreshToken;
 
   if (!refreshToken) {
@@ -158,8 +176,17 @@ router.post('/refresh', (req, res) => {
   try {
     const payload = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
 
-    // TODO: Obtener datos actualizados del usuario desde DB
-    const nuevoPayload = { id: payload.id, tenantId: 1, rol: 'TENANT_ADMIN', email: 'demo@gesicomm.com' };
+    const usuario = await Usuario.findByPk(payload.id);
+    if (!usuario) {
+      return res.status(401).json({ message: 'Usuario no encontrado.' });
+    }
+
+    const nuevoPayload = {
+      id: usuario.id,
+      tenantId: usuario.inquilino_id,
+      rol: usuario.rol,
+      email: usuario.correo_electronico,
+    };
 
     const nuevoAccessToken = jwt.sign(nuevoPayload, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRATION || '15m',
@@ -173,14 +200,13 @@ router.post('/refresh', (req, res) => {
     });
 
     return res.json({ message: 'Token renovado.' });
-  } catch {
+  } catch (err) {
     return res.status(401).json({ message: 'Sesión expirada. Por favor inicia sesión.' });
   }
 });
 
 // ============================================================
 // GET /api/auth/me
-// Verifica la sesión activa y devuelve la identidad del usuario
 // ============================================================
 router.get('/me', verificarToken, (req, res) => {
   return res.json({
@@ -197,8 +223,6 @@ router.get('/me', verificarToken, (req, res) => {
 router.post('/forgot-password', limiteAuth, validar(esquemaRecuperarPassword), async (req, res) => {
   const { email } = req.body;
 
-  // TODO: Enviar email de recuperación si existe el usuario
-  // Respondemos siempre con el mismo mensaje para no revelar si el email existe
   auditoria('RECUPERACION_PASSWORD_SOLICITADA', { email, ip: req.ip });
 
   return res.json({ message: 'Si el correo existe, recibirás instrucciones en breve.' });
