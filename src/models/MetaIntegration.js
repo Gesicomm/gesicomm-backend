@@ -20,6 +20,10 @@ const MetaIntegration = sequelize.define('MetaIntegration', {
     type: DataTypes.STRING,
     allowNull: true,
   },
+  business_name: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
   waba_id: {
     type: DataTypes.STRING,
     allowNull: true,
