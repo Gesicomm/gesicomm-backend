@@ -1,6 +1,7 @@
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 const Inquilino = require('./Inquilino');
+const Rol = require('./Rol');
 
 const Usuario = sequelize.define('Usuario', {
   id: {
@@ -13,6 +14,14 @@ const Usuario = sequelize.define('Usuario', {
     allowNull: false,
     references: {
       model: Inquilino,
+      key: 'id',
+    },
+  },
+  rol_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    references: {
+      model: Rol,
       key: 'id',
     },
   },
@@ -31,11 +40,6 @@ const Usuario = sequelize.define('Usuario', {
   contrasena_hash: {
     type: DataTypes.STRING,
     allowNull: false,
-  },
-  rol: {
-    type: DataTypes.STRING,
-    allowNull: false,
-    defaultValue: 'SELLER',
   },
 }, {
   tableName: 'usuarios',

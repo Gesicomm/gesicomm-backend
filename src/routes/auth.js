@@ -15,7 +15,7 @@ const rateLimit = require('express-rate-limit');
 const { validar, esquemaLogin, esquemaRegistro, esquemaRecuperarPassword } = require('../middleware/validacion');
 const { verificarToken } = require('../middleware/autenticacion');
 const { auditoria } = require('../utils/logger');
-const { Usuario, Inquilino, sequelize } = require('../models');
+const { Usuario, Inquilino, Rol, sequelize } = require('../models');
 
 const router = express.Router();
 
@@ -56,7 +56,10 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const usuario = await Usuario.findOne({ where: { correo_electronico: email } });
+    const usuario = await Usuario.findOne({ 
+      where: { correo_electronico: email },
+      include: [{ model: Rol }]
+    });
     
     if (!usuario) {
       auditoria('LOGIN_FALLIDO', { email, ip: req.ip, razon: 'Usuario no encontrado' });
@@ -73,7 +76,8 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
     const payload = {
       id: usuario.id,
       email: usuario.correo_electronico,
-      rol: usuario.rol,
+      rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
+      permisos: usuario.Rol ? usuario.Rol.permisos : [],
       tenantId: usuario.inquilino_id,
     };
 
@@ -97,7 +101,8 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
         id: usuario.id,
         nombre: usuario.nombre,
         email: usuario.correo_electronico,
-        rol: usuario.rol,
+        rol: payload.rol,
+        permisos: payload.permisos,
       },
     });
   } catch (err) {
@@ -110,38 +115,50 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
 // POST /api/auth/register
 // ============================================================
 router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) => {
-  // Usamos una transacción para garantizar que se crea el Inquilino y el Usuario, o ninguno.
   const t = await sequelize.transaction();
 
   try {
     const { nombre, email, password } = req.body;
 
-    // Verificar si el usuario ya existe
     const existe = await Usuario.findOne({ where: { correo_electronico: email }, transaction: t });
     if (existe) {
       await t.rollback();
       return res.status(400).json({ message: 'El correo ya está registrado.' });
     }
 
-    // 1. Crear Inquilino por defecto para este nuevo usuario
-    const nombreEmpresa = `Empresa de ${nombre}`;
-    const inquilino = await Inquilino.create({ nombre: nombreEmpresa }, { transaction: t });
+    // Como es MVP de tenant único por ahora, buscamos o creamos la empresa principal
+    const [inquilino] = await Inquilino.findOrCreate({ 
+      where: { nombre: 'Gesicomm Principal' }, 
+      transaction: t 
+    });
 
-    // 2. Hash de contraseña
+    // Nos aseguramos de que existan los roles básicos
+    const [rolUsuario] = await Rol.findOrCreate({
+      where: { nombre: 'usuario' },
+      defaults: { permisos: ['ver_dashboard'] },
+      transaction: t
+    });
+
+    await Rol.findOrCreate({
+      where: { nombre: 'administrador' },
+      defaults: { permisos: ['ver_dashboard', 'gestionar_usuarios', 'configurar_sistema'] },
+      transaction: t
+    });
+
     const contrasena_hash = await bcrypt.hash(password, 12);
 
-    // 3. Crear el Usuario como TENANT_ADMIN
+    // Todo el que se registra públicamente entra como 'usuario'
     await Usuario.create({
       inquilino_id: inquilino.id,
+      rol_id: rolUsuario.id,
       nombre,
       correo_electronico: email,
       contrasena_hash,
-      rol: 'TENANT_ADMIN',
     }, { transaction: t });
 
     await t.commit();
 
-    auditoria('USUARIO_CREADO', { email, ip: req.ip, inquilinoId: inquilino.id });
+    auditoria('USUARIO_CREADO', { email, ip: req.ip });
 
     return res.status(201).json({ message: 'Cuenta creada. Por favor inicia sesión.' });
   } catch (err) {
@@ -176,16 +193,20 @@ router.post('/refresh', async (req, res) => {
   try {
     const payload = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
 
-    const usuario = await Usuario.findByPk(payload.id);
+    const usuario = await Usuario.findByPk(payload.id, {
+      include: [{ model: Rol }]
+    });
+    
     if (!usuario) {
       return res.status(401).json({ message: 'Usuario no encontrado.' });
     }
 
     const nuevoPayload = {
       id: usuario.id,
-      tenantId: usuario.inquilino_id,
-      rol: usuario.rol,
       email: usuario.correo_electronico,
+      rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
+      permisos: usuario.Rol ? usuario.Rol.permisos : [],
+      tenantId: usuario.inquilino_id,
     };
 
     const nuevoAccessToken = jwt.sign(nuevoPayload, process.env.JWT_SECRET, {
@@ -213,6 +234,7 @@ router.get('/me', verificarToken, (req, res) => {
     id: req.usuario.id,
     email: req.usuario.email,
     rol: req.usuario.rol,
+    permisos: req.usuario.permisos,
     tenantId: req.usuario.tenantId,
   });
 });

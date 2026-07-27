@@ -1,41 +1,27 @@
 /**
- * Middleware de Autorización (RBAC — Control de Acceso Basado en Roles).
+ * Middleware de Autorización (RBAC dinámico por base de datos).
  *
- * Autenticación ≠ Autorización:
- *   - Autenticación: ¿Quién eres?     → verificarToken()
- *   - Autorización:  ¿Puedes hacer esto? → verificarRol()
- *
- * Jerarquía de roles en Gesicomm:
- *
- *   SUPER_ADMIN  → Acceso total al sistema (gestión de tenants)
- *   TENANT_ADMIN → Administrador del tenant (su empresa)
- *   MANAGER      → Puede gestionar productos, pedidos, clientes
- *   SELLER       → Solo puede ver y crear pedidos
+ * El modelo Rol contiene un JSON 'permisos' con un arreglo de acciones permitidas.
+ * Ej: ["ver_usuarios", "crear_productos"]
  *
  * Uso:
- *   router.delete('/usuarios/:id',
+ *   router.post('/productos',
  *     verificarToken,
- *     verificarRol(['SUPER_ADMIN', 'TENANT_ADMIN']),
- *     eliminarUsuario
+ *     verificarPermiso('crear_productos'),
+ *     crearProducto
  *   );
  */
 
-const ROLES = {
-  SUPER_ADMIN: 4,
-  TENANT_ADMIN: 3,
-  MANAGER: 2,
-  SELLER: 1,
-};
-
 /**
- * Verifica que el usuario tenga al menos uno de los roles requeridos.
- * @param {string[]} rolesPermitidos - Lista de roles con acceso al endpoint.
+ * Verifica que el usuario tenga el permiso requerido en su rol.
+ * @param {string} permisoRequerido - El string exacto del permiso.
  */
-function verificarRol(rolesPermitidos = []) {
+function verificarPermiso(permisoRequerido) {
   return (req, res, next) => {
-    const rolUsuario = req.usuario?.rol;
+    // Los permisos ahora vendrán inyectados en el token JWT o los podemos buscar en middleware
+    const permisosUsuario = req.usuario?.permisos || [];
 
-    if (!rolUsuario || !rolesPermitidos.includes(rolUsuario)) {
+    if (!permisosUsuario.includes(permisoRequerido)) {
       return res.status(403).json({ message: 'No tienes permiso para realizar esta acción.' });
     }
 
@@ -43,4 +29,4 @@ function verificarRol(rolesPermitidos = []) {
   };
 }
 
-module.exports = { verificarRol, ROLES };
+module.exports = { verificarPermiso };
