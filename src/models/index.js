@@ -26,4 +26,5 @@ module.exports = {
   Permiso,
   RolPermiso,
   Usuario,
+  MetaIntegration,
 };
