@@ -25,10 +25,13 @@ app.use(helmet());
 //    ❌ NUNCA: origin: '*' para APIs autenticadas.
 // ============================================================
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'https://gesicomm.com',
-  credentials: true, // Necesario para enviar/recibir cookies HttpOnly
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
+  origin: [
+    process.env.FRONTEND_URL,
+    'https://gesicomm.com',
+    'https://www.gesicomm.com',
+    'http://localhost:5173'
+  ].filter(Boolean),
+  credentials: true,
 }));
 
 // ============================================================
