@@ -4,10 +4,14 @@ const Rol = require('./Rol');
 const Permiso = require('./Permiso');
 const RolPermiso = require('./RolPermiso');
 const Usuario = require('./Usuario');
+const MetaIntegration = require('./MetaIntegration');
 
 // Definir relaciones
 Inquilino.hasMany(Usuario, { foreignKey: 'inquilino_id' });
 Usuario.belongsTo(Inquilino, { foreignKey: 'inquilino_id' });
+
+Inquilino.hasOne(MetaIntegration, { foreignKey: 'inquilino_id' });
+MetaIntegration.belongsTo(Inquilino, { foreignKey: 'inquilino_id' });
 
 Rol.hasMany(Usuario, { foreignKey: 'rol_id' });
 Usuario.belongsTo(Rol, { foreignKey: 'rol_id' });

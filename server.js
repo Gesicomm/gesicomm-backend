@@ -10,6 +10,7 @@ const { logger } = require('./src/utils/logger');
 
 // Rutas
 const authRoutes = require('./src/routes/auth');
+const metaRoutes = require('./src/routes/meta');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -58,6 +59,7 @@ app.use(limiteGlobal);
 // 5. Rutas de la API
 // ============================================================
 app.use('/api/auth', authRoutes);
+app.use('/api/meta', metaRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {
