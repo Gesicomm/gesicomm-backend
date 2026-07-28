@@ -10,7 +10,11 @@ const MetaIntegration = sequelize.define('MetaIntegration', {
   inquilino_id: {
     type: DataTypes.INTEGER,
     allowNull: false,
-    unique: true // un tenant tiene una integración de Meta activa a la vez por ahora
+    // Sin unique: true — un tenant puede tener múltiples tiendas conectadas
+  },
+  nombre: {
+    type: DataTypes.STRING,
+    allowNull: true, // Nombre visible de la tienda (ej: "BM - Ecom"). Se toma de business_name al crear.
   },
   access_token: {
     type: DataTypes.TEXT,

@@ -21,12 +21,14 @@ const fetchMeta = async (url) => {
 };
 
 // GET /api/meta/connect -> Inicia el flujo OAuth
+// Query param opcional: ?mode=add_store para agregar una nueva tienda sin reemplazar la actual
 router.get('/connect', verificarToken, (req, res) => {
     if (!FB_APP_ID || !FB_REDIRECT_URI) {
         return res.status(500).json({ message: 'Configuración de Meta ausente en el servidor' });
     }
 
     const state = crypto.randomBytes(16).toString('hex');
+    const mode = req.query.mode || 'connect'; // 'connect' | 'add_store'
 
     res.cookie('meta_oauth_state', state, {
         httpOnly: true,
@@ -36,6 +38,13 @@ router.get('/connect', verificarToken, (req, res) => {
     });
 
     res.cookie('meta_oauth_tenant', req.usuario.tenantId, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'Lax',
+        maxAge: 10 * 60 * 1000
+    });
+
+    res.cookie('meta_oauth_mode', mode, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'Lax',
@@ -57,6 +66,7 @@ router.get('/callback', async (req, res) => {
     const { code, state, error, error_description } = req.query;
     const cookieState = req.cookies?.meta_oauth_state;
     const tenantId = req.cookies?.meta_oauth_tenant;
+    const mode = req.cookies?.meta_oauth_mode || 'connect';
 
     const frontendRedirect = process.env.FRONTEND_URL;
 
@@ -102,36 +112,56 @@ router.get('/callback', async (req, res) => {
             return res.redirect(`${frontendRedirect}/settings?meta_error=${encodeURIComponent('No se encontró ningún Business Manager asociado a esta cuenta de Facebook.')}`);
         }
 
-        // Tomamos el primer Business Manager de la cuenta
         const business = businessData.data[0];
-
-        // 6. Cifrado del token
         const encryptedToken = EncryptionService.encrypt(longLivedToken);
 
-        // 7. Guardar en base de datos con el Business ID real
-        const [integracion, created] = await MetaIntegration.findOrCreate({
-            where: { inquilino_id: tenantId },
-            defaults: {
-                access_token: encryptedToken,
-                business_id: business.id,
-                business_name: business.name,
-                estado: 'conectado'
+        // 6. Guardar según el modo
+        if (mode === 'add_store') {
+            // Verificar que este BM no esté ya conectado para este tenant
+            const existing = await MetaIntegration.findOne({
+                where: { inquilino_id: tenantId, business_id: business.id }
+            });
+            if (existing) {
+                res.clearCookie('meta_oauth_state');
+                res.clearCookie('meta_oauth_tenant');
+                res.clearCookie('meta_oauth_mode');
+                return res.redirect(`${frontendRedirect}/settings?meta_error=${encodeURIComponent('Esta tienda ya está conectada.')}`);
             }
-        });
-
-        if (!created) {
-            await integracion.update({
+            // Crear nuevo registro (sin reemplazar los existentes)
+            await MetaIntegration.create({
+                inquilino_id: tenantId,
+                nombre: business.name,
                 access_token: encryptedToken,
                 business_id: business.id,
                 business_name: business.name,
                 estado: 'conectado'
             });
+        } else {
+            // Modo original: upsert del primer registro del tenant
+            const [integracion, created] = await MetaIntegration.findOrCreate({
+                where: { inquilino_id: tenantId, business_id: business.id },
+                defaults: {
+                    nombre: business.name,
+                    access_token: encryptedToken,
+                    business_name: business.name,
+                    estado: 'conectado'
+                }
+            });
+            if (!created) {
+                await integracion.update({
+                    nombre: business.name,
+                    access_token: encryptedToken,
+                    business_name: business.name,
+                    estado: 'conectado'
+                });
+            }
         }
 
         res.clearCookie('meta_oauth_state');
         res.clearCookie('meta_oauth_tenant');
+        res.clearCookie('meta_oauth_mode');
 
-        auditoria('META_CONECTADO', { tenantId, businessId: business.id });
+        auditoria('META_CONECTADO', { tenantId, businessId: business.id, mode });
 
         return res.redirect(`${frontendRedirect}/settings?meta_success=true`);
 
@@ -141,14 +171,15 @@ router.get('/callback', async (req, res) => {
     }
 });
 
-// GET /api/meta/status
+// GET /api/meta/status -> Compatibilidad hacia atrás (usa la primera tienda activa)
 router.get('/status', verificarToken, async (req, res) => {
     try {
         const integracion = await MetaIntegration.findOne({
-            where: { inquilino_id: req.usuario.tenantId }
+            where: { inquilino_id: req.usuario.tenantId, estado: 'conectado' },
+            order: [['createdAt', 'ASC']]
         });
 
-        if (!integracion || integracion.estado !== 'conectado') {
+        if (!integracion) {
             return res.json({ status: 'desconectado' });
         }
 
@@ -163,14 +194,54 @@ router.get('/status', verificarToken, async (req, res) => {
     }
 });
 
+// GET /api/meta/stores -> Lista todas las tiendas conectadas del tenant
+router.get('/stores', verificarToken, async (req, res) => {
+    try {
+        const tiendas = await MetaIntegration.findAll({
+            where: { inquilino_id: req.usuario.tenantId },
+            attributes: ['id', 'nombre', 'business_id', 'business_name', 'estado', 'createdAt'],
+            order: [['createdAt', 'ASC']]
+        });
+        return res.json({ tiendas });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Error interno del servidor.' });
+    }
+});
+
+// DELETE /api/meta/stores/:id -> Elimina una tienda específica
+router.delete('/stores/:id', verificarToken, async (req, res) => {
+    try {
+        const integracion = await MetaIntegration.findOne({
+            where: { id: req.params.id, inquilino_id: req.usuario.tenantId }
+        });
+        if (!integracion) {
+            return res.status(404).json({ message: 'Tienda no encontrada.' });
+        }
+        await integracion.destroy();
+        return res.json({ message: 'Tienda desconectada correctamente.' });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Error interno del servidor.' });
+    }
+});
+
 // POST /api/meta/filters -> Retorna los selects disponibles (Business y Ad Accounts)
 router.post('/filters', verificarToken, async (req, res) => {
     try {
+        const { store_id } = req.body;
+
+        // Buscar la tienda específica o la primera activa del tenant
+        const whereClause = store_id
+            ? { id: store_id, inquilino_id: req.usuario.tenantId, estado: 'conectado' }
+            : { inquilino_id: req.usuario.tenantId, estado: 'conectado' };
+
         const integracion = await MetaIntegration.findOne({
-            where: { inquilino_id: req.usuario.tenantId }
+            where: whereClause,
+            order: [['createdAt', 'ASC']]
         });
 
-        if (!integracion || integracion.estado !== 'conectado') {
+        if (!integracion) {
             return res.status(400).json({ message: 'Meta no está conectado.' });
         }
 
@@ -213,13 +284,18 @@ router.post('/filters', verificarToken, async (req, res) => {
 // POST /api/meta/campaign-list -> Retorna solo ID y Nombre de campañas para el select
 router.post('/campaign-list', verificarToken, async (req, res) => {
     try {
-        const { ad_account_id } = req.body;
+        const { ad_account_id, store_id } = req.body;
         if (!ad_account_id) return res.json({ campaigns: [] });
 
+        const whereClause = store_id
+            ? { id: store_id, inquilino_id: req.usuario.tenantId, estado: 'conectado' }
+            : { inquilino_id: req.usuario.tenantId, estado: 'conectado' };
+
         const integracion = await MetaIntegration.findOne({
-            where: { inquilino_id: req.usuario.tenantId }
+            where: whereClause,
+            order: [['createdAt', 'ASC']]
         });
-        if (!integracion || integracion.estado !== 'conectado') {
+        if (!integracion) {
             return res.status(400).json({ message: 'Meta no está conectado.' });
         }
 
@@ -247,13 +323,18 @@ router.post('/campaign-list', verificarToken, async (req, res) => {
 // POST /api/meta/campaigns -> Tabla Escalafy (Alta densidad, Paginado 10, POST)
 router.post('/campaigns', verificarToken, async (req, res) => {
     try {
-        const { ad_account_id, date_start, date_end, cursor, status, campaign_id } = req.body;
-        
+        const { ad_account_id, date_start, date_end, cursor, status, campaign_id, store_id } = req.body;
+
+        const whereClause = store_id
+            ? { id: store_id, inquilino_id: req.usuario.tenantId, estado: 'conectado' }
+            : { inquilino_id: req.usuario.tenantId, estado: 'conectado' };
+
         const integracion = await MetaIntegration.findOne({
-            where: { inquilino_id: req.usuario.tenantId }
+            where: whereClause,
+            order: [['createdAt', 'ASC']]
         });
 
-        if (!integracion || integracion.estado !== 'conectado') {
+        if (!integracion) {
             return res.status(400).json({ message: 'Meta no está conectado.' });
         }
 
