@@ -127,18 +127,18 @@ async function crear(req, res) {
     const esAdmin = req.usuario.rol === 'admin';
 
     const {
-      nombre, sku, categoria_id, marca_id, tags,
+      nombre, categoria_id, tags,
       descripcion_corta, descripcion_larga,
       precio_costo, precio_minimo, precio_base,
       descuento_porcentaje, descuento_inicio, descuento_fin, impuestos_incluidos,
       cantidad_disponible, stock_minimo, unidad_medida,
-      activo, destacado, fecha_disponible_desde, fecha_disponible_hasta,
+      activo, estado_venta, destacado, fecha_disponible_desde, fecha_disponible_hasta,
       slug: slugManual, meta_titulo, meta_descripcion,
-      peso, dimensiones, tipo_producto,
       variantes = [], precios_mayoristas = [], relacionados = [],
     } = req.body;
 
-    if (!nombre || precio_base === undefined) {
+    const precioBaseNum = parseFloat(precio_base);
+    if (!nombre || isNaN(precioBaseNum)) {
       await t.rollback();
       return res.status(400).json({ message: 'Nombre y precio_base son requeridos.' });
     }
@@ -158,22 +158,26 @@ async function crear(req, res) {
       : await generarSlugUnico(nombre, inquilino_id);
 
     const producto = await Producto.create({
-      inquilino_id, nombre, sku, categoria_id, marca_id,
-      tags: tags || [], descripcion_corta, descripcion_larga,
-      precio_costo: esAdmin ? precio_costo : undefined,
-      precio_minimo, precio_base,
-      descuento_porcentaje: descuento_porcentaje || 0,
-      descuento_inicio, descuento_fin,
+      inquilino_id, nombre,
+      categoria_id: categoria_id || null,
+      tags: tags || [],
+      descripcion_corta, descripcion_larga,
+      precio_costo: esAdmin && precio_costo ? parseFloat(precio_costo) : null,
+      precio_minimo: precio_minimo ? parseFloat(precio_minimo) : null,
+      precio_base: precioBaseNum,
+      descuento_porcentaje: parseFloat(descuento_porcentaje) || 0,
+      descuento_inicio: descuento_inicio || null,
+      descuento_fin: descuento_fin || null,
       impuestos_incluidos: impuestos_incluidos !== false,
-      cantidad_disponible: variantes.length > 0 ? 0 : (cantidad_disponible || 0),
-      stock_minimo: stock_minimo || 0,
+      cantidad_disponible: variantes.length > 0 ? 0 : (parseInt(cantidad_disponible) || 0),
+      stock_minimo: parseInt(stock_minimo) || 0,
       unidad_medida: unidad_medida || 'unidad',
       activo: activo !== false,
+      estado_venta: estado_venta || 'en_venta',
       destacado: destacado || false,
-      fecha_disponible_desde, fecha_disponible_hasta,
+      fecha_disponible_desde: fecha_disponible_desde || null,
+      fecha_disponible_hasta: fecha_disponible_hasta || null,
       slug, meta_titulo, meta_descripcion,
-      peso, dimensiones,
-      tipo_producto: tipo_producto || 'fisico',
       creado_por: usuario_id,
       modificado_por: usuario_id,
     }, { transaction: t });
@@ -221,12 +225,16 @@ async function crear(req, res) {
     return res.status(201).json(serializar(productoCompleto, esAdmin));
   } catch (err) {
     await t.rollback();
-    // Limpiar archivos temporales si hubo rollback
     for (const { tmpPath } of archivosTemp) {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     }
-    console.error(err);
-    return res.status(500).json({ message: 'Error al crear producto.' });
+    console.error('[crear producto]', err);
+    // Errores de validación de Sequelize: enviar detalle al cliente
+    if (err.name === 'SequelizeValidationError' || err.name === 'SequelizeUniqueConstraintError') {
+      const mensajes = err.errors?.map(e => e.message) || [err.message];
+      return res.status(422).json({ message: 'Error de validación.', errores: mensajes });
+    }
+    return res.status(500).json({ message: err.message || 'Error al crear producto.' });
   }
 }
 

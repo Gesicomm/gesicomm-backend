@@ -104,12 +104,17 @@ const Producto = sequelize.define('Producto', {
     allowNull: true,
     defaultValue: 'unidad',
   },
-  // --- Estado ---
   activo: {
     type: DataTypes.BOOLEAN,
     defaultValue: true,
     allowNull: false,
     comment: 'Soft-delete. false = producto dado de baja, nunca se borra físicamente.',
+  },
+  estado_venta: {
+    type: DataTypes.ENUM('en_venta', 'fuera_de_stock', 'no_disponible'),
+    defaultValue: 'en_venta',
+    allowNull: false,
+    comment: '"en_venta" = visible y vendible. "fuera_de_stock" = visible pero no se puede comprar. "no_disponible" = no aparece en tienda.',
   },
   destacado: {
     type: DataTypes.BOOLEAN,
