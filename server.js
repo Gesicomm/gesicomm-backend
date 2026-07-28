@@ -9,8 +9,12 @@ const rateLimit = require('express-rate-limit');
 const { logger } = require('./src/utils/logger');
 
 // Rutas
+const path = require('path');
 const authRoutes = require('./src/routes/auth');
 const metaRoutes = require('./src/routes/meta');
+const productosRoutes = require('./src/routes/productos');
+const categoriasRoutes = require('./src/routes/categorias');
+const marcasRoutes = require('./src/routes/marcas');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -40,6 +44,8 @@ app.use(cors({
 // ============================================================
 app.use(express.json({ limit: '10kb' })); // Límite de tamaño para prevenir ataques
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+// Servir imágenes de productos subidas
+app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads')));
 app.use(cookieParser()); // Necesario para leer cookies HttpOnly
 
 // ============================================================
@@ -60,6 +66,9 @@ app.use(limiteGlobal);
 // ============================================================
 app.use('/api/auth', authRoutes);
 app.use('/api/meta', metaRoutes);
+app.use('/api/productos', productosRoutes);
+app.use('/api/categorias', categoriasRoutes);
+app.use('/api/marcas', marcasRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {

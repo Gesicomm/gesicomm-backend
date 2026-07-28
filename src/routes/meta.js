@@ -177,8 +177,8 @@ router.get('/data', verificarToken, async (req, res) => {
         // Descifrar el token real
         const accessToken = EncryptionService.decrypt(integracion.access_token);
 
-        // Obtener campañas reales del Ad Account asociado al Business Manager
-        const adsUrl = `https://graph.facebook.com/${FB_API_VERSION}/${integracion.business_id}/owned_ad_accounts`
+        // Obtener cuentas publicitarias asociadas al usuario (personal y business)
+        const adsUrl = `https://graph.facebook.com/${FB_API_VERSION}/me/adaccounts`
             + `?access_token=${accessToken}`
             + `&fields=id,name,account_status,amount_spent,balance,currency`;
 

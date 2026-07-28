@@ -18,9 +18,12 @@
     "express-rate-limit": "^7.2.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
+    "multer": "^2.2.0",
     "pg": "^8.22.0",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.8",
+    "sharp": "^0.35.3",
+    "slugify": "^1.6.9",
     "winston": "^3.11.0",
     "zod": "^3.22.4"
   },
