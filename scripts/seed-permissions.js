@@ -5,12 +5,21 @@ const permisosDisponibles = [
   { nombre: 'ver_dashboard', descripcion: 'Acceso básico al panel principal' },
   { nombre: 'gestionar_usuarios', descripcion: 'Puede invitar, editar y eliminar usuarios' },
   { nombre: 'configurar_sistema', descripcion: 'Acceso a ajustes técnicos globales' },
+  // Combos
+  { nombre: 'ver_combos', descripcion: 'Ver y listar combos' },
+  { nombre: 'crear_combos', descripcion: 'Crear nuevos combos' },
+  { nombre: 'editar_combos', descripcion: 'Modificar combos existentes' },
+  { nombre: 'activar_combos', descripcion: 'Activar y desactivar combos' },
+  { nombre: 'configurar_combos', descripcion: 'Configurar parámetros económicos de combos' },
 ];
 
 const rolesBasicos = [
   {
     nombre: 'administrador',
-    permisos: ['ver_dashboard', 'gestionar_usuarios', 'configurar_sistema'],
+    permisos: [
+      'ver_dashboard', 'gestionar_usuarios', 'configurar_sistema',
+      'ver_combos', 'crear_combos', 'editar_combos', 'activar_combos', 'configurar_combos'
+    ],
   },
   {
     nombre: 'usuario',

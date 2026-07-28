@@ -6,6 +6,7 @@ const router = express.Router();
 const { verificarToken } = require('../middleware/autenticacion');
 const ctrl = require('../controllers/producto.controller');
 const imgCtrl = require('../controllers/imagen.controller');
+const comboRoutes = require('./combos');
 
 router.use(verificarToken);
 
@@ -20,5 +21,8 @@ router.delete('/:id', ctrl.eliminar);
 router.post('/:id/imagenes', imgCtrl.upload.single('imagen'), imgCtrl.subirImagen);
 router.put('/:id/imagenes/:imgId', imgCtrl.actualizarImagen);
 router.delete('/:id/imagenes/:imgId', imgCtrl.eliminarImagen);
+
+// Combos
+router.use('/:productoId/combos', comboRoutes);
 
 module.exports = router;

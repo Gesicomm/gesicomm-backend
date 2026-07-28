@@ -13,9 +13,10 @@ const { Op } = require('sequelize');
 const slugify = require('slugify');
 const {
   sequelize, Producto, ProductoVariante, ProductoImagen,
-  PrecioMayorista, ProductoRelacionado, HistorialPrecio,
+  ProductoCombo, ProductoComboItem, ProductoRelacionado, HistorialPrecio,
   Categoria, Marca, Usuario,
 } = require('../models');
+
 const { calcularPrecioEfectivo, validarPrecioMinimo } = require('../utils/precio');
 
 const UPLOADS_PUBLIC = path.join(process.cwd(), 'public', 'uploads');
@@ -95,7 +96,7 @@ async function buscar(req, res) {
     const { rows: productos, count } = await Producto.findAndCountAll({
       where,
       include: [
-        { model: Categoria, attributes: ['id', 'nombre', 'slug'] },
+        { model: Categoria, as: 'categoria', attributes: ['id', 'nombre', 'slug'] },
         { model: Marca, attributes: ['id', 'nombre', 'slug'] },
         { model: ProductoImagen, as: 'imagenes', where: { es_principal: true }, required: false, attributes: ['url', 'orden'] },
       ],
@@ -134,7 +135,7 @@ async function crear(req, res) {
       cantidad_disponible, stock_minimo, unidad_medida,
       activo, estado_venta, destacado, fecha_disponible_desde, fecha_disponible_hasta,
       slug: slugManual, meta_titulo, meta_descripcion,
-      variantes = [], precios_mayoristas = [], relacionados = [],
+      variantes = [], combos = [], relacionados = [],
     } = req.body;
 
     const precioBaseNum = parseFloat(precio_base);
@@ -191,13 +192,7 @@ async function crear(req, res) {
       await recalcularStockPadre(producto.id, t);
     }
 
-    // Crear precios mayoristas
-    if (precios_mayoristas.length > 0) {
-      await PrecioMayorista.bulkCreate(
-        precios_mayoristas.map(pm => ({ ...pm, inquilino_id, producto_id: producto.id })),
-        { transaction: t }
-      );
-    }
+
 
     // Crear relaciones
     if (relacionados.length > 0) {
@@ -218,7 +213,13 @@ async function crear(req, res) {
       include: [
         { model: ProductoVariante, as: 'variantes' },
         { model: ProductoImagen, as: 'imagenes' },
-        { model: PrecioMayorista, as: 'precios_mayoristas' },
+        { 
+          model: ProductoCombo, as: 'combos', 
+          include: [{
+            model: ProductoComboItem, as: 'items',
+            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base'] }]
+          }]
+        },
       ],
     });
 
@@ -248,11 +249,17 @@ async function detalle(req, res) {
     const producto = await Producto.findOne({
       where: { id, inquilino_id },
       include: [
-        { model: Categoria, attributes: ['id', 'nombre', 'slug', 'parent_id'] },
+        { model: Categoria, as: 'categoria', attributes: ['id', 'nombre', 'slug', 'parent_id'] },
         { model: Marca, attributes: ['id', 'nombre', 'slug'] },
         { model: ProductoVariante, as: 'variantes', include: [{ model: ProductoImagen, as: 'imagenes' }] },
         { model: ProductoImagen, as: 'imagenes', order: [['orden', 'ASC']] },
-        { model: PrecioMayorista, as: 'precios_mayoristas', order: [['cantidad_minima', 'ASC']] },
+        { 
+          model: ProductoCombo, as: 'combos', 
+          include: [{
+            model: ProductoComboItem, as: 'items',
+            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base'] }]
+          }]
+        },
         { model: HistorialPrecio, as: 'historial_precios', order: [['fecha_cambio', 'DESC']], limit: 20 },
         { model: ProductoRelacionado, as: 'relaciones',
           include: [{ model: Producto, as: 'ProductoVinculado', attributes: ['id', 'nombre', 'slug', 'precio_base'] }] },
@@ -363,13 +370,21 @@ async function actualizar(req, res) {
     const tieneVariantes = await ProductoVariante.count({ where: { producto_id: id, activo: true }, transaction: t });
     if (tieneVariantes > 0) await recalcularStockPadre(id, t);
 
+
+
     await t.commit();
 
     const productoActualizado = await Producto.findByPk(id, {
       include: [
         { model: ProductoVariante, as: 'variantes' },
         { model: ProductoImagen, as: 'imagenes' },
-        { model: PrecioMayorista, as: 'precios_mayoristas' },
+        { 
+          model: ProductoCombo, as: 'combos', 
+          include: [{
+            model: ProductoComboItem, as: 'items',
+            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base'] }]
+          }]
+        },
       ],
     });
 

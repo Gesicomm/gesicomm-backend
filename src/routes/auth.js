@@ -129,11 +129,12 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
       return res.status(400).json({ message: 'El correo ya está registrado.' });
     }
 
-    // Como es MVP de tenant único por ahora, buscamos o creamos la empresa principal
-    const [inquilino] = await Inquilino.findOrCreate({ 
-      where: { nombre: 'Gesicomm Principal' }, 
-      transaction: t 
-    });
+    // Como es MVP de tenant único por ahora, todos los usuarios van al primer inquilino existente
+    const inquilino = await Inquilino.findOne({ transaction: t, order: [['id', 'ASC']] });
+    if (!inquilino) {
+      await t.rollback();
+      return res.status(500).json({ message: 'Error: No hay inquilino base configurado.' });
+    }
 
     // Buscar el rol básico de usuario (debe haber sido creado por el script seed-permissions)
     const rolUsuario = await Rol.findOne({ where: { nombre: 'usuario' }, transaction: t });

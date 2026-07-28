@@ -15,6 +15,7 @@ const metaRoutes = require('./src/routes/meta');
 const productosRoutes = require('./src/routes/productos');
 const categoriasRoutes = require('./src/routes/categorias');
 const marcasRoutes = require('./src/routes/marcas');
+const combosAdminRoutes = require('./src/routes/combos-admin');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -70,6 +71,7 @@ app.use('/api/meta', metaRoutes);
 app.use('/api/productos', productosRoutes);
 app.use('/api/categorias', categoriasRoutes);
 app.use('/api/marcas', marcasRoutes);
+app.use('/api/combos', combosAdminRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {
