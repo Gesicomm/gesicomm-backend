@@ -163,8 +163,8 @@ router.get('/status', verificarToken, async (req, res) => {
     }
 });
 
-// GET /api/meta/data -> Datos reales desde la Graph API
-router.get('/data', verificarToken, async (req, res) => {
+// POST /api/meta/filters -> Retorna los selects disponibles (Business y Ad Accounts)
+router.post('/filters', verificarToken, async (req, res) => {
     try {
         const integracion = await MetaIntegration.findOne({
             where: { inquilino_id: req.usuario.tenantId }
@@ -174,60 +174,202 @@ router.get('/data', verificarToken, async (req, res) => {
             return res.status(400).json({ message: 'Meta no está conectado.' });
         }
 
-        // Descifrar el token real
         const accessToken = EncryptionService.decrypt(integracion.access_token);
 
-        // Obtener cuentas publicitarias asociadas al usuario (personal y business)
-        const adsUrl = `https://graph.facebook.com/${FB_API_VERSION}/me/adaccounts`
-            + `?access_token=${accessToken}`
-            + `&fields=id,name,account_status,amount_spent,balance,currency`;
+        // Portafolios (Business Managers)
+        const bmUrl = `https://graph.facebook.com/${FB_API_VERSION}/me/businesses?access_token=${accessToken}&fields=id,name`;
+        const bmData = await fetchMeta(bmUrl);
 
-        const adsData = await fetchMeta(adsUrl);
+        const businesses = bmData.data || [];
 
-        // Por cada Ad Account, obtener sus campañas activas con métricas
-        const adAccounts = adsData.data || [];
-        const campaignsResult = [];
-
-        for (const account of adAccounts) {
-            const campsUrl = `https://graph.facebook.com/${FB_API_VERSION}/${account.id}/campaigns`
-                + `?access_token=${accessToken}`
-                + `&fields=id,name,status,insights{spend,clicks,ctr,cpm,cpc,impressions}`
-                + `&effective_status=["ACTIVE","PAUSED"]`
-                + `&limit=10`;
-
-            const campsData = await fetchMeta(campsUrl);
-
-            if (campsData.data) {
-                for (const camp of campsData.data) {
-                    const insight = camp.insights?.data?.[0] || {};
-                    campaignsResult.push({
-                        id: camp.id,
-                        name: camp.name,
-                        status: camp.status,
-                        ad_account: account.name,
-                        insights: {
-                            gasto: insight.spend ? `$${parseFloat(insight.spend).toFixed(2)}` : '$0.00',
-                            clicks: insight.clicks || 0,
-                            impresiones: insight.impressions || 0,
-                            ctr: insight.ctr ? `${parseFloat(insight.ctr).toFixed(2)}%` : '0%',
-                            cpm: insight.cpm ? `$${parseFloat(insight.cpm).toFixed(2)}` : '$0.00',
-                            cpc: insight.cpc ? `$${parseFloat(insight.cpc).toFixed(2)}` : '$0.00',
-                        }
+        // Por cada BM, obtener SOLO las cuentas que le pertenecen (owned)
+        // Esto excluye cuentas compartidas en Read-Only y cuentas personales
+        const adAccounts = [];
+        for (const bm of businesses) {
+            try {
+                const ownedUrl = `https://graph.facebook.com/${FB_API_VERSION}/${bm.id}/owned_ad_accounts?access_token=${accessToken}&fields=id,name,account_status,currency&limit=50`;
+                const ownedData = await fetchMeta(ownedUrl);
+                if (ownedData.data) {
+                    ownedData.data.forEach(ad => {
+                        ad.business = { id: bm.id, name: bm.name };
+                        adAccounts.push(ad);
                     });
                 }
+            } catch (err) {
+                console.log(`No se pudieron leer owned_ad_accounts para BM ${bm.id}:`, err.message);
             }
         }
 
         return res.json({
-            business_id: integracion.business_id,
-            business_name: integracion.business_name,
-            ad_accounts: adAccounts.length,
-            campaigns: campaignsResult
+            businesses: businesses,
+            ad_accounts: adAccounts,
+        });
+    } catch (err) {
+        console.error('Meta /filters Error:', err.message);
+        return res.status(500).json({ message: 'Error al cargar filtros de Meta: ' + err.message });
+    }
+});
+
+// POST /api/meta/campaign-list -> Retorna solo ID y Nombre de campañas para el select
+router.post('/campaign-list', verificarToken, async (req, res) => {
+    try {
+        const { ad_account_id } = req.body;
+        if (!ad_account_id) return res.json({ campaigns: [] });
+
+        const integracion = await MetaIntegration.findOne({
+            where: { inquilino_id: req.usuario.tenantId }
+        });
+        if (!integracion || integracion.estado !== 'conectado') {
+            return res.status(400).json({ message: 'Meta no está conectado.' });
+        }
+
+        const accessToken = EncryptionService.decrypt(integracion.access_token);
+        
+        // Obtenemos todas las campañas (sin insights para que sea súper rápido)
+        const campsUrl = `https://graph.facebook.com/${FB_API_VERSION}/${ad_account_id}/campaigns`
+            + `?access_token=${accessToken}`
+            + `&fields=id,name`
+            + `&effective_status=["ACTIVE","PAUSED","ARCHIVED"]`
+            + `&limit=500`; // Limitamos a un buen número para llenar el dropdown
+            
+        const campsData = await fetchMeta(campsUrl);
+
+        return res.json({
+            campaigns: campsData.data || []
         });
 
     } catch (err) {
-        console.error('Meta /data Error:', err.message);
-        return res.status(500).json({ message: 'Error al obtener datos de Meta: ' + err.message });
+        console.error('Meta /campaign-list Error:', err.message);
+        return res.status(500).json({ message: 'Error al cargar lista de campañas: ' + err.message });
+    }
+});
+
+// POST /api/meta/campaigns -> Tabla Escalafy (Alta densidad, Paginado 10, POST)
+router.post('/campaigns', verificarToken, async (req, res) => {
+    try {
+        const { ad_account_id, date_start, date_end, cursor, status, campaign_id } = req.body;
+        
+        const integracion = await MetaIntegration.findOne({
+            where: { inquilino_id: req.usuario.tenantId }
+        });
+
+        if (!integracion || integracion.estado !== 'conectado') {
+            return res.status(400).json({ message: 'Meta no está conectado.' });
+        }
+
+        const accessToken = EncryptionService.decrypt(integracion.access_token);
+        
+        let targetAdAccount = ad_account_id;
+        
+        if (!targetAdAccount) {
+            // Si no envió ad_account_id, tomamos la primera disponible
+            const adsUrl = `https://graph.facebook.com/${FB_API_VERSION}/me/adaccounts?access_token=${accessToken}&fields=id`;
+            const adsData = await fetchMeta(adsUrl);
+            if (!adsData.data || adsData.data.length === 0) {
+                return res.json({ campaigns: [], paging: null });
+            }
+            targetAdAccount = adsData.data[0].id;
+        }
+
+        let timeRangeParams = '';
+        if (date_start && date_end) {
+            timeRangeParams = `&time_range={"since":"${date_start}","until":"${date_end}"}`;
+        } else {
+            timeRangeParams = `&date_preset=maximum`;
+        }
+
+        const afterParam = cursor ? `&after=${cursor}` : '';
+        const limitParam = `&limit=10`;
+
+        let effectiveStatusParam = `&effective_status=["ACTIVE","PAUSED","ARCHIVED"]`;
+        if (status && status !== 'ALL') {
+            effectiveStatusParam = `&effective_status=["${status}"]`;
+        }
+
+        let filteringParam = '';
+        if (campaign_id && campaign_id !== 'ALL') {
+            filteringParam = `&filtering=[{"field":"campaign.id","operator":"EQUAL","value":"${campaign_id}"}]`;
+        }
+
+        // Traemos objective y métricas detalladas para diferenciar WhatsApp vs Web, más la fecha start_time
+        const fields = 'id,name,status,start_time,objective,daily_budget,lifetime_budget,' + 
+                       'insights{spend,actions,action_values,cost_per_action_type,purchase_roas,outbound_clicks}';
+
+        const campsUrl = `https://graph.facebook.com/${FB_API_VERSION}/${targetAdAccount}/campaigns`
+            + `?access_token=${accessToken}`
+            + `&fields=${fields}`
+            + effectiveStatusParam
+            + timeRangeParams
+            + limitParam
+            + afterParam
+            + filteringParam;
+
+        const campsData = await fetchMeta(campsUrl);
+        const campaignsResult = [];
+
+        if (campsData.data) {
+            for (const camp of campsData.data) {
+                const insight = camp.insights?.data?.[0] || {};
+                const actions = insight.actions || [];
+                const actionValues = insight.action_values || [];
+                const costPerAction = insight.cost_per_action_type || [];
+                
+                // Helper functions
+                const getVal = (arr, actionType) => arr.find(a => a.action_type === actionType)?.value || 0;
+                
+                // Base
+                const spend = parseFloat(insight.spend || 0);
+                const budget = camp.daily_budget ? parseFloat(camp.daily_budget)/100 : (camp.lifetime_budget ? parseFloat(camp.lifetime_budget)/100 : 0);
+                
+                // Web
+                const purchases = parseFloat(getVal(actions, 'purchase') || getVal(actions, 'offsite_conversion.fb_pixel_purchase'));
+                const costPerPurchase = parseFloat(getVal(costPerAction, 'purchase') || getVal(costPerAction, 'offsite_conversion.fb_pixel_purchase'));
+                const purchaseVal = parseFloat(getVal(actionValues, 'purchase') || getVal(actionValues, 'offsite_conversion.fb_pixel_purchase'));
+                const roas = insight.purchase_roas?.[0]?.value ? parseFloat(insight.purchase_roas[0].value) : (spend > 0 && purchaseVal > 0 ? purchaseVal/spend : 0);
+                const outboundClicks = parseFloat(getVal(actions, 'outbound_clicks') || getVal(actions, 'link_click'));
+                const conversionRate = outboundClicks > 0 ? (purchases / outboundClicks) * 100 : 0;
+
+                // WhatsApp
+                const conversations = parseFloat(getVal(actions, 'onsite_conversion.messaging_conversation_started_7d') || getVal(actions, 'onsite_conversion.messaging_first_reply'));
+                const costPerConversation = conversations > 0 ? spend / conversations : 0;
+                const closeRate = conversations > 0 ? (purchases / conversations) * 100 : 0;
+
+                // Determinar tipo principal (Si el objetivo es MESSAGES o OUTCOME_ENGAGEMENT, priorizar ws)
+                const isWhatsapp = ['MESSAGES', 'OUTCOME_ENGAGEMENT'].includes(camp.objective);
+
+                campaignsResult.push({
+                    id: camp.id,
+                    name: camp.name,
+                    status: camp.status,
+                    start_time: camp.start_time,
+                    objective: camp.objective,
+                    type: isWhatsapp ? 'whatsapp' : 'web',
+                    metrics: {
+                        presupuesto: budget,
+                        importe_gastado: spend,
+                        compras: purchases,
+                        costo_por_compra: costPerPurchase,
+                        roas: roas,
+                        valor_conversion: purchaseVal,
+                        // Web específicas
+                        porcentaje_conversion: conversionRate,
+                        // WS específicas
+                        conversaciones: conversations,
+                        costo_por_conversacion: costPerConversation,
+                        porcentaje_cierre: closeRate,
+                    }
+                });
+            }
+        }
+
+        return res.json({
+            campaigns: campaignsResult,
+            paging: campsData.paging || null
+        });
+
+    } catch (err) {
+        console.error('Meta /campaigns Error:', err.message);
+        return res.status(500).json({ message: 'Error al obtener campañas de Meta: ' + err.message });
     }
 });
 
