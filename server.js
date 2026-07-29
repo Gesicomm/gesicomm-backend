@@ -25,7 +25,9 @@ const PORT = process.env.PORT || 3000;
 // 1. HELMET — Headers de seguridad HTTP
 //    Configura automáticamente: CSP, HSTS, X-Frame-Options, etc.
 // ============================================================
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
 
 // ============================================================
 // 2. CORS — Solo permite peticiones desde el frontend oficial.

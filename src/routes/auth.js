@@ -15,6 +15,7 @@ const rateLimit = require('express-rate-limit');
 const { validar, esquemaLogin, esquemaRegistro, esquemaRecuperarPassword } = require('../middleware/validacion');
 const { verificarToken } = require('../middleware/autenticacion');
 const { auditoria } = require('../utils/logger');
+const { rollbackSeguro } = require('../utils/transaction');
 const { Usuario, Inquilino, Rol, Permiso, sequelize } = require('../models');
 
 const router = express.Router();
@@ -125,21 +126,21 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
 
     const existe = await Usuario.findOne({ where: { correo_electronico: email }, transaction: t });
     if (existe) {
-      await t.rollback();
+      await rollbackSeguro(t);
       return res.status(400).json({ message: 'El correo ya está registrado.' });
     }
 
     // Como es MVP de tenant único por ahora, todos los usuarios van al primer inquilino existente
     const inquilino = await Inquilino.findOne({ transaction: t, order: [['id', 'ASC']] });
     if (!inquilino) {
-      await t.rollback();
+      await rollbackSeguro(t);
       return res.status(500).json({ message: 'Error: No hay inquilino base configurado.' });
     }
 
     // Buscar el rol básico de usuario (debe haber sido creado por el script seed-permissions)
     const rolUsuario = await Rol.findOne({ where: { nombre: 'usuario' }, transaction: t });
     if (!rolUsuario) {
-      await t.rollback();
+      await rollbackSeguro(t);
       return res.status(500).json({ message: 'Error de configuración del servidor: Roles no inicializados.' });
     }
 
@@ -160,7 +161,7 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
 
     return res.status(201).json({ message: 'Cuenta creada. Por favor inicia sesión.' });
   } catch (err) {
-    await t.rollback();
+    await rollbackSeguro(t);
     console.error(err);
     return res.status(500).json({ message: 'Error interno del servidor al crear cuenta.' });
   }

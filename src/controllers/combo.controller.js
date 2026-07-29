@@ -18,6 +18,7 @@
 
 const { sequelize } = require('../models');
 const ComboService = require('../services/combo.service');
+const { rollbackSeguro } = require('../utils/transaction');
 
 // ─── POST /api/combos/simular ─────────────────────────────────────────────────
 
@@ -64,7 +65,7 @@ async function crear(req, res) {
     await t.commit();
     return res.status(201).json(combo);
   } catch (err) {
-    await t.rollback();
+    await rollbackSeguro(t);
     console.error('[combo] crear:', err.message);
     if (err.name === 'SequelizeUniqueConstraintError') {
       return res.status(422).json({ message: 'Ya existe un combo con este nombre para este producto.' });
@@ -95,7 +96,7 @@ async function actualizar(req, res) {
     await t.commit();
     return res.json(combo);
   } catch (err) {
-    await t.rollback();
+    await rollbackSeguro(t);
     console.error('[combo] actualizar:', err.message);
     if (err.name === 'SequelizeUniqueConstraintError') {
       return res.status(422).json({ message: 'Ya existe un combo con este nombre para este producto.' });
@@ -112,14 +113,14 @@ async function cambiarEstado(req, res) {
   try {
     const { estado } = req.body;
     if (!estado) {
-      await t.rollback();
+      await rollbackSeguro(t);
       return res.status(400).json({ message: 'El campo "estado" es requerido.' });
     }
     const combo = await ComboService.cambiarEstado(Number(req.params.id), estado, req.usuario.tenantId, t);
     await t.commit();
     return res.json(combo);
   } catch (err) {
-    await t.rollback();
+    await rollbackSeguro(t);
     console.error('[combo] cambiarEstado:', err.message);
     const status = err.message === 'Combo no encontrado.' ? 404 : 400;
     return res.status(status).json({ message: err.message || 'Error al cambiar el estado.' });

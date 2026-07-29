@@ -11,6 +11,11 @@ const permisosDisponibles = [
   { nombre: 'editar_combos', descripcion: 'Modificar combos existentes' },
   { nombre: 'activar_combos', descripcion: 'Activar y desactivar combos' },
   { nombre: 'configurar_combos', descripcion: 'Configurar parámetros económicos de combos' },
+  // Productos
+  { nombre: 'ver_productos', descripcion: 'Ver y buscar el catálogo de productos' },
+  { nombre: 'crear_productos', descripcion: 'Crear nuevos productos' },
+  { nombre: 'editar_productos', descripcion: 'Modificar productos existentes y subir imágenes' },
+  { nombre: 'eliminar_productos', descripcion: 'Eliminar productos y sus imágenes' },
 ];
 
 const rolesBasicos = [
@@ -18,12 +23,13 @@ const rolesBasicos = [
     nombre: 'administrador',
     permisos: [
       'ver_dashboard', 'gestionar_usuarios', 'configurar_sistema',
-      'ver_combos', 'crear_combos', 'editar_combos', 'activar_combos', 'configurar_combos'
+      'ver_combos', 'crear_combos', 'editar_combos', 'activar_combos', 'configurar_combos',
+      'ver_productos', 'crear_productos', 'editar_productos', 'eliminar_productos'
     ],
   },
   {
     nombre: 'usuario',
-    permisos: ['ver_dashboard'],
+    permisos: ['ver_dashboard', 'ver_productos'],
   },
 ];
 
