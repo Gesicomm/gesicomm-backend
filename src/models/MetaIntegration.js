@@ -12,6 +12,10 @@ const MetaIntegration = sequelize.define('MetaIntegration', {
     allowNull: false,
     // Sin unique: true — un tenant puede tener múltiples tiendas conectadas
   },
+  usuario_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true, // Para asegurar retrocompatibilidad inmediata, luego será false
+  },
   nombre: {
     type: DataTypes.STRING,
     allowNull: true, // Nombre visible de la tienda (ej: "BM - Ecom"). Se toma de business_name al crear.

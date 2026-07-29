@@ -10,9 +10,11 @@ const Marca = require('./Marca');
 const Producto = require('./Producto');
 const ProductoVariante = require('./ProductoVariante');
 const ProductoImagen = require('./ProductoImagen');
-const PrecioMayorista = require('./PrecioMayorista');
+const ProductoCombo = require('./ProductoCombo');
+const ProductoComboItem = require('./ProductoComboItem');
 const ProductoRelacionado = require('./ProductoRelacionado');
 const HistorialPrecio = require('./HistorialPrecio');
+const ComboConfiguracion = require('./ComboConfiguracion');
 
 // ============================================================
 // Relaciones existentes
@@ -52,7 +54,7 @@ Inquilino.hasMany(Producto, { foreignKey: 'inquilino_id' });
 Producto.belongsTo(Inquilino, { foreignKey: 'inquilino_id' });
 
 Categoria.hasMany(Producto, { foreignKey: 'categoria_id' });
-Producto.belongsTo(Categoria, { foreignKey: 'categoria_id' });
+Producto.belongsTo(Categoria, { as: 'categoria', foreignKey: 'categoria_id' });
 
 Marca.hasMany(Producto, { foreignKey: 'marca_id' });
 Producto.belongsTo(Marca, { foreignKey: 'marca_id' });
@@ -77,9 +79,22 @@ ProductoImagen.belongsTo(Producto, { foreignKey: 'producto_id' });
 ProductoVariante.hasMany(ProductoImagen, { as: 'imagenes', foreignKey: 'variante_id' });
 ProductoImagen.belongsTo(ProductoVariante, { foreignKey: 'variante_id' });
 
-// Precios mayoristas
-Producto.hasMany(PrecioMayorista, { as: 'precios_mayoristas', foreignKey: 'producto_id', onDelete: 'CASCADE' });
-PrecioMayorista.belongsTo(Producto, { foreignKey: 'producto_id' });
+// Combos (Multi-producto)
+Inquilino.hasMany(ProductoCombo, { foreignKey: 'inquilino_id' });
+ProductoCombo.belongsTo(Inquilino, { foreignKey: 'inquilino_id' });
+
+Producto.hasMany(ProductoCombo, { as: 'combos', foreignKey: 'producto_id', onDelete: 'CASCADE' });
+ProductoCombo.belongsTo(Producto, { as: 'producto_padre', foreignKey: 'producto_id' });
+
+ProductoCombo.hasMany(ProductoComboItem, { as: 'items', foreignKey: 'combo_id', onDelete: 'CASCADE' });
+ProductoComboItem.belongsTo(ProductoCombo, { foreignKey: 'combo_id' });
+
+Producto.hasMany(ProductoComboItem, { as: 'como_item_de_combo', foreignKey: 'producto_incluido_id', onDelete: 'CASCADE' });
+ProductoComboItem.belongsTo(Producto, { as: 'producto_incluido', foreignKey: 'producto_incluido_id' });
+
+// Configuración económica de combos por tenant
+Inquilino.hasOne(ComboConfiguracion, { foreignKey: 'inquilino_id' });
+ComboConfiguracion.belongsTo(Inquilino, { foreignKey: 'inquilino_id' });
 
 // Productos relacionados (relación muchos-a-muchos auto-referencial)
 Producto.hasMany(ProductoRelacionado, { as: 'relaciones', foreignKey: 'producto_id', onDelete: 'CASCADE' });
@@ -105,7 +120,9 @@ module.exports = {
   Producto,
   ProductoVariante,
   ProductoImagen,
-  PrecioMayorista,
+  ProductoCombo,
+  ProductoComboItem,
   ProductoRelacionado,
   HistorialPrecio,
+  ComboConfiguracion,
 };

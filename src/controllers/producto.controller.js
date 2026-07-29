@@ -13,10 +13,12 @@ const { Op } = require('sequelize');
 const slugify = require('slugify');
 const {
   sequelize, Producto, ProductoVariante, ProductoImagen,
-  PrecioMayorista, ProductoRelacionado, HistorialPrecio,
-  Categoria, Marca, Usuario,
+  ProductoRelacionado, HistorialPrecio,
+  Categoria, Marca,
 } = require('../models');
+
 const { calcularPrecioEfectivo, validarPrecioMinimo } = require('../utils/precio');
+const { rollbackSeguro } = require('../utils/transaction');
 
 const UPLOADS_PUBLIC = path.join(process.cwd(), 'public', 'uploads');
 const UPLOADS_TMP    = path.join(process.cwd(), 'tmp', 'uploads');
@@ -57,6 +59,49 @@ async function recalcularStockPadre(producto_id, transaction) {
   return total;
 }
 
+// ─── Helper: sincronizar variantes al editar un producto ────────────────────
+// Crea las nuevas (sin id), actualiza las existentes (con id) y desactiva
+// (soft-delete) las que ya no vienen en el payload. Filas sin nombre se
+// ignoran (fila vacía dejada a medio llenar en el formulario).
+async function sincronizarVariantes(producto_id, inquilino_id, variantesPayload, transaction) {
+  const actuales = await ProductoVariante.findAll({
+    where: { producto_id, activo: true },
+    transaction,
+  });
+  const mapaActuales = new Map(actuales.map(v => [v.id, v]));
+  const idsConservados = new Set();
+
+  for (const v of variantesPayload) {
+    const nombre = (v.nombre || '').trim();
+    if (!nombre) continue;
+
+    const datos = {
+      nombre,
+      sku_variante: v.sku_variante || null,
+      stock: parseInt(v.stock) || 0,
+      precio_diferencial: v.precio_diferencial ? parseFloat(v.precio_diferencial) : 0,
+    };
+
+    const idExistente = v.id ? Number(v.id) : null;
+    if (idExistente && mapaActuales.has(idExistente)) {
+      idsConservados.add(idExistente);
+      await mapaActuales.get(idExistente).update(datos, { transaction });
+    } else {
+      const nueva = await ProductoVariante.create(
+        { inquilino_id, producto_id, ...datos },
+        { transaction }
+      );
+      idsConservados.add(nueva.id);
+    }
+  }
+
+  for (const actual of actuales) {
+    if (!idsConservados.has(actual.id)) {
+      await actual.update({ activo: false }, { transaction });
+    }
+  }
+}
+
 // ─── Serializer: filtra precio_costo según rol ───────────────────────────────
 function serializar(producto, esAdmin = false) {
   const data = producto.toJSON ? producto.toJSON() : { ...producto };
@@ -68,7 +113,7 @@ function serializar(producto, esAdmin = false) {
 async function buscar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const esAdmin = req.usuario.rol === 'admin';
+    const esAdmin = req.usuario.rol === 'administrador';
     const {
       texto, categoria_id, marca_id, activo, destacado,
       precio_min, precio_max, stock_bajo, page = 1, limit = 10,
@@ -94,8 +139,23 @@ async function buscar(req, res) {
     const offset = (page - 1) * limit;
     const { rows: productos, count } = await Producto.findAndCountAll({
       where,
+      // Listado liviano: solo las columnas que consumen ProductList.jsx y los
+      // buscadores de producto de ComboEditor.jsx/ComboModal.jsx. El detalle
+      // completo (descripciones, variantes, combos, historial...) se pide
+      // aparte en GET /api/productos/:id cuando hace falta.
+      attributes: [
+        'id', 'nombre', 'sku', 'precio_base', 'precio_costo',
+        'cantidad_disponible', 'stock_minimo',
+        'estado_venta', 'activo', 'destacado', 'categoria_id',
+      ],
+      // Con `attributes` restringido, Sequelize no resuelve bien el ORDER BY
+      // sobre una columna fuera de esa lista cuando hay includes hasMany
+      // paginados (arma una subquery que la pierde). subQuery:false lo evita;
+      // distinct:true evita que el LEFT JOIN con imagenes infle el conteo.
+      subQuery: false,
+      distinct: true,
       include: [
-        { model: Categoria, attributes: ['id', 'nombre', 'slug'] },
+        { model: Categoria, as: 'categoria', attributes: ['id', 'nombre', 'slug'] },
         { model: Marca, attributes: ['id', 'nombre', 'slug'] },
         { model: ProductoImagen, as: 'imagenes', where: { es_principal: true }, required: false, attributes: ['url', 'orden'] },
       ],
@@ -124,7 +184,7 @@ async function crear(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const usuario_id = req.usuario.id;
-    const esAdmin = req.usuario.rol === 'admin';
+    const esAdmin = req.usuario.rol === 'administrador';
 
     const {
       nombre, categoria_id, tags,
@@ -134,12 +194,12 @@ async function crear(req, res) {
       cantidad_disponible, stock_minimo, unidad_medida,
       activo, estado_venta, destacado, fecha_disponible_desde, fecha_disponible_hasta,
       slug: slugManual, meta_titulo, meta_descripcion,
-      variantes = [], precios_mayoristas = [], relacionados = [],
+      variantes = [], combos = [], relacionados = [],
     } = req.body;
 
     const precioBaseNum = parseFloat(precio_base);
     if (!nombre || isNaN(precioBaseNum)) {
-      await t.rollback();
+      await rollbackSeguro(t);
       return res.status(400).json({ message: 'Nombre y precio_base son requeridos.' });
     }
 
@@ -149,7 +209,7 @@ async function crear(req, res) {
       precio_minimo, variantes,
     });
     if (!valido) {
-      await t.rollback();
+      await rollbackSeguro(t);
       return res.status(422).json({ message: 'Validación de precio mínimo fallida.', errores });
     }
 
@@ -191,13 +251,7 @@ async function crear(req, res) {
       await recalcularStockPadre(producto.id, t);
     }
 
-    // Crear precios mayoristas
-    if (precios_mayoristas.length > 0) {
-      await PrecioMayorista.bulkCreate(
-        precios_mayoristas.map(pm => ({ ...pm, inquilino_id, producto_id: producto.id })),
-        { transaction: t }
-      );
-    }
+
 
     // Crear relaciones
     if (relacionados.length > 0) {
@@ -214,17 +268,12 @@ async function crear(req, res) {
       if (fs.existsSync(tmpPath)) fs.renameSync(tmpPath, finalPath);
     }
 
-    const productoCompleto = await Producto.findByPk(producto.id, {
-      include: [
-        { model: ProductoVariante, as: 'variantes' },
-        { model: ProductoImagen, as: 'imagenes' },
-        { model: PrecioMayorista, as: 'precios_mayoristas' },
-      ],
-    });
-
-    return res.status(201).json(serializar(productoCompleto, esAdmin));
+    // El frontend solo usa el `id` de esta respuesta (para asociarle las
+    // imágenes en cola) — no hace falta re-consultar con combos/variantes/
+    // imagenes (un producto recién creado nunca puede tener combos todavía).
+    return res.status(201).json(serializar(producto, esAdmin));
   } catch (err) {
-    await t.rollback();
+    await rollbackSeguro(t);
     for (const { tmpPath } of archivosTemp) {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     }
@@ -239,25 +288,30 @@ async function crear(req, res) {
 }
 
 // ─── GET /api/productos/:id ──────────────────────────────────────────────────
+// Detalle liviano para EDITAR el producto (ProductForm.jsx). Solo trae lo que
+// ese formulario realmente consume: campos propios + variantes + imágenes.
+// `categoria_id`/`marca_id` ya están en el producto — no hace falta el JOIN
+// completo a Categoria/Marca solo para reponer un <select>.
+//
+// Todo lo demás vive en su propio endpoint, para pedirlo solo cuando hace
+// falta en vez de siempre:
+//   - combos       → GET /productos/:id/combos      (ya existía, ComboService)
+//   - historial de precios → GET /productos/:id/historial-precios
+// `relaciones`, `Creador` y `Modificador` se sacaron del payload por completo:
+// ninguna pantalla del frontend los usa hoy. Si en el futuro hace falta
+// mostrar auditoría o productos relacionados, se agregan como su propio
+// endpoint liviano, no reincorporados acá.
 async function detalle(req, res) {
   try {
     const { id } = req.params;
     const inquilino_id = req.usuario.tenantId;
-    const esAdmin = req.usuario.rol === 'admin';
+    const esAdmin = req.usuario.rol === 'administrador';
 
     const producto = await Producto.findOne({
       where: { id, inquilino_id },
       include: [
-        { model: Categoria, attributes: ['id', 'nombre', 'slug', 'parent_id'] },
-        { model: Marca, attributes: ['id', 'nombre', 'slug'] },
-        { model: ProductoVariante, as: 'variantes', include: [{ model: ProductoImagen, as: 'imagenes' }] },
+        { model: ProductoVariante, as: 'variantes' },
         { model: ProductoImagen, as: 'imagenes', order: [['orden', 'ASC']] },
-        { model: PrecioMayorista, as: 'precios_mayoristas', order: [['cantidad_minima', 'ASC']] },
-        { model: HistorialPrecio, as: 'historial_precios', order: [['fecha_cambio', 'DESC']], limit: 20 },
-        { model: ProductoRelacionado, as: 'relaciones',
-          include: [{ model: Producto, as: 'ProductoVinculado', attributes: ['id', 'nombre', 'slug', 'precio_base'] }] },
-        { model: Usuario, as: 'Creador', attributes: ['id', 'nombre'] },
-        { model: Usuario, as: 'Modificador', attributes: ['id', 'nombre'] },
       ],
     });
 
@@ -270,6 +324,28 @@ async function detalle(req, res) {
   }
 }
 
+// ─── GET /api/productos/:id/historial-precios ────────────────────────────────
+async function historialPrecios(req, res) {
+  try {
+    const { id } = req.params;
+    const inquilino_id = req.usuario.tenantId;
+
+    const producto = await Producto.findOne({ where: { id, inquilino_id }, attributes: ['id'] });
+    if (!producto) return res.status(404).json({ message: 'Producto no encontrado.' });
+
+    const historial = await HistorialPrecio.findAll({
+      where: { producto_id: id },
+      order: [['fecha_cambio', 'DESC']],
+      limit: 20,
+    });
+
+    return res.json(historial);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Error al obtener el historial de precios.' });
+  }
+}
+
 // ─── PUT /api/productos/:id ──────────────────────────────────────────────────
 async function actualizar(req, res) {
   const t = await sequelize.transaction();
@@ -278,11 +354,11 @@ async function actualizar(req, res) {
     const { id } = req.params;
     const inquilino_id = req.usuario.tenantId;
     const usuario_id = req.usuario.id;
-    const esAdmin = req.usuario.rol === 'admin';
+    const esAdmin = req.usuario.rol === 'administrador';
 
     const producto = await Producto.findOne({ where: { id, inquilino_id }, transaction: t });
     if (!producto) {
-      await t.rollback();
+      await rollbackSeguro(t);
       return res.status(404).json({ message: 'Producto no encontrado.' });
     }
 
@@ -304,7 +380,7 @@ async function actualizar(req, res) {
       variantes: variantesActuales,
     });
     if (!valido) {
-      await t.rollback();
+      await rollbackSeguro(t);
       return res.status(422).json({ message: 'Validación de precio mínimo fallida.', errores });
     }
 
@@ -339,7 +415,7 @@ async function actualizar(req, res) {
       'nombre', 'sku', 'categoria_id', 'marca_id', 'tags',
       'descripcion_corta', 'descripcion_larga',
       'precio_minimo', 'precio_base', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'impuestos_incluidos',
-      'stock_minimo', 'unidad_medida', 'activo', 'destacado',
+      'cantidad_disponible', 'stock_minimo', 'unidad_medida', 'activo', 'destacado',
       'fecha_disponible_desde', 'fecha_disponible_hasta',
       'meta_titulo', 'meta_descripcion', 'peso', 'dimensiones', 'tipo_producto',
     ];
@@ -359,23 +435,30 @@ async function actualizar(req, res) {
     producto.modificado_por = usuario_id;
     await producto.save({ transaction: t });
 
-    // Recalcular stock si hay variantes
+    // Sincronizar variantes (crear/actualizar/desactivar) si el payload las trae.
+    // `campos.variantes` puede venir como [] explícito para "sin variantes" —
+    // eso también debe desactivar las que hubiera.
+    if (campos.variantes !== undefined) {
+      await sincronizarVariantes(id, inquilino_id, campos.variantes, t);
+    }
+
+    // Si el producto tiene variantes activas, su stock SIEMPRE se deriva de
+    // ellas — pisa cualquier cantidad_disponible que se haya mandado suelta.
     const tieneVariantes = await ProductoVariante.count({ where: { producto_id: id, activo: true }, transaction: t });
     if (tieneVariantes > 0) await recalcularStockPadre(id, t);
 
+
+
     await t.commit();
 
-    const productoActualizado = await Producto.findByPk(id, {
-      include: [
-        { model: ProductoVariante, as: 'variantes' },
-        { model: ProductoImagen, as: 'imagenes' },
-        { model: PrecioMayorista, as: 'precios_mayoristas' },
-      ],
-    });
-
-    return res.json(serializar(productoActualizado, esAdmin));
+    // El frontend (ProductForm.jsx) ni siquiera lee la respuesta de este
+    // endpoint — navega directo al listado. Antes se hacía un re-fetch con
+    // combos + variantes + imagenes solo para descartarlo. Si algún consumidor
+    // futuro necesita el producto actualizado completo, que pida GET /:id
+    // (que ya trae variantes/imagenes) en vez de duplicar el join acá.
+    return res.json(serializar(producto, esAdmin));
   } catch (err) {
-    await t.rollback();
+    await rollbackSeguro(t);
     console.error(err);
     return res.status(500).json({ message: 'Error al actualizar producto.' });
   }
@@ -402,4 +485,4 @@ async function eliminar(req, res) {
   }
 }
 
-module.exports = { buscar, crear, detalle, actualizar, eliminar };
+module.exports = { buscar, crear, detalle, historialPrecios, actualizar, eliminar };

@@ -15,6 +15,7 @@ const metaRoutes = require('./src/routes/meta');
 const productosRoutes = require('./src/routes/productos');
 const categoriasRoutes = require('./src/routes/categorias');
 const marcasRoutes = require('./src/routes/marcas');
+const combosAdminRoutes = require('./src/routes/combos-admin');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -24,7 +25,9 @@ const PORT = process.env.PORT || 3000;
 // 1. HELMET — Headers de seguridad HTTP
 //    Configura automáticamente: CSP, HSTS, X-Frame-Options, etc.
 // ============================================================
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
 
 // ============================================================
 // 2. CORS — Solo permite peticiones desde el frontend oficial.
@@ -70,6 +73,7 @@ app.use('/api/meta', metaRoutes);
 app.use('/api/productos', productosRoutes);
 app.use('/api/categorias', categoriasRoutes);
 app.use('/api/marcas', marcasRoutes);
+app.use('/api/combos', combosAdminRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {
