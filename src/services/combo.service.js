@@ -22,6 +22,16 @@ const ComboConfiguracionService = require('./comboConfiguracion.service');
 
 class ComboService {
 
+  /**
+   * Normaliza el precio_minimo recibido del payload: null/undefined/''/0 → null
+   * (sin piso configurado), igual que Producto.precio_minimo.
+   */
+  static parsearPrecioMinimo(valor) {
+    if (valor === undefined || valor === null || valor === '') return null;
+    const num = parseFloat(valor);
+    return num > 0 ? num : null;
+  }
+
   // ─── DTO Mapping ──────────────────────────────────────────────────────────
 
   /**
@@ -169,19 +179,21 @@ class ComboService {
 
     return ProductoCombo.findAll({
       where,
+      attributes: { exclude: ['descripcion', 'fecha_inicio', 'fecha_fin'] }, // Exclude large or unnecessary fields if any, though reducing relations is more critical
       include: [
         {
           model: Producto,
           as: 'producto_padre',
-          attributes: ['id', 'nombre', 'precio_base', 'precio_costo', 'sku'],
+          attributes: ['id', 'nombre'],
         },
         {
           model: ProductoComboItem,
           as: 'items',
+          attributes: ['id', 'descuento_porcentaje'],
           include: [{
             model: Producto,
             as: 'producto_incluido',
-            attributes: ['id', 'nombre', 'precio_base', 'precio_costo', 'sku', 'estado_venta', 'cantidad_disponible'],
+            attributes: ['id', 'nombre'],
           }],
         },
       ],
@@ -234,6 +246,12 @@ class ComboService {
     if (!principalProductId) throw new Error('El producto principal es obligatorio.');
     if (parseFloat(precio_total) < 0) throw new Error('El precio del combo no puede ser negativo.');
 
+    const precioTotalNum = parseFloat(precio_total) || 0;
+    const precioMinimoNum = this.parsearPrecioMinimo(payload.precio_minimo);
+    if (precioMinimoNum && precioTotalNum < precioMinimoNum) {
+      throw new Error(`El precio del combo (${precioTotalNum}) no puede ser menor al precio mínimo configurado (${precioMinimoNum}).`);
+    }
+
     // Ejecutar simulación para obtener snapshot
     const resultado = await this.simular(principalProductId, upsells, inquilino_id);
 
@@ -242,7 +260,8 @@ class ComboService {
       producto_id: principalProductId,
       nombre: nombre.trim(),
       descripcion: descripcion?.trim() || null,
-      precio_total: parseFloat(precio_total) || 0,
+      precio_total: precioTotalNum,
+      precio_minimo: precioMinimoNum,
       estado: 'BORRADOR',
       activo: false, // BORRADOR no está activo
       fecha_inicio: fecha_inicio || null,
@@ -272,12 +291,24 @@ class ComboService {
     });
     if (!combo) throw new Error('Combo no encontrado.');
 
-    const { nombre, descripcion, precio_total, principalProductId, upsells = [], fecha_inicio, fecha_fin } = payload;
+    const { nombre, descripcion, precio_total, principalProductId, precio_minimo, upsells = [], fecha_inicio, fecha_fin } = payload;
+    const hasPrecioMinimo = 'precio_minimo' in payload;
 
     const pId = principalProductId || combo.producto_id;
     const upsList = upsells;
 
     if (parseFloat(precio_total) < 0) throw new Error('El precio del combo no puede ser negativo.');
+
+    // Resolver valores efectivos (el payload puede ser parcial) para validar
+    // el piso de venta con los datos que realmente van a quedar guardados.
+    const precioTotalEfectivo = precio_total !== undefined ? parseFloat(precio_total) || 0 : parseFloat(combo.precio_total);
+    const precioMinimoEfectivo = hasPrecioMinimo
+      ? this.parsearPrecioMinimo(precio_minimo)
+      : (combo.precio_minimo !== null ? parseFloat(combo.precio_minimo) : null);
+      
+    if (precioMinimoEfectivo && precioTotalEfectivo < precioMinimoEfectivo) {
+      throw new Error(`El precio del combo (${precioTotalEfectivo}) no puede ser menor al precio mínimo configurado (${precioMinimoEfectivo}).`);
+    }
 
     // Recalcular snapshot con valores actuales del catálogo
     const resultado = await this.simular(pId, upsList, inquilino_id);
@@ -287,6 +318,7 @@ class ComboService {
       ...(nombre !== undefined && { nombre: nombre.trim() }),
       ...(descripcion !== undefined && { descripcion: descripcion?.trim() || null }),
       ...(precio_total !== undefined && { precio_total: parseFloat(precio_total) }),
+      ...(hasPrecioMinimo && { precio_minimo: precioMinimoEfectivo }),
       ...(principalProductId !== undefined && { producto_id: principalProductId }),
       ...(fecha_inicio !== undefined && { fecha_inicio }),
       ...(fecha_fin !== undefined && { fecha_fin }),

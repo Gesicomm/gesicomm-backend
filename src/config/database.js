@@ -10,6 +10,12 @@ const sequelize = new Sequelize(
     port: process.env.DB_PORT || 5432,
     dialect: 'postgres',
     logging: process.env.NODE_ENV === 'production' ? false : console.log,
+    pool: {
+      max: 20,
+      min: 0,
+      acquire: 60000,
+      idle: 10000
+    }
   }
 );
 

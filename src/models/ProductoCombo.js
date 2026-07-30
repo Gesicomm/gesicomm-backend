@@ -49,6 +49,13 @@ const ProductoCombo = sequelize.define('ProductoCombo', {
     defaultValue: 0,
     validate: { min: 0 },
   },
+  // Piso de venta fijado por el admin. Si se configura (> 0), precio_total
+  // nunca puede guardarse por debajo de este valor — mismo criterio que
+  // Producto.precio_minimo. Null/0 = sin piso configurado.
+  precio_minimo: {
+    type: DataTypes.DECIMAL(12, 2),
+    allowNull: true,
+  },
   // Ciclo de vida del combo.
   estado: {
     type: DataTypes.ENUM('BORRADOR', 'ACTIVO', 'INACTIVO'),

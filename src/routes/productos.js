@@ -16,6 +16,8 @@ router.post('/buscar', verificarPermiso('ver_productos'), ctrl.buscar);
 router.post('/', verificarPermiso('crear_productos'), ctrl.crear);
 router.get('/:id', verificarPermiso('ver_productos'), ctrl.detalle);
 router.get('/:id/historial-precios', verificarPermiso('ver_productos'), ctrl.historialPrecios);
+router.get('/:id/variantes', verificarPermiso('ver_productos'), ctrl.variantes);
+router.get('/:id/imagenes', verificarPermiso('ver_productos'), ctrl.imagenes);
 router.put('/:id', verificarPermiso('editar_productos'), ctrl.actualizar);
 router.delete('/:id', verificarPermiso('eliminar_productos'), ctrl.eliminar);
 
