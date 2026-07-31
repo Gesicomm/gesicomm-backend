@@ -16,8 +16,21 @@ const productosRoutes = require('./src/routes/productos');
 const categoriasRoutes = require('./src/routes/categorias');
 const marcasRoutes = require('./src/routes/marcas');
 const combosAdminRoutes = require('./src/routes/combos-admin');
+const courierRoutes = require('./src/routes/courierRoutes');
+const envioRoutes = require('./src/routes/envioRoutes');
+const vitrinaRoutes = require('./src/routes/vitrina');
+const landingRoutes = require('./src/routes/landing');
+const landingPublicaRoutes = require('./src/routes/landingPublica');
+const landingHtmlRoutes = require('./src/routes/landingHtml');
+const tiendaRoutes = require('./src/routes/tienda');
 
 const app = express();
+// 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
+// visitante detrás de Cloudflare vía ngx_http_realip_module ANTES de
+// proxear acá, así que Node solo necesita confiar en Nginx mismo — no en
+// 2 (Cloudflare + Nginx). Si cambia esa topología (ej. se saca el
+// realip_module de Nginx), este valor tiene que subir a 2 o req.ip queda
+// mal para rate limiting y, más adelante, para el matching de IP de Meta CAPI.
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
@@ -74,6 +87,13 @@ app.use('/api/productos', productosRoutes);
 app.use('/api/categorias', categoriasRoutes);
 app.use('/api/marcas', marcasRoutes);
 app.use('/api/combos', combosAdminRoutes);
+app.use('/api/couriers', courierRoutes);
+app.use('/api/envios', envioRoutes);
+app.use('/api/vitrina', vitrinaRoutes);
+app.use('/api/mis-landings', landingRoutes);
+app.use('/api/mi-tienda', tiendaRoutes);
+app.use('/api/l', landingPublicaRoutes);
+app.use('/l', landingHtmlRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {
@@ -103,12 +123,15 @@ app.use((err, req, res, next) => {
 // ============================================================
 // 7. Base de Datos y Servidor
 const { sequelize } = require('./src/models');
+const { migrarEnvios } = require('./scripts/migrar-envios');
 
-// ⚠️ PRECAUCIÓN: En producción NUNCA se debe usar { alter: true } salvo que sepas lo que haces.
-const forceAlter = process.env.DB_SYNC_ALTER === 'true';
-
-sequelize.sync({ alter: forceAlter }).then(() => {
-  logger.info('Modelos sincronizados con la base de datos.');
+sequelize.sync({ alter: false }).then(async () => {
+  try {
+    await migrarEnvios();
+  } catch (mErr) {
+    logger.error('Error al aplicar migraciones de estructura:', mErr);
+  }
+  logger.info('Modelos y tabla envios sincronizados con la base de datos.');
   app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });
