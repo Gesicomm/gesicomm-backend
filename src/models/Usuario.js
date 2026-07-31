@@ -41,6 +41,12 @@ const Usuario = sequelize.define('Usuario', {
     type: DataTypes.STRING,
     allowNull: false,
   },
+  activo: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: true,
+    comment: 'false = usuario suspendido. Hoy solo se usa para ocultar sus landings públicas, no bloquea login.',
+  },
 }, {
   tableName: 'usuarios',
   timestamps: true,

@@ -32,21 +32,39 @@ const limiteAuth = rateLimit({
   legacyHeaders: false,
 });
 
+// Con subdominios de tienda (*.gesicomm.com), la cookie de sesión NO debe
+// viajar a mitienda.gesicomm.com — esas páginas son públicas y no deben
+// poder leer ni reenviar la sesión del dueño. COOKIE_DOMAIN (env) fija el
+// scope exacto al host de la app (ej: 'app.gesicomm.com'), NUNCA
+// '.gesicomm.com' (eso sí viajaría a todos los subdominios). Sin la
+// variable seteada (dev local, o mientras no haya subdominios en
+// producción todavía) se omite `domain` y el navegador usa el default
+// (host exacto de la request) — mismo comportamiento que antes.
+const cookieDomain = process.env.COOKIE_DOMAIN || undefined;
+
 // Helper para enviar la cookie HttpOnly con el access token
-function enviarCookieToken(res, accessToken, refreshToken) {
+function enviarCookieToken(req, res, accessToken, refreshToken) {
+  const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || (req.headers.host && req.headers.host.includes('localhost'));
+  
+  const isSecure = !isLocalhost && process.env.NODE_ENV === 'production';
+  const domain = isLocalhost ? undefined : cookieDomain;
+  const sameSite = isLocalhost ? 'Lax' : 'Strict';
+
   res.cookie('accessToken', accessToken, {
     httpOnly: true,            // JavaScript del navegador NO puede leerlo
-    secure: process.env.NODE_ENV === 'production', // Solo HTTPS en producción
-    sameSite: 'Strict',        // Protección CSRF
+    secure: isSecure,          // No usar secure en localhost HTTP para que el navegador guarde la cookie
+    sameSite: sameSite,        // Lax en localhost para solicitudes cross-port (5173 -> 3000)
     maxAge: 15 * 60 * 1000,   // 15 minutos (igual que JWT_EXPIRATION)
+    ...(domain && { domain }),
   });
 
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'Strict',
+    secure: isSecure,
+    sameSite: sameSite,
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
     path: '/api/auth/refresh',        // Solo se envía a esta ruta
+    ...(domain && { domain }),
   });
 }
 
@@ -79,6 +97,7 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
 
     const payload = {
       id: usuario.id,
+      nombre: usuario.nombre,
       email: usuario.correo_electronico,
       rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
       permisos: usuario.Rol && usuario.Rol.Permisos ? usuario.Rol.Permisos.map(p => p.nombre) : [],
@@ -95,7 +114,7 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
       { expiresIn: process.env.REFRESH_TOKEN_EXPIRATION || '7d' }
     );
 
-    enviarCookieToken(res, accessToken, refreshToken);
+    enviarCookieToken(req, res, accessToken, refreshToken);
 
     auditoria('LOGIN', { usuarioId: usuario.id, email, ip: req.ip });
 
@@ -173,8 +192,11 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
 router.post('/logout', verificarToken, (req, res) => {
   auditoria('LOGOUT', { usuarioId: req.usuario.id, ip: req.ip });
 
-  res.clearCookie('accessToken');
-  res.clearCookie('refreshToken', { path: '/api/auth/refresh' });
+  const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || (req.headers.host && req.headers.host.includes('localhost'));
+  const domain = isLocalhost ? undefined : cookieDomain;
+
+  res.clearCookie('accessToken', { ...(domain && { domain }) });
+  res.clearCookie('refreshToken', { path: '/api/auth/refresh', ...(domain && { domain }) });
 
   return res.json({ message: 'Sesión cerrada correctamente.' });
 });
@@ -205,6 +227,7 @@ router.post('/refresh', async (req, res) => {
 
     const nuevoPayload = {
       id: usuario.id,
+      nombre: usuario.nombre,
       email: usuario.correo_electronico,
       rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
       permisos: usuario.Rol && usuario.Rol.Permisos ? usuario.Rol.Permisos.map(p => p.nombre) : [],
@@ -215,10 +238,14 @@ router.post('/refresh', async (req, res) => {
       expiresIn: process.env.JWT_EXPIRATION || '15m',
     });
 
+    const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || (req.headers.host && req.headers.host.includes('localhost'));
+    const isSecure = !isLocalhost && process.env.NODE_ENV === 'production';
+    const sameSite = isLocalhost ? 'Lax' : 'Strict';
+
     res.cookie('accessToken', nuevoAccessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'Strict',
+      secure: isSecure,
+      sameSite: sameSite,
       maxAge: 15 * 60 * 1000,
     });
 
@@ -234,6 +261,7 @@ router.post('/refresh', async (req, res) => {
 router.get('/me', verificarToken, (req, res) => {
   return res.json({
     id: req.usuario.id,
+    nombre: req.usuario.nombre,
     email: req.usuario.email,
     rol: req.usuario.rol,
     permisos: req.usuario.permisos,

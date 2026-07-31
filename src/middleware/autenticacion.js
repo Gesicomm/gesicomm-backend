@@ -29,6 +29,7 @@ function verificarToken(req, res, next) {
     // El tenantId viene del token (firmado por el servidor), NO del body del cliente.
     req.usuario = {
       id: payload.id,
+      nombre: payload.nombre,
       email: payload.email,
       rol: payload.rol,
       permisos: payload.permisos || [],

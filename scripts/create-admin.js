@@ -44,10 +44,17 @@ async function createAdmin() {
       process.exit(1);
     }
 
-    // Buscar o crear la empresa (MVP logic)
-    const [inquilino] = await Inquilino.findOrCreate({ 
-      where: { nombre: 'Gesicomm Principal' }
-    });
+    // MVP de tenant único: reutilizar SIEMPRE el mismo inquilino que usa el
+    // registro público (routes/auth.js → el de id más bajo), nunca buscar
+    // por nombre. Antes este script hacía findOrCreate por nombre
+    // ('Gesicomm Principal'), lo que creó un segundo tenant fantasma la
+    // primera vez que se corrió con un inquilino existente que no se
+    // llamaba así — separando en dos catálogos aislados datos que debían
+    // ser uno solo.
+    let inquilino = await Inquilino.findOne({ order: [['id', 'ASC']] });
+    if (!inquilino) {
+      inquilino = await Inquilino.create({ nombre: 'Gesicomm Principal' });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 12);
 
