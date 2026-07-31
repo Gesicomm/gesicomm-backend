@@ -6,7 +6,7 @@
  * contacto, pixel) que heredan todas sus landings.
  */
 
-const { Tienda } = require('../models');
+const { Tienda, Usuario } = require('../models');
 const EncryptionService = require('../utils/EncryptionService');
 const { validarFormato: validarFormatoSubdominio, disponible: subdominioDisponible } = require('../utils/validarSubdominio');
 const CloudflareService = require('./cloudflare.service');
@@ -14,6 +14,7 @@ const CloudflareService = require('./cloudflare.service');
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const WHATSAPP_RE = /^\d{8,15}$/;
 const META_PIXEL_RE = /^\d{15,16}$/;
+const PLANES_VALIDOS = new Set(['free', 'pago']);
 // Formato laxo de dominio — la verificación real de que existe y resuelve
 // bien la hace Cloudflare al crear el Custom Hostname.
 const DOMINIO_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
@@ -22,7 +23,9 @@ class TiendaService {
 
   static async obtenerPorUsuario(usuario_id) {
     const tienda = await Tienda.findOne({ where: { usuario_id } });
-    return tienda ? this.serializar(tienda) : null;
+    if (!tienda) return null;
+    const usuario = await Usuario.findByPk(usuario_id, { attributes: ['plan'] });
+    return { ...this.serializar(tienda), plan: usuario?.plan ?? null };
   }
 
   static validarCamposComunes(payload) {
@@ -69,6 +72,9 @@ class TiendaService {
     if (!valido) throw new Error(motivo);
     if (!(await subdominioDisponible(subdominio))) throw new Error('Ese subdominio ya está en uso.');
 
+    const plan = payload.plan || 'free';
+    if (!PLANES_VALIDOS.has(plan)) throw new Error('plan debe ser "free" o "pago".');
+
     const errores = this.validarCamposComunes(payload);
     if (errores.length) {
       const err = new Error('Validación fallida.');
@@ -84,7 +90,12 @@ class TiendaService {
       nombre: payload.nombre.trim(),
     });
 
-    return this.serializar(tienda);
+    // El plan es de la cuenta (Usuario), no de la tienda — ver comentario
+    // en Usuario.js. Se completa acá porque hoy el onboarding elige el
+    // plan en el mismo paso que crea la tienda.
+    await Usuario.update({ plan }, { where: { id: usuario_id } });
+
+    return { ...this.serializar(tienda), plan };
   }
 
   static async actualizar(usuario_id, payload) {
@@ -106,6 +117,10 @@ class TiendaService {
       }
     }
 
+    if (payload.plan !== undefined && !PLANES_VALIDOS.has(payload.plan)) {
+      errores.push('plan debe ser "free" o "pago".');
+    }
+
     if (errores.length) {
       const err = new Error('Validación fallida.');
       err.errores = errores;
@@ -115,7 +130,14 @@ class TiendaService {
     Object.assign(tienda, this.camposEditables(payload));
     if (nuevoSubdominio !== null) tienda.subdominio = nuevoSubdominio;
     await tienda.save();
-    return this.serializar(tienda);
+
+    // El plan vive en Usuario, no en Tienda — ver comentario en Usuario.js.
+    if (payload.plan !== undefined) {
+      await Usuario.update({ plan: payload.plan }, { where: { id: usuario_id } });
+    }
+    const usuario = await Usuario.findByPk(usuario_id, { attributes: ['plan'] });
+
+    return { ...this.serializar(tienda), plan: usuario?.plan ?? null };
   }
 
   static async verificarDisponibilidadSubdominio(sub, usuario_id = null) {

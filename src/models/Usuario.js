@@ -47,6 +47,11 @@ const Usuario = sequelize.define('Usuario', {
     defaultValue: true,
     comment: 'false = usuario suspendido. Hoy solo se usa para ocultar sus landings públicas, no bloquea login.',
   },
+  plan: {
+    type: DataTypes.ENUM('free', 'pago'),
+    allowNull: true,
+    comment: 'Elegido en el onboarding, a nivel de cuenta (no por tienda) — hoy 1 tienda por usuario, pero el plan ya queda a nivel cuenta pensando en soportar varias más adelante. null hasta completar el onboarding. Sin cobro integrado — "pago" solo marca la intención.',
+  },
 }, {
   tableName: 'usuarios',
   timestamps: true,
