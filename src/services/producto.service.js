@@ -28,6 +28,12 @@ class ProductoService {
       where: { producto_id, activo: true },
       transaction,
     });
+
+    // Si el producto no tiene variantes activas, NO se pisa la cantidad_disponible manual
+    if (!variantes || variantes.length === 0) {
+      return null;
+    }
+
     const total = variantes.reduce((acc, v) => acc + (parseInt(v.stock) || 0), 0);
     await Producto.update(
       { cantidad_disponible: total },
@@ -172,20 +178,29 @@ class ProductoService {
     const descuento_fin_nuevo = campos.descuento_fin !== undefined ? campos.descuento_fin : producto.descuento_fin;
     const precio_minimo_nuevo = campos.precio_minimo !== undefined ? parseFloat(campos.precio_minimo) : parseFloat(producto.precio_minimo);
 
-    const variantesActuales = await ProductoVariante.findAll({ where: { producto_id: id, activo: true }, transaction });
-    const { valido, errores } = validarPrecioMinimo({
-      precio_base: precio_base_nuevo,
-      descuento_porcentaje: descuento_nuevo,
-      descuento_inicio: descuento_inicio_nuevo,
-      descuento_fin: descuento_fin_nuevo,
-      precio_minimo: precio_minimo_nuevo,
-      variantes: variantesActuales,
-    });
-    
-    if (!valido) {
-      const err = new Error('Validación de precio mínimo fallida.');
-      err.errores = errores;
-      throw err;
+    // Si el update no toca ningún campo de precio, no hay nada nuevo que
+    // validar contra el mínimo — el estado ya guardado se asume válido de
+    // cuando se guardó. Evita una consulta de variantes en el caso común
+    // (activar/desactivar, editar descripción, cambiar stock, etc.).
+    const tocaPrecio = ['precio_base', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'precio_minimo']
+      .some(campo => campos[campo] !== undefined);
+
+    if (tocaPrecio) {
+      const variantesActuales = await ProductoVariante.findAll({ where: { producto_id: id, activo: true }, transaction });
+      const { valido, errores } = validarPrecioMinimo({
+        precio_base: precio_base_nuevo,
+        descuento_porcentaje: descuento_nuevo,
+        descuento_inicio: descuento_inicio_nuevo,
+        descuento_fin: descuento_fin_nuevo,
+        precio_minimo: precio_minimo_nuevo,
+        variantes: variantesActuales,
+      });
+
+      if (!valido) {
+        const err = new Error('Validación de precio mínimo fallida.');
+        err.errores = errores;
+        throw err;
+      }
     }
 
     const precioBaseAnterior = parseFloat(producto.precio_base);

@@ -16,6 +16,11 @@ const permisosDisponibles = [
   { nombre: 'crear_productos', descripcion: 'Crear nuevos productos' },
   { nombre: 'editar_productos', descripcion: 'Modificar productos existentes y subir imágenes' },
   { nombre: 'eliminar_productos', descripcion: 'Eliminar productos y sus imágenes' },
+  // Vitrina de usuario (landing propia)
+  { nombre: 'ver_analisis_sensibilidad', descripcion: 'Ver el análisis de sensibilidad de precios de productos y combos' },
+  { nombre: 'gestionar_precio_propio', descripcion: 'Definir el precio de venta propio de productos y combos, respetando el precio mínimo' },
+  { nombre: 'gestionar_landing', descripcion: 'Crear, editar, publicar y despublicar landings públicas propias' },
+  { nombre: 'gestionar_tienda', descripcion: 'Configurar la tienda propia: subdominio, dominio propio, colores, contacto y pixel' },
 ];
 
 const rolesBasicos = [
@@ -24,12 +29,13 @@ const rolesBasicos = [
     permisos: [
       'ver_dashboard', 'gestionar_usuarios', 'configurar_sistema',
       'ver_combos', 'crear_combos', 'editar_combos', 'activar_combos', 'configurar_combos',
-      'ver_productos', 'crear_productos', 'editar_productos', 'eliminar_productos'
+      'ver_productos', 'crear_productos', 'editar_productos', 'eliminar_productos',
+      'ver_analisis_sensibilidad',
     ],
   },
   {
     nombre: 'usuario',
-    permisos: ['ver_dashboard', 'ver_productos'],
+    permisos: ['ver_dashboard', 'ver_productos', 'ver_combos', 'ver_analisis_sensibilidad', 'gestionar_precio_propio', 'gestionar_landing', 'gestionar_tienda'],
   },
 ];
 

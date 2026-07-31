@@ -15,6 +15,15 @@ const ProductoComboItem = require('./ProductoComboItem');
 const ProductoRelacionado = require('./ProductoRelacionado');
 const HistorialPrecio = require('./HistorialPrecio');
 const ComboConfiguracion = require('./ComboConfiguracion');
+const Courier = require('./Courier');
+const CourierTarifa = require('./CourierTarifa');
+const Envio = require('./Envio');
+const EnvioItem = require('./EnvioItem');
+const PrecioUsuario = require('./PrecioUsuario');
+const Tienda = require('./Tienda');
+const Landing = require('./Landing');
+const LandingItem = require('./LandingItem');
+const LandingEvento = require('./LandingEvento');
 
 // ============================================================
 // Relaciones existentes
@@ -30,6 +39,25 @@ Usuario.belongsTo(Rol, { foreignKey: 'rol_id' });
 
 Rol.belongsToMany(Permiso, { through: RolPermiso, foreignKey: 'rol_id' });
 Permiso.belongsToMany(Rol, { through: RolPermiso, foreignKey: 'permiso_id' });
+
+// ============================================================
+// Relaciones de Logística (Courier y Envíos)
+// ============================================================
+Usuario.hasMany(Courier, { foreignKey: 'usuario_id' });
+Courier.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Courier.hasMany(CourierTarifa, { as: 'tarifas', foreignKey: 'courier_id', onDelete: 'CASCADE' });
+CourierTarifa.belongsTo(Courier, { foreignKey: 'courier_id' });
+
+Usuario.hasMany(Envio, { foreignKey: 'usuario_id' });
+Envio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Courier.hasMany(Envio, { foreignKey: 'courier_id' });
+Envio.belongsTo(Courier, { foreignKey: 'courier_id' });
+
+Envio.hasMany(EnvioItem, { as: 'items', foreignKey: 'envio_id', onDelete: 'CASCADE' });
+EnvioItem.belongsTo(Envio, { foreignKey: 'envio_id' });
+EnvioItem.belongsTo(Producto, { foreignKey: 'producto_id' });
 
 // ============================================================
 // Relaciones de Categoría
@@ -107,6 +135,23 @@ HistorialPrecio.belongsTo(Producto, { foreignKey: 'producto_id' });
 Usuario.hasMany(HistorialPrecio, { foreignKey: 'usuario_id' });
 HistorialPrecio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
+// Precios propios por usuario (vitrina / landing)
+Usuario.hasMany(PrecioUsuario, { as: 'precios_personalizados', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+PrecioUsuario.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+// Tienda: 1:1 con Usuario, dueña de las landings públicas
+Usuario.hasOne(Tienda, { foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+Tienda.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Tienda.hasMany(Landing, { as: 'landings', foreignKey: 'tienda_id', onDelete: 'CASCADE' });
+Landing.belongsTo(Tienda, { foreignKey: 'tienda_id' });
+
+Landing.hasMany(LandingItem, { as: 'items', foreignKey: 'landing_id', onDelete: 'CASCADE' });
+LandingItem.belongsTo(Landing, { foreignKey: 'landing_id' });
+
+Landing.hasMany(LandingEvento, { as: 'eventos', foreignKey: 'landing_id', onDelete: 'CASCADE' });
+LandingEvento.belongsTo(Landing, { foreignKey: 'landing_id' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -125,4 +170,13 @@ module.exports = {
   ProductoRelacionado,
   HistorialPrecio,
   ComboConfiguracion,
+  Courier,
+  CourierTarifa,
+  Envio,
+  EnvioItem,
+  PrecioUsuario,
+  Tienda,
+  Landing,
+  LandingItem,
+  LandingEvento,
 };

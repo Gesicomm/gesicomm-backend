@@ -78,28 +78,29 @@ class ComboService {
    * @returns {Promise<object>} Resultado del motor de cálculo
    */
   static async simular(principalId, upsells = [], inquilino_id) {
-    // 1. Obtener producto principal
-    const principal = await Producto.findOne({
-      where: { id: principalId, inquilino_id, activo: true },
-    });
-    if (!principal) throw new Error('El producto principal no existe o no está activo.');
-    if (!principal.precio_costo) throw new Error(`El producto "${principal.nombre}" no tiene precio de costo configurado.`);
-
-    // 2. Validar que no haya IDs duplicados
+    // 1. Validaciones de forma (sin DB) — se rechazan antes de gastar una
+    // ida-vuelta a la base en un payload que ya se sabe inválido.
     const upsellIds = upsells.map(u => Number(u.productId));
     const idSet = new Set(upsellIds);
     if (idSet.size !== upsellIds.length) throw new Error('No se pueden agregar productos duplicados al combo.');
-
-    // 3. Impedir que el principal sea también upsell
     if (idSet.has(Number(principalId))) throw new Error('El producto principal no puede ser upsell de sí mismo.');
 
-    // 4. Resolver upsells del catálogo (nunca confiar en precios del frontend)
+    // 2. Principal, upsells y configuración del tenant son independientes
+    // entre sí — se resuelven en paralelo en vez de uno atrás del otro.
+    const [principal, productosUpsell, config] = await Promise.all([
+      Producto.findOne({ where: { id: principalId, inquilino_id, activo: true } }),
+      upsellIds.length > 0
+        ? Producto.findAll({ where: { id: upsellIds, inquilino_id, activo: true } })
+        : Promise.resolve([]),
+      ComboConfiguracionService.obtenerOCrear(inquilino_id),
+    ]);
+
+    if (!principal) throw new Error('El producto principal no existe o no está activo.');
+    if (!principal.precio_costo) throw new Error(`El producto "${principal.nombre}" no tiene precio de costo configurado.`);
+
+    // 3. Resolver upsells del catálogo (nunca confiar en precios del frontend)
     let upsellsData = [];
     if (upsellIds.length > 0) {
-      const productosUpsell = await Producto.findAll({
-        where: { id: upsellIds, inquilino_id, activo: true },
-      });
-
       if (productosUpsell.length !== upsellIds.length) {
         throw new Error('Uno o más upsells no existen, no están activos o no pertenecen al catálogo.');
       }
@@ -117,14 +118,11 @@ class ComboService {
       });
     }
 
-    // 5. Obtener configuración del tenant (auto-crea si no existe)
-    const config = await ComboConfiguracionService.obtenerOCrear(inquilino_id);
-
-    // 6. Construir DTO y ejecutar motor
+    // 4. Construir DTO y ejecutar motor
     const motorInput = this.toMotorInput(principal, upsellsData, config);
     const resultado = comboPricing.calcular(motorInput);
 
-    // 7. Agregar advertencias de stock
+    // 5. Agregar advertencias de stock
     const stockWarnings = await this.validarDisponibilidad(principal, upsellsData);
     resultado.warnings = [...resultado.warnings, ...stockWarnings];
 

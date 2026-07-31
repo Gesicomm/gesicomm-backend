@@ -217,6 +217,24 @@ function clasificarRentabilidad(margin, minimumMargin = 0.10) {
   return 'SALUDABLE';
 }
 
+/**
+ * Metadata de presentación para cada valor que puede devolver
+ * clasificarRentabilidad(). Única fuente de verdad: cualquier consumidor
+ * (admin, vitrina del usuario, futuros clientes de la API) debe leer la
+ * etiqueta/severidad desde acá — nunca reimplementar el mapeo enum→texto
+ * en la capa de presentación, para no repetir el drift que ya sufrió
+ * calcularSensibilidad() entre el backend y su espejo de frontend.
+ *
+ * `severity` además funciona como nombre de clase CSS (saludable |
+ * margen-bajo | no-rentable), así el frontend no necesita su propio
+ * diccionario de traducción.
+ */
+const RENTABILIDAD_META = {
+  SALUDABLE: { label: 'Saludable', severity: 'saludable' },
+  MARGEN_BAJO: { label: 'Margen bajo', severity: 'margen-bajo' },
+  NO_RENTABLE: { label: 'No rentable', severity: 'no-rentable' },
+};
+
 // ─── Recomendaciones de precio ────────────────────────────────────────────────
 
 /**
@@ -407,6 +425,7 @@ module.exports = {
   calcularComparativa,
   clasificarOferta,
   clasificarRentabilidad,
+  RENTABILIDAD_META,
   calcularRecomendaciones,
   calcularPrecioMinimo,
   calcularDescuentoMaximo,
