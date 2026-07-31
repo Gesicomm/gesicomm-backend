@@ -1,0 +1,91 @@
+'use strict';
+
+/**
+ * Controller privado de Tienda — gestión de la identidad pública propia.
+ *
+ * GET    /api/mi-tienda                          → mi tienda (o null si no existe)
+ * POST   /api/mi-tienda                           → crear
+ * PUT    /api/mi-tienda                           → actualizar (nombre/colores/contacto/pixel)
+ * GET    /api/mi-tienda/subdominio/disponibilidad  → check en vivo
+ * POST   /api/mi-tienda/dominio-propio             → registrar dominio propio (Cloudflare)
+ * GET    /api/mi-tienda/dominio-propio/estado      → consultar verificación
+ * DELETE /api/mi-tienda/dominio-propio             → revocar dominio propio
+ */
+
+const TiendaService = require('../services/tienda.service');
+
+function manejarError(res, err, defaultMsg) {
+  console.error('[tienda]', err.message);
+  const status = err.message.includes('no tenés una tienda') ? 404 : (err.errores ? 422 : 400);
+  return res.status(status).json({ message: err.message || defaultMsg, errores: err.errores });
+}
+
+async function obtener(req, res) {
+  try {
+    const tienda = await TiendaService.obtenerPorUsuario(req.usuario.id);
+    return res.json(tienda);
+  } catch (err) {
+    console.error('[tienda] obtener:', err.message);
+    return res.status(500).json({ message: 'Error al obtener la tienda.' });
+  }
+}
+
+async function crear(req, res) {
+  try {
+    const tienda = await TiendaService.crear(req.usuario.id, req.usuario.tenantId, req.body);
+    return res.status(201).json(tienda);
+  } catch (err) {
+    return manejarError(res, err, 'Error al crear la tienda.');
+  }
+}
+
+async function actualizar(req, res) {
+  try {
+    const tienda = await TiendaService.actualizar(req.usuario.id, req.body);
+    return res.json(tienda);
+  } catch (err) {
+    return manejarError(res, err, 'Error al actualizar la tienda.');
+  }
+}
+
+async function disponibilidadSubdominio(req, res) {
+  try {
+    const resultado = await TiendaService.verificarDisponibilidadSubdominio(req.query.sub, req.usuario.id);
+    return res.json(resultado);
+  } catch (err) {
+    console.error('[tienda] disponibilidadSubdominio:', err.message);
+    return res.status(500).json({ message: 'Error al verificar el subdominio.' });
+  }
+}
+
+async function guardarDominioPropio(req, res) {
+  try {
+    const resultado = await TiendaService.guardarDominioPropio(req.usuario.id, req.body.dominio);
+    return res.status(201).json(resultado);
+  } catch (err) {
+    return manejarError(res, err, 'Error al configurar el dominio propio.');
+  }
+}
+
+async function estadoDominioPropio(req, res) {
+  try {
+    const resultado = await TiendaService.verificarDominioPropio(req.usuario.id);
+    return res.json(resultado);
+  } catch (err) {
+    return manejarError(res, err, 'Error al verificar el dominio propio.');
+  }
+}
+
+async function eliminarDominioPropio(req, res) {
+  try {
+    const tienda = await TiendaService.eliminarDominioPropio(req.usuario.id);
+    return res.json(tienda);
+  } catch (err) {
+    return manejarError(res, err, 'Error al eliminar el dominio propio.');
+  }
+}
+
+module.exports = {
+  obtener, crear, actualizar, disponibilidadSubdominio,
+  guardarDominioPropio, estadoDominioPropio, eliminarDominioPropio,
+};
