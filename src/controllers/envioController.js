@@ -56,10 +56,13 @@ exports.createEnvio = async (req, res) => {
 
     const hoy = fecha || new Date().toISOString().split('T')[0];
 
+    const fullCliente = `${nombre_cliente || ''} ${apellido_cliente || ''}`.trim() || 'Cliente';
+
     const nuevoEnvio = await Envio.create(
       {
         usuario_id,
         courier_id: courier_id || null,
+        cliente: fullCliente,
         fecha: hoy,
         hora: hora || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         confirmador,
@@ -119,7 +122,14 @@ exports.updateEstado = async (req, res) => {
     if (!envio) return res.status(404).json({ error: 'Envío no encontrado' });
 
     const updateData = {};
-    if (estado !== undefined) updateData.estado = estado;
+    if (estado !== undefined) {
+      updateData.estado = estado;
+      if (estado === 'Rendido') {
+        updateData.fecha_rendicion = new Date().toISOString().split('T')[0];
+      } else {
+        updateData.fecha_rendicion = null;
+      }
+    }
     if (courier_id !== undefined) updateData.courier_id = courier_id;
 
     await envio.update(updateData);

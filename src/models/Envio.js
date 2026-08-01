@@ -27,6 +27,11 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.STRING(100),
     allowNull: true,
   },
+  cliente: {
+    type: DataTypes.STRING(255),
+    allowNull: false,
+    defaultValue: 'Cliente',
+  },
   nombre_cliente: {
     type: DataTypes.STRING(100),
     allowNull: true,
@@ -84,6 +89,10 @@ const Envio = sequelize.define('Envio', {
     defaultValue: 'Pendiente',
   },
   dispatchedAt: {
+    type: DataTypes.DATEONLY,
+    allowNull: true,
+  },
+  fecha_rendicion: {
     type: DataTypes.DATEONLY,
     allowNull: true,
   },

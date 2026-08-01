@@ -28,7 +28,13 @@ exports.createCourier = async (req, res) => {
     });
 
     if (tarifas && tarifas.length > 0) {
-      const tarifasWithId = tarifas.map(t => ({ ...t, courier_id: courier.id }));
+      const tarifasWithId = tarifas.map(t => ({
+        ...t,
+        courier_id: courier.id,
+        rango_min: (t.rango_min === "" || t.rango_min === undefined || t.rango_min === null) ? 0 : Number(t.rango_min),
+        rango_max: (t.rango_max === "" || t.rango_max === undefined || t.rango_max === null) ? null : Number(t.rango_max),
+        costo: (t.costo === "" || t.costo === undefined || t.costo === null) ? 0 : Number(t.costo)
+      }));
       await CourierTarifa.bulkCreate(tarifasWithId);
     }
 
@@ -59,7 +65,13 @@ exports.updateCourier = async (req, res) => {
       await CourierTarifa.destroy({ where: { courier_id: courier.id } });
       // Crear las nuevas
       if (tarifas.length > 0) {
-        const tarifasWithId = tarifas.map(t => ({ ...t, courier_id: courier.id }));
+        const tarifasWithId = tarifas.map(t => ({
+          ...t,
+          courier_id: courier.id,
+          rango_min: (t.rango_min === "" || t.rango_min === undefined || t.rango_min === null) ? 0 : Number(t.rango_min),
+          rango_max: (t.rango_max === "" || t.rango_max === undefined || t.rango_max === null) ? null : Number(t.rango_max),
+          costo: (t.costo === "" || t.costo === undefined || t.costo === null) ? 0 : Number(t.costo)
+        }));
         await CourierTarifa.bulkCreate(tarifasWithId);
       }
     }

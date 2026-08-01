@@ -34,9 +34,26 @@ const limitePublico = rateLimit({
   },
 });
 
-router.use(limitePublico, resolverTienda);
+// Más estricto que el GET: es escritura (dispara una llamada a la Graph
+// API de Meta), pero igual de generoso en la ventana — un visitante real
+// puede tocar "Consultar" varias veces navegando la landing.
+const limiteEventos = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    console.warn(`[landing-publica] 429 rate limit eventos — ip=${req.ip} host=${req.hostname}`);
+    res.status(429).json({ message: 'Demasiadas solicitudes. Por favor intenta más tarde.' });
+  },
+});
 
-router.get('/', ctrl.obtenerPorSlug);   // landing es_home de la tienda del hostname
-router.get('/:slug', ctrl.obtenerPorSlug);
+// El rate limit corre antes que resolverTienda a propósito (igual que
+// antes): así una ráfaga de tráfico abusivo se corta sin gastar una
+// consulta a la base por request.
+router.get('/', limitePublico, resolverTienda, ctrl.obtenerPorSlug);   // landing es_home de la tienda del hostname
+router.post('/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
+router.get('/:slug', limitePublico, resolverTienda, ctrl.obtenerPorSlug);
+router.post('/:slug/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
 
 module.exports = router;

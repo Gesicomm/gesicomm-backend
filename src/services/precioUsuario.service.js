@@ -14,7 +14,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Producto, ProductoCombo, ProductoComboItem, ProductoImagen, PrecioUsuario } = require('../models');
+const { Producto, ProductoCombo, ProductoComboItem, ProductoImagen, PrecioUsuario, Marca } = require('../models');
 const ComboConfiguracionService = require('./comboConfiguracion.service');
 const ComboService = require('./combo.service');
 const comboPricing = require('../utils/comboPricing');
@@ -48,18 +48,38 @@ class PrecioUsuarioService {
     const [productos, combos, precios] = await Promise.all([
       Producto.findAll({
         where: { inquilino_id, activo: true, estado_venta: 'en_venta' },
-        attributes: ['id', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_minimo'],
+        attributes: [
+          'id', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_minimo',
+          'cantidad_disponible', 'destacado', 'created_at',
+        ],
+        include: [
+          { association: 'categoria', attributes: ['id', 'nombre'] },
+          { model: Marca, attributes: ['id', 'nombre'] },
+        ],
         order: [['nombre', 'ASC']],
       }),
       ProductoCombo.findAll({
         where: { inquilino_id, estado: 'ACTIVO' },
-        attributes: ['id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id'],
-        include: [{
-          model: ProductoComboItem,
-          as: 'items',
-          attributes: ['id'],
-          include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre'] }],
-        }],
+        attributes: ['id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at'],
+        include: [
+          {
+            model: ProductoComboItem,
+            as: 'items',
+            attributes: ['id'],
+            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre'] }],
+          },
+          // Un combo no tiene categoría/marca/imagen propias: las hereda del
+          // producto principal, igual que hace landing.service al publicar.
+          {
+            model: Producto,
+            as: 'producto_padre',
+            attributes: ['id', 'cantidad_disponible'],
+            include: [
+              { association: 'categoria', attributes: ['id', 'nombre'] },
+              { model: Marca, attributes: ['id', 'nombre'] },
+            ],
+          },
+        ],
         order: [['nombre', 'ASC']],
       }),
       PrecioUsuario.findAll({ where: { usuario_id } }),
@@ -67,12 +87,16 @@ class PrecioUsuarioService {
 
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
 
-    // Depende de los IDs de productos recién resueltos, no se puede paralelizar con lo anterior.
-    const productIds = productos.map(p => p.id);
+    // Depende de los IDs recién resueltos, no se puede paralelizar con lo anterior.
+    // Los combos entran con el id de su producto_padre: la imagen del combo es la del principal.
+    const idsParaImagen = [
+      ...productos.map(p => p.id),
+      ...combos.map(c => c.producto_padre?.id).filter(Boolean),
+    ];
     const imgMap = new Map();
-    if (productIds.length > 0) {
+    if (idsParaImagen.length > 0) {
       const imagenes = await ProductoImagen.findAll({
-        where: { producto_id: { [Op.in]: productIds }, es_principal: true },
+        where: { producto_id: { [Op.in]: idsParaImagen }, es_principal: true },
         attributes: ['producto_id', 'url'],
       });
       imagenes.forEach(img => imgMap.set(img.producto_id, img.url));
@@ -92,12 +116,18 @@ class PrecioUsuarioService {
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
         imagen: imgMap.get(p.id) || null,
+        categoria: p.categoria?.nombre || null,
+        marca: p.Marca?.nombre || null,
+        stock: p.cantidad_disponible,
+        destacado: !!p.destacado,
+        creado_en: p.created_at,
       };
     });
 
     const combosDto = combos.map(c => {
       const precioUsuario = mapaPrecios.has(`combo:${c.id}`) ? mapaPrecios.get(`combo:${c.id}`) : null;
       const precioBase = parseFloat(c.precio_total);
+      const padre = c.producto_padre;
       return {
         id: c.id,
         tipo: 'combo',
@@ -108,6 +138,12 @@ class PrecioUsuarioService {
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
         productos_incluidos: (c.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean),
+        imagen: padre ? (imgMap.get(padre.id) || null) : null,
+        categoria: padre?.categoria?.nombre || null,
+        marca: padre?.Marca?.nombre || null,
+        stock: padre?.cantidad_disponible ?? null,
+        destacado: false,
+        creado_en: c.created_at,
       };
     });
 

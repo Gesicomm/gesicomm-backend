@@ -22,6 +22,7 @@ const fetchMeta = async (url) => {
 
 // GET /api/meta/connect -> Inicia el flujo OAuth
 // Query param opcional: ?mode=add_store para agregar una nueva tienda sin reemplazar la actual
+// Query param opcional: ?redirect_to= para indicar a dónde redirigir al finalizar
 router.get('/connect', verificarToken, (req, res) => {
     if (!FB_APP_ID || !FB_REDIRECT_URI) {
         return res.status(500).json({ message: 'Configuración de Meta ausente en el servidor' });
@@ -29,6 +30,7 @@ router.get('/connect', verificarToken, (req, res) => {
 
     const state = crypto.randomBytes(16).toString('hex');
     const mode = req.query.mode || 'connect'; // 'connect' | 'add_store'
+    const redirectTo = req.query.redirect_to || '/settings';
 
     res.cookie('meta_oauth_state', state, {
         httpOnly: true,
@@ -58,6 +60,13 @@ router.get('/connect', verificarToken, (req, res) => {
         maxAge: 10 * 60 * 1000
     });
 
+    res.cookie('meta_oauth_redirect', redirectTo, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'Lax',
+        maxAge: 10 * 60 * 1000
+    });
+
     const scope = 'ads_management,business_management';
     const authUrl = `https://www.facebook.com/${FB_API_VERSION}/dialog/oauth`
         + `?client_id=${FB_APP_ID}`
@@ -75,17 +84,28 @@ router.get('/callback', async (req, res) => {
     const tenantId = req.cookies?.meta_oauth_tenant;
     const userId = req.cookies?.meta_oauth_user;
     const mode = req.cookies?.meta_oauth_mode || 'connect';
+    const redirectPath = req.cookies?.meta_oauth_redirect || '/settings';
 
     const frontendRedirect = process.env.FRONTEND_URL;
 
     // 1. Manejo de error de acceso denegado por parte del usuario
     if (error) {
-        return res.redirect(`${frontendRedirect}/settings?meta_error=${encodeURIComponent('Acceso denegado: ' + error_description)}`);
+        res.clearCookie('meta_oauth_state');
+        res.clearCookie('meta_oauth_tenant');
+        res.clearCookie('meta_oauth_user');
+        res.clearCookie('meta_oauth_mode');
+        res.clearCookie('meta_oauth_redirect');
+        return res.redirect(`${frontendRedirect}${redirectPath}?meta_error=${encodeURIComponent('Acceso denegado: ' + error_description)}`);
     }
 
     // 2. Validación CSRF y sesión
     if (!state || state !== cookieState || !tenantId || !userId) {
-        return res.redirect(`${frontendRedirect}/settings?meta_error=${encodeURIComponent('Error de validación de estado (CSRF) o sesión expirada')}`);
+        res.clearCookie('meta_oauth_state');
+        res.clearCookie('meta_oauth_tenant');
+        res.clearCookie('meta_oauth_user');
+        res.clearCookie('meta_oauth_mode');
+        res.clearCookie('meta_oauth_redirect');
+        return res.redirect(`${frontendRedirect}${redirectPath}?meta_error=${encodeURIComponent('Error de validación de estado (CSRF) o sesión expirada')}`);
     }
 
     try {
@@ -117,7 +137,12 @@ router.get('/callback', async (req, res) => {
         const businessData = await fetchMeta(meUrl);
 
         if (!businessData.data || businessData.data.length === 0) {
-            return res.redirect(`${frontendRedirect}/settings?meta_error=${encodeURIComponent('No se encontró ningún Business Manager asociado a esta cuenta de Facebook.')}`);
+            res.clearCookie('meta_oauth_state');
+            res.clearCookie('meta_oauth_tenant');
+            res.clearCookie('meta_oauth_user');
+            res.clearCookie('meta_oauth_mode');
+            res.clearCookie('meta_oauth_redirect');
+            return res.redirect(`${frontendRedirect}${redirectPath}?meta_error=${encodeURIComponent('No se encontró ningún Business Manager asociado a esta cuenta de Facebook.')}`);
         }
 
         const business = businessData.data[0];
@@ -127,15 +152,15 @@ router.get('/callback', async (req, res) => {
         if (mode === 'add_store') {
             // Verificar que este BM no esté ya conectado para este tenant
             const existing = await MetaIntegration.findOne({
-                where: { inquilino_id: tenantId,
-                usuario_id: userId, usuario_id: userId, business_id: business.id }
+                where: { inquilino_id: tenantId, usuario_id: userId, business_id: business.id }
             });
             if (existing) {
                 res.clearCookie('meta_oauth_state');
                 res.clearCookie('meta_oauth_tenant');
-        res.clearCookie('meta_oauth_user');
+                res.clearCookie('meta_oauth_user');
                 res.clearCookie('meta_oauth_mode');
-                return res.redirect(`${frontendRedirect}/settings?meta_error=${encodeURIComponent('Esta tienda ya está conectada.')}`);
+                res.clearCookie('meta_oauth_redirect');
+                return res.redirect(`${frontendRedirect}${redirectPath}?meta_error=${encodeURIComponent('Esta tienda ya está conectada.')}`);
             }
             // Crear nuevo registro (sin reemplazar los existentes)
             await MetaIntegration.create({
@@ -150,8 +175,7 @@ router.get('/callback', async (req, res) => {
         } else {
             // Modo original: upsert del primer registro del tenant
             const [integracion, created] = await MetaIntegration.findOrCreate({
-                where: { inquilino_id: tenantId,
-                usuario_id: userId, usuario_id: userId, business_id: business.id },
+                where: { inquilino_id: tenantId, usuario_id: userId, business_id: business.id },
                 defaults: {
                     nombre: business.name,
                     access_token: encryptedToken,
@@ -173,14 +197,20 @@ router.get('/callback', async (req, res) => {
         res.clearCookie('meta_oauth_tenant');
         res.clearCookie('meta_oauth_user');
         res.clearCookie('meta_oauth_mode');
+        res.clearCookie('meta_oauth_redirect');
 
         auditoria('META_CONECTADO', { tenantId, businessId: business.id, mode });
 
-        return res.redirect(`${frontendRedirect}/settings?meta_success=true`);
+        return res.redirect(`${frontendRedirect}${redirectPath}?meta_success=true`);
 
     } catch (err) {
+        res.clearCookie('meta_oauth_state');
+        res.clearCookie('meta_oauth_tenant');
+        res.clearCookie('meta_oauth_user');
+        res.clearCookie('meta_oauth_mode');
+        res.clearCookie('meta_oauth_redirect');
         console.error('Meta Callback Error:', err.message);
-        return res.redirect(`${frontendRedirect}/settings?meta_error=${encodeURIComponent('Error al procesar el token de Meta: ' + err.message)}`);
+        return res.redirect(`${frontendRedirect}${redirectPath}?meta_error=${encodeURIComponent('Error al procesar el token de Meta: ' + err.message)}`);
     }
 });
 

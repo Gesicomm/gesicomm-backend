@@ -60,17 +60,19 @@ function escapeHtml(valor = '') {
   }[c]));
 }
 
-function paginaOg({ titulo, descripcion, imagen, url }) {
+function paginaOg({ titulo, descripcion, imagen, url, keywords }) {
   const t = escapeHtml(titulo);
   const d = escapeHtml(descripcion);
   const u = escapeHtml(url);
   const imgTag = imagen ? `<meta property="og:image" content="${escapeHtml(imagen)}">\n<meta name="twitter:card" content="summary_large_image">` : '';
+  const keywordsTag = keywords ? `<meta name="keywords" content="${escapeHtml(keywords)}">` : '';
   return `<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <title>${t}</title>
 <meta name="description" content="${d}">
+${keywordsTag}
 <meta property="og:type" content="website">
 <meta property="og:title" content="${t}">
 <meta property="og:description" content="${d}">
@@ -111,14 +113,23 @@ async function manejarSolicitudPublica(req, res) {
       }));
     }
 
-    const primeraImagen = resultado.items.find(i => i.imagen)?.imagen;
-    const imagenAbsoluta = primeraImagen ? `${req.protocol}://${req.get('host')}${primeraImagen}` : null;
+    // resultado.seo.* ya trae los fallbacks resueltos (título/descripción
+    // propios de SEO si se cargaron, si no el título/descripción de la
+    // landing; og_imagen cae al banner si no hay una imagen OG propia) —
+    // ver landing.service.js obtenerPublica(). Antes esto ignoraba todo
+    // eso y armaba el preview con el título/descripción crudos y la
+    // primera imagen de item, así que el paso "SEO" del editor no tenía
+    // ningún efecto sobre lo que ve un bot real.
+    const seo = resultado.seo || {};
+    const imagenRelativa = seo.og_imagen || resultado.items.find(i => i.imagen)?.imagen || null;
+    const imagenAbsoluta = imagenRelativa ? `${req.protocol}://${req.get('host')}${imagenRelativa}` : null;
 
     return res.status(200).send(paginaOg({
-      titulo: resultado.titulo || resultado.tienda?.nombre || 'Catálogo',
-      descripcion: resultado.descripcion || '',
+      titulo: seo.titulo || resultado.titulo || resultado.tienda?.nombre || 'Catálogo',
+      descripcion: seo.descripcion || resultado.descripcion || '',
       imagen: imagenAbsoluta,
       url: destino,
+      keywords: seo.keywords || null,
     }));
   } catch (err) {
     console.error('[landing-html] error:', err.message);

@@ -16,6 +16,7 @@ async function migrarEnvios() {
     'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "costo_envio" INTEGER DEFAULT 0',
     'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "metodo_pago" VARCHAR(50) DEFAULT \'Efectivo\'',
     'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "observaciones" TEXT',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "fecha_rendicion" DATE',
   ];
 
   for (const q of queries) {

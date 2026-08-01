@@ -21,5 +21,10 @@ router.get('/:id', ctrl.detalle);
 router.put('/:id', ctrl.actualizar);
 router.delete('/:id', ctrl.eliminar);
 router.patch('/:id/estado', ctrl.cambiarEstado);
+router.post('/:id/banner', ctrl.subirImagenLandingMiddleware, ctrl.subirBanner);
+router.delete('/:id/banner', ctrl.eliminarBanner);
+router.post('/:id/seo-imagen', ctrl.subirImagenLandingMiddleware, ctrl.subirSeoImagen);
+router.delete('/:id/seo-imagen', ctrl.eliminarSeoImagen);
+router.get('/:id/estadisticas', ctrl.estadisticas);
 
 module.exports = router;

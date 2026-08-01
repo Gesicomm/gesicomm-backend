@@ -34,7 +34,14 @@ class ImagenService {
     });
   }
 
-  static async subir(producto_id, inquilino_id, fileData, bodyData) {
+  /**
+   * Redimensiona y guarda un archivo subido por multer en public/uploads,
+   * devolviendo la URL pública relativa (misma convención en todo el
+   * proyecto: "/uploads/archivo.jpg", servida por express.static).
+   * No crea ninguna fila en base — eso lo decide cada caller (producto,
+   * banner de landing, etc.), acá solo vive el procesamiento del archivo.
+   */
+  static async guardarArchivo(fileData, { width = 1200, quality = 80 } = {}) {
     const tmpPath = fileData.path;
     try {
       const buffer = await fs.promises.readFile(tmpPath);
@@ -42,34 +49,39 @@ class ImagenService {
       const finalPath = path.join(UPLOADS_PUBLIC, filename);
 
       await sharp(buffer)
-        .resize({ width: 1200, withoutEnlargement: true })
-        .jpeg({ quality: 80 })
+        .resize({ width, withoutEnlargement: true })
+        .jpeg({ quality })
         .toFile(finalPath);
 
       await this.borrarArchivoSeguro(tmpPath);
-
-      const maxOrden = await ProductoImagen.max('orden', { where: { producto_id } }) || 0;
-      const esPrincipal = bodyData.es_principal === 'true' || bodyData.es_principal === true;
-      const variante_id = bodyData.variante_id ? parseInt(bodyData.variante_id) : null;
-
-      if (esPrincipal) {
-        await ProductoImagen.update({ es_principal: false }, { where: { producto_id } });
-      }
-
-      const imagen = await ProductoImagen.create({
-        inquilino_id,
-        producto_id,
-        variante_id,
-        url: `/uploads/${filename}`,
-        es_principal: esPrincipal,
-        orden: maxOrden + 1,
-      });
-
-      return imagen;
+      return `/uploads/${filename}`;
     } catch (err) {
       await this.borrarArchivoSeguro(tmpPath);
       throw err;
     }
+  }
+
+  static async subir(producto_id, inquilino_id, fileData, bodyData) {
+    // guardarArchivo() ya limpia el tmp (éxito o error) — subir() no
+    // necesita su propio try/catch de limpieza de archivo acá.
+    const url = await this.guardarArchivo(fileData);
+
+    const maxOrden = await ProductoImagen.max('orden', { where: { producto_id } }) || 0;
+    const esPrincipal = bodyData.es_principal === 'true' || bodyData.es_principal === true;
+    const variante_id = bodyData.variante_id ? parseInt(bodyData.variante_id) : null;
+
+    if (esPrincipal) {
+      await ProductoImagen.update({ es_principal: false }, { where: { producto_id } });
+    }
+
+    return ProductoImagen.create({
+      inquilino_id,
+      producto_id,
+      variante_id,
+      url,
+      es_principal: esPrincipal,
+      orden: maxOrden + 1,
+    });
   }
 
   static async actualizar(imagen_id, producto_id, inquilino_id, datos) {

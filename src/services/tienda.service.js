@@ -14,6 +14,8 @@ const CloudflareService = require('./cloudflare.service');
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const WHATSAPP_RE = /^\d{8,15}$/;
 const META_PIXEL_RE = /^\d{15,16}$/;
+const GA_ID_RE = /^G-[A-Z0-9]{4,16}$/i;
+const TIKTOK_PIXEL_RE = /^[A-Z0-9]{10,25}$/i;
 const PLANES_VALIDOS = new Set(['free', 'pago']);
 // Formato laxo de dominio — la verificación real de que existe y resuelve
 // bien la hace Cloudflare al crear el Custom Hostname.
@@ -42,12 +44,21 @@ class TiendaService {
     if (payload.meta_pixel_id && !META_PIXEL_RE.test(payload.meta_pixel_id)) {
       errores.push('meta_pixel_id inválido (debe ser numérico, 15 o 16 dígitos).');
     }
+    if (payload.google_analytics_id && !GA_ID_RE.test(payload.google_analytics_id)) {
+      errores.push('google_analytics_id inválido (formato esperado: G-XXXXXXXXXX).');
+    }
+    if (payload.tiktok_pixel_id && !TIKTOK_PIXEL_RE.test(payload.tiktok_pixel_id)) {
+      errores.push('tiktok_pixel_id inválido.');
+    }
     return errores;
   }
 
   static camposEditables(payload) {
     const campos = {};
-    for (const campo of ['nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'color_primario', 'color_secundario', 'color_fondo', 'meta_test_event_code']) {
+    for (const campo of [
+      'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'color_primario', 'color_secundario', 'color_fondo',
+      'meta_test_event_code', 'google_analytics_id', 'tiktok_pixel_id',
+    ]) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo] || null;
     }
     if (payload.meta_capi_activo !== undefined) campos.meta_capi_activo = !!payload.meta_capi_activo;

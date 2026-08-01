@@ -61,6 +61,42 @@ const Landing = sequelize.define('Landing', {
   mostrar_filtro_etiqueta: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   mostrar_buscador: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   mostrar_orden_precio: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+  // --- Banner principal: a diferencia del tema/contacto, es contenido
+  // propio de ESTA landing, no compartido con las demás de la tienda. ---
+  mostrar_banner: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  banner_imagen: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+    comment: 'Ruta relativa servida por /uploads, misma convención que ProductoImagen.url.',
+  },
+  banner_titulo: { type: DataTypes.STRING(200), allowNull: true },
+  banner_subtitulo: { type: DataTypes.STRING(300), allowNull: true },
+  banner_boton_texto: { type: DataTypes.STRING(50), allowNull: true },
+  banner_boton_link: {
+    type: DataTypes.STRING(500),
+    allowNull: true,
+    comment: 'Validado en el service: solo http(s):// o ruta relativa — se renderiza como href en la landing pública.',
+  },
+  // --- Diseño: override por landing. null en color_primario/color_fondo
+  // = hereda el de Tienda (comportamiento de siempre). ---
+  tema_modo: { type: DataTypes.ENUM('oscuro', 'claro'), allowNull: false, defaultValue: 'oscuro' },
+  color_primario: { type: DataTypes.STRING(7), allowNull: true },
+  color_fondo: { type: DataTypes.STRING(7), allowNull: true },
+  radio_bordes: { type: DataTypes.ENUM('chico', 'mediano', 'grande'), allowNull: false, defaultValue: 'mediano' },
+  fuente: { type: DataTypes.ENUM('outfit', 'inter', 'poppins', 'roboto'), allowNull: false, defaultValue: 'outfit' },
+  mostrar_whatsapp: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+  // --- SEO ---
+  seo_titulo: { type: DataTypes.STRING(160), allowNull: true },
+  seo_descripcion: { type: DataTypes.STRING(320), allowNull: true },
+  seo_keywords: { type: DataTypes.STRING(300), allowNull: true },
+  seo_og_imagen: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+    comment: 'Igual que banner_imagen: solo la escribe el endpoint de subida, no el PUT de texto.',
+  },
+  // --- Mensaje de WhatsApp: qué agregar además de {producto} ---
+  whatsapp_incluir_precio: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  whatsapp_incluir_url: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   activo: {
     type: DataTypes.BOOLEAN,
     allowNull: false,

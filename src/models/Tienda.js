@@ -100,6 +100,18 @@ const Tienda = sequelize.define('Tienda', {
     allowNull: false,
     defaultValue: false,
   },
+  // --- Analítica de terceros: solo el lado cliente (pixel/gtag). A
+  // diferencia de Meta, no hay integración server-side (CAPI) para
+  // estas — no hay token que cifrar ni endpoint que llamar. ---
+  google_analytics_id: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    comment: 'Measurement ID de GA4, formato "G-XXXXXXXXXX".',
+  },
+  tiktok_pixel_id: {
+    type: DataTypes.STRING(30),
+    allowNull: true,
+  },
   activo: {
     type: DataTypes.BOOLEAN,
     allowNull: false,
