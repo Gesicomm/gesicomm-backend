@@ -23,6 +23,8 @@ const landingRoutes = require('./src/routes/landing');
 const landingPublicaRoutes = require('./src/routes/landingPublica');
 const landingHtmlRoutes = require('./src/routes/landingHtml');
 const tiendaRoutes = require('./src/routes/tienda');
+const educacionRoutes = require('./src/routes/educacionRoutes');
+const adminEducacionRoutes = require('./src/routes/adminEducacionRoutes');
 
 const app = express();
 // 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
@@ -71,7 +73,7 @@ app.use(cookieParser()); // Necesario para leer cookies HttpOnly
 // ============================================================
 const limiteGlobal = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 200,                  // máximo 200 requests por IP en 15 min
+  max: process.env.NODE_ENV === 'production' ? 300 : 3000, // hasta 3000 requests en desarrollo / testing
   message: { message: 'Demasiadas solicitudes. Por favor intenta más tarde.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -92,6 +94,8 @@ app.use('/api/envios', envioRoutes);
 app.use('/api/vitrina', vitrinaRoutes);
 app.use('/api/mis-landings', landingRoutes);
 app.use('/api/mi-tienda', tiendaRoutes);
+app.use('/api/educacion', educacionRoutes);
+app.use('/api/admin/educacion', adminEducacionRoutes);
 app.use('/api/l', landingPublicaRoutes);
 app.use('/l', landingHtmlRoutes);
 

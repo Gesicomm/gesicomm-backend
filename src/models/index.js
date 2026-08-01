@@ -152,6 +152,29 @@ LandingItem.belongsTo(Landing, { foreignKey: 'landing_id' });
 Landing.hasMany(LandingEvento, { as: 'eventos', foreignKey: 'landing_id', onDelete: 'CASCADE' });
 LandingEvento.belongsTo(Landing, { foreignKey: 'landing_id' });
 
+// ============================================================
+// Relaciones de Educación / Academia
+// ============================================================
+const ModuloEducacion = require('./ModuloEducacion');
+const Examen = require('./Examen');
+const PreguntaExamen = require('./PreguntaExamen');
+const ProgresoUsuarioModulo = require('./ProgresoUsuarioModulo');
+
+ModuloEducacion.belongsTo(Inquilino, { foreignKey: 'inquilino_id' });
+Inquilino.hasMany(ModuloEducacion, { as: 'modulosEducacion', foreignKey: 'inquilino_id' });
+
+ModuloEducacion.hasOne(Examen, { as: 'examen', foreignKey: 'modulo_id', onDelete: 'CASCADE' });
+Examen.belongsTo(ModuloEducacion, { foreignKey: 'modulo_id' });
+
+Examen.hasMany(PreguntaExamen, { as: 'preguntas', foreignKey: 'examen_id', onDelete: 'CASCADE' });
+PreguntaExamen.belongsTo(Examen, { foreignKey: 'examen_id' });
+
+Usuario.hasMany(ProgresoUsuarioModulo, { as: 'progresosEducacion', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+ProgresoUsuarioModulo.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+ModuloEducacion.hasMany(ProgresoUsuarioModulo, { as: 'progresos', foreignKey: 'modulo_id', onDelete: 'CASCADE' });
+ProgresoUsuarioModulo.belongsTo(ModuloEducacion, { foreignKey: 'modulo_id' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -179,4 +202,8 @@ module.exports = {
   Landing,
   LandingItem,
   LandingEvento,
+  ModuloEducacion,
+  Examen,
+  PreguntaExamen,
+  ProgresoUsuarioModulo,
 };
