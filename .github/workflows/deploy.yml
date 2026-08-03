@@ -13,6 +13,7 @@ jobs:
       - name: Pull latest code and Deploy
         run: |
           cd ~/gesicomm/gesicomm-backend
-          git pull https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Gesicomm/gesicomm-backend.git main
+          git fetch https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Gesicomm/gesicomm-backend.git main
+          git reset --hard FETCH_HEAD
           cd ~/gesicomm
           docker compose up -d --build backend
