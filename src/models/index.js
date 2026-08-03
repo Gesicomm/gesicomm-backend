@@ -24,6 +24,8 @@ const Tienda = require('./Tienda');
 const Landing = require('./Landing');
 const LandingItem = require('./LandingItem');
 const LandingEvento = require('./LandingEvento');
+const SolicitudEliminacion = require('./SolicitudEliminacion');
+const MensajeContacto = require('./MensajeContacto');
 
 // ============================================================
 // Relaciones existentes
@@ -186,6 +188,17 @@ ProgresoUsuarioLeccion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 LeccionEducacion.hasMany(ProgresoUsuarioLeccion, { as: 'progresos', foreignKey: 'leccion_id', onDelete: 'CASCADE' });
 ProgresoUsuarioLeccion.belongsTo(LeccionEducacion, { foreignKey: 'leccion_id', as: 'leccion' });
 
+// ============================================================
+// Cumplimiento (solicitudes de eliminación de datos)
+// ============================================================
+// SET NULL y no CASCADE a propósito: la solicitud de eliminación es la
+// evidencia de que se cumplió con el derecho de supresión (GDPR art. 17,
+// CCPA/CPRA), así que tiene que sobrevivir al borrado de la cuenta que la
+// originó. Al borrarse el usuario queda la solicitud con estado/fechas y
+// sin vínculo a la persona, que es exactamente lo que hay que conservar.
+Usuario.hasMany(SolicitudEliminacion, { foreignKey: 'usuario_id', onDelete: 'SET NULL' });
+SolicitudEliminacion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -219,4 +232,6 @@ module.exports = {
   PreguntaExamen,
   ProgresoUsuarioModulo,
   ProgresoUsuarioLeccion,
+  SolicitudEliminacion,
+  MensajeContacto,
 };

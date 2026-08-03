@@ -25,6 +25,7 @@ const landingHtmlRoutes = require('./src/routes/landingHtml');
 const tiendaRoutes = require('./src/routes/tienda');
 const educacionRoutes = require('./src/routes/educacionRoutes');
 const adminEducacionRoutes = require('./src/routes/adminEducacionRoutes');
+const publicoRoutes = require('./src/routes/publico');
 
 const app = express();
 // 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
@@ -113,6 +114,7 @@ app.use('/api/mis-landings', landingRoutes);
 app.use('/api/mi-tienda', tiendaRoutes);
 app.use('/api/educacion', educacionRoutes);
 app.use('/api/admin/educacion', adminEducacionRoutes);
+app.use('/api/publico', publicoRoutes);
 app.use('/api/l', landingPublicaRoutes);
 app.use('/l', landingHtmlRoutes);
 

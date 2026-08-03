@@ -4,6 +4,7 @@ const { verificarToken } = require('../middleware/autenticacion');
 const { MetaIntegration } = require('../models');
 const { auditoria } = require('../utils/logger');
 const EncryptionService = require('../utils/EncryptionService');
+const solicitudEliminacionController = require('../controllers/solicitudEliminacion.controller');
 
 const router = express.Router();
 
@@ -523,5 +524,20 @@ router.post('/disconnect', verificarToken, async (req, res) => {
         return res.status(500).json({ message: 'Error interno del servidor.' });
     }
 });
+
+// POST /api/meta/data-deletion-callback -> Data Deletion Callback de Meta.
+//
+// Esta es la URL que se carga en el App Dashboard, en Facebook Login >
+// Configuración > "Data Deletion Request URL". Meta la invoca cuando alguien
+// quita la app desde su configuración de Facebook o Instagram.
+//
+// Va SIN verificarToken a propósito: quien llama es Meta, no un usuario con
+// sesión. La autenticación real es el HMAC-SHA256 del signed_request contra
+// el App Secret, que valida el service antes de tocar la base.
+//
+// A diferencia del resto de este archivo, la lógica vive en el controller y
+// el service (solicitudEliminacion.*) — el patrón por capas del repo — y acá
+// queda solo el montaje de la ruta.
+router.post('/data-deletion-callback', solicitudEliminacionController.metaCallback);
 
 module.exports = router;
