@@ -1,11 +1,12 @@
 const { Envio, EnvioItem, Courier, Producto } = require('../models');
 const { Op } = require('sequelize');
+const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 
 exports.listEnvios = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     // La regla del proyecto: endpoints con filtros dinámicos son POST y leen de req.body
-    const { fecha, estado } = req.body;
+    const { fecha, estado, confirmador, courier_id, origen } = req.body;
 
     const where = { usuario_id };
     if (fecha) {
@@ -14,12 +15,21 @@ exports.listEnvios = async (req, res) => {
     if (estado) {
       where.estado = estado;
     }
+    if (confirmador && confirmador !== 'TODOS') {
+      where.confirmador = confirmador;
+    }
+    if (courier_id && courier_id !== 'TODOS') {
+      where.courier_id = courier_id === 'null' ? null : courier_id;
+    }
+    if (origen && origen !== 'TODOS') {
+      where.origen = origen;
+    }
 
     const envios = await Envio.findAll({
       where,
       include: [
         { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
-        { model: EnvioItem, as: 'items', include: [{ model: Producto, attributes: ['id', 'nombre', 'sku'] }] }
+        { model: EnvioItem, as: 'items', include: [{ model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo'] }] }
       ],
       order: [['id', 'DESC']]
     });
@@ -51,11 +61,20 @@ exports.createEnvio = async (req, res) => {
       metodo_pago,
       observaciones,
       courier_id,
+      origen,
+      campaign_name,
+      campaign_id,
+      adset,
+      ad,
+      utm_source,
+      utm_medium,
+      utm_campaign,
+      estado_comercial,
+      estado_logistico,
       items
     } = req.body;
 
     const hoy = fecha || new Date().toISOString().split('T')[0];
-
     const fullCliente = `${nombre_cliente || ''} ${apellido_cliente || ''}`.trim() || 'Cliente';
 
     const nuevoEnvio = await Envio.create(
@@ -65,7 +84,7 @@ exports.createEnvio = async (req, res) => {
         cliente: fullCliente,
         fecha: hoy,
         hora: hora || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        confirmador,
+        confirmador: confirmador || null,
         nombre_cliente,
         apellido_cliente,
         telefono,
@@ -80,6 +99,16 @@ exports.createEnvio = async (req, res) => {
         observaciones,
         estado: 'Pendiente',
         dispatchedAt: hoy,
+        origen: origen || 'WEB',
+        campaign_name: campaign_name || null,
+        campaign_id: campaign_id || null,
+        adset: adset || null,
+        ad: ad || null,
+        utm_source: utm_source || null,
+        utm_medium: utm_medium || null,
+        utm_campaign: utm_campaign || null,
+        estado_comercial: estado_comercial || 'Confirmado',
+        estado_logistico: estado_logistico || 'Pendiente',
         items: items && items.length > 0 ? items.map(item => ({
           producto_id: item.producto_id || null,
           nombre_producto: item.nombre_producto || 'Producto sin nombre',
@@ -110,11 +139,11 @@ exports.createEnvio = async (req, res) => {
 
 exports.updateEstado = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id; // Corregido req.user -> req.usuario
+    const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const { estado, courier_id } = req.body;
+    const { estado, courier_id, estado_comercial, estado_logistico } = req.body;
 
-    if (!estado && courier_id === undefined) {
+    if (!estado && courier_id === undefined && !estado_comercial && !estado_logistico) {
       return res.status(400).json({ error: 'Se requiere al menos estado o courier_id' });
     }
 
@@ -126,10 +155,17 @@ exports.updateEstado = async (req, res) => {
       updateData.estado = estado;
       if (estado === 'Rendido') {
         updateData.fecha_rendicion = new Date().toISOString().split('T')[0];
-      } else {
-        updateData.fecha_rendicion = null;
+        updateData.estado_logistico = 'Rendido';
+      } else if (estado === 'Entregado') {
+        updateData.estado_logistico = 'Entregado';
+      } else if (estado === 'En Tránsito') {
+        updateData.estado_logistico = 'En Tránsito';
+      } else if (estado === 'Devuelto') {
+        updateData.estado_logistico = 'Devuelto';
       }
     }
+    if (estado_comercial !== undefined) updateData.estado_comercial = estado_comercial;
+    if (estado_logistico !== undefined) updateData.estado_logistico = estado_logistico;
     if (courier_id !== undefined) updateData.courier_id = courier_id;
 
     await envio.update(updateData);
@@ -147,3 +183,21 @@ exports.updateEstado = async (req, res) => {
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
+
+/**
+ * Endpoint de Centro de Inteligencia Comercial & Analytics
+ * POST /api/envios/metricas-dashboard
+ */
+exports.getDashboardMetricas = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const filtros = req.body || {};
+
+    const data = await getAnalyticsCompleto(filtros, usuario_id);
+    res.json(data);
+  } catch (error) {
+    console.error('Error in getDashboardMetricas:', error);
+    res.status(500).json({ error: 'Error al calcular métricas analíticas' });
+  }
+};
+

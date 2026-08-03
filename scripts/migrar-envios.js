@@ -17,6 +17,16 @@ async function migrarEnvios() {
     'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "metodo_pago" VARCHAR(50) DEFAULT \'Efectivo\'',
     'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "observaciones" TEXT',
     'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "fecha_rendicion" DATE',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "origen" VARCHAR(50) DEFAULT \'WEB\'',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "campaign_name" VARCHAR(255)',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "campaign_id" VARCHAR(100)',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "adset" VARCHAR(255)',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "ad" VARCHAR(255)',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "utm_source" VARCHAR(100)',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "utm_medium" VARCHAR(100)',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "utm_campaign" VARCHAR(100)',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "estado_comercial" VARCHAR(50)',
+    'ALTER TABLE "envios" ADD COLUMN IF NOT EXISTS "estado_logistico" VARCHAR(50)',
   ];
 
   for (const q of queries) {

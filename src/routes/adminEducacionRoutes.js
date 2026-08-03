@@ -8,6 +8,8 @@ router.use(verificarToken);
 
 router.get('/modulos', adminEducacionController.listModulos);
 router.post('/modulos', adminEducacionController.createModulo);
+router.post('/modulos/reordenar', adminEducacionController.reordenarModulos);
+router.post('/modulos/:id/duplicar', adminEducacionController.duplicarModulo);
 router.put('/modulos/:id', adminEducacionController.updateModulo);
 router.delete('/modulos/:id', adminEducacionController.deleteModulo);
 

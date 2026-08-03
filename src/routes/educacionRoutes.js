@@ -12,8 +12,8 @@ router.get('/modulos', educacionController.getModulos);
 // Detalle de módulo específico y su examen (sin respuestas)
 router.get('/modulos/:id', educacionController.getDetalleModulo);
 
-// Marcar video como completado
-router.post('/modulos/:id/video-visto', educacionController.marcarVideoVisto);
+// Marcar lección individual como completada
+router.post('/lecciones/:leccionId/completar', educacionController.marcarLeccionCompletada);
 
 // Enviar y calificar examen
 router.post('/modulos/:id/enviar-examen', educacionController.enviarExamen);

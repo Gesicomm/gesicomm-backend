@@ -46,15 +46,32 @@ app.use(helmet({
 
 // ============================================================
 // 2. CORS — Solo permite peticiones desde el frontend oficial.
-//    ❌ NUNCA: origin: '*' para APIs autenticadas.
+//    Permite dinámicamente puertos de localhost / 127.0.0.1 en desarrollo.
 // ============================================================
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'https://gesicomm.com',
+  'https://www.gesicomm.com',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+  'http://127.0.0.1:3000'
+].filter(Boolean);
+
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL,
-    'https://gesicomm.com',
-    'https://www.gesicomm.com',
-    'http://localhost:5173'
-  ].filter(Boolean),
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (
+      allowedOrigins.includes(origin) ||
+      /^http:\/\/localhost(:\d+)?$/.test(origin) ||
+      /^http:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)
+    ) {
+      return callback(null, true);
+    }
+    return callback(new Error('Bloqueado por política CORS'));
+  },
   credentials: true,
 }));
 

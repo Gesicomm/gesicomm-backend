@@ -26,7 +26,7 @@ const router = express.Router();
 // ============================================================
 const limiteAuth = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 10,                   // máximo 10 intentos por ventana
+  max: process.env.NODE_ENV === 'production' ? 10 : 500, // flexible en desarrollo y tests
   message: { message: 'Demasiados intentos. Por favor espera 15 minutos.' },
   standardHeaders: true,
   legacyHeaders: false,

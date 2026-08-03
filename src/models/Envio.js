@@ -96,6 +96,51 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.DATEONLY,
     allowNull: true,
   },
+  // --- Atribución comercial y canales (Escalabilidad ERP) ---
+  origen: {
+    type: DataTypes.STRING(50),
+    allowNull: false,
+    defaultValue: 'WEB',
+  },
+  campaign_name: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  campaign_id: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
+  adset: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  ad: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  utm_source: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
+  utm_medium: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
+  utm_campaign: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
+  // --- Estados disociados: Comercial (Confirmador) vs Logístico (Courier) ---
+  estado_comercial: {
+    type: DataTypes.STRING(50),
+    allowNull: true,
+    defaultValue: 'Confirmado',
+  },
+  estado_logistico: {
+    type: DataTypes.STRING(50),
+    allowNull: true,
+    defaultValue: 'Pendiente',
+  },
 }, {
   tableName: 'envios',
   timestamps: true,

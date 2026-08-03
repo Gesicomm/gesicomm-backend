@@ -35,6 +35,17 @@ const ProgresoUsuarioModulo = sequelize.define('ProgresoUsuarioModulo', {
     allowNull: false,
     defaultValue: 0,
   },
+  intentos_fallidos: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    comment: 'Contador de intentos fallidos consecutivos',
+  },
+  bloqueado_hasta: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Fecha y hora hasta la cual el examen está bloqueado por penalización tras 3 fallos',
+  },
   completado: {
     type: DataTypes.BOOLEAN,
     allowNull: false,
