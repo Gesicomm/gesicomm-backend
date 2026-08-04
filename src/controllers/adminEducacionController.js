@@ -121,7 +121,7 @@ async function createModulo(req, res) {
       icono,
       color_accent,
       estado,
-      orden: maxOrden + 1,
+      orden: req.body.orden !== undefined && req.body.orden !== null ? Number(req.body.orden) : (maxOrden + 1),
       duracion_minutos: duracion_minutos || 10,
       menu_desbloqueado: menu_desbloqueado || null,
       recursos_descarga: Array.isArray(recursos_descarga) ? recursos_descarga : [],
@@ -171,6 +171,7 @@ async function createModulo(req, res) {
 
     return res.status(201).json({
       message: 'Módulo creado exitosamente en la ruta de aprendizaje.',
+      modulo: nuevoModulo,
       modulo_id: nuevoModulo.id,
     });
   } catch (error) {

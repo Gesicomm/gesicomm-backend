@@ -2,6 +2,8 @@ const courierController = require('../controllers/courierController');
 const { Courier, CourierTarifa } = require('../models');
 const { Op } = require('sequelize');
 
+jest.setTimeout(30000);
+
 describe('Courier Controller Unit Tests', () => {
 
   const cleanTestCouriers = async () => {

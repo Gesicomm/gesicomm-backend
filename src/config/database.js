@@ -29,6 +29,8 @@ async function probarConexion() {
   }
 }
 
-probarConexion();
+if (process.env.NODE_ENV !== 'test') {
+  probarConexion();
+}
 
 module.exports = sequelize;

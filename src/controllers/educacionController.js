@@ -48,6 +48,15 @@ async function getModulos(req, res) {
     });
     const leccionesCompletadasSet = new Set(progresosLecciones.map(p => p.leccion_id));
 
+    const completedOrders = new Set(
+      modulos
+        .filter(m => {
+          const prog = m.progresos && m.progresos.length > 0 ? m.progresos[0] : null;
+          return Boolean(prog?.completado || prog?.examen_aprobado);
+        })
+        .map(m => m.orden)
+    );
+
     let anteriorCompletado = true; // El primer módulo siempre está desbloqueado
     let totalLeccionesGlobal = 0;
     let totalLeccionesCompletadas = 0;
@@ -78,8 +87,9 @@ async function getModulos(req, res) {
       const leccionesVistasModulo = leccionesConEstado.filter(l => l.completada).length;
       const videosCompletados = totalLeccionesModulo === 0 || leccionesVistasModulo === totalLeccionesModulo;
 
-      // El módulo está desbloqueado si es el primero o si el anterior fue aprobado
-      const desbloqueado = index === 0 || anteriorCompletado;
+      // El módulo está desbloqueado si es el primero (o de orden 1), si el anterior fue aprobado, o si el orden anterior está completado
+      const ordenAnteriorCompletado = m.orden > 1 && completedOrders.has(m.orden - 1);
+      const desbloqueado = index === 0 || m.orden <= 1 || anteriorCompletado || ordenAnteriorCompletado;
       const examenAprobado = Boolean(progreso?.examen_aprobado);
       const completado = Boolean(progreso?.completado);
 
@@ -87,7 +97,7 @@ async function getModulos(req, res) {
         modulosAprobados++;
       }
 
-      // Para desbloquear el siguiente, este módulo debe estar aprobado
+      // Para desbloquear el siguiente en la lista directa
       anteriorCompletado = examenAprobado || (!m.examen && videosCompletados);
 
       // Calcular duración total acumulada de las lecciones
@@ -346,6 +356,51 @@ async function marcarLeccionCompletada(req, res) {
 }
 
 /**
+ * Marcar video general de un módulo como visto.
+ */
+async function marcarVideoVisto(req, res) {
+  try {
+    const { id } = req.params;
+    const usuarioId = req.usuario.id;
+
+    const modulo = await ModuloEducacion.findByPk(id, {
+      include: [{ model: Examen, as: 'examen', where: { activo: true }, required: false }],
+    });
+    if (!modulo) {
+      return res.status(404).json({ message: 'Módulo no encontrado.' });
+    }
+
+    let [progreso] = await ProgresoUsuarioModulo.findOrCreate({
+      where: { usuario_id: usuarioId, modulo_id: modulo.id },
+      defaults: {
+        usuario_id: usuarioId,
+        modulo_id: modulo.id,
+        video_completado: true,
+        completado: !modulo.examen,
+        fecha_completado: !modulo.examen ? new Date() : null,
+      },
+    });
+
+    if (!progreso.video_completado) {
+      progreso.video_completado = true;
+      if (!modulo.examen) {
+        progreso.completado = true;
+        progreso.fecha_completado = new Date();
+      }
+      await progreso.save();
+    }
+
+    return res.json({
+      message: 'Video marcado como completado.',
+      progreso,
+    });
+  } catch (error) {
+    console.error('Error al marcar video como visto:', error);
+    return res.status(500).json({ message: 'Error al registrar vista del video.' });
+  }
+}
+
+/**
  * Enviar respuestas y calificar el examen del módulo.
  * Si el usuario falla 3 veces, el examen queda bloqueado por 4 horas.
  * NUNCA se devuelven las respuestas correctas ni explicaciones en caso de reprobación.
@@ -534,9 +589,12 @@ async function getProgresoSidebar(req, res) {
       delete menusBloqueados[m];
     });
 
+    const desbloqueadosArr = Array.from(menusDesbloqueados);
     return res.json({
-      menus_desbloqueados: Array.from(menusDesbloqueados),
+      menus_desbloqueados: desbloqueadosArr,
+      menusDesbloqueados: desbloqueadosArr,
       menus_bloqueados: menusBloqueados,
+      menusBloqueados: menusBloqueados,
     });
   } catch (error) {
     console.error('Error al obtener progreso para sidebar:', error);
@@ -548,6 +606,7 @@ module.exports = {
   getModulos,
   getDetalleModulo,
   marcarLeccionCompletada,
+  marcarVideoVisto,
   enviarExamen,
   getProgresoSidebar,
 };
