@@ -73,6 +73,11 @@ function limpiarItems(items) {
       content_id: typeof i.content_id === 'string' ? i.content_id.slice(0, 100) : null,
       nombre: i.nombre.trim().slice(0, 200),
       cantidad: Number.isFinite(i.cantidad) ? Math.max(1, Math.min(999, Math.trunc(i.cantidad))) : 1,
+      // Precio unitario al momento del checkout — nunca se manda a la Graph
+      // API de Meta (ver custom_data más abajo), solo alimenta
+      // estadisticasRango() para "valor estimado en carritos enviados".
+      // Sin este campo (eventos viejos) esa suma simplemente no lo cuenta.
+      precio: Number.isFinite(i.precio) ? Math.max(0, Math.min(999999999, Math.round(i.precio))) : null,
     }));
   return limpio.length ? limpio : undefined;
 }

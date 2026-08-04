@@ -20,7 +20,7 @@ async function crear(req, res) {
     });
   } catch (err) {
     logger.error({ mensaje: err.message, stack: err.stack, ruta: req.path });
-    return res.status(500).json({ message: 'No se pudo enviar el mensaje. Escribinos a support@gesicomm.com.' });
+    return res.status(500).json({ message: 'No se pudo enviar el mensaje. Escribinos a contacto@gesicomm.com.' });
   }
 }
 

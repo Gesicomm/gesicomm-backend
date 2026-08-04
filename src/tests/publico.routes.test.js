@@ -265,7 +265,8 @@ describe('POST /api/publico/contacto', () => {
     const res = await request(app).post('/api/publico/contacto').send(mensajeValido);
 
     expect(res.status).toBe(201);
-    expect(res.body.mensaje.derivado_a).toBe('privacy@gesicomm.com');
+    expect(res.body.mensaje.derivado_a).toBe('contacto@gesicomm.com');
+    expect(res.body.mensaje.area).toBe('privacidad');
     expect(MensajeContacto.create).toHaveBeenCalledTimes(1);
   });
 

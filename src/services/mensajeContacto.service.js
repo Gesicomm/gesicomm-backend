@@ -4,17 +4,14 @@ const { Op } = require('sequelize');
 const { MensajeContacto } = require('../models');
 
 /**
- * Casilla a la que se deriva cada área. Se expone en /contact para que el
- * visitante pueda escribir directo si prefiere no usar el formulario, y es
- * la misma dirección que figura en la Política de Privacidad.
+ * Casilla única de contacto de Gesicomm. Es la misma que se publica en el
+ * sitio y en las políticas: no hay direcciones separadas por área.
+ *
+ * `area` no cambia el destinatario, sirve para clasificar y priorizar la
+ * bandeja: las consultas de privacidad y legales tienen plazos normativos
+ * que cumplir y hay que poder distinguirlas de una consulta comercial.
  */
-const CASILLAS = {
-  soporte: 'support@gesicomm.com',
-  privacidad: 'privacy@gesicomm.com',
-  legal: 'legal@gesicomm.com',
-  comercial: 'support@gesicomm.com',
-  seguridad: 'security@gesicomm.com',
-};
+const CORREO_CONTACTO = 'contacto@gesicomm.com';
 
 class MensajeContactoService {
   static async crear(datos, contexto = {}) {
@@ -34,7 +31,7 @@ class MensajeContactoService {
     return {
       id: registro.id,
       area: registro.area,
-      derivado_a: CASILLAS[registro.area] || CASILLAS.soporte,
+      derivado_a: CORREO_CONTACTO,
       recibido_en: registro.created_at,
     };
   }
@@ -73,4 +70,4 @@ class MensajeContactoService {
 }
 
 module.exports = MensajeContactoService;
-module.exports.CASILLAS = CASILLAS;
+module.exports.CORREO_CONTACTO = CORREO_CONTACTO;

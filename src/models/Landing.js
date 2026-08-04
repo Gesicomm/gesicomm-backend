@@ -82,6 +82,8 @@ const Landing = sequelize.define('Landing', {
   tema_modo: { type: DataTypes.ENUM('oscuro', 'claro'), allowNull: false, defaultValue: 'oscuro' },
   color_primario: { type: DataTypes.STRING(7), allowNull: true },
   color_fondo: { type: DataTypes.STRING(7), allowNull: true },
+  color_texto: { type: DataTypes.STRING(7), allowNull: true, comment: 'Override del color de letras; null = hereda el default de tema_modo.' },
+  color_tarjeta: { type: DataTypes.STRING(7), allowNull: true, comment: 'Override del fondo de las tarjetas de producto; null = hereda el default de tema_modo.' },
   radio_bordes: { type: DataTypes.ENUM('chico', 'mediano', 'grande'), allowNull: false, defaultValue: 'mediano' },
   fuente: { type: DataTypes.ENUM('outfit', 'inter', 'poppins', 'roboto'), allowNull: false, defaultValue: 'outfit' },
   mostrar_whatsapp: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },

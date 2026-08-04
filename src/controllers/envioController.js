@@ -1,4 +1,4 @@
-const { Envio, EnvioItem, Courier, Producto } = require('../models');
+const { Envio, EnvioItem, Courier, Producto, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 
@@ -42,6 +42,7 @@ exports.listEnvios = async (req, res) => {
 };
 
 exports.createEnvio = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     const usuario_id = req.usuario.id;
     const {
@@ -118,9 +119,31 @@ exports.createEnvio = async (req, res) => {
         })) : []
       },
       {
-        include: [{ model: EnvioItem, as: 'items' }]
+        include: [{ model: EnvioItem, as: 'items' }],
+        transaction: t
       }
     );
+
+    // Descontar el stock correspondiente de cada producto vendido en el pedido
+    if (items && Array.isArray(items) && items.length > 0) {
+      for (const item of items) {
+        if (item.producto_id) {
+          const cantVendida = parseInt(item.cantidad) || 1;
+          const prod = await Producto.findByPk(item.producto_id, { transaction: t });
+          if (prod) {
+            const stockActual = parseInt(prod.cantidad_disponible) || 0;
+            const nuevoStock = Math.max(0, stockActual - cantVendida);
+            const actualizacion = { cantidad_disponible: nuevoStock };
+            if (nuevoStock === 0 && prod.estado_venta === 'en_venta') {
+              actualizacion.estado_venta = 'fuera_de_stock';
+            }
+            await prod.update(actualizacion, { transaction: t });
+          }
+        }
+      }
+    }
+
+    await t.commit();
 
     // Retornar envio completo con Courier e Items
     const result = await Envio.findByPk(nuevoEnvio.id, {
@@ -132,6 +155,7 @@ exports.createEnvio = async (req, res) => {
 
     res.status(201).json(result);
   } catch (error) {
+    if (t) await t.rollback();
     console.error('Error creating envio:', error);
     res.status(500).json({ error: 'Error al crear el envío' });
   }

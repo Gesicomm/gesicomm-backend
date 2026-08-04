@@ -23,6 +23,7 @@ const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
   ProductoImagen, ProductoVariante, LandingEvento,
 } = require('../models');
+const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 const MAX_ITEMS_POR_LANDING = 40;
 // MVP: una sola landing por tienda, siempre en la raíz (es_home=true) — no
@@ -87,7 +88,12 @@ class LandingService {
     if (payload.banner_boton_link !== undefined && !this.linkBannerEsSeguro(payload.banner_boton_link)) {
       errores.push('El link del botón del banner debe empezar con http://, https:// o /.');
     }
-    const NOMBRES_COLOR = { color_primario: 'El color principal', color_fondo: 'El color de fondo' };
+    const NOMBRES_COLOR = {
+      color_primario: 'El color principal',
+      color_fondo: 'El color de fondo',
+      color_texto: 'El color de texto',
+      color_tarjeta: 'El color de las tarjetas',
+    };
     for (const campo of Object.keys(NOMBRES_COLOR)) {
       const valor = payload[campo];
       if (valor !== undefined && valor !== null && valor !== '' && !HEX_COLOR_RE.test(valor)) {
@@ -167,7 +173,7 @@ class LandingService {
     // sin pasar por esa limpieza.
     for (const campo of [
       'banner_titulo', 'banner_subtitulo', 'banner_boton_texto', 'banner_boton_link',
-      'color_primario', 'color_fondo', 'seo_titulo', 'seo_descripcion', 'seo_keywords',
+      'color_primario', 'color_fondo', 'color_texto', 'color_tarjeta', 'seo_titulo', 'seo_descripcion', 'seo_keywords',
     ]) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo]?.trim ? (payload[campo].trim() || null) : (payload[campo] || null);
     }
@@ -420,6 +426,97 @@ class LandingService {
     };
   }
 
+  /**
+   * Igual que estadisticas() pero por rango de calendario en vez de ventana
+   * rodante de N días — mismos presets que pedidosAnalyticsService (ver
+   * utils/rangoFechas), para que en el dashboard del usuario el filtro de
+   * fechas sea un solo control compartido con las métricas de Ventas
+   * confirmadas (Envio/EnvioItem).
+   *
+   * valor_carritos: suma de precio×cantidad de los items de cada checkout
+   * de carrito ("Contact" con payload.items[].precio) — es el valor de lo
+   * que se mandó por WhatsApp, NO una venta confirmada (eso depende de que
+   * la tienda cargue el pedido a mano en Envio, ver pedidosAnalyticsService
+   * "facturacion_entregada"). Eventos previos a que items llevara precio
+   * simplemente no suman acá — no se inventa un valor que no se registró.
+   */
+  static async estadisticasRango(id, tienda_id, filtros = {}) {
+    const landing = await Landing.findOne({ where: { id, tienda_id }, attributes: ['id'] });
+    if (!landing) throw new Error('Landing no encontrada.');
+
+    const { desde, hasta } = resolverRangoFechas(filtros);
+    const desdeDate = new Date(`${desde}T00:00:00`);
+    const hastaDate = new Date(`${hasta}T23:59:59.999`);
+
+    const MAX_DIAS_RANGO = 400;
+    if ((hastaDate - desdeDate) / 86400000 > MAX_DIAS_RANGO) {
+      hastaDate.setTime(desdeDate.getTime() + MAX_DIAS_RANGO * 86400000);
+    }
+
+    const eventos = await LandingEvento.findAll({
+      where: { landing_id: id, created_at: { [Op.between]: [desdeDate, hastaDate] } },
+      attributes: ['tipo_evento', 'payload', 'created_at'],
+      order: [['created_at', 'ASC']],
+    });
+
+    const visitas = eventos.filter(e => e.tipo_evento === 'visita');
+    const contactos = eventos.filter(e => e.tipo_evento === 'Contact');
+
+    const pad = (n) => String(n).padStart(2, '0');
+    const formatYMD = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+    const serieMap = new Map();
+    for (const cursor = new Date(desdeDate); cursor <= hastaDate; cursor.setDate(cursor.getDate() + 1)) {
+      const dia = formatYMD(cursor);
+      serieMap.set(dia, { fecha: dia, visitas: 0, contactos: 0, valor_carritos: 0 });
+    }
+
+    visitas.forEach(v => {
+      const dia = formatYMD(v.created_at);
+      if (serieMap.has(dia)) serieMap.get(dia).visitas += 1;
+    });
+
+    let valorCarritosTotal = 0;
+    const productosMap = new Map();
+    contactos.forEach(c => {
+      const dia = formatYMD(c.created_at);
+      if (serieMap.has(dia)) serieMap.get(dia).contactos += 1;
+
+      const items = Array.isArray(c.payload?.items) ? c.payload.items : null;
+      if (items) {
+        let valorEvento = 0;
+        items.forEach(it => {
+          if (!it?.nombre) return;
+          productosMap.set(it.nombre, (productosMap.get(it.nombre) || 0) + (it.cantidad || 1));
+          if (Number.isFinite(it.precio)) valorEvento += it.precio * (it.cantidad || 1);
+        });
+        valorCarritosTotal += valorEvento;
+        if (serieMap.has(dia)) serieMap.get(dia).valor_carritos += valorEvento;
+        return;
+      }
+      const nombre = c.payload?.custom_data?.content_name;
+      if (nombre) productosMap.set(nombre, (productosMap.get(nombre) || 0) + 1);
+    });
+
+    const productos_mas_consultados = [...productosMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([nombre, consultas]) => ({ nombre, consultas }));
+
+    const totalVisitas = visitas.length;
+    const totalContactos = contactos.length;
+
+    return {
+      rango_fechas: { desde, hasta, periodo: filtros.periodo || 'este_mes' },
+      visitas: totalVisitas,
+      conversaciones_whatsapp: totalContactos,
+      ctr: totalVisitas > 0 ? totalContactos / totalVisitas : 0,
+      valor_carritos: valorCarritosTotal,
+      serie: [...serieMap.values()],
+      productos_mas_consultados,
+    };
+  }
+
   // ─── Resolución pública (sin auth) ───────────────────────────────────────
 
   /**
@@ -618,6 +715,10 @@ class LandingService {
         primario: landing.color_primario || tienda.color_primario,
         secundario: tienda.color_secundario,
         fondo: landing.color_fondo || (landing.tema_modo === 'claro' ? '#f8fafc' : tienda.color_fondo),
+        // texto/tarjeta: sin equivalente en Tienda — null = hereda el
+        // default de tema_modo (ver MODOS en landingDiseno.js).
+        texto: landing.color_texto || null,
+        tarjeta: landing.color_tarjeta || null,
       },
       diseno: {
         radio_bordes: landing.radio_bordes,

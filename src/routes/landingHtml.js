@@ -2,9 +2,14 @@
 
 /**
  * Punto de entrada público HTML de una tienda — el link que se comparte
- * (WhatsApp, Meta Ads) apunta acá, resuelto por hostname vía
+ * (WhatsApp, Meta Ads) apunta a la raíz del hostname de la tienda
+ * (https://<tienda>.gesicomm.com), resuelto por hostname vía
  * middleware/resolverTienda (subdominio o dominio propio).
- * Montada en: /l (fuera de /api)
+ * Montada en: /l (fuera de /api) — pero desde la IP dedicada, Nginx
+ * reescribe internamente "/" a "/l" en el vhost de *.gesicomm.com (ver
+ * deploy/nginx/tiendas.gesicomm.com, location = /), así que el visitante
+ * nunca ve "/l" en la URL. Sigue viviendo acá adentro porque /l y /l/:slug
+ * quedaron como ruta pública de compatibilidad — ver App.jsx del frontend.
  *
  * Arquitectura de despliegue real (VPS de producción, 2026-07-31): el
  * frontend corre como su propio contenedor Docker (gesicomm-front, nginx
@@ -93,8 +98,10 @@ async function manejarSolicitudPublica(req, res) {
   }
 
   const esBot = BOT_UA_RE.test(req.headers['user-agent'] || '');
-  const slugPath = req.params.slug ? `/l/${encodeURIComponent(req.params.slug)}` : '/l';
-  const destino = `https://${req.hostname}${slugPath}`;
+  // Siempre la raíz del hostname: con el cap de una landing por tienda
+  // (siempre es_home), esa es la URL pública real sea cual sea el path
+  // por el que se haya llegado acá (/, /l, o /l/:slug).
+  const destino = `https://${req.hostname}`;
 
   if (!esBot) {
     res.setHeader('X-Accel-Redirect', '/_frontend-shell/');

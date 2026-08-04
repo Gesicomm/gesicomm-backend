@@ -47,7 +47,7 @@ async function solicitar(req, res) {
     });
   } catch (err) {
     logger.error({ mensaje: err.message, stack: err.stack, ruta: req.path });
-    return res.status(500).json({ message: 'No se pudo registrar la solicitud. Escribinos a privacy@gesicomm.com.' });
+    return res.status(500).json({ message: 'No se pudo registrar la solicitud. Escribinos a contacto@gesicomm.com.' });
   }
 }
 
@@ -159,7 +159,7 @@ async function solicitarDesdePanel(req, res) {
     });
   } catch (err) {
     logger.error({ mensaje: err.message, stack: err.stack, ruta: req.path });
-    return res.status(500).json({ message: 'No se pudo registrar la solicitud. Escribinos a privacy@gesicomm.com.' });
+    return res.status(500).json({ message: 'No se pudo registrar la solicitud. Escribinos a contacto@gesicomm.com.' });
   }
 }
 

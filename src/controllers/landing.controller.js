@@ -17,6 +17,7 @@
  * POST   /api/mis-landings/:id/seo-imagen → subir imagen OG
  * DELETE /api/mis-landings/:id/seo-imagen → quitar imagen OG
  * GET    /api/mis-landings/:id/estadisticas → visitas/conversaciones/CTR/productos más consultados
+ * POST   /api/mis-landings/:id/estadisticas-rango → ídem, por rango de calendario (filtros dinámicos vía body)
  */
 
 const path = require('path');
@@ -235,10 +236,21 @@ async function estadisticas(req, res) {
   }
 }
 
+async function estadisticasRango(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    const datos = await LandingService.estadisticasRango(req.params.id, tienda.id, req.body || {});
+    return res.json(datos);
+  } catch (err) {
+    return manejarError(res, err, 'Error al obtener las estadísticas.');
+  }
+}
+
 module.exports = {
   listar, crear, detalle, actualizar, eliminar, cambiarEstado,
   subirImagenLandingMiddleware,
   subirBanner, eliminarBanner,
   subirSeoImagen, eliminarSeoImagen,
-  estadisticas,
+  estadisticas, estadisticasRango,
 };

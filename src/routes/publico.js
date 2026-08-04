@@ -33,7 +33,7 @@ const router = express.Router();
 const limiteFormulario = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hora
   max: process.env.NODE_ENV === 'production' ? 5 : 100,
-  message: { message: 'Demasiadas solicitudes desde esta conexión. Probá de nuevo en una hora o escribinos a privacy@gesicomm.com.' },
+  message: { message: 'Demasiadas solicitudes desde esta conexión. Probá de nuevo en una hora o escribinos a contacto@gesicomm.com.' },
   standardHeaders: true,
   legacyHeaders: false,
 });

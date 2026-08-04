@@ -26,5 +26,6 @@ router.delete('/:id/banner', ctrl.eliminarBanner);
 router.post('/:id/seo-imagen', ctrl.subirImagenLandingMiddleware, ctrl.subirSeoImagen);
 router.delete('/:id/seo-imagen', ctrl.eliminarSeoImagen);
 router.get('/:id/estadisticas', ctrl.estadisticas);
+router.post('/:id/estadisticas-rango', ctrl.estadisticasRango);
 
 module.exports = router;
