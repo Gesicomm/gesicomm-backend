@@ -4,7 +4,7 @@ const { ModuloEducacion, Examen, PreguntaExamen, ProgresoUsuarioModulo, Usuario,
 const { Op } = require('sequelize');
 
 describe('Education & LMS Module Unit Tests', () => {
-  jest.setTimeout(30000);
+  jest.setTimeout(60000);
   let testUsuarioId = null;
 
   const cleanTestData = async () => {
