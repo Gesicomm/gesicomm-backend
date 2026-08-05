@@ -73,22 +73,51 @@ async function obtenerPorSlug(req, res) {
 }
 
 /**
+ * El nombre de producto que se guarda nunca sale del cliente: se resuelve
+ * contra el catálogo real de la landing. /eventos es público y sin auth, y su
+ * payload termina renderizado en "productos más consultados" del panel de la
+ * dueña de la tienda — sin esto, cualquiera podía llenarle las estadísticas
+ * de productos inventados.
+ *
+ * El sufijo de variante se conserva solo si esa variante existe de verdad en
+ * ese producto: "Remera (XL)" sigue funcionando, "Remera (lo que sea)" cae al
+ * nombre canónico.
+ */
+function nombreCanonico(content_id, nombreCliente, catalogo) {
+  const entrada = catalogo.get(content_id);
+  if (!entrada) return null;
+  if (typeof nombreCliente === 'string') {
+    const conVariante = nombreCliente.match(/^(.*) \((.+)\)$/);
+    if (conVariante && conVariante[1] === entrada.nombre && entrada.variantes.has(conVariante[2])) {
+      return nombreCliente;
+    }
+  }
+  return entrada.nombre;
+}
+
+/**
  * Blindaje de custom_data antes de reenviarlo a la Graph API: solo se
  * aceptan las claves que Meta espera para este tipo de evento, con tipos y
  * tamaños acotados. Todo lo demás en el body se descarta en silencio — es
  * un endpoint público de escritura, nunca se reenvía JSON arbitrario del
  * cliente tal cual.
+ *
+ * @param {Map} catalogo - ver LandingService.obtenerCatalogoParaEvento.
  */
-function limpiarCustomData(custom_data) {
+function limpiarCustomData(custom_data, catalogo) {
   if (!custom_data || typeof custom_data !== 'object') return undefined;
   const limpio = {};
 
   if (Array.isArray(custom_data.content_ids)) {
-    const ids = custom_data.content_ids.filter(id => typeof id === 'string' && id.length <= 100).slice(0, MAX_CONTENT_IDS);
+    const ids = custom_data.content_ids.filter(id => catalogo.has(id)).slice(0, MAX_CONTENT_IDS);
     if (ids.length) limpio.content_ids = ids;
   }
-  if (typeof custom_data.content_name === 'string') {
-    limpio.content_name = custom_data.content_name.slice(0, 200);
+  // content_name NO se toma del cliente: se deriva de los content_ids que sí
+  // existen en la landing. Ver nombreCanonico().
+  if (limpio.content_ids?.length === 1) {
+    limpio.content_name = nombreCanonico(limpio.content_ids[0], custom_data.content_name, catalogo);
+  } else if (limpio.content_ids?.length > 1) {
+    limpio.content_name = `Carrito (${limpio.content_ids.length} productos)`;
   }
   if (custom_data.content_type === 'product' || custom_data.content_type === 'product_group') {
     limpio.content_type = custom_data.content_type;
@@ -107,20 +136,41 @@ function limpiarCustomData(custom_data) {
 }
 
 /**
+ * event_source_url lo manda un visitante anónimo: viaja a la Graph API y
+ * queda guardado tal cual en LandingEvento.payload. Hoy no se renderiza en
+ * ningún lado (estadisticas() solo devuelve agregados), pero guardar un
+ * esquema arbitrario es dejar armado un XSS almacenado para el día que el
+ * panel liste eventos crudos con un enlace clickeable. El valor legítimo es
+ * siempre window.location.href de una landing https.
+ */
+function limpiarUrlOrigen(url) {
+  if (typeof url !== 'string') return null;
+  const limpio = url.trim().slice(0, 500);
+  return /^https?:\/\//i.test(limpio) ? limpio : null;
+}
+
+/**
  * Detalle por producto de un checkout de carrito o agregado — NO se manda a la Graph
  * API de Meta (custom_data ya cumple el schema de Meta por su cuenta), se
  * guarda solo en LandingEvento.payload para que estadisticas() pueda
  * calcular "productos más consultados" con más de un producto por evento.
  */
-function limpiarItems(items) {
+function limpiarItems(items, catalogo) {
   if (!Array.isArray(items)) return undefined;
   const limpio = items
-    .filter(i => i && typeof i.nombre === 'string' && i.nombre.trim())
+    // Antes alcanzaba con mandar un `nombre` cualquiera. Ahora el item tiene
+    // que existir en la landing: lo que no está en el catálogo se descarta.
+    .filter(i => i && catalogo.has(i.content_id))
     .slice(0, MAX_CONTENT_IDS)
     .map(i => ({
-      content_id: typeof i.content_id === 'string' ? i.content_id.slice(0, 100) : null,
-      nombre: i.nombre.trim().slice(0, 200),
+      content_id: i.content_id,
+      nombre: nombreCanonico(i.content_id, i.nombre, catalogo),
       cantidad: Number.isFinite(i.cantidad) ? Math.max(1, Math.min(999, Math.trunc(i.cantidad))) : 1,
+      // precio sigue viniendo del cliente (acotado, pero no verificado contra
+      // el catálogo): recalcularlo acá exigiría duplicar toda la resolución de
+      // precios de obtenerPublica (PrecioUsuario + precio_minimo + delta de
+      // variante). Impacto acotado a valor_carritos de las estadísticas, que
+      // ya es una métrica de intención y no de venta confirmada.
       precio: Number.isFinite(i.precio) ? Math.max(0, Math.min(999999999, Math.round(i.precio))) : null,
     }));
   return limpio.length ? limpio : undefined;
@@ -146,19 +196,25 @@ async function registrarEvento(req, res) {
       return res.status(404).json({ message: 'Landing no encontrada.' });
     }
 
+    // Un evento cuyos items no existen en la landing igual se registra (el
+    // conteo de conversiones sigue siendo válido), pero sin detalle de
+    // producto — no se descarta entero para no perder eventos legítimos de
+    // alguien que tenía la landing abierta cuando se editó el catálogo.
+    const catalogo = await LandingService.obtenerCatalogoParaEvento(landing_id);
+
     // Nunca bloquea la respuesta al visitante por un fallo de Meta — ver
     // metaCapi.service.js, enviarEvento() no rechaza.
     const resultado = await MetaCapiService.enviarEvento(tienda, {
       landing_id,
       event_name,
       event_id: event_id.trim(),
-      event_source_url: typeof event_source_url === 'string' ? event_source_url.slice(0, 500) : null,
+      event_source_url: limpiarUrlOrigen(event_source_url),
       client_ip: req.ip,
       client_user_agent: req.headers['user-agent'] || null,
       fbc: typeof fbc === 'string' ? fbc.slice(0, 200) : (req.cookies?._fbc || null),
       fbp: typeof fbp === 'string' ? fbp.slice(0, 200) : (req.cookies?._fbp || null),
-      custom_data: limpiarCustomData(custom_data),
-      items: limpiarItems(items),
+      custom_data: limpiarCustomData(custom_data, catalogo),
+      items: limpiarItems(items, catalogo),
     });
 
     return res.status(202).json({ ok: true, enviado_capi: resultado.enviado });

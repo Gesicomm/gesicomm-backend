@@ -61,7 +61,14 @@ const allowedOrigins = [
   'http://127.0.0.1:3000'
 ].filter(Boolean);
 
-app.use(cors({
+// Rutas públicas de tienda (/api/l = JSON de la landing, /l = HTML con los
+// meta tags de Open Graph). A diferencia del resto de la app, NO se sirven
+// desde un origen fijo: cada tienda tiene el suyo (<sub>.gesicomm.com o su
+// dominio propio verificado), así que su Origin nunca puede estar en una
+// whitelist estática.
+const RUTAS_PUBLICAS_TIENDA = /^\/(api\/l|l)(\/|$)/;
+
+const corsApp = cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
     if (
@@ -74,7 +81,34 @@ app.use(cors({
     return callback(new Error('Bloqueado por política CORS'));
   },
   credentials: true,
-}));
+});
+
+/**
+ * El navegador manda el header `Origin` en TODO método que no sea GET/HEAD,
+ * incluso cuando la request es same-origin. Con la whitelist de corsApp eso
+ * significaba que cada POST a /api/l/eventos desde https://<tienda>.gesicomm.com
+ * moría con 500 en el CORS global, antes de llegar a resolverTienda y al
+ * controller — los eventos de conversión (AddToCart / InitiateCheckout /
+ * Contact) se perdían en silencio y en LandingEvento solo quedaban las
+ * 'visita', que se escriben del lado del servidor durante el GET (el GET
+ * pasaba justamente porque same-origin no manda Origin).
+ *
+ * Abrirlo acá es seguro y no agranda la superficie real: estas rutas son
+ * anónimas por diseño, no leen sesión (credentials:false ⇒ el navegador no
+ * manda ni expone cookies cross-origin) y solo devuelven datos que ya están
+ * públicos en la propia página. El abuso posible —mandar eventos falsos— ya
+ * era posible con curl desde siempre; contra eso está el rate limit por IP de
+ * routes/landingPublica.js, no el CORS.
+ */
+const corsTiendaPublica = cors({
+  origin: true,
+  credentials: false,
+  methods: ['GET', 'POST', 'OPTIONS'],
+});
+
+app.use((req, res, next) => (
+  RUTAS_PUBLICAS_TIENDA.test(req.path) ? corsTiendaPublica : corsApp
+)(req, res, next));
 
 // ============================================================
 // 3. Parsers
@@ -95,6 +129,15 @@ const limiteGlobal = rateLimit({
   message: { message: 'Demasiadas solicitudes. Por favor intenta más tarde.' },
   standardHeaders: true,
   legacyHeaders: false,
+  // Las rutas públicas de tienda tienen sus propios límites, deliberadamente
+  // más altos (600 GET / 120 POST de eventos, ver routes/landingPublica.js y
+  // routes/landingHtml.js): el tráfico de campañas de Meta llega en ráfaga y
+  // por el CGNAT de las operadoras móviles muchísima gente real comparte IP
+  // saliente. Con el límite global de 300 por delante esos límites propios
+  // eran inalcanzables — cortaba antes el global, con un 429 igual de
+  // invisible que el 500 de CORS. No quedan sin protección: siguen pasando
+  // por limitePublico/limiteEventos/limiteHtml.
+  skip: (req) => RUTAS_PUBLICAS_TIENDA.test(req.path),
 });
 app.use(limiteGlobal);
 
@@ -147,10 +190,12 @@ app.use((err, req, res, next) => {
 // 7. Base de Datos y Servidor
 const { sequelize } = require('./src/models');
 const { migrarEnvios } = require('./scripts/migrar-envios');
+const { migrarLandingEventos } = require('./scripts/migrar-landing-eventos');
 
 sequelize.sync({ alter: false }).then(async () => {
   try {
     await migrarEnvios();
+    await migrarLandingEventos();
   } catch (mErr) {
     logger.error('Error al aplicar migraciones de estructura:', mErr);
   }

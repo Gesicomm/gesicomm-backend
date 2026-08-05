@@ -345,13 +345,73 @@ class LandingService {
   }
 
   /**
+   * Catálogo real de una landing, indexado por el content_id PÚBLICO — el
+   * mismo identificador que obtenerPublica() le entrega al navegador (el slug
+   * del item, o "<tipo>-<id>" si no tiene). Lo usa registrarEvento() para no
+   * guardar nombres de producto inventados: /eventos es público y sin auth, y
+   * lo que se guarda en LandingEvento.payload termina renderizado en
+   * "productos más consultados" del panel de la dueña de la tienda.
+   *
+   * A propósito NO filtra por activo/estado_venta como obtenerPublica: si la
+   * dueña despublica un producto mientras alguien tiene la landing abierta,
+   * el evento de esa persona sigue siendo legítimo y no hay que perderlo. Acá
+   * se valida la IDENTIDAD del item, no su estado.
+   *
+   * @returns {Promise<Map<string, {nombre: string, variantes: Set<string>}>>}
+   */
+  static async obtenerCatalogoParaEvento(landing_id) {
+    const items = await LandingItem.findAll({
+      where: { landing_id },
+      attributes: ['tipo', 'referencia_id'],
+    });
+    if (!items.length) return new Map();
+
+    const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
+    const idsCombo = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
+
+    const [productos, combos, variantes] = await Promise.all([
+      idsProducto.length
+        ? Producto.findAll({ where: { id: { [Op.in]: idsProducto } }, attributes: ['id', 'slug', 'nombre'] })
+        : Promise.resolve([]),
+      idsCombo.length
+        ? ProductoCombo.findAll({ where: { id: { [Op.in]: idsCombo } }, attributes: ['id', 'nombre'] })
+        : Promise.resolve([]),
+      idsProducto.length
+        ? ProductoVariante.findAll({ where: { producto_id: { [Op.in]: idsProducto } }, attributes: ['producto_id', 'nombre'] })
+        : Promise.resolve([]),
+    ]);
+
+    const variantesPorProducto = new Map();
+    variantes.forEach(v => {
+      const set = variantesPorProducto.get(v.producto_id) || new Set();
+      set.add(v.nombre);
+      variantesPorProducto.set(v.producto_id, set);
+    });
+
+    const catalogo = new Map();
+    productos.forEach(p => {
+      catalogo.set(p.slug || `producto-${p.id}`, {
+        nombre: p.nombre,
+        variantes: variantesPorProducto.get(p.id) || new Set(),
+      });
+    });
+    // Los combos no tienen slug propio — obtenerPublica cae al mismo fallback.
+    combos.forEach(c => {
+      catalogo.set(`combo-${c.id}`, { nombre: c.nombre, variantes: new Set() });
+    });
+
+    return catalogo;
+  }
+
+  /**
    * Fire-and-forget: nunca se awaitea desde el caller (ver obtenerPublica)
    * — una landing pública no puede tardar más ni romperse porque falló un
    * INSERT de tracking. Sin filtro de bots: cada GET exitoso cuenta como
    * visita, aceptado como límite conocido de esta primera versión.
    */
   static registrarVisita(landing_id) {
-    LandingEvento.create({ landing_id, tipo_evento: 'visita', payload: null, enviado_capi: false }).catch(() => {});
+    LandingEvento.create({ landing_id, tipo_evento: 'visita', payload: null, enviado_capi: false })
+      .catch(err => console.error('[landing] No se pudo registrar la visita:', err.message));
   }
 
   /**
@@ -456,7 +516,6 @@ class LandingService {
     });
 
     const visitas = eventos.filter(e => e.tipo_evento === 'visita');
-    const contactos = eventos.filter(e => ['Contact', 'InitiateCheckout', 'Lead'].includes(e.tipo_evento));
     const todosEventos = eventos.filter(e => ['Contact', 'InitiateCheckout', 'AddToCart', 'Lead'].includes(e.tipo_evento));
 
     const pad = (n) => String(n).padStart(2, '0');
@@ -465,7 +524,14 @@ class LandingService {
     const serieMap = new Map();
     for (const cursor = new Date(desdeDate); cursor <= hastaDate; cursor.setDate(cursor.getDate() + 1)) {
       const dia = formatYMD(cursor);
-      serieMap.set(dia, { fecha: dia, visitas: 0, contactos: 0, valor_carritos: 0 });
+      serieMap.set(dia, {
+        fecha: dia,
+        visitas: 0,
+        añadidos_carrito: 0,
+        checkouts_iniciados: 0,
+        contactos: 0,
+        valor_carritos: 0,
+      });
     }
 
     visitas.forEach(v => {
@@ -474,11 +540,25 @@ class LandingService {
     });
 
     let valorCarritosTotal = 0;
+    let totalAñadidosCarrito = 0;
+    let totalCheckoutsIniciados = 0;
+    let totalContactos = 0;
+    
     const productosMap = new Map();
+
     todosEventos.forEach(c => {
       const dia = formatYMD(c.created_at);
-      if (['Contact', 'InitiateCheckout'].includes(c.tipo_evento) && serieMap.has(dia)) {
-        serieMap.get(dia).contactos += 1;
+      const diaStat = serieMap.get(dia);
+
+      if (c.tipo_evento === 'AddToCart') {
+        totalAñadidosCarrito += 1;
+        if (diaStat) diaStat.añadidos_carrito += 1;
+      } else if (c.tipo_evento === 'InitiateCheckout') {
+        totalCheckoutsIniciados += 1;
+        if (diaStat) diaStat.checkouts_iniciados += 1;
+      } else if (['Contact', 'Lead'].includes(c.tipo_evento)) {
+        totalContactos += 1;
+        if (diaStat) diaStat.contactos += 1;
       }
 
       const items = Array.isArray(c.payload?.items) ? c.payload.items : null;
@@ -489,19 +569,21 @@ class LandingService {
           productosMap.set(it.nombre, (productosMap.get(it.nombre) || 0) + (it.cantidad || 1));
           if (Number.isFinite(it.precio)) valorEvento += it.precio * (it.cantidad || 1);
         });
-        // Solo sumamos a valor_carritos total los eventos de checkout o carrito
-        if (['Contact', 'InitiateCheckout'].includes(c.tipo_evento)) {
+        
+        // Sumamos a valor_carritos el valor de las intenciones de compra firmes
+        if (['Contact', 'InitiateCheckout', 'Lead'].includes(c.tipo_evento)) {
           valorCarritosTotal += valorEvento;
-          if (serieMap.has(dia)) serieMap.get(dia).valor_carritos += valorEvento;
+          if (diaStat) diaStat.valor_carritos += valorEvento;
         }
         return;
       }
+      
       const nombre = c.payload?.custom_data?.content_name;
       if (nombre) productosMap.set(nombre, (productosMap.get(nombre) || 0) + 1);
       const val = c.payload?.custom_data?.value;
-      if (['Contact', 'InitiateCheckout'].includes(c.tipo_evento) && Number.isFinite(val)) {
+      if (['Contact', 'InitiateCheckout', 'Lead'].includes(c.tipo_evento) && Number.isFinite(val)) {
         valorCarritosTotal += val;
-        if (serieMap.has(dia)) serieMap.get(dia).valor_carritos += val;
+        if (diaStat) diaStat.valor_carritos += val;
       }
     });
 
@@ -511,12 +593,14 @@ class LandingService {
       .map(([nombre, consultas]) => ({ nombre, consultas }));
 
     const totalVisitas = visitas.length;
-    const totalContactos = contactos.length;
 
     return {
       rango_fechas: { desde, hasta, periodo: filtros.periodo || 'este_mes' },
       visitas: totalVisitas,
-      conversaciones_whatsapp: totalContactos,
+      añadidos_carrito: totalAñadidosCarrito,
+      checkouts_iniciados: totalCheckoutsIniciados,
+      contactos_whatsapp: totalContactos, // kept naming for backwards compatibility just in case
+      conversaciones_whatsapp: totalContactos, // legacy
       ctr: totalVisitas > 0 ? totalContactos / totalVisitas : 0,
       valor_carritos: valorCarritosTotal,
       serie: [...serieMap.values()],
@@ -769,9 +853,15 @@ class LandingService {
       // decidir si vale la pena llamar a /eventos — nunca meta_access_token
       // ni meta_test_event_code (ese es un dato de depuración de la dueña
       // de la tienda, no del visitante público).
+      //
+      // test_event_code se devolvía acá pese a lo que decía este mismo
+      // comentario: cualquiera que abriera la landing lo leía y podía
+      // inyectar eventos falsos al stream de Test Events de la tienda. El
+      // lado CAPI lo sigue mandando desde el servidor (metaCapi.service.js),
+      // que es donde corresponde: la herramienta de prueba de Meta funciona
+      // igual, sin que el código viaje al navegador.
       meta: {
         pixel_id: tienda.meta_pixel_id || null,
-        test_event_code: tienda.meta_test_event_code || null,
         capi_activo: !!tienda.meta_capi_activo,
         google_analytics_id: tienda.google_analytics_id || null,
         tiktok_pixel_id: tienda.tiktok_pixel_id || null,

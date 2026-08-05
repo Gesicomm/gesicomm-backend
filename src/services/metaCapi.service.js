@@ -16,6 +16,25 @@ const { LandingEvento } = require('../models');
 const FB_API_VERSION = process.env.FACEBOOK_API_VERSION || 'v23.0';
 
 /**
+ * El INSERT del log nunca puede tumbar la respuesta al visitante — pero
+ * tragarse el error tampoco: LandingEvento es la ÚNICA fuente de las
+ * estadísticas de la landing, así que un fallo silencioso acá se ve igual
+ * que "nadie consultó nada". Se loguea y se sigue.
+ *
+ * La excepción es el choque contra el índice único (landing_id, event_id):
+ * eso no es un fallo sino la deduplicación funcionando — el mismo evento ya
+ * quedó registrado y el segundo intento se descarta sin ruido.
+ */
+async function guardarEvento(registro) {
+  try {
+    await LandingEvento.create(registro);
+  } catch (err) {
+    if (err.name === 'SequelizeUniqueConstraintError') return;
+    console.error('[meta-capi] No se pudo guardar el LandingEvento:', err.message);
+  }
+}
+
+/**
  * @param {object} tienda - instancia de Tienda con meta_pixel_id/meta_access_token/meta_test_event_code.
  * @param {object} evento
  * @param {number} evento.landing_id
@@ -37,6 +56,7 @@ async function enviarEvento(tienda, evento) {
   const registro = {
     landing_id: evento.landing_id,
     tipo_evento: evento.event_name,
+    event_id: evento.event_id,
     payload: {
       event_id: evento.event_id,
       event_source_url: evento.event_source_url,
@@ -47,7 +67,7 @@ async function enviarEvento(tienda, evento) {
   };
 
   if (!tienda.meta_capi_activo || !tienda.meta_pixel_id || !tienda.meta_access_token) {
-    await LandingEvento.create(registro).catch(() => {});
+    await guardarEvento(registro);
     return { enviado: false, motivo: 'CAPI no configurado para esta tienda.' };
   }
 
@@ -82,7 +102,7 @@ async function enviarEvento(tienda, evento) {
 
     const data = await resp.json().catch(() => null);
     registro.enviado_capi = resp.ok;
-    await LandingEvento.create(registro).catch(() => {});
+    await guardarEvento(registro);
 
     if (!resp.ok) {
       console.warn('[meta-capi] Graph API respondió error:', resp.status, data);
@@ -91,7 +111,7 @@ async function enviarEvento(tienda, evento) {
     return { enviado: true };
   } catch (err) {
     console.error('[meta-capi] Error al enviar evento:', err.message);
-    await LandingEvento.create(registro).catch(() => {});
+    await guardarEvento(registro);
     return { enviado: false, motivo: err.message };
   }
 }
