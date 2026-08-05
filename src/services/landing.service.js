@@ -379,7 +379,8 @@ class LandingService {
     });
 
     const visitas = eventos.filter(e => e.tipo_evento === 'visita');
-    const contactos = eventos.filter(e => e.tipo_evento === 'Contact');
+    const contactos = eventos.filter(e => ['Contact', 'InitiateCheckout', 'Lead'].includes(e.tipo_evento));
+    const todosEventosConversion = eventos.filter(e => ['Contact', 'InitiateCheckout', 'AddToCart', 'Lead'].includes(e.tipo_evento));
 
     const serieMap = new Map();
     for (let i = 0; i < diasNum; i++) {
@@ -391,12 +392,10 @@ class LandingService {
       if (serieMap.has(dia)) serieMap.set(dia, serieMap.get(dia) + 1);
     });
 
-    // payload.items trae el detalle por producto de un checkout de carrito
-    // (varios productos en un solo evento "Contact"). Los eventos previos a
-    // esta función (o un "Consultar" simple) no lo tienen — para esos se
-    // sigue usando custom_data.content_name, que sigue siendo un solo string.
+    // payload.items trae el detalle por producto de un checkout de carrito o AddToCart
+    // (varios productos en un solo evento o individuales).
     const productosMap = new Map();
-    contactos.forEach(c => {
+    todosEventosConversion.forEach(c => {
       const items = Array.isArray(c.payload?.items) ? c.payload.items : null;
       if (items) {
         items.forEach(it => {
@@ -434,11 +433,8 @@ class LandingService {
    * confirmadas (Envio/EnvioItem).
    *
    * valor_carritos: suma de precio×cantidad de los items de cada checkout
-   * de carrito ("Contact" con payload.items[].precio) — es el valor de lo
-   * que se mandó por WhatsApp, NO una venta confirmada (eso depende de que
-   * la tienda cargue el pedido a mano en Envio, ver pedidosAnalyticsService
-   * "facturacion_entregada"). Eventos previos a que items llevara precio
-   * simplemente no suman acá — no se inventa un valor que no se registró.
+   * de carrito ("Contact" con payload.items[].precio) o AddToCart — es el valor
+   * de lo que se consultó o mandó por WhatsApp, NO una venta confirmada.
    */
   static async estadisticasRango(id, tienda_id, filtros = {}) {
     const landing = await Landing.findOne({ where: { id, tienda_id }, attributes: ['id'] });
@@ -460,7 +456,8 @@ class LandingService {
     });
 
     const visitas = eventos.filter(e => e.tipo_evento === 'visita');
-    const contactos = eventos.filter(e => e.tipo_evento === 'Contact');
+    const contactos = eventos.filter(e => ['Contact', 'InitiateCheckout', 'Lead'].includes(e.tipo_evento));
+    const todosEventos = eventos.filter(e => ['Contact', 'InitiateCheckout', 'AddToCart', 'Lead'].includes(e.tipo_evento));
 
     const pad = (n) => String(n).padStart(2, '0');
     const formatYMD = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -478,9 +475,11 @@ class LandingService {
 
     let valorCarritosTotal = 0;
     const productosMap = new Map();
-    contactos.forEach(c => {
+    todosEventos.forEach(c => {
       const dia = formatYMD(c.created_at);
-      if (serieMap.has(dia)) serieMap.get(dia).contactos += 1;
+      if (['Contact', 'InitiateCheckout'].includes(c.tipo_evento) && serieMap.has(dia)) {
+        serieMap.get(dia).contactos += 1;
+      }
 
       const items = Array.isArray(c.payload?.items) ? c.payload.items : null;
       if (items) {
@@ -490,12 +489,20 @@ class LandingService {
           productosMap.set(it.nombre, (productosMap.get(it.nombre) || 0) + (it.cantidad || 1));
           if (Number.isFinite(it.precio)) valorEvento += it.precio * (it.cantidad || 1);
         });
-        valorCarritosTotal += valorEvento;
-        if (serieMap.has(dia)) serieMap.get(dia).valor_carritos += valorEvento;
+        // Solo sumamos a valor_carritos total los eventos de checkout o carrito
+        if (['Contact', 'InitiateCheckout'].includes(c.tipo_evento)) {
+          valorCarritosTotal += valorEvento;
+          if (serieMap.has(dia)) serieMap.get(dia).valor_carritos += valorEvento;
+        }
         return;
       }
       const nombre = c.payload?.custom_data?.content_name;
       if (nombre) productosMap.set(nombre, (productosMap.get(nombre) || 0) + 1);
+      const val = c.payload?.custom_data?.value;
+      if (['Contact', 'InitiateCheckout'].includes(c.tipo_evento) && Number.isFinite(val)) {
+        valorCarritosTotal += val;
+        if (serieMap.has(dia)) serieMap.get(dia).valor_carritos += val;
+      }
     });
 
     const productos_mas_consultados = [...productosMap.entries()]
@@ -764,6 +771,7 @@ class LandingService {
       // de la tienda, no del visitante público).
       meta: {
         pixel_id: tienda.meta_pixel_id || null,
+        test_event_code: tienda.meta_test_event_code || null,
         capi_activo: !!tienda.meta_capi_activo,
         google_analytics_id: tienda.google_analytics_id || null,
         tiktok_pixel_id: tienda.tiktok_pixel_id || null,
