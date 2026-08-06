@@ -70,10 +70,15 @@ class PrecioUsuarioService {
           },
           // Un combo no tiene categoría/marca/imagen propias: las hereda del
           // producto principal, igual que hace landing.service al publicar.
+          // required: true = INNER JOIN: si el padre está inactivo, el combo
+          // queda excluido del catálogo — coherente con obtenerPublica(), que
+          // aplica la misma condición y nunca mostraría ese combo en la landing.
           {
             model: Producto,
             as: 'producto_padre',
             attributes: ['id', 'cantidad_disponible'],
+            where: { activo: true },
+            required: true,
             include: [
               { association: 'categoria', attributes: ['id', 'nombre'] },
               { model: Marca, attributes: ['id', 'nombre'] },

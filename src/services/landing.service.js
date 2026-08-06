@@ -142,8 +142,21 @@ class LandingService {
       idsProducto.length
         ? Producto.findAll({ where: { id: { [Op.in]: idsProducto }, inquilino_id, activo: true }, attributes: ['id'] })
         : Promise.resolve([]),
+      // Igual que listarCatalogo y obtenerPublica: el combo solo es válido si
+      // su producto padre está activo. Sin este chequeo se podía guardar un
+      // combo que luego nunca aparecería en la landing pública.
       idsCombo.length
-        ? ProductoCombo.findAll({ where: { id: { [Op.in]: idsCombo }, inquilino_id, estado: 'ACTIVO' }, attributes: ['id'] })
+        ? ProductoCombo.findAll({
+          where: { id: { [Op.in]: idsCombo }, inquilino_id, estado: 'ACTIVO' },
+          attributes: ['id'],
+          include: [{
+            model: Producto,
+            as: 'producto_padre',
+            attributes: ['id'],
+            where: { activo: true },
+            required: true,
+          }],
+        })
         : Promise.resolve([]),
     ]);
 
