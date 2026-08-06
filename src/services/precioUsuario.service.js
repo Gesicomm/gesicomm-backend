@@ -101,10 +101,15 @@ class PrecioUsuarioService {
     const imgMap = new Map();
     if (idsParaImagen.length > 0) {
       const imagenes = await ProductoImagen.findAll({
-        where: { producto_id: { [Op.in]: idsParaImagen }, es_principal: true },
+        where: { producto_id: { [Op.in]: idsParaImagen } },
         attributes: ['producto_id', 'url'],
+        order: [['es_principal', 'DESC'], ['orden', 'ASC']],
       });
-      imagenes.forEach(img => imgMap.set(img.producto_id, img.url));
+      imagenes.forEach(img => {
+        if (!imgMap.has(img.producto_id)) {
+          imgMap.set(img.producto_id, img.url);
+        }
+      });
     }
 
     const productosDto = productos.map(p => {
