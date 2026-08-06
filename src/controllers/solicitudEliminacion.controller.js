@@ -8,6 +8,7 @@
  */
 const bcrypt = require('bcryptjs');
 const SolicitudEliminacionService = require('../services/solicitudEliminacion.service');
+const EmailService = require('../services/email.service');
 const { Usuario } = require('../models');
 const { auditoria, logger } = require('../utils/logger');
 
@@ -34,16 +35,27 @@ async function solicitar(req, res) {
       ip: req.ip,
     });
 
+    const url_estado = `${SITIO_PUBLICO}/data-deletion/estado/${solicitud.codigo}`;
+
+    // Envío de correo de confirmación automático (no bloqueante)
+    if (!duplicada && req.body && req.body.email) {
+      EmailService.enviarConfirmacionEliminacion({
+        email: req.body.email,
+        nombre: req.body.nombre,
+        codigo: solicitud.codigo,
+        fechaLimite: solicitud.fecha_limite,
+        urlEstado: url_estado,
+      }).catch(err => {
+        logger.error({ mensaje: '[solicitar] Error enviando email de confirmación:', error: err.message });
+      });
+    }
+
     return res.status(duplicada ? 200 : 201).json({
-      // El mensaje describe un contacto del equipo y no un correo
-      // automático porque hoy la verificación de identidad es un paso
-      // manual: no hay envío transaccional conectado. Si más adelante se
-      // integra un proveedor de correo, este texto se ajusta junto con él.
       message: duplicada
         ? 'Ya existe una solicitud en curso para este correo. Te mostramos su estado actual.'
-        : 'Solicitud registrada. Nuestro equipo de privacidad se va a comunicar a esa dirección para verificar tu identidad.',
+        : 'Solicitud registrada. Te enviamos un correo con tu código de seguimiento y nuestro equipo de privacidad revisará la solicitud.',
       solicitud,
-      url_estado: `${SITIO_PUBLICO}/data-deletion/estado/${solicitud.codigo}`,
+      url_estado,
     });
   } catch (err) {
     logger.error({ mensaje: err.message, stack: err.stack, ruta: req.path });
