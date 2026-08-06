@@ -1,13 +1,16 @@
 /**
  * Rutas de autenticación.
  *
- * POST /api/auth/login          → Iniciar sesión
- * POST /api/auth/register       → Registrarse
- * POST /api/auth/logout         → Cerrar sesión
- * POST /api/auth/refresh        → Renovar access token
- * POST /api/auth/forgot-password → Solicitar recuperación de contraseña
- * GET  /api/auth/me             → Verificar sesión activa
+ * POST /api/auth/login            → Iniciar sesión
+ * POST /api/auth/register         → Registrarse (envía OTP de verificación)
+ * POST /api/auth/verify-email     → Verificar email con código OTP
+ * POST /api/auth/resend-code      → Reenviar código OTP de verificación
+ * POST /api/auth/logout           → Cerrar sesión
+ * POST /api/auth/refresh          → Renovar access token
+ * POST /api/auth/forgot-password  → Solicitar recuperación de contraseña
+ * GET  /api/auth/me               → Verificar sesión activa
  */
+const crypto = require('crypto');
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -16,6 +19,7 @@ const { validar, esquemaLogin, esquemaRegistro, esquemaRecuperarPassword } = req
 const { verificarToken } = require('../middleware/autenticacion');
 const { auditoria } = require('../utils/logger');
 const { rollbackSeguro } = require('../utils/transaction');
+const EmailService = require('../services/email.service');
 const { Usuario, Inquilino, Rol, Permiso, sequelize } = require('../models');
 
 const router = express.Router();
@@ -31,6 +35,20 @@ const limiteAuth = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// Rate-limit específico para el reenvío de código: máximo 3 reenvíos por 15 min
+const limiteReenvio = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 3 : 500,
+  message: { message: 'Demasiados reenvíos. Por favor esperá 15 minutos antes de solicitar otro código.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+/** Genera un código OTP de 6 dígitos criptoseguro. */
+function generarOTP() {
+  return String(crypto.randomInt(100000, 999999));
+}
 
 // Con subdominios de tienda (*.gesicomm.com), la cookie de sesión NO debe
 // viajar a mitienda.gesicomm.com — esas páginas son públicas y no deben
@@ -93,6 +111,16 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
     if (!passwordValida) {
       auditoria('LOGIN_FALLIDO', { email, ip: req.ip, razon: 'Contraseña incorrecta' });
       return res.status(401).json({ message: 'Credenciales inválidas.' });
+    }
+
+    // Bloquear login si el email aún no fue verificado
+    if (!usuario.email_verificado) {
+      auditoria('LOGIN_FALLIDO', { email, ip: req.ip, razon: 'Email no verificado' });
+      return res.status(403).json({
+        message: 'Debés verificar tu correo antes de ingresar. Revisá tu bandeja de entrada (o Spam) y utilizá el código que te enviamos.',
+        requiere_verificacion: true,
+        email: usuario.correo_electronico,
+      });
     }
 
     const payload = {
@@ -164,25 +192,161 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
     }
 
     const contrasena_hash = await bcrypt.hash(password, 12);
+    const otp = generarOTP();
+    const otpExpira = new Date(Date.now() + 15 * 60 * 1000); // 15 minutos
 
-    // Todo el que se registra públicamente entra como 'usuario'
+    // Crear usuario con email no verificado y código OTP
     await Usuario.create({
       inquilino_id: inquilino.id,
       rol_id: rolUsuario.id,
       nombre,
       correo_electronico: email,
       contrasena_hash,
+      email_verificado: false,
+      codigo_verificacion: otp,
+      codigo_verificacion_expira: otpExpira,
     }, { transaction: t });
 
     await t.commit();
 
     auditoria('USUARIO_CREADO', { email, ip: req.ip });
 
-    return res.status(201).json({ message: 'Cuenta creada. Por favor inicia sesión.' });
+    // Enviar OTP por correo (no bloqueante — la cuenta ya está creada)
+    EmailService.enviarCodigoVerificacionEmail({ email, nombre, codigo: otp })
+      .catch(err => console.error('[register] Error enviando OTP:', err.message));
+
+    return res.status(201).json({
+      message: 'Cuenta creada. Te enviamos un código de 6 dígitos a tu correo para activarla.',
+      requiere_verificacion: true,
+      email,
+    });
   } catch (err) {
     await rollbackSeguro(t);
     console.error(err);
     return res.status(500).json({ message: 'Error interno del servidor al crear cuenta.' });
+  }
+});
+
+// ============================================================
+// POST /api/auth/verify-email
+// ============================================================
+router.post('/verify-email', limiteAuth, async (req, res) => {
+  try {
+    const { email, codigo } = req.body;
+
+    if (!email || !codigo) {
+      return res.status(400).json({ message: 'El correo y el código son obligatorios.' });
+    }
+
+    const usuario = await Usuario.findOne({
+      where: { correo_electronico: String(email).trim().toLowerCase() },
+      include: [{ model: Rol, include: [{ model: Permiso }] }],
+    });
+
+    if (!usuario) {
+      return res.status(404).json({ message: 'No encontramos una cuenta con ese correo.' });
+    }
+
+    if (usuario.email_verificado) {
+      return res.status(400).json({ message: 'Este correo ya fue verificado anteriormente. Podés iniciar sesión.' });
+    }
+
+    // Validar que el código no expiró
+    if (!usuario.codigo_verificacion_expira || new Date() > new Date(usuario.codigo_verificacion_expira)) {
+      return res.status(410).json({
+        message: 'El código expiró. Solicitá uno nuevo.',
+        codigo_expirado: true,
+      });
+    }
+
+    // Validar el código (comparación en string, ambos de 6 dígitos)
+    if (String(usuario.codigo_verificacion) !== String(codigo).trim()) {
+      return res.status(400).json({ message: 'Código incorrecto. Revisá el correo e intentá de nuevo.' });
+    }
+
+    // Activar la cuenta y limpiar el OTP
+    await usuario.update({
+      email_verificado: true,
+      codigo_verificacion: null,
+      codigo_verificacion_expira: null,
+    });
+
+    auditoria('EMAIL_VERIFICADO', { usuarioId: usuario.id, email: usuario.correo_electronico, ip: req.ip });
+
+    // Iniciar sesión automáticamente
+    const payload = {
+      id: usuario.id,
+      nombre: usuario.nombre,
+      email: usuario.correo_electronico,
+      rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
+      permisos: usuario.Rol && usuario.Rol.Permisos ? usuario.Rol.Permisos.map(p => p.nombre) : [],
+      tenantId: usuario.inquilino_id,
+    };
+
+    const accessToken = jwt.sign(payload, process.env.JWT_SECRET, {
+      expiresIn: process.env.JWT_EXPIRATION || '15m',
+    });
+    const refreshToken = jwt.sign(
+      { id: usuario.id },
+      process.env.REFRESH_TOKEN_SECRET,
+      { expiresIn: process.env.REFRESH_TOKEN_EXPIRATION || '7d' }
+    );
+
+    enviarCookieToken(req, res, accessToken, refreshToken);
+
+    return res.json({
+      message: '¡Correo verificado! Tu cuenta está activa.',
+      usuario: {
+        id: usuario.id,
+        nombre: usuario.nombre,
+        email: usuario.correo_electronico,
+        rol: payload.rol,
+        permisos: payload.permisos,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Error interno del servidor.' });
+  }
+});
+
+// ============================================================
+// POST /api/auth/resend-code
+// ============================================================
+router.post('/resend-code', limiteReenvio, async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: 'El correo es obligatorio.' });
+    }
+
+    const usuario = await Usuario.findOne({
+      where: { correo_electronico: String(email).trim().toLowerCase() },
+    });
+
+    // Respuesta genérica para no revelar si el email existe
+    if (!usuario || usuario.email_verificado) {
+      return res.json({ message: 'Si existe una cuenta pendiente de verificación con ese correo, te enviamos un nuevo código.' });
+    }
+
+    const otp = generarOTP();
+    const otpExpira = new Date(Date.now() + 15 * 60 * 1000);
+
+    await usuario.update({
+      codigo_verificacion: otp,
+      codigo_verificacion_expira: otpExpira,
+    });
+
+    EmailService.enviarCodigoVerificacionEmail({ email: usuario.correo_electronico, nombre: usuario.nombre, codigo: otp })
+      .catch(err => console.error('[resend-code] Error enviando OTP:', err.message));
+
+    auditoria('OTP_REENVIADO', { email: usuario.correo_electronico, ip: req.ip });
+
+    return res.json({ message: 'Si existe una cuenta pendiente de verificación con ese correo, te enviamos un nuevo código.' });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Error interno del servidor.' });
   }
 });
 

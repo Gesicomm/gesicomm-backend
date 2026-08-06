@@ -52,6 +52,22 @@ const Usuario = sequelize.define('Usuario', {
     allowNull: true,
     comment: 'Elegido en el onboarding, a nivel de cuenta (no por tienda) — hoy 1 tienda por usuario, pero el plan ya queda a nivel cuenta pensando en soportar varias más adelante. null hasta completar el onboarding. Sin cobro integrado — "pago" solo marca la intención.',
   },
+  email_verificado: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    comment: 'true = el usuario confirmó su correo con el código OTP. Los usuarios creados antes de esta feature arrancan con true para no bloquear cuentas existentes.',
+  },
+  codigo_verificacion: {
+    type: DataTypes.STRING(6),
+    allowNull: true,
+    comment: 'Código OTP de 6 dígitos en texto plano (nunca se almacena, solo se usa para comparar).',
+  },
+  codigo_verificacion_expira: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Timestamp de expiración del código OTP. El código es válido por 15 minutos.',
+  },
 }, {
   tableName: 'usuarios',
   timestamps: true,
