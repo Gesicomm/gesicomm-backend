@@ -24,6 +24,9 @@ jest.mock('../models', () => {
         return registro;
       }),
     },
+    Usuario: {
+      findOne: jest.fn().mockResolvedValue({ id: 1, correo_electronico: 'ana@example.com', inquilino_id: 1 }),
+    },
     MensajeContacto: {
       findAndCountAll: jest.fn().mockResolvedValue({ rows: [], count: 0 }),
       create: jest.fn(async (datos) => ({ ...datos, id: 1, created_at: new Date() })),
@@ -33,7 +36,7 @@ jest.mock('../models', () => {
 
 const express = require('express');
 const request = require('supertest');
-const { SolicitudEliminacion, MensajeContacto } = require('../models');
+const { SolicitudEliminacion, Usuario, MensajeContacto } = require('../models');
 
 const APP_SECRET = 'secreto-de-prueba-no-usar-en-produccion';
 
@@ -58,6 +61,7 @@ describe('POST /api/publico/eliminacion-datos', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     SolicitudEliminacion.findOne.mockResolvedValue(null);
+    Usuario.findOne.mockResolvedValue({ id: 1, correo_electronico: 'ana@example.com', inquilino_id: 1 });
     app = crearApp();
   });
 
@@ -92,6 +96,18 @@ describe('POST /api/publico/eliminacion-datos', () => {
     const serializado = JSON.stringify(res.body);
     expect(serializado).not.toContain('ana@example.com');
     expect(serializado).not.toContain('Ana Pérez');
+  });
+
+  test('rechaza con 404 si el email no pertenece a ninguna cuenta registrada', async () => {
+    Usuario.findOne.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/publico/eliminacion-datos')
+      .send(solicitudValida);
+
+    expect(res.status).toBe(404);
+    expect(res.body.message).toContain('No encontramos ninguna cuenta');
+    expect(SolicitudEliminacion.create).not.toHaveBeenCalled();
   });
 
   test('rechaza un email inválido con 400 y no toca la base', async () => {

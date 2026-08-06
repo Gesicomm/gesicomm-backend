@@ -58,8 +58,15 @@ async function solicitar(req, res) {
       url_estado,
     });
   } catch (err) {
-    logger.error({ mensaje: err.message, stack: err.stack, ruta: req.path });
-    return res.status(500).json({ message: 'No se pudo registrar la solicitud. Escribinos a contacto@gesicomm.com.' });
+    const status = err.statusCode || 500;
+    if (status === 500) {
+      logger.error({ mensaje: err.message, stack: err.stack, ruta: req.path });
+    }
+    return res.status(status).json({
+      message: err.statusCode
+        ? err.message
+        : 'No se pudo registrar la solicitud. Escribinos a contacto@gesicomm.com.',
+    });
   }
 }
 

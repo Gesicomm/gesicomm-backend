@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { Op } = require('sequelize');
-const { SolicitudEliminacion } = require('../models');
+const { SolicitudEliminacion, Usuario } = require('../models');
 
 /**
  * Plazo máximo comprometido públicamente en /data-deletion y en la Política
@@ -70,13 +70,24 @@ class SolicitudEliminacionService {
   /**
    * Alta desde el formulario público de /data-deletion.
    *
-   * Si ya hay una solicitud abierta para el mismo email devuelve esa en vez
-   * de crear otra: reenviar el formulario no debe multiplicar los registros
-   * ni reiniciar el plazo de 30 días, que corre desde el primer pedido.
+   * 1. Valida que el correo pertenezca a una cuenta registrada en el sistema.
+   * 2. Si ya hay una solicitud abierta para el mismo email devuelve esa en vez
+   *    de crear otra (evita duplicar registros o reiniciar el plazo).
    */
   static async crearDesdeFormulario(datos, contexto = {}) {
     const { nombre, email, empresa, motivo } = datos;
     const emailNormalizado = String(email).trim().toLowerCase();
+
+    // 1. Verificar existencia del usuario en la plataforma
+    const usuario = await Usuario.findOne({
+      where: { correo_electronico: emailNormalizado },
+    });
+
+    if (!usuario) {
+      const error = new Error('No encontramos ninguna cuenta registrada con este correo electrónico.');
+      error.statusCode = 404;
+      throw error;
+    }
 
     const existente = await SolicitudEliminacion.findOne({
       where: { email: emailNormalizado, estado: { [Op.in]: ESTADOS_ABIERTOS } },
@@ -94,6 +105,8 @@ class SolicitudEliminacionService {
       email: emailNormalizado,
       empresa: empresa ? String(empresa).trim() : null,
       motivo: motivo ? String(motivo).trim() : null,
+      usuario_id: usuario.id,
+      inquilino_id: usuario.inquilino_id || null,
       ip_solicitante: contexto.ip || null,
       user_agent: contexto.userAgent ? String(contexto.userAgent).slice(0, 500) : null,
       fecha_limite: this.calcularFechaLimite(),
