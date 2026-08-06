@@ -37,8 +37,8 @@ async function solicitar(req, res) {
 
     const url_estado = `${SITIO_PUBLICO}/data-deletion/estado/${solicitud.codigo}`;
 
-    // Envío de correo de confirmación automático (no bloqueante)
-    if (!duplicada && req.body && req.body.email) {
+    // Envío de correo de confirmación o recordatorio automático (no bloqueante)
+    if (req.body && req.body.email) {
       EmailService.enviarConfirmacionEliminacion({
         email: req.body.email,
         nombre: req.body.nombre,
