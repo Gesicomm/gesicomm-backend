@@ -25,6 +25,7 @@ router.post('/:id/banner', ctrl.subirImagenLandingMiddleware, ctrl.subirBanner);
 router.delete('/:id/banner', ctrl.eliminarBanner);
 router.post('/:id/seo-imagen', ctrl.subirImagenLandingMiddleware, ctrl.subirSeoImagen);
 router.delete('/:id/seo-imagen', ctrl.eliminarSeoImagen);
+router.post('/:id/testimonio-foto', ctrl.subirImagenLandingMiddleware, ctrl.subirTestimonioFoto);
 router.get('/:id/estadisticas', ctrl.estadisticas);
 router.post('/:id/estadisticas-rango', ctrl.estadisticasRango);
 

@@ -87,6 +87,10 @@ const Landing = sequelize.define('Landing', {
   radio_bordes: { type: DataTypes.ENUM('chico', 'mediano', 'grande'), allowNull: false, defaultValue: 'mediano' },
   fuente: { type: DataTypes.ENUM('outfit', 'inter', 'poppins', 'roboto'), allowNull: false, defaultValue: 'outfit' },
   mostrar_whatsapp: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+  // --- Opiniones y FAQ: contenido propio de ESTA landing, igual criterio
+  // que el banner (ver Testimonio.js/Faq.js) ---
+  mostrar_testimonios: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  mostrar_faq: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   // --- SEO ---
   seo_titulo: { type: DataTypes.STRING(160), allowNull: true },
   seo_descripcion: { type: DataTypes.STRING(320), allowNull: true },

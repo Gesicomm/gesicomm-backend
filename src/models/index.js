@@ -24,6 +24,8 @@ const Tienda = require('./Tienda');
 const Landing = require('./Landing');
 const LandingItem = require('./LandingItem');
 const LandingEvento = require('./LandingEvento');
+const Testimonio = require('./Testimonio');
+const Faq = require('./Faq');
 const SolicitudEliminacion = require('./SolicitudEliminacion');
 const MensajeContacto = require('./MensajeContacto');
 
@@ -154,6 +156,12 @@ LandingItem.belongsTo(Landing, { foreignKey: 'landing_id' });
 Landing.hasMany(LandingEvento, { as: 'eventos', foreignKey: 'landing_id', onDelete: 'CASCADE' });
 LandingEvento.belongsTo(Landing, { foreignKey: 'landing_id' });
 
+Landing.hasMany(Testimonio, { as: 'testimonios', foreignKey: 'landing_id', onDelete: 'CASCADE' });
+Testimonio.belongsTo(Landing, { foreignKey: 'landing_id' });
+
+Landing.hasMany(Faq, { as: 'faq', foreignKey: 'landing_id', onDelete: 'CASCADE' });
+Faq.belongsTo(Landing, { foreignKey: 'landing_id' });
+
 // ============================================================
 // Relaciones de Educación / Academia
 // ============================================================
@@ -226,6 +234,8 @@ module.exports = {
   Landing,
   LandingItem,
   LandingEvento,
+  Testimonio,
+  Faq,
   ModuloEducacion,
   LeccionEducacion,
   Examen,

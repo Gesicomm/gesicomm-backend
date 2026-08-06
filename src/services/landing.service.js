@@ -21,11 +21,13 @@ const { Op } = require('sequelize');
 const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
-  ProductoImagen, ProductoVariante, LandingEvento,
+  ProductoImagen, ProductoVariante, LandingEvento, Testimonio, Faq,
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 const MAX_ITEMS_POR_LANDING = 40;
+const MAX_TESTIMONIOS_POR_LANDING = 20;
+const MAX_FAQ_POR_LANDING = 20;
 // MVP: una sola landing por tienda, siempre en la raíz (es_home=true) — no
 // hay UI para elegir slug ni marcar "página principal", así que una
 // segunda landing quedaría inaccesible igual. Multi-landing por tienda
@@ -84,6 +86,28 @@ class LandingService {
     const errores = [];
     if (Array.isArray(payload.items) && payload.items.length > MAX_ITEMS_POR_LANDING) {
       errores.push(`No se pueden agregar más de ${MAX_ITEMS_POR_LANDING} items a una landing.`);
+    }
+    if (Array.isArray(payload.testimonios)) {
+      if (payload.testimonios.length > MAX_TESTIMONIOS_POR_LANDING) {
+        errores.push(`No se pueden agregar más de ${MAX_TESTIMONIOS_POR_LANDING} testimonios a una landing.`);
+      }
+      payload.testimonios.forEach((tItem, idx) => {
+        if (!tItem?.nombre?.trim()) errores.push(`Testimonio #${idx + 1}: el nombre es obligatorio.`);
+        if (!tItem?.comentario?.trim()) errores.push(`Testimonio #${idx + 1}: el comentario es obligatorio.`);
+        const calificacion = Number(tItem?.calificacion);
+        if (!Number.isInteger(calificacion) || calificacion < 1 || calificacion > 5) {
+          errores.push(`Testimonio #${idx + 1}: la calificación debe ser un número entero de 1 a 5.`);
+        }
+      });
+    }
+    if (Array.isArray(payload.faq)) {
+      if (payload.faq.length > MAX_FAQ_POR_LANDING) {
+        errores.push(`No se pueden agregar más de ${MAX_FAQ_POR_LANDING} preguntas frecuentes a una landing.`);
+      }
+      payload.faq.forEach((fItem, idx) => {
+        if (!fItem?.pregunta?.trim()) errores.push(`FAQ #${idx + 1}: la pregunta es obligatoria.`);
+        if (!fItem?.respuesta?.trim()) errores.push(`FAQ #${idx + 1}: la respuesta es obligatoria.`);
+      });
     }
     if (payload.banner_boton_link !== undefined && !this.linkBannerEsSeguro(payload.banner_boton_link)) {
       errores.push('El link del botón del banner debe empezar con http://, https:// o /.');
@@ -147,6 +171,37 @@ class LandingService {
     })));
   }
 
+  /**
+   * Reemplazo total, mismo criterio que sincronizarItems: los testimonios
+   * no tienen id estable entre guardados (destroy-all + bulkCreate), así
+   * que la foto se sube aparte (ver LandingService.subirFotoTestimonio) y
+   * viaja como URL de texto dentro del payload, igual que "etiqueta" en
+   * los items.
+   */
+  static async sincronizarTestimonios(landing_id, testimonios = []) {
+    await Testimonio.destroy({ where: { landing_id } });
+    if (!testimonios.length) return;
+    await Testimonio.bulkCreate(testimonios.map((t, idx) => ({
+      landing_id,
+      nombre: t.nombre.trim(),
+      foto: t.foto || null,
+      calificacion: Number(t.calificacion),
+      comentario: t.comentario.trim(),
+      orden: t.orden !== undefined ? Number(t.orden) : idx,
+    })));
+  }
+
+  static async sincronizarFaq(landing_id, faq = []) {
+    await Faq.destroy({ where: { landing_id } });
+    if (!faq.length) return;
+    await Faq.bulkCreate(faq.map((f, idx) => ({
+      landing_id,
+      pregunta: f.pregunta.trim(),
+      respuesta: f.respuesta.trim(),
+      orden: f.orden !== undefined ? Number(f.orden) : idx,
+    })));
+  }
+
   // ─── Campos simples (comunes a crear/actualizar) ────────────────────────
 
   static camposEditables(payload) {
@@ -158,6 +213,7 @@ class LandingService {
       'mostrar_filtro_categoria', 'mostrar_filtro_marca', 'mostrar_filtro_etiqueta',
       'mostrar_buscador', 'mostrar_orden_precio', 'mostrar_banner', 'mostrar_whatsapp',
       'whatsapp_incluir_precio', 'whatsapp_incluir_url',
+      'mostrar_testimonios', 'mostrar_faq',
     ]) {
       if (payload[flag] !== undefined) campos[flag] = !!payload[flag];
     }
@@ -220,6 +276,8 @@ class LandingService {
     });
 
     await this.sincronizarItems(landing.id, items);
+    if (payload.testimonios !== undefined) await this.sincronizarTestimonios(landing.id, payload.testimonios);
+    if (payload.faq !== undefined) await this.sincronizarFaq(landing.id, payload.faq);
 
     return this.obtener(landing.id, tienda_id);
   }
@@ -252,6 +310,12 @@ class LandingService {
 
     if (payload.items !== undefined) {
       await this.sincronizarItems(landing.id, payload.items);
+    }
+    if (payload.testimonios !== undefined) {
+      await this.sincronizarTestimonios(landing.id, payload.testimonios);
+    }
+    if (payload.faq !== undefined) {
+      await this.sincronizarFaq(landing.id, payload.faq);
     }
 
     return this.obtener(landing.id, tienda_id);
@@ -300,14 +364,32 @@ class LandingService {
   static async obtener(id, tienda_id) {
     const landing = await Landing.findOne({
       where: { id, tienda_id },
-      include: [{ model: LandingItem, as: 'items' }],
+      include: [
+        { model: LandingItem, as: 'items' },
+        { model: Testimonio, as: 'testimonios' },
+        { model: Faq, as: 'faq' },
+      ],
       // El orden de una asociación se declara acá arriba, no dentro del
       // include: ahí Sequelize lo ignora en silencio y los items vuelven
       // en orden de inserción, perdiendo el orden que definió el usuario.
-      order: [[{ model: LandingItem, as: 'items' }, 'orden', 'ASC']],
+      order: [
+        [{ model: LandingItem, as: 'items' }, 'orden', 'ASC'],
+        [{ model: Testimonio, as: 'testimonios' }, 'orden', 'ASC'],
+        [{ model: Faq, as: 'faq' }, 'orden', 'ASC'],
+      ],
     });
     if (!landing) throw new Error('Landing no encontrada.');
     return landing.toJSON();
+  }
+
+  /**
+   * Solo confirma pertenencia (usado por subirTestimonioFoto, que no
+   * necesita el resto del detalle) — mismo mensaje de error que el resto
+   * del CRUD para que manejarError() lo mapee a 404 sin casos especiales.
+   */
+  static async verificarPertenece(id, tienda_id) {
+    const landing = await Landing.findOne({ where: { id, tienda_id }, attributes: ['id'] });
+    if (!landing) throw new Error('Landing no encontrada.');
   }
 
   static async eliminar(id, tienda_id) {
@@ -439,7 +521,12 @@ class LandingService {
     });
 
     const visitas = eventos.filter(e => e.tipo_evento === 'visita');
-    const contactos = eventos.filter(e => ['Contact', 'InitiateCheckout', 'Lead'].includes(e.tipo_evento));
+    // 'InitiateCheckout' NO cuenta como conversación de WhatsApp: un checkout
+    // de carrito emite InitiateCheckout Y Contact por el mismo envío (ver
+    // checkoutCarrito en LandingPublica.jsx), así que incluirlo contaba dos
+    // veces la misma conversación e inflaba el CTR. Mismo criterio que
+    // estadisticasRango(), que ya filtraba solo por Contact/Lead.
+    const contactos = eventos.filter(e => ['Contact', 'Lead'].includes(e.tipo_evento));
     const todosEventosConversion = eventos.filter(e => ['Contact', 'InitiateCheckout', 'AddToCart', 'Lead'].includes(e.tipo_evento));
 
     const serieMap = new Map();
@@ -455,7 +542,16 @@ class LandingService {
     // payload.items trae el detalle por producto de un checkout de carrito o AddToCart
     // (varios productos en un solo evento o individuales).
     const productosMap = new Map();
+    // Misma deduplicación que estadisticasRango(): el par
+    // InitiateCheckout+Contact de un checkout de carrito comparte el event_id
+    // base y no puede contar sus productos dos veces.
+    const intencionesYaContadas = new Set();
     todosEventosConversion.forEach(c => {
+      const intencion = String(c.payload?.event_id || '').replace(/-contact$/, '');
+      if (intencion) {
+        if (intencionesYaContadas.has(intencion)) return;
+        intencionesYaContadas.add(intencion);
+      }
       const items = Array.isArray(c.payload?.items) ? c.payload.items : null;
       if (items) {
         items.forEach(it => {
@@ -546,6 +642,24 @@ class LandingService {
     
     const productosMap = new Map();
 
+    /**
+     * Un checkout de carrito emite DOS eventos con exactamente los mismos
+     * items: InitiateCheckout y Contact (ver checkoutCarrito en
+     * LandingPublica.jsx). Meta los necesita separados —son dos eventos
+     * distintos de su embudo—, pero para el negocio son UNA sola intención de
+     * compra: el mismo carrito, mandado una vez por WhatsApp.
+     *
+     * Sin deduplicar, cada checkout sumaba su valor DOS veces a
+     * valor_carritos y contaba sus productos dos veces en "más consultados".
+     * El par comparte el event_id base ("<uuid>" y "<uuid>-contact"), que es
+     * lo que se usa para agruparlos.
+     *
+     * Los contadores del embudo (arriba) NO se deduplican a propósito: ahí sí
+     * corresponde contar 1 checkout y 1 contacto por separado, que es lo que
+     * pasó de verdad.
+     */
+    const intencionesYaValorizadas = new Set();
+
     todosEventos.forEach(c => {
       const dia = formatYMD(c.created_at);
       const diaStat = serieMap.get(dia);
@@ -559,6 +673,14 @@ class LandingService {
       } else if (['Contact', 'Lead'].includes(c.tipo_evento)) {
         totalContactos += 1;
         if (diaStat) diaStat.contactos += 1;
+      }
+
+      // Las filas viejas sin event_id en el payload no se deduplican (quedan
+      // como estaban): sin identificador no hay forma de saber cuál era el par.
+      const intencion = String(c.payload?.event_id || '').replace(/-contact$/, '');
+      if (intencion) {
+        if (intencionesYaValorizadas.has(intencion)) return;
+        intencionesYaValorizadas.add(intencion);
       }
 
       const items = Array.isArray(c.payload?.items) ? c.payload.items : null;
@@ -642,7 +764,7 @@ class LandingService {
     const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
 
-    const [productos, combos] = await Promise.all([
+    const [productos, combos, testimonios, faqs] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
           where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
@@ -667,6 +789,12 @@ class LandingService {
             },
           ],
         })
+        : Promise.resolve([]),
+      landing.mostrar_testimonios
+        ? Testimonio.findAll({ where: { landing_id: landing.id }, order: [['orden', 'ASC']] })
+        : Promise.resolve([]),
+      landing.mostrar_faq
+        ? Faq.findAll({ where: { landing_id: landing.id }, order: [['orden', 'ASC']] })
         : Promise.resolve([]),
     ]);
 
@@ -785,6 +913,11 @@ class LandingService {
         categoria: productoParaFiltros?.categoria?.nombre || null,
         marca: productoParaFiltros?.Marca?.nombre || null,
         etiqueta: item.etiqueta,
+        // Producto.destacado ya existe en el catálogo (lo marca la dueña
+        // en el picker de la landing) — los combos nunca son destacados.
+        destacado: esCombo ? false : !!entidad.destacado,
+        // Fecha real (LandingItem.created_at) para el badge "Nuevo".
+        creado: item.createdAt,
       });
     }
 
@@ -867,6 +1000,16 @@ class LandingService {
         tiktok_pixel_id: tienda.tiktok_pixel_id || null,
       },
       items: itemsDto,
+      testimonios: testimonios.map(t => ({
+        nombre: t.nombre,
+        foto: t.foto,
+        calificacion: t.calificacion,
+        comentario: t.comentario,
+      })),
+      faq: faqs.map(f => ({
+        pregunta: f.pregunta,
+        respuesta: f.respuesta,
+      })),
     };
   }
 }
