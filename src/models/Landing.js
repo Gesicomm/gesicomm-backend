@@ -91,6 +91,10 @@ const Landing = sequelize.define('Landing', {
   // que el banner (ver Testimonio.js/Faq.js) ---
   mostrar_testimonios: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   mostrar_faq: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  // Default true: hoy el ÚNICO comportamiento que existe al finalizar un
+  // pedido es redirigir a WhatsApp — con el toggle apagado, el checkout
+  // solo crea el pedido (Envio) y muestra una confirmación en la página.
+  checkout_redirigir_whatsapp: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   // --- SEO ---
   seo_titulo: { type: DataTypes.STRING(160), allowNull: true },
   seo_descripcion: { type: DataTypes.STRING(320), allowNull: true },

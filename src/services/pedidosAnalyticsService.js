@@ -116,6 +116,8 @@ async function getKpisFinancieros(whereBase) {
   let costoLogisticoTotal = 0;
   let costoLogisticoEntregados = 0;
   let costoMercaderiaEntregada = 0;
+  let costoComisionTotal = 0;
+  let ivaFacturadoTotal = 0;
   let pedidosEntregadosCount = 0;
 
   for (const e of envios) {
@@ -132,6 +134,13 @@ async function getKpisFinancieros(whereBase) {
       facturacionEntregada += monto;
       costoLogisticoEntregados += costoEnvio;
       pedidosEntregadosCount++;
+
+      const comisionPct = Number(e.comision_pct_aplicada || 0);
+      costoComisionTotal += monto * (comisionPct / 100);
+
+      if (e.quiere_factura) {
+        ivaFacturadoTotal += monto * 0.10;
+      }
 
       if (e.items && e.items.length > 0) {
         for (const item of e.items) {
@@ -150,7 +159,8 @@ async function getKpisFinancieros(whereBase) {
 
   const ticketPromedio = pedidosEntregadosCount > 0 ? Math.round(facturacionEntregada / pedidosEntregadosCount) : 0;
   const costoLogisticoPorEntrega = pedidosEntregadosCount > 0 ? Math.round(costoLogisticoEntregados / pedidosEntregadosCount) : 0;
-  const margenBrutoEstimado = facturacionEntregada - costoLogisticoEntregados - costoMercaderiaEntregada;
+  const costoComisionPorEntrega = pedidosEntregadosCount > 0 ? Math.round(costoComisionTotal / pedidosEntregadosCount) : 0;
+  const margenBrutoEstimado = facturacionEntregada - costoLogisticoEntregados - costoMercaderiaEntregada - costoComisionTotal - ivaFacturadoTotal;
   const pctMargenBruto = facturacionEntregada > 0 ? Number(((margenBrutoEstimado / facturacionEntregada) * 100).toFixed(1)) : 0;
 
   return {
@@ -161,7 +171,10 @@ async function getKpisFinancieros(whereBase) {
     costo_logistico_total: costoLogisticoTotal,
     costo_logistico_por_entrega: costoLogisticoPorEntrega,
     costo_mercaderia_entregada: costoMercaderiaEntregada,
-    margen_bruto_estimado: margenBrutoEstimado,
+    costo_comision_total: Math.round(costoComisionTotal),
+    costo_comision_por_entrega: costoComisionPorEntrega,
+    iva_facturado_total: Math.round(ivaFacturadoTotal),
+    margen_bruto_estimado: Math.round(margenBrutoEstimado),
     pct_margen_bruto: pctMargenBruto,
   };
 }

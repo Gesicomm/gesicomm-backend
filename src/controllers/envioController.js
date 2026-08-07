@@ -1,5 +1,6 @@
 const { Envio, EnvioItem, Courier, Producto, sequelize } = require('../models');
 const { Op } = require('sequelize');
+
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 
 exports.listEnvios = async (req, res) => {
@@ -60,6 +61,8 @@ exports.createEnvio = async (req, res) => {
       monto,
       costo_envio,
       metodo_pago,
+      metodo_pago_id,
+      comision_pct_aplicada,
       observaciones,
       courier_id,
       origen,
@@ -72,11 +75,32 @@ exports.createEnvio = async (req, res) => {
       utm_campaign,
       estado_comercial,
       estado_logistico,
+      quiere_factura,
+      razon_social,
+      ruc,
+      nro_comprobante,
       items
     } = req.body;
 
     const hoy = fecha || new Date().toISOString().split('T')[0];
     const fullCliente = `${nombre_cliente || ''} ${apellido_cliente || ''}`.trim() || 'Cliente';
+
+    if (quiere_factura && !(ruc && String(ruc).trim())) {
+      await t.rollback();
+      return res.status(400).json({ error: 'El RUC es obligatorio cuando se solicita factura' });
+    }
+
+    const nroComprobanteLimpio = nro_comprobante && String(nro_comprobante).trim() ? String(nro_comprobante).trim() : null;
+    if (nroComprobanteLimpio) {
+      const existente = await Envio.findOne({
+        where: { usuario_id, nro_comprobante: nroComprobanteLimpio },
+        transaction: t,
+      });
+      if (existente) {
+        await t.rollback();
+        return res.status(400).json({ error: 'Ya existe un pedido con ese número de comprobante' });
+      }
+    }
 
     const nuevoEnvio = await Envio.create(
       {
@@ -97,10 +121,16 @@ exports.createEnvio = async (req, res) => {
         monto: monto || 0,
         costo_envio: costo_envio || 0,
         metodo_pago: metodo_pago || 'Efectivo',
+        metodo_pago_id: metodo_pago_id || null,
+        comision_pct_aplicada: comision_pct_aplicada || 0,
         observaciones,
         estado: 'Pendiente',
         dispatchedAt: hoy,
         origen: origen || 'WEB',
+        quiere_factura: !!quiere_factura,
+        razon_social: razon_social || null,
+        ruc: ruc || null,
+        nro_comprobante: nroComprobanteLimpio,
         campaign_name: campaign_name || null,
         campaign_id: campaign_id || null,
         adset: adset || null,
@@ -124,24 +154,10 @@ exports.createEnvio = async (req, res) => {
       }
     );
 
-    // Descontar el stock correspondiente de cada producto vendido en el pedido
-    if (items && Array.isArray(items) && items.length > 0) {
-      for (const item of items) {
-        if (item.producto_id) {
-          const cantVendida = parseInt(item.cantidad) || 1;
-          const prod = await Producto.findByPk(item.producto_id, { transaction: t });
-          if (prod) {
-            const stockActual = parseInt(prod.cantidad_disponible) || 0;
-            const nuevoStock = Math.max(0, stockActual - cantVendida);
-            const actualizacion = { cantidad_disponible: nuevoStock };
-            if (nuevoStock === 0 && prod.estado_venta === 'en_venta') {
-              actualizacion.estado_venta = 'fuera_de_stock';
-            }
-            await prod.update(actualizacion, { transaction: t });
-          }
-        }
-      }
-    }
+    // El stock ya NO se descuenta acá — se descuenta al pasar a
+    // "Confirmado" (ver updateEstado), sea cual sea el origen del pedido.
+    // Antes se descontaba al crear, lo que exponía el stock real a
+    // cualquiera que llenara el checkout público sin intención de compra.
 
     await t.commit();
 
@@ -162,17 +178,36 @@ exports.createEnvio = async (req, res) => {
 };
 
 exports.updateEstado = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const { estado, courier_id, estado_comercial, estado_logistico } = req.body;
+    const {
+      estado, courier_id, estado_comercial, estado_logistico,
+      // Campos que completa el modal único de Pedido (mismo componente de
+      // alta, en modo "completar") al confirmar — el checkout público no
+      // los pide (ruc es opcional ahí; courier/costo de envío los define
+      // el staff, nunca el visitante).
+      ruc, direccion, referencia, link_maps, costo_envio, metodo_pago,
+      quiere_factura, razon_social, nro_comprobante, metodo_pago_id, comision_pct_aplicada,
+      ciudad, departamento, nombre_cliente, apellido_cliente, telefono,
+      confirmador, origen, campaign_name, observaciones, monto,
+    } = req.body;
 
     if (!estado && courier_id === undefined && !estado_comercial && !estado_logistico) {
+      await t.rollback();
       return res.status(400).json({ error: 'Se requiere al menos estado o courier_id' });
     }
 
-    const envio = await Envio.findOne({ where: { id, usuario_id } });
-    if (!envio) return res.status(404).json({ error: 'Envío no encontrado' });
+    const envio = await Envio.findOne({
+      where: { id, usuario_id },
+      include: [{ model: EnvioItem, as: 'items' }],
+      transaction: t,
+    });
+    if (!envio) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Envío no encontrado' });
+    }
 
     const updateData = {};
     if (estado !== undefined) {
@@ -191,8 +226,76 @@ exports.updateEstado = async (req, res) => {
     if (estado_comercial !== undefined) updateData.estado_comercial = estado_comercial;
     if (estado_logistico !== undefined) updateData.estado_logistico = estado_logistico;
     if (courier_id !== undefined) updateData.courier_id = courier_id;
+    if (ruc !== undefined) updateData.ruc = ruc;
+    if (direccion !== undefined) updateData.direccion = direccion;
+    if (referencia !== undefined) updateData.referencia = referencia;
+    if (link_maps !== undefined) updateData.link_maps = link_maps;
+    if (costo_envio !== undefined) updateData.costo_envio = costo_envio;
+    if (metodo_pago !== undefined) updateData.metodo_pago = metodo_pago;
+    if (metodo_pago_id !== undefined) updateData.metodo_pago_id = metodo_pago_id;
+    if (comision_pct_aplicada !== undefined) updateData.comision_pct_aplicada = comision_pct_aplicada;
+    if (quiere_factura !== undefined) updateData.quiere_factura = quiere_factura;
+    if (razon_social !== undefined) updateData.razon_social = razon_social;
+    if (ciudad !== undefined) updateData.ciudad = ciudad;
+    if (departamento !== undefined) updateData.departamento = departamento;
+    if (telefono !== undefined) updateData.telefono = telefono;
+    if (confirmador !== undefined) updateData.confirmador = confirmador;
+    if (origen !== undefined) updateData.origen = origen;
+    if (campaign_name !== undefined) updateData.campaign_name = campaign_name;
+    if (observaciones !== undefined) updateData.observaciones = observaciones;
+    if (monto !== undefined) updateData.monto = monto;
+    if (nombre_cliente !== undefined || apellido_cliente !== undefined) {
+      updateData.nombre_cliente = nombre_cliente !== undefined ? nombre_cliente : envio.nombre_cliente;
+      updateData.apellido_cliente = apellido_cliente !== undefined ? apellido_cliente : envio.apellido_cliente;
+      updateData.cliente = `${updateData.nombre_cliente || ''} ${updateData.apellido_cliente || ''}`.trim() || 'Cliente';
+    }
 
-    await envio.update(updateData);
+    if (updateData.quiere_factura && !((updateData.ruc ?? envio.ruc) && String(updateData.ruc ?? envio.ruc).trim())) {
+      await t.rollback();
+      return res.status(400).json({ error: 'El RUC es obligatorio cuando se solicita factura' });
+    }
+
+    if (nro_comprobante !== undefined) {
+      const nroComprobanteLimpio = nro_comprobante && String(nro_comprobante).trim() ? String(nro_comprobante).trim() : null;
+      if (nroComprobanteLimpio) {
+        const existente = await Envio.findOne({
+          where: { usuario_id, nro_comprobante: nroComprobanteLimpio, id: { [Op.ne]: envio.id } },
+          transaction: t,
+        });
+        if (existente) {
+          await t.rollback();
+          return res.status(400).json({ error: 'Ya existe un pedido con ese número de comprobante' });
+        }
+      }
+      updateData.nro_comprobante = nroComprobanteLimpio;
+    }
+
+    // Descuento de stock movido acá desde createEnvio: recién se compromete
+    // stock real cuando el pedido pasa a "Confirmado" — antes (Pendiente)
+    // puede venir de un checkout público sin ninguna verificación.
+    // stock_descontado evita descontar dos veces si el pedido pasa por
+    // Confirmado más de una vez (se mueve para atrás y de nuevo adelante).
+    if (estado === 'Confirmado' && !envio.stock_descontado) {
+      for (const item of envio.items || []) {
+        if (item.producto_id) {
+          const cantVendida = parseInt(item.cantidad) || 1;
+          const prod = await Producto.findByPk(item.producto_id, { transaction: t });
+          if (prod) {
+            const stockActual = parseInt(prod.cantidad_disponible) || 0;
+            const nuevoStock = Math.max(0, stockActual - cantVendida);
+            const actualizacionProd = { cantidad_disponible: nuevoStock };
+            if (nuevoStock === 0 && prod.estado_venta === 'en_venta') {
+              actualizacionProd.estado_venta = 'fuera_de_stock';
+            }
+            await prod.update(actualizacionProd, { transaction: t });
+          }
+        }
+      }
+      updateData.stock_descontado = true;
+    }
+
+    await envio.update(updateData, { transaction: t });
+    await t.commit();
 
     const result = await Envio.findByPk(envio.id, {
       include: [
@@ -203,6 +306,7 @@ exports.updateEstado = async (req, res) => {
 
     res.json(result);
   } catch (error) {
+    if (!t.finished) await t.rollback();
     console.error('Error updating estado:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }

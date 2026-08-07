@@ -8,6 +8,8 @@
  * GET  /api/l/                → landing es_home de la tienda del hostname actual.
  * POST /api/l/:slug/eventos   → evento de conversión (Meta CAPI), ver metaCapi.service.js.
  * POST /api/l/eventos         → ídem, para la landing es_home.
+ * POST /api/l/:slug/checkout  → crea un Envío (Pedido) real, ver landing.service.js#crearCheckout.
+ * POST /api/l/checkout        → ídem, para la landing es_home.
  */
 
 const { Landing, Tienda, Usuario } = require('../models');
@@ -176,6 +178,55 @@ function limpiarItems(items, catalogo) {
   return limpio.length ? limpio : undefined;
 }
 
+const MAX_TEXTO_CORTO = 150;
+const MAX_TEXTO_LARGO = 300;
+
+/** Recorta y descarta si no es string — mismo criterio que limpiarUrlOrigen para campos de texto libre del checkout público. */
+function limpiarTexto(valor, maxLen) {
+  if (typeof valor !== 'string') return null;
+  const limpio = valor.trim().slice(0, maxLen);
+  return limpio || null;
+}
+
+/**
+ * Checkout público — crea un Envío (Pedido) real en estado "Pendiente".
+ * Toda la resolución de precio/stock/pertenencia a la landing vive en
+ * LandingService.crearCheckout(); acá solo se sanea el texto libre del
+ * body antes de pasarlo (mismo espíritu que limpiarCustomData/limpiarItems
+ * para /eventos: nunca se reenvía el body del cliente tal cual).
+ */
+async function crearCheckout(req, res) {
+  try {
+    const { tienda } = await resolverTiendaYLanding(req);
+    if (!tienda) {
+      return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
+    }
+
+    const body = req.body || {};
+    const datosCliente = {
+      nombre_cliente: limpiarTexto(body.nombre_cliente, MAX_TEXTO_CORTO),
+      ruc: limpiarTexto(body.ruc, 20),
+      telefono: limpiarTexto(body.telefono, 50),
+      ciudad: limpiarTexto(body.ciudad, 100),
+      departamento: limpiarTexto(body.departamento, 100),
+      direccion: limpiarTexto(body.direccion, 255),
+      referencia: limpiarTexto(body.referencia, MAX_TEXTO_LARGO),
+      items: Array.isArray(body.items) ? body.items.slice(0, 40).map(i => ({
+        content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
+        variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
+        cantidad: i?.cantidad,
+      })) : [],
+    };
+
+    const resultado = await LandingService.crearCheckout(tienda, req.params.slug || null, datosCliente);
+    return res.status(201).json(resultado);
+  } catch (err) {
+    const status = err.status || (err.message?.includes('no encontrada') ? 404 : 400);
+    console.error('[landing-publica] crearCheckout:', err.message);
+    return res.status(status).json({ message: err.message || 'Error al crear el pedido.' });
+  }
+}
+
 async function registrarEvento(req, res) {
   try {
     const { tienda, landing_id } = await resolverTiendaYLanding(req);
@@ -226,4 +277,4 @@ async function registrarEvento(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, registrarEvento };
+module.exports = { obtenerPorSlug, registrarEvento, crearCheckout };

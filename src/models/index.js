@@ -19,6 +19,7 @@ const Courier = require('./Courier');
 const CourierTarifa = require('./CourierTarifa');
 const Envio = require('./Envio');
 const EnvioItem = require('./EnvioItem');
+const MetodoPago = require('./MetodoPago');
 const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
 const Landing = require('./Landing');
@@ -62,6 +63,12 @@ Envio.belongsTo(Courier, { foreignKey: 'courier_id' });
 Envio.hasMany(EnvioItem, { as: 'items', foreignKey: 'envio_id', onDelete: 'CASCADE' });
 EnvioItem.belongsTo(Envio, { foreignKey: 'envio_id' });
 EnvioItem.belongsTo(Producto, { foreignKey: 'producto_id' });
+
+Usuario.hasMany(MetodoPago, { foreignKey: 'usuario_id' });
+MetodoPago.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+MetodoPago.hasMany(Envio, { foreignKey: 'metodo_pago_id' });
+Envio.belongsTo(MetodoPago, { foreignKey: 'metodo_pago_id' });
 
 // ============================================================
 // Relaciones de Categoría
@@ -229,6 +236,7 @@ module.exports = {
   CourierTarifa,
   Envio,
   EnvioItem,
+  MetodoPago,
   PrecioUsuario,
   Tienda,
   Landing,

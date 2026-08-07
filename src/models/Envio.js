@@ -141,6 +141,44 @@ const Envio = sequelize.define('Envio', {
     allowNull: true,
     defaultValue: 'Pendiente',
   },
+  // --- Checkout público (landing) ---
+  ruc: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    comment: 'RUC opcional para factura virtual — contexto Paraguay.',
+  },
+  // --- Facturación del pedido ---
+  quiere_factura: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  },
+  razon_social: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  nro_comprobante: {
+    type: DataTypes.STRING(50),
+    allowNull: true,
+    comment: 'Único por usuario cuando está presente (ver índice parcial en migrar-metodos-pago-y-factura.js).',
+  },
+  // --- Método de pago (ABM) ---
+  metodo_pago_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  comision_pct_aplicada: {
+    type: DataTypes.DECIMAL(5, 2),
+    allowNull: false,
+    defaultValue: 0,
+    comment: 'Snapshot del % de comisión del método de pago vigente al crear el pedido, para no alterar reportes históricos si luego se edita el ABM.',
+  },
+  stock_descontado: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    comment: 'Guarda de idempotencia: el stock se descuenta una sola vez, al pasar a Confirmado (ver envioController.updateEstado), sin importar cuántas veces el pedido pase por ese estado.',
+  },
 }, {
   tableName: 'envios',
   timestamps: true,

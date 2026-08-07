@@ -48,12 +48,29 @@ const limiteEventos = rateLimit({
   },
 });
 
+// Más estricto todavía que /eventos: a diferencia de un evento de
+// tracking, esto crea una fila real (Envío) con datos personales del
+// visitante — nombre, teléfono, dirección. Sin límite, es trivial de
+// abusar para llenar el Kanban de pedidos falsos.
+const limiteCheckout = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    console.warn(`[landing-publica] 429 rate limit checkout — ip=${req.ip} host=${req.hostname}`);
+    res.status(429).json({ message: 'Demasiadas solicitudes. Por favor intenta más tarde.' });
+  },
+});
+
 // El rate limit corre antes que resolverTienda a propósito (igual que
 // antes): así una ráfaga de tráfico abusivo se corta sin gastar una
 // consulta a la base por request.
 router.get('/', limitePublico, resolverTienda, ctrl.obtenerPorSlug);   // landing es_home de la tienda del hostname
 router.post('/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
+router.post('/checkout', limiteCheckout, resolverTienda, ctrl.crearCheckout);
 router.get('/:slug', limitePublico, resolverTienda, ctrl.obtenerPorSlug);
 router.post('/:slug/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
+router.post('/:slug/checkout', limiteCheckout, resolverTienda, ctrl.crearCheckout);
 
 module.exports = router;

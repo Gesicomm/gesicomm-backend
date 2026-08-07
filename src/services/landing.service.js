@@ -21,13 +21,14 @@ const { Op } = require('sequelize');
 const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
-  ProductoImagen, ProductoVariante, LandingEvento, Testimonio, Faq,
+  ProductoImagen, ProductoVariante, LandingEvento, Testimonio, Faq, Envio, EnvioItem,
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
 const MAX_FAQ_POR_LANDING = 20;
+const MAX_ITEMS_CHECKOUT = 40;
 // MVP: una sola landing por tienda, siempre en la raíz (es_home=true) — no
 // hay UI para elegir slug ni marcar "página principal", así que una
 // segunda landing quedaría inaccesible igual. Multi-landing por tienda
@@ -133,6 +134,35 @@ class LandingService {
     return limpio || null;
   }
 
+  /**
+   * Fórmula de precio real de un item — la usan obtenerPublica() (lo que
+   * VE el visitante) y crearCheckout() (lo que efectivamente se cobra en
+   * el pedido), para que nunca puedan desincronizarse entre sí.
+   *
+   * @param {number} precioBase - precio_base (producto) o precio_total (combo).
+   * @param {number|null} precioMinimo - piso vigente, o null si no tiene.
+   * @param {number|undefined} precioUsuario - precio propio de la vendedora, si fijó uno.
+   * @returns {{base: number, efectivo: number}} `base` (sin piso, ancla para el delta
+   *   de variante) y `efectivo` (con el piso ya aplicado — precio final si no hay variante).
+   */
+  static calcularPrecioBase(precioBase, precioMinimo, precioUsuario) {
+    const base = precioUsuario !== undefined && precioUsuario !== null ? precioUsuario : precioBase;
+    const efectivo = precioMinimo !== null ? Math.max(base, precioMinimo) : base;
+    return { base, efectivo };
+  }
+
+  /**
+   * precio_diferencial es un delta ABSOLUTO que fijó el admin sobre el
+   * precio base (ej: "el talle XL cuesta 10.000 más"). Se aplica sobre
+   * `base` (sin piso) y se vuelve a pisar por precioMinimo — ninguna
+   * variante puede venderse por debajo del piso.
+   */
+  static calcularPrecioVariante(base, precioDiferencial, precioMinimo) {
+    let precio = base + parseFloat(precioDiferencial);
+    if (precioMinimo !== null) precio = Math.max(precio, precioMinimo);
+    return precio;
+  }
+
   /** Valida que cada item exista, esté activo y pertenezca al mismo inquilino. */
   static async resolverItemsCatalogo(items, inquilino_id) {
     const idsProducto = items.filter(i => i.tipo === 'producto').map(i => Number(i.referencia_id));
@@ -226,7 +256,7 @@ class LandingService {
       'mostrar_filtro_categoria', 'mostrar_filtro_marca', 'mostrar_filtro_etiqueta',
       'mostrar_buscador', 'mostrar_orden_precio', 'mostrar_banner', 'mostrar_whatsapp',
       'whatsapp_incluir_precio', 'whatsapp_incluir_url',
-      'mostrar_testimonios', 'mostrar_faq',
+      'mostrar_testimonios', 'mostrar_faq', 'checkout_redirigir_whatsapp',
     ]) {
       if (payload[flag] !== undefined) campos[flag] = !!payload[flag];
     }
@@ -881,9 +911,7 @@ class LandingService {
       const precioUsuario = mapaPrecios.get(`${item.tipo}:${entidad.id}`);
       // Nunca se confía en el precio guardado: se recalcula contra el piso VIGENTE,
       // por si precio_minimo subió después de que el usuario fijó su precio.
-      const precioBaseEfectivo = precioUsuario !== undefined ? precioUsuario : precioBase;
-      let precioEfectivo = precioBaseEfectivo;
-      if (precioMinimo !== null) precioEfectivo = Math.max(precioEfectivo, precioMinimo);
+      const { base: precioBaseEfectivo, efectivo: precioEfectivo } = this.calcularPrecioBase(precioBase, precioMinimo, precioUsuario);
 
       const galeriaFuente = productoParaFiltros ? (mapaImagenes.get(productoParaFiltros.id) || []) : [];
       // Galería general: todas las imágenes que no son de una variante
@@ -899,8 +927,7 @@ class LandingService {
       // vendedora si lo tiene, si no precio_base) y se vuelve a pisar por
       // precio_minimo — ninguna variante puede venderse por debajo del piso.
       const variantesDto = !esCombo ? (mapaVariantes.get(entidad.id) || []).map(v => {
-        let precioVariante = precioBaseEfectivo + parseFloat(v.precio_diferencial);
-        if (precioMinimo !== null) precioVariante = Math.max(precioVariante, precioMinimo);
+        const precioVariante = this.calcularPrecioVariante(precioBaseEfectivo, v.precio_diferencial, precioMinimo);
         return {
           id: v.id,
           nombre: v.nombre,
@@ -978,6 +1005,10 @@ class LandingService {
         incluir_precio: !!landing.whatsapp_incluir_precio,
         incluir_url: !!landing.whatsapp_incluir_url,
       },
+      // Qué pasa después de crear el pedido — ver CartDrawer.jsx.
+      checkout: {
+        redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp,
+      },
       // null si está apagado o si no se cargó ni imagen ni título — así el
       // frontend público no tiene que repetir esa condición.
       banner: (landing.mostrar_banner && (landing.banner_titulo || landing.banner_imagen)) ? {
@@ -1023,6 +1054,183 @@ class LandingService {
         pregunta: f.pregunta,
         respuesta: f.respuesta,
       })),
+    };
+  }
+
+  /**
+   * Checkout público — crea un Envío (Pedido) real en estado "Pendiente" a
+   * partir de lo que completó un visitante anónimo. Es un endpoint sin
+   * autenticación: nunca se confía en precio/monto que mande el cliente,
+   * se resuelve todo contra el catálogo real con calcularPrecioBase()/
+   * calcularPrecioVariante() — la MISMA fórmula que ve el visitante en
+   * obtenerPublica(), para que la landing y lo que efectivamente se cobra
+   * en el pedido nunca puedan desincronizarse.
+   *
+   * Tampoco se acepta cualquier content_id: solo los que están curados de
+   * verdad en ESTA landing (mismo principio que ya aplica
+   * obtenerCatalogoParaEvento()/limpiarItems() para el tracking de eventos)
+   * — lo que mande el cliente fuera de ese conjunto se ignora en silencio.
+   *
+   * No descuenta stock acá — recién se compromete al pasar a "Confirmado"
+   * (ver envioController.updateEstado), porque este endpoint es público y
+   * sin ninguna verificación: descontar al crear expondría el stock real a
+   * cualquiera que complete el formulario sin intención de compra.
+   *
+   * @param {object} tienda - instancia de Tienda ya resuelta (con Usuario incluido).
+   * @param {string|null} slug - null/undefined → landing es_home de la tienda.
+   * @param {object} datosCliente - { nombre_cliente, ruc, telefono, ciudad, departamento, direccion, referencia, items }
+   * @returns {{pedido_id: number, monto: number, redirigir_whatsapp: boolean}}
+   */
+  static async crearCheckout(tienda, slug, datosCliente) {
+    const where = { tienda_id: tienda.id };
+    if (slug) where.slug = slug; else where.es_home = true;
+
+    const landing = await Landing.findOne({ where, include: [{ model: LandingItem, as: 'items' }] });
+    if (!landing) throw new Error('Landing no encontrada.');
+    if (!landing.activo || !tienda.activo || !tienda.Usuario?.activo) throw new Error('Esta landing no está disponible.');
+
+    const { nombre_cliente, ruc, telefono, ciudad, departamento, direccion, referencia, items } = datosCliente || {};
+
+    if (!nombre_cliente?.trim()) throw new Error('El nombre y apellido es obligatorio.');
+    if (!telefono?.trim()) throw new Error('El celular es obligatorio.');
+    if (!ciudad?.trim()) throw new Error('La ciudad es obligatoria.');
+    if (!direccion?.trim()) throw new Error('La dirección es obligatoria.');
+    if (!Array.isArray(items) || items.length === 0) throw new Error('El carrito está vacío.');
+    if (items.length > MAX_ITEMS_CHECKOUT) throw new Error(`No se pueden pedir más de ${MAX_ITEMS_CHECKOUT} ítems distintos.`);
+
+    const landingItems = landing.items || [];
+    const idsProducto = landingItems.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
+    const idsCombo = landingItems.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
+
+    const [productos, combos] = await Promise.all([
+      idsProducto.length
+        ? Producto.findAll({ where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' } })
+        : Promise.resolve([]),
+      idsCombo.length
+        ? ProductoCombo.findAll({
+          where: { id: { [Op.in]: idsCombo }, estado: 'ACTIVO' },
+          include: [{ model: Producto, as: 'producto_padre', where: { activo: true } }],
+        })
+        : Promise.resolve([]),
+    ]);
+
+    const referenciasProducto = productos.map(p => p.id);
+    const referenciasCombo = combos.map(c => c.id);
+
+    const [precios, variantes] = await Promise.all([
+      PrecioUsuario.findAll({
+        where: {
+          usuario_id: tienda.usuario_id,
+          [Op.or]: [
+            { tipo: 'producto', referencia_id: { [Op.in]: referenciasProducto.length ? referenciasProducto : [-1] } },
+            { tipo: 'combo', referencia_id: { [Op.in]: referenciasCombo.length ? referenciasCombo : [-1] } },
+          ],
+        },
+      }),
+      idsProducto.length
+        ? ProductoVariante.findAll({ where: { producto_id: { [Op.in]: idsProducto }, activo: true } })
+        : Promise.resolve([]),
+    ]);
+
+    const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
+    const mapaVariantes = new Map();
+    variantes.forEach(v => {
+      const lista = mapaVariantes.get(v.producto_id) || [];
+      lista.push(v);
+      mapaVariantes.set(v.producto_id, lista);
+    });
+    const mapaProducto = new Map(productos.map(p => [p.id, p]));
+    const mapaCombo = new Map(combos.map(c => [c.id, c]));
+
+    // content_id público (slug || "<tipo>-<id>") → item real de ESTA
+    // landing — mismo identificador que le entrega obtenerPublica() al
+    // navegador, así el carrito arma sus items con el mismo id que acá.
+    const mapaPorContentId = new Map();
+    for (const li of landingItems) {
+      const entidad = li.tipo === 'producto' ? mapaProducto.get(li.referencia_id) : mapaCombo.get(li.referencia_id);
+      if (!entidad) continue;
+      mapaPorContentId.set(entidad.slug || `${li.tipo}-${entidad.id}`, { entidad, esCombo: li.tipo === 'combo' });
+    }
+
+    const itemsResueltos = [];
+    for (const pedido of items) {
+      const resuelto = mapaPorContentId.get(pedido?.content_id);
+      if (!resuelto) continue; // no está curado en esta landing — se descarta, nunca se inventa.
+      const { entidad, esCombo } = resuelto;
+      const cantidad = Math.max(1, Math.min(99, Number.parseInt(pedido.cantidad, 10) || 1));
+
+      const precioBase = parseFloat(esCombo ? entidad.precio_total : entidad.precio_base);
+      const precioMinimo = entidad.precio_minimo !== null && entidad.precio_minimo !== undefined ? parseFloat(entidad.precio_minimo) : null;
+      const precioUsuario = mapaPrecios.get(`${esCombo ? 'combo' : 'producto'}:${entidad.id}`);
+      const { base, efectivo } = this.calcularPrecioBase(precioBase, precioMinimo, precioUsuario);
+
+      let precioFinal = efectivo;
+      let stockDisponible = esCombo ? (entidad.producto_padre?.cantidad_disponible ?? null) : entidad.cantidad_disponible;
+      let nombreFinal = entidad.nombre;
+
+      if (!esCombo && pedido.variante_id) {
+        const variante = (mapaVariantes.get(entidad.id) || []).find(v => v.id === Number(pedido.variante_id));
+        if (variante) {
+          precioFinal = this.calcularPrecioVariante(base, variante.precio_diferencial, precioMinimo);
+          stockDisponible = variante.stock;
+          nombreFinal = `${entidad.nombre} (${variante.nombre})`;
+        }
+      }
+
+      if (stockDisponible !== null && stockDisponible !== undefined && stockDisponible < cantidad) {
+        const err = new Error(`"${nombreFinal}" no tiene stock suficiente (disponible: ${stockDisponible}).`);
+        err.status = 409;
+        throw err;
+      }
+
+      itemsResueltos.push({
+        // Los combos no tienen fila propia en Producto — igual que ya pasa
+        // con los pedidos cargados a mano (ver envioController.js), un
+        // EnvioItem sin producto_id no participa del descuento de stock al
+        // confirmar (el "stock" de un combo lo da su producto_padre, no
+        // hay campo propio que descontar).
+        producto_id: esCombo ? null : entidad.id,
+        nombre_producto: nombreFinal,
+        cantidad,
+        precio_unitario: precioFinal,
+        subtotal: precioFinal * cantidad,
+      });
+    }
+
+    if (!itemsResueltos.length) throw new Error('Ningún producto del carrito está disponible en esta landing.');
+
+    const monto = itemsResueltos.reduce((s, i) => s + i.subtotal, 0);
+    const hoy = new Date();
+
+    const nuevoEnvio = await Envio.create({
+      usuario_id: tienda.usuario_id,
+      cliente: nombre_cliente.trim(),
+      nombre_cliente: nombre_cliente.trim(),
+      apellido_cliente: null,
+      ruc: ruc?.trim() || null,
+      telefono: telefono.trim(),
+      ciudad: ciudad.trim(),
+      departamento: departamento?.trim() || null,
+      direccion: direccion.trim(),
+      referencia: referencia?.trim() || null,
+      monto,
+      costo_envio: 0,
+      metodo_pago: 'Efectivo',
+      estado: 'Pendiente',
+      estado_logistico: 'Pendiente',
+      // No 'Confirmado' (el default del modelo, pensado para carga manual
+      // por personal de confianza) — acá nadie revisó todavía el pedido.
+      estado_comercial: 'Pendiente',
+      origen: 'LANDING',
+      fecha: hoy.toISOString().split('T')[0],
+      hora: hoy.toLocaleTimeString('es-PY', { hour: '2-digit', minute: '2-digit' }),
+      items: itemsResueltos,
+    }, { include: [{ model: EnvioItem, as: 'items' }] });
+
+    return {
+      pedido_id: nuevoEnvio.id,
+      monto,
+      redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp,
     };
   }
 }
