@@ -8,6 +8,9 @@ router.use(verificarToken);
 // Usamos POST para listar con filtros dinámicos (fecha, estado) según la regla global
 router.post('/list', envioController.listEnvios);
 
+// Vista de tabla con paginación, búsqueda y filtros completos
+router.post('/list-paginado', envioController.listEnviosPaginados);
+
 // Centro de Inteligencia Comercial & Analytics (filtros dinámicos en req.body)
 router.post('/metricas-dashboard', envioController.getDashboardMetricas);
 

@@ -1223,6 +1223,10 @@ class LandingService {
       estado_comercial: 'Pendiente',
       origen: 'LANDING',
       fecha: hoy.toISOString().split('T')[0],
+      // El Kanban de Courier filtra "envíos del día" por ESTE campo, no por
+      // "fecha" — sin setearlo, el pedido queda invisible en el tablero
+      // sin importar qué fecha se elija (bug real: así se creó el #46).
+      dispatchedAt: hoy.toISOString().split('T')[0],
       hora: hoy.toLocaleTimeString('es-PY', { hour: '2-digit', minute: '2-digit' }),
       items: itemsResueltos,
     }, { include: [{ model: EnvioItem, as: 'items' }] });

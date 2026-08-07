@@ -42,6 +42,99 @@ exports.listEnvios = async (req, res) => {
   }
 };
 
+/**
+ * Endpoint paginado para la vista de tabla de pedidos.
+ * Soporta: paginación, filtro por rango de fechas, múltiples estados,
+ * búsqueda por cliente (nombre/teléfono), ciudad, courier, confirmador, origen.
+ */
+exports.listEnviosPaginados = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const {
+      page = 1,
+      limit = 10,
+      fecha_desde,
+      fecha_hasta,
+      estados,          // array de strings, ej: ['Pendiente', 'Confirmado']
+      cliente,          // texto libre: busca en nombre_cliente + apellido_cliente + telefono
+      ciudad,
+      courier_id,
+      confirmador,
+      origen,
+    } = req.body;
+
+    const where = { usuario_id };
+
+    // Rango de fechas (dispatchedAt)
+    if (fecha_desde && fecha_hasta) {
+      where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
+    } else if (fecha_desde) {
+      where.dispatchedAt = { [Op.gte]: fecha_desde };
+    } else if (fecha_hasta) {
+      where.dispatchedAt = { [Op.lte]: fecha_hasta };
+    }
+
+    // Multi-estado
+    if (Array.isArray(estados) && estados.length > 0) {
+      where.estado = { [Op.in]: estados };
+    }
+
+    // Búsqueda por texto de cliente (nombre o teléfono)
+    if (cliente && cliente.trim()) {
+      const term = `%${cliente.trim()}%`;
+      where[Op.or] = [
+        { nombre_cliente: { [Op.like]: term } },
+        { apellido_cliente: { [Op.like]: term } },
+        { telefono: { [Op.like]: term } },
+      ];
+    }
+
+    if (ciudad && ciudad.trim()) {
+      where.ciudad = { [Op.like]: `%${ciudad.trim()}%` };
+    }
+
+    if (courier_id && courier_id !== 'TODOS') {
+      where.courier_id = courier_id === 'null' ? null : Number(courier_id);
+    }
+
+    if (confirmador && confirmador !== 'TODOS') {
+      where.confirmador = confirmador;
+    }
+
+    if (origen && origen !== 'TODOS') {
+      where.origen = origen;
+    }
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
+    const offset = (pageNum - 1) * limitNum;
+
+    const { count, rows } = await Envio.findAndCountAll({
+      where,
+      include: [
+        { model: Courier, attributes: ['id', 'nombre'] },
+        { model: EnvioItem, as: 'items', attributes: ['id', 'nombre_producto', 'cantidad', 'precio_unitario'] },
+      ],
+      order: [['id', 'DESC']],
+      limit: limitNum,
+      offset,
+      distinct: true, // necesario con includes para que count sea correcto
+    });
+
+    res.json({
+      data: rows,
+      total: count,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(count / limitNum),
+    });
+  } catch (error) {
+    console.error('Error listEnviosPaginados:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+
 exports.createEnvio = async (req, res) => {
   const t = await sequelize.transaction();
   try {
