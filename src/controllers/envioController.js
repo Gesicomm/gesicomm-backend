@@ -1,5 +1,5 @@
 const { Envio, EnvioItem, Courier, Producto, sequelize } = require('../models');
-const { Op } = require('sequelize');
+const { Op, Sequelize } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 
@@ -79,26 +79,42 @@ exports.listEnviosPaginados = async (req, res) => {
       where.estado = { [Op.in]: estados };
     }
 
-    // Búsqueda por texto de cliente (nombre o teléfono)
+    // Búsqueda flexible e insensible a mayúsculas/minúsculas de cliente (nombre, teléfono, ruc, dirección o ID)
     if (cliente && cliente.trim()) {
       const term = `%${cliente.trim()}%`;
-      where[Op.or] = [
-        { nombre_cliente: { [Op.like]: term } },
-        { apellido_cliente: { [Op.like]: term } },
-        { telefono: { [Op.like]: term } },
+      const cleanNum = cliente.replace(/#/g, '').trim();
+      const numericId = parseInt(cleanNum, 10);
+
+      const orList = [
+        { nombre_cliente: { [Op.iLike]: term } },
+        { apellido_cliente: { [Op.iLike]: term } },
+        { cliente: { [Op.iLike]: term } },
+        { telefono: { [Op.iLike]: term } },
+        { ruc: { [Op.iLike]: term } },
+        { direccion: { [Op.iLike]: term } },
+        Sequelize.where(
+          Sequelize.fn('concat', Sequelize.fn('COALESCE', Sequelize.col('nombre_cliente'), ''), ' ', Sequelize.fn('COALESCE', Sequelize.col('apellido_cliente'), '')),
+          { [Op.iLike]: term }
+        ),
       ];
+
+      if (!isNaN(numericId) && numericId > 0 && String(numericId) === cleanNum) {
+        orList.push({ id: numericId });
+      }
+
+      where[Op.or] = orList;
     }
 
     if (ciudad && ciudad.trim()) {
-      where.ciudad = { [Op.like]: `%${ciudad.trim()}%` };
+      where.ciudad = { [Op.iLike]: `%${ciudad.trim()}%` };
     }
 
     if (courier_id && courier_id !== 'TODOS') {
       where.courier_id = courier_id === 'null' ? null : Number(courier_id);
     }
 
-    if (confirmador && confirmador !== 'TODOS') {
-      where.confirmador = confirmador;
+    if (confirmador && confirmador !== 'TODOS' && confirmador.trim()) {
+      where.confirmador = { [Op.iLike]: `%${confirmador.trim()}%` };
     }
 
     if (origen && origen !== 'TODOS') {
