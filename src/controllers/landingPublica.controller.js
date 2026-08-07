@@ -206,6 +206,8 @@ async function crearCheckout(req, res) {
     const datosCliente = {
       nombre_cliente: limpiarTexto(body.nombre_cliente, MAX_TEXTO_CORTO),
       ruc: limpiarTexto(body.ruc, 20),
+      razon_social: limpiarTexto(body.razon_social, MAX_TEXTO_CORTO),
+      quiere_factura: body.quiere_factura !== undefined ? Boolean(body.quiere_factura) : Boolean(body.ruc && String(body.ruc).trim()),
       telefono: limpiarTexto(body.telefono, 50),
       ciudad: limpiarTexto(body.ciudad, 100),
       departamento: limpiarTexto(body.departamento, 100),

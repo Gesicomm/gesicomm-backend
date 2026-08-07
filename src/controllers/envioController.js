@@ -201,7 +201,7 @@ exports.createEnvio = async (req, res) => {
         courier_id: courier_id || null,
         cliente: fullCliente,
         fecha: hoy,
-        hora: hora || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        hora: hora || new Date().toLocaleTimeString('es-PY', { timeZone: 'America/Asuncion', hour: '2-digit', minute: '2-digit' }),
         confirmador: confirmador || null,
         nombre_cliente,
         apellido_cliente,

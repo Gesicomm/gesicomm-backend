@@ -1089,7 +1089,7 @@ class LandingService {
     if (!landing) throw new Error('Landing no encontrada.');
     if (!landing.activo || !tienda.activo || !tienda.Usuario?.activo) throw new Error('Esta landing no está disponible.');
 
-    const { nombre_cliente, ruc, telefono, ciudad, departamento, direccion, referencia, items } = datosCliente || {};
+    const { nombre_cliente, ruc, razon_social, quiere_factura, telefono, ciudad, departamento, direccion, referencia, items } = datosCliente || {};
 
     if (!nombre_cliente?.trim()) throw new Error('El nombre y apellido es obligatorio.');
     if (!telefono?.trim()) throw new Error('El celular es obligatorio.');
@@ -1200,14 +1200,23 @@ class LandingService {
     if (!itemsResueltos.length) throw new Error('Ningún producto del carrito está disponible en esta landing.');
 
     const monto = itemsResueltos.reduce((s, i) => s + i.subtotal, 0);
-    const hoy = new Date();
+    const ahora = new Date();
+    // Fechas y horas en zona horaria de Paraguay (America/Asuncion)
+    const fechaPy = ahora.toLocaleDateString('en-CA', { timeZone: 'America/Asuncion' }); // YYYY-MM-DD
+    const horaPy = ahora.toLocaleTimeString('es-PY', { timeZone: 'America/Asuncion', hour: '2-digit', minute: '2-digit' });
+
+    const tieneFactura = Boolean(quiere_factura || (ruc && String(ruc).trim()));
+    const rucLimpio = ruc?.trim() || null;
+    const razonSocialLimpia = razon_social?.trim() || (tieneFactura ? nombre_cliente.trim() : null);
 
     const nuevoEnvio = await Envio.create({
       usuario_id: tienda.usuario_id,
       cliente: nombre_cliente.trim(),
       nombre_cliente: nombre_cliente.trim(),
       apellido_cliente: null,
-      ruc: ruc?.trim() || null,
+      quiere_factura: tieneFactura,
+      ruc: rucLimpio,
+      razon_social: razonSocialLimpia,
       telefono: telefono.trim(),
       ciudad: ciudad.trim(),
       departamento: departamento?.trim() || null,
@@ -1222,12 +1231,12 @@ class LandingService {
       // por personal de confianza) — acá nadie revisó todavía el pedido.
       estado_comercial: 'Pendiente',
       origen: 'LANDING',
-      fecha: hoy.toISOString().split('T')[0],
+      fecha: fechaPy,
       // El Kanban de Courier filtra "envíos del día" por ESTE campo, no por
       // "fecha" — sin setearlo, el pedido queda invisible en el tablero
       // sin importar qué fecha se elija (bug real: así se creó el #46).
-      dispatchedAt: hoy.toISOString().split('T')[0],
-      hora: hoy.toLocaleTimeString('es-PY', { hour: '2-digit', minute: '2-digit' }),
+      dispatchedAt: fechaPy,
+      hora: horaPy,
       items: itemsResueltos,
     }, { include: [{ model: EnvioItem, as: 'items' }] });
 
