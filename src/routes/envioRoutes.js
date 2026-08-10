@@ -20,4 +20,11 @@ router.post('/', envioController.createEnvio);
 // Actualizar estado o courier
 router.put('/:id/estado', envioController.updateEstado);
 
+// Devolución y pérdida, gestionadas por producto/cantidad (ver plan Gestión de Pedidos)
+router.post('/:id/devolucion', envioController.registrarDevolucion);
+router.post('/:id/perdida', envioController.registrarPerdida);
+
+// Contador de pedidos por estado, respetando los filtros activos (pestañas de la bandeja)
+router.post('/conteo-por-estado', envioController.conteoPorEstado);
+
 module.exports = router;

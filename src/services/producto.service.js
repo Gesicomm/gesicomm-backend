@@ -52,10 +52,12 @@ class ProductoService {
     const {
       texto, categoria_id, marca_id, activo, destacado,
       precio_min, precio_max, stock_bajo, page = 1, limit = 10,
+      creado_por
     } = filtros;
 
     const where = { inquilino_id };
     if (activo !== undefined) where.activo = activo;
+    if (creado_por !== undefined) where.creado_por = creado_por;
     if (destacado !== undefined) where.destacado = destacado;
     if (categoria_id) where.categoria_id = categoria_id;
     if (marca_id) where.marca_id = marca_id;
@@ -78,7 +80,7 @@ class ProductoService {
       attributes: [
         'id', 'nombre', 'sku', 'precio_base', 'precio_costo',
         'cantidad_disponible', 'stock_minimo',
-        'estado_venta', 'activo', 'destacado', 'categoria_id', 'marca_id'
+        'estado_venta', 'activo', 'destacado', 'categoria_id', 'marca_id', 'creado_por'
       ],
       order: [['created_at', 'DESC']],
       limit: parseInt(limit),
@@ -172,6 +174,10 @@ class ProductoService {
     const producto = await Producto.findOne({ where: { id, inquilino_id }, transaction });
     if (!producto) throw new Error('Producto no encontrado.');
 
+    if (!esAdmin && producto.creado_por !== usuario_id) {
+      throw new Error('No tienes permiso para modificar un producto que no creaste.');
+    }
+
     const precio_base_nuevo = campos.precio_base !== undefined ? parseFloat(campos.precio_base) : parseFloat(producto.precio_base);
     const descuento_nuevo = campos.descuento_porcentaje !== undefined ? parseFloat(campos.descuento_porcentaje) : parseFloat(producto.descuento_porcentaje);
     const descuento_inicio_nuevo = campos.descuento_inicio !== undefined ? campos.descuento_inicio : producto.descuento_inicio;
@@ -254,9 +260,13 @@ class ProductoService {
     return this.serializar(producto, esAdmin);
   }
 
-  static async eliminar(id, inquilino_id, usuario_id) {
+  static async eliminar(id, inquilino_id, usuario_id, esAdmin = false) {
     const producto = await Producto.findOne({ where: { id, inquilino_id } });
     if (!producto) throw new Error('Producto no encontrado.');
+
+    if (!esAdmin && producto.creado_por !== usuario_id) {
+      throw new Error('No tienes permiso para dar de baja un producto que no creaste.');
+    }
 
     producto.activo = false;
     producto.modificado_por = usuario_id;

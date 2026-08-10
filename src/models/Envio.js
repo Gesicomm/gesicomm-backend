@@ -179,6 +179,43 @@ const Envio = sequelize.define('Envio', {
     defaultValue: false,
     comment: 'Guarda de idempotencia: el stock se descuenta una sola vez, al pasar a Confirmado (ver envioController.updateEstado), sin importar cuántas veces el pedido pase por ese estado.',
   },
+  // --- Gestión de Pedidos: estado operativo (9 valores) vs financiero ---
+  // estado sigue siendo el operativo de siempre — ver lib/courier.js (frontend)
+  // para el catálogo autoritativo: Pendiente/Confirmado/Preparado/Despachado/
+  // Reprogramado/Entregado/Cancelado/Devuelto/Perdido. "Rendido" ya NO es un
+  // valor válido de estado — pasa a ser estado_financiero='liquidado'.
+  estado_financiero: {
+    type: DataTypes.ENUM('pendiente_liquidacion', 'liquidado'),
+    allowNull: false,
+    defaultValue: 'pendiente_liquidacion',
+    comment: 'Independiente del estado operativo — si el pedido ya entró en una Liquidacion de courier.',
+  },
+  fecha_reprogramada: {
+    type: DataTypes.DATEONLY,
+    allowNull: true,
+    comment: 'Obligatoria al pasar a estado Reprogramado.',
+  },
+  motivo_reprogramacion: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  stock_despachado: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    comment: 'Guarda de idempotencia: mueve stock reservado→tránsito una sola vez, al pasar a Despachado.',
+  },
+  stock_liberado: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    comment: 'Guarda de idempotencia: libera stock reservado/en tránsito una sola vez, al cancelar.',
+  },
+  cargo_perdida_courier: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Snapshot: valor de venta de lo perdido − costo de envío, calculado al registrar la pérdida. Lo usa el motor de rendición.',
+  },
 }, {
   tableName: 'envios',
   timestamps: true,

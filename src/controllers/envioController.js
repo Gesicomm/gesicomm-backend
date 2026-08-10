@@ -1,7 +1,240 @@
-const { Envio, EnvioItem, Courier, Producto, sequelize } = require('../models');
-const { Op, Sequelize } = require('sequelize');
+const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Oferta, OfertaComponente, sequelize } = require('../models');
+const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
+
+/**
+ * Resuelve qué producto(s) y cuántas unidades físicas hay que descontar del
+ * stock para UN EnvioItem: si tiene oferta_id, la receta sale de los
+ * componentes de esa oferta (multiplicados por la cantidad del ítem); si
+ * no, es el caso simple de siempre (1 producto × cantidad).
+ */
+async function resolverReceta(item, t) {
+  const cantidadItem = parseInt(item.cantidad) || 1;
+  if (item.oferta_id) {
+    const oferta = await Oferta.findByPk(item.oferta_id, {
+      include: [{ model: OfertaComponente, as: 'componentes' }],
+      transaction: t,
+    });
+    if (oferta && oferta.componentes && oferta.componentes.length > 0) {
+      return oferta.componentes.map(c => ({ producto_id: c.producto_id, cantidad: cantidadItem * c.cantidad }));
+    }
+  }
+  if (item.producto_id) {
+    return [{ producto_id: item.producto_id, cantidad: cantidadItem }];
+  }
+  return [];
+}
+
+/**
+ * Descuenta stock real y deja un snapshot inmutable (EnvioItemComponente) de
+ * qué se descontó — para que un pedido confirmado nunca cambie de
+ * significado si después se edita/da de baja la oferta que se usó.
+ *
+ * Atómico dentro de la transacción del caller: cada producto involucrado se
+ * bloquea (SELECT ... FOR UPDATE) antes de leer/escribir su stock, así dos
+ * confirmaciones concurrentes no pisan el stock una de la otra — la segunda
+ * espera a que la primera confirme y lee el valor ya actualizado.
+ */
+async function descontarStockYSnapshot(items, t) {
+  const recetaPorItem = new Map();
+  const totalPorProducto = new Map();
+
+  for (const item of items) {
+    const receta = await resolverReceta(item, t);
+    recetaPorItem.set(item.id, receta);
+    for (const { producto_id, cantidad } of receta) {
+      totalPorProducto.set(producto_id, (totalPorProducto.get(producto_id) || 0) + cantidad);
+    }
+  }
+
+  const productosPorId = new Map();
+  for (const [producto_id, cantidadTotal] of totalPorProducto) {
+    const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (!prod) continue;
+    productosPorId.set(producto_id, prod);
+
+    const stockActual = parseInt(prod.cantidad_disponible) || 0;
+    const nuevoStock = Math.max(0, stockActual - cantidadTotal);
+    const nuevaReservada = (parseInt(prod.cantidad_reservada) || 0) + cantidadTotal;
+    const actualizacion = { cantidad_disponible: nuevoStock, cantidad_reservada: nuevaReservada };
+    if (nuevoStock === 0 && prod.estado_venta === 'en_venta') {
+      actualizacion.estado_venta = 'fuera_de_stock';
+    }
+    await prod.update(actualizacion, { transaction: t });
+  }
+
+  for (const item of items) {
+    const receta = recetaPorItem.get(item.id) || [];
+    for (const { producto_id, cantidad } of receta) {
+      const prod = productosPorId.get(producto_id);
+      await EnvioItemComponente.create({
+        envio_item_id: item.id,
+        producto_id,
+        cantidad,
+        costo_unitario: prod ? (parseFloat(prod.precio_costo) || 0) : 0,
+      }, { transaction: t });
+    }
+  }
+}
+
+/** Trae todos los EnvioItemComponente (snapshot de receta) de un conjunto de EnvioItem. */
+async function obtenerComponentesDeItems(items, t) {
+  const itemIds = items.map(i => i.id);
+  if (itemIds.length === 0) return [];
+  return EnvioItemComponente.findAll({ where: { envio_item_id: { [Op.in]: itemIds } }, transaction: t });
+}
+
+/**
+ * Despachado: mueve stock reservado → tránsito para cada producto físico
+ * involucrado en el pedido (según la receta ya snapshotteada). Idempotente
+ * vía envio.stock_despachado (chequeado por el caller antes de invocar).
+ */
+async function moverAReservadoATransito(items, t) {
+  const componentes = await obtenerComponentesDeItems(items, t);
+  const totalPorProducto = new Map();
+  for (const c of componentes) {
+    totalPorProducto.set(c.producto_id, (totalPorProducto.get(c.producto_id) || 0) + c.cantidad);
+  }
+  for (const [producto_id, cantidad] of totalPorProducto) {
+    const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (!prod) continue;
+    const reservada = Math.max(0, (parseInt(prod.cantidad_reservada) || 0) - cantidad);
+    const transito = (parseInt(prod.cantidad_transito) || 0) + cantidad;
+    await prod.update({ cantidad_reservada: reservada, cantidad_transito: transito }, { transaction: t });
+  }
+}
+
+/**
+ * Cancelado: libera el stock comprometido por el pedido, sin importar en
+ * qué bucket esté (reservado si nunca se despachó, tránsito si sí) — vuelve
+ * a cantidad_disponible. Idempotente vía envio.stock_liberado (chequeado
+ * por el caller: solo debe invocarse si stock_descontado && !stock_liberado).
+ */
+async function liberarStock(envio, items, t) {
+  const componentes = await obtenerComponentesDeItems(items, t);
+  const totalPorProducto = new Map();
+  for (const c of componentes) {
+    totalPorProducto.set(c.producto_id, (totalPorProducto.get(c.producto_id) || 0) + c.cantidad);
+  }
+  const campoOrigen = envio.stock_despachado ? 'cantidad_transito' : 'cantidad_reservada';
+  for (const [producto_id, cantidad] of totalPorProducto) {
+    const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (!prod) continue;
+    const origenActual = Math.max(0, (parseInt(prod[campoOrigen]) || 0) - cantidad);
+    const disponible = (parseInt(prod.cantidad_disponible) || 0) + cantidad;
+    const actualizacion = { cantidad_disponible: disponible, [campoOrigen]: origenActual };
+    if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') {
+      actualizacion.estado_venta = 'en_venta';
+    }
+    await prod.update(actualizacion, { transaction: t });
+  }
+}
+
+/**
+ * Devolución por producto/cantidad (Devuelto). `itemsPayload`:
+ * [{ envio_item_componente_id, cantidad, condicion: 'vendible'|'dañado' }]
+ * Vendible: sale de tránsito y vuelve a disponible. Dañado: sale de
+ * tránsito y no regresa al inventario vendible. Nunca confía en el total
+ * enviado por frontend — recalcula el remanente disponible para devolver
+ * por componente (cantidad − ya gestionado) en cada llamada, así que dos
+ * llamadas con la misma cantidad total nunca superan `cantidad`.
+ */
+async function registrarDevolucionComponentes(envio, itemsPayload, t) {
+  for (const { envio_item_componente_id, cantidad, condicion } of itemsPayload) {
+    const cant = parseInt(cantidad) || 0;
+    if (cant <= 0) throw new Error('La cantidad a devolver debe ser mayor a 0');
+    if (!['vendible', 'dañado'].includes(condicion)) {
+      throw new Error('Condición inválida: debe ser "vendible" o "dañado"');
+    }
+
+    const componente = await EnvioItemComponente.findByPk(envio_item_componente_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (!componente) throw new Error(`Componente ${envio_item_componente_id} no encontrado`);
+
+    const item = await EnvioItem.findOne({ where: { id: componente.envio_item_id, envio_id: envio.id }, transaction: t });
+    if (!item) throw new Error(`El componente ${envio_item_componente_id} no pertenece a este pedido`);
+
+    const yaGestionado = componente.cantidad_devuelta_vendible + componente.cantidad_devuelta_danada + componente.cantidad_perdida;
+    const disponibleParaDevolver = componente.cantidad - yaGestionado;
+    if (cant > disponibleParaDevolver) {
+      throw new Error(`Cantidad a devolver (${cant}) supera la cantidad disponible (${disponibleParaDevolver}) del componente ${envio_item_componente_id}`);
+    }
+
+    const prod = await Producto.findByPk(componente.producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (prod) {
+      const transito = Math.max(0, (parseInt(prod.cantidad_transito) || 0) - cant);
+      const actualizacion = { cantidad_transito: transito };
+      if (condicion === 'vendible') {
+        const disponible = (parseInt(prod.cantidad_disponible) || 0) + cant;
+        actualizacion.cantidad_disponible = disponible;
+        if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') actualizacion.estado_venta = 'en_venta';
+      }
+      await prod.update(actualizacion, { transaction: t });
+    }
+
+    if (condicion === 'vendible') {
+      await componente.update({ cantidad_devuelta_vendible: componente.cantidad_devuelta_vendible + cant }, { transaction: t });
+    } else {
+      await componente.update({ cantidad_devuelta_danada: componente.cantidad_devuelta_danada + cant }, { transaction: t });
+    }
+  }
+}
+
+/**
+ * Pérdida por producto/cantidad (Perdido). `itemsPayload`:
+ * [{ envio_item_componente_id, cantidad }]
+ * Sale de tránsito permanentemente (no vuelve a disponible). Recalcula el
+ * cargo total del pedido desde cero sobre TODOS sus componentes (no solo
+ * los de esta llamada) para nunca restar costo_envio más de una vez, y lo
+ * guarda como snapshot en Envio.cargo_perdida_courier — el backend nunca
+ * confía en un importe calculado por el frontend.
+ */
+async function registrarPerdidaComponentes(envio, itemsPayload, t) {
+  for (const { envio_item_componente_id, cantidad } of itemsPayload) {
+    const cant = parseInt(cantidad) || 0;
+    if (cant <= 0) throw new Error('La cantidad perdida debe ser mayor a 0');
+
+    const componente = await EnvioItemComponente.findByPk(envio_item_componente_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (!componente) throw new Error(`Componente ${envio_item_componente_id} no encontrado`);
+
+    const item = await EnvioItem.findOne({ where: { id: componente.envio_item_id, envio_id: envio.id }, transaction: t });
+    if (!item) throw new Error(`El componente ${envio_item_componente_id} no pertenece a este pedido`);
+
+    const yaGestionado = componente.cantidad_devuelta_vendible + componente.cantidad_devuelta_danada + componente.cantidad_perdida;
+    const disponibleParaPerder = componente.cantidad - yaGestionado;
+    if (cant > disponibleParaPerder) {
+      throw new Error(`Cantidad perdida (${cant}) supera la cantidad disponible (${disponibleParaPerder}) del componente ${envio_item_componente_id}`);
+    }
+
+    const prod = await Producto.findByPk(componente.producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (prod) {
+      const transito = Math.max(0, (parseInt(prod.cantidad_transito) || 0) - cant);
+      await prod.update({ cantidad_transito: transito }, { transaction: t });
+    }
+
+    await componente.update({ cantidad_perdida: componente.cantidad_perdida + cant }, { transaction: t });
+  }
+
+  const items = await EnvioItem.findAll({ where: { envio_id: envio.id }, transaction: t });
+  const itemIds = items.map(i => i.id);
+  const todosLosComponentes = itemIds.length
+    ? await EnvioItemComponente.findAll({ where: { envio_item_id: { [Op.in]: itemIds } }, transaction: t })
+    : [];
+
+  let valorTotalPerdido = 0;
+  for (const item of items) {
+    const componentesDelItem = todosLosComponentes.filter(c => c.envio_item_id === item.id);
+    const cantidadFisicaTotal = componentesDelItem.reduce((acc, c) => acc + c.cantidad, 0);
+    if (cantidadFisicaTotal === 0) continue;
+    const precioUnitarioVenta = (parseFloat(item.subtotal) || 0) / cantidadFisicaTotal;
+    const cantidadPerdidaDelItem = componentesDelItem.reduce((acc, c) => acc + c.cantidad_perdida, 0);
+    valorTotalPerdido += precioUnitarioVenta * cantidadPerdidaDelItem;
+  }
+
+  const cargo = Math.round(valorTotalPerdido - (parseInt(envio.costo_envio) || 0));
+  await envio.update({ cargo_perdida_courier: cargo }, { transaction: t });
+  return cargo;
+}
 
 exports.listEnvios = async (req, res) => {
   try {
@@ -129,7 +362,13 @@ exports.listEnviosPaginados = async (req, res) => {
       where,
       include: [
         { model: Courier, attributes: ['id', 'nombre'] },
-        { model: EnvioItem, as: 'items', attributes: ['id', 'nombre_producto', 'cantidad', 'precio_unitario'] },
+        {
+          model: EnvioItem, as: 'items', attributes: ['id', 'producto_id', 'nombre_producto', 'cantidad', 'precio_unitario', 'subtotal', 'oferta_nombre'],
+          include: [{
+            model: EnvioItemComponente, as: 'componentes_vendidos',
+            attributes: ['id', 'producto_id', 'cantidad', 'cantidad_devuelta_vendible', 'cantidad_devuelta_danada', 'cantidad_perdida'],
+          }],
+        },
       ],
       order: [['id', 'DESC']],
       limit: limitNum,
@@ -211,6 +450,17 @@ exports.createEnvio = async (req, res) => {
       }
     }
 
+    // Ítems vendidos con una oferta (pack/combo/order bump/upsell) guardan un
+    // snapshot de código/nombre de la oferta en el propio ítem — la receta de
+    // stock recién se resuelve y snapshotea en EnvioItemComponente al
+    // confirmar (ver descontarStockYSnapshot). Oferta se aísla por
+    // inquilino_id (tenantId), no por usuario_id — son conceptos de tenant
+    // distintos en este proyecto (ver Producto/Oferta vs Envio/Courier).
+    const ofertaIds = [...new Set((items || []).map(it => it.oferta_id).filter(Boolean))];
+    const ofertasPorId = ofertaIds.length > 0
+      ? new Map((await Oferta.findAll({ where: { id: ofertaIds, inquilino_id: req.usuario.tenantId }, transaction: t })).map(o => [o.id, o]))
+      : new Map();
+
     const nuevoEnvio = await Envio.create(
       {
         usuario_id,
@@ -233,7 +483,11 @@ exports.createEnvio = async (req, res) => {
         metodo_pago_id: metodo_pago_id || null,
         comision_pct_aplicada: comision_pct_aplicada || 0,
         observaciones,
-        estado: 'Pendiente',
+        // Pedido manual (esta pantalla la usa el staff autenticado, nunca
+        // el checkout público — ver landing.service.js/crearCheckout para
+        // ese flujo aparte): ya fue confirmado por definición, no pasa por
+        // "Pendiente" (ver plan Gestión de Pedidos, sección 5).
+        estado: 'Confirmado',
         dispatchedAt: hoy,
         origen: origen || 'WEB',
         quiere_factura: !!quiere_factura,
@@ -249,13 +503,19 @@ exports.createEnvio = async (req, res) => {
         utm_campaign: utm_campaign || null,
         estado_comercial: estado_comercial || 'Confirmado',
         estado_logistico: estado_logistico || 'Pendiente',
-        items: items && items.length > 0 ? items.map(item => ({
-          producto_id: item.producto_id || null,
-          nombre_producto: item.nombre_producto || 'Producto sin nombre',
-          cantidad: item.cantidad || 1,
-          precio_unitario: item.precio_unitario || 0,
-          subtotal: (item.cantidad || 1) * (item.precio_unitario || 0)
-        })) : []
+        items: items && items.length > 0 ? items.map(item => {
+          const oferta = item.oferta_id ? ofertasPorId.get(Number(item.oferta_id)) : null;
+          return {
+            producto_id: item.producto_id || null,
+            oferta_id: oferta ? oferta.id : null,
+            oferta_codigo: oferta ? oferta.codigo : null,
+            oferta_nombre: oferta ? oferta.nombre : null,
+            nombre_producto: item.nombre_producto || 'Producto sin nombre',
+            cantidad: item.cantidad || 1,
+            precio_unitario: item.precio_unitario || 0,
+            subtotal: (item.cantidad || 1) * (item.precio_unitario || 0)
+          };
+        }) : []
       },
       {
         include: [{ model: EnvioItem, as: 'items' }],
@@ -263,10 +523,12 @@ exports.createEnvio = async (req, res) => {
       }
     );
 
-    // El stock ya NO se descuenta acá — se descuenta al pasar a
-    // "Confirmado" (ver updateEstado), sea cual sea el origen del pedido.
-    // Antes se descontaba al crear, lo que exponía el stock real a
-    // cualquiera que llenara el checkout público sin intención de compra.
+    // El pedido manual nace en "Confirmado" (ver arriba), así que reserva
+    // stock real desde la creación — mismo mecanismo que usa updateEstado
+    // al confirmar un pedido que sí pasó por "Pendiente" (checkout público,
+    // ver landing.service.js/crearCheckout).
+    await descontarStockYSnapshot(nuevoEnvio.items || [], t);
+    await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
 
     await t.commit();
 
@@ -286,6 +548,29 @@ exports.createEnvio = async (req, res) => {
   }
 };
 
+// Catálogo autoritativo de estado operativo — ver plan Gestión de Pedidos
+// sección 3. "Rendido"/"En camino"/"En Tránsito"/"Reagendado" ya no son
+// valores válidos (ver migrar-gestion-pedidos.js para la conversión de
+// filas legacy). El estado financiero (pendiente_liquidacion/liquidado)
+// vive aparte, en Envio.estado_financiero, y nunca lo toca esta función.
+const ESTADOS_OPERATIVOS = ['Pendiente', 'Confirmado', 'Preparado', 'Despachado', 'Reprogramado', 'Entregado', 'Cancelado', 'Devuelto', 'Perdido'];
+
+// Transiciones permitidas desde cada estado actual. "Devuelto" y "Perdido"
+// deliberadamente NO aparecen como destino acá: se gestionan por
+// producto/cantidad vía POST /:id/devolucion y POST /:id/perdida (abajo),
+// que validan su propia transición y aplican su propio movimiento de stock.
+const TRANSICIONES_VALIDAS = {
+  Pendiente: ['Confirmado', 'Cancelado'],
+  Confirmado: ['Preparado', 'Cancelado'],
+  Preparado: ['Despachado', 'Cancelado'],
+  Despachado: ['Entregado', 'Reprogramado'],
+  Reprogramado: ['Despachado', 'Entregado', 'Cancelado', 'Reprogramado'],
+  Entregado: [],
+  Cancelado: [],
+  Devuelto: [],
+  Perdido: [],
+};
+
 exports.updateEstado = async (req, res) => {
   const t = await sequelize.transaction();
   try {
@@ -301,6 +586,8 @@ exports.updateEstado = async (req, res) => {
       quiere_factura, razon_social, nro_comprobante, metodo_pago_id, comision_pct_aplicada,
       ciudad, departamento, nombre_cliente, apellido_cliente, telefono,
       confirmador, origen, campaign_name, observaciones, monto,
+      // Obligatorio para pasar a Reprogramado — ver TRANSICIONES_VALIDAS.
+      fecha_reprogramada, motivo_reprogramacion,
     } = req.body;
 
     if (!estado && courier_id === undefined && !estado_comercial && !estado_logistico) {
@@ -319,21 +606,70 @@ exports.updateEstado = async (req, res) => {
     }
 
     const updateData = {};
-    if (estado !== undefined) {
-      updateData.estado = estado;
-      if (estado === 'Rendido') {
-        updateData.fecha_rendicion = new Date().toISOString().split('T')[0];
-        updateData.estado_logistico = 'Rendido';
-      } else if (estado === 'Entregado') {
-        updateData.estado_logistico = 'Entregado';
-      } else if (estado === 'En Tránsito') {
-        updateData.estado_logistico = 'En Tránsito';
-      } else if (estado === 'Devuelto') {
-        updateData.estado_logistico = 'Devuelto';
+
+    if (estado !== undefined && estado !== envio.estado) {
+      if (estado === 'Devuelto' || estado === 'Perdido') {
+        await t.rollback();
+        return res.status(400).json({
+          error: `Para pasar a "${estado}" hay que usar POST /api/envios/${envio.id}/${estado === 'Devuelto' ? 'devolucion' : 'perdida'}, indicando el detalle por producto.`,
+        });
       }
+      if (!ESTADOS_OPERATIVOS.includes(estado)) {
+        await t.rollback();
+        return res.status(400).json({ error: `Estado inválido: "${estado}".` });
+      }
+      const destinosValidos = TRANSICIONES_VALIDAS[envio.estado] || [];
+      if (!destinosValidos.includes(estado)) {
+        await t.rollback();
+        return res.status(400).json({ error: `No se puede pasar de "${envio.estado}" a "${estado}".` });
+      }
+
+      if (estado === 'Reprogramado') {
+        if (!fecha_reprogramada) {
+          await t.rollback();
+          return res.status(400).json({ error: 'fecha_reprogramada es obligatoria para reprogramar el pedido' });
+        }
+        updateData.fecha_reprogramada = fecha_reprogramada;
+        updateData.motivo_reprogramacion = motivo_reprogramacion || null;
+      }
+
+      if (estado === 'Entregado') {
+        const metodoFinal = metodo_pago_id !== undefined ? metodo_pago_id : envio.metodo_pago_id;
+        const montoFinal = monto !== undefined ? monto : envio.monto;
+        const costoFinal = costo_envio !== undefined ? costo_envio : envio.costo_envio;
+        if (!metodoFinal || montoFinal === undefined || montoFinal === null || costoFinal === undefined || costoFinal === null) {
+          await t.rollback();
+          return res.status(400).json({ error: 'metodo_pago_id, monto y costo_envio son obligatorios para marcar el pedido como Entregado' });
+        }
+        updateData.metodo_pago_id = metodoFinal;
+        updateData.monto = montoFinal;
+        updateData.costo_envio = costoFinal;
+      }
+
+      // Movimientos de stock por transición — cada uno protegido por su
+      // propio flag de idempotencia (ver Producto/Envio) y bloqueo de fila
+      // dentro de la transacción (Transaction.LOCK.UPDATE, en los helpers).
+      if (estado === 'Confirmado' && !envio.stock_descontado) {
+        await descontarStockYSnapshot(envio.items || [], t);
+        updateData.stock_descontado = true;
+      }
+      if (estado === 'Despachado' && !envio.stock_despachado) {
+        await moverAReservadoATransito(envio.items || [], t);
+        updateData.stock_despachado = true;
+      }
+      if (estado === 'Cancelado' && envio.stock_descontado && !envio.stock_liberado) {
+        await liberarStock(envio, envio.items || [], t);
+        updateData.stock_liberado = true;
+      }
+
+      updateData.estado = estado;
+      // Sync legacy para pantallas que todavía puedan leer estado_logistico
+      // directamente — el catálogo autoritativo es Envio.estado (ver arriba).
+      updateData.estado_logistico = estado;
     }
+
     if (estado_comercial !== undefined) updateData.estado_comercial = estado_comercial;
-    if (estado_logistico !== undefined) updateData.estado_logistico = estado_logistico;
+    if (estado_logistico !== undefined && updateData.estado_logistico === undefined) updateData.estado_logistico = estado_logistico;
     if (courier_id !== undefined) updateData.courier_id = courier_id;
     if (ruc !== undefined) updateData.ruc = ruc;
     if (direccion !== undefined) updateData.direccion = direccion;
@@ -379,30 +715,6 @@ exports.updateEstado = async (req, res) => {
       updateData.nro_comprobante = nroComprobanteLimpio;
     }
 
-    // Descuento de stock movido acá desde createEnvio: recién se compromete
-    // stock real cuando el pedido pasa a "Confirmado" — antes (Pendiente)
-    // puede venir de un checkout público sin ninguna verificación.
-    // stock_descontado evita descontar dos veces si el pedido pasa por
-    // Confirmado más de una vez (se mueve para atrás y de nuevo adelante).
-    if (estado === 'Confirmado' && !envio.stock_descontado) {
-      for (const item of envio.items || []) {
-        if (item.producto_id) {
-          const cantVendida = parseInt(item.cantidad) || 1;
-          const prod = await Producto.findByPk(item.producto_id, { transaction: t });
-          if (prod) {
-            const stockActual = parseInt(prod.cantidad_disponible) || 0;
-            const nuevoStock = Math.max(0, stockActual - cantVendida);
-            const actualizacionProd = { cantidad_disponible: nuevoStock };
-            if (nuevoStock === 0 && prod.estado_venta === 'en_venta') {
-              actualizacionProd.estado_venta = 'fuera_de_stock';
-            }
-            await prod.update(actualizacionProd, { transaction: t });
-          }
-        }
-      }
-      updateData.stock_descontado = true;
-    }
-
     await envio.update(updateData, { transaction: t });
     await t.commit();
 
@@ -417,6 +729,181 @@ exports.updateEstado = async (req, res) => {
   } catch (error) {
     if (!t.finished) await t.rollback();
     console.error('Error updating estado:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/**
+ * POST /api/envios/:id/devolucion — Devuelto, gestionado por producto y
+ * cantidad. Body: { items: [{ envio_item_componente_id, cantidad, condicion }] }
+ * Solo válido desde Despachado o Reprogramado (el producto tiene que estar
+ * en tránsito para poder devolverse). Una devolución parcial NO obliga a
+ * que el pedido completo pase a "Devuelto" — eso lo decide el caller
+ * (frontend) pasando o no `marcar_estado: true`; si se pasa, acá se valida
+ * y aplica esa transición dentro de la misma operación atómica.
+ */
+exports.registrarDevolucion = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const usuario_id = req.usuario.id;
+    const { id } = req.params;
+    const { items, marcar_estado } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      await t.rollback();
+      return res.status(400).json({ error: 'Se requiere al menos un ítem a devolver' });
+    }
+
+    const envio = await Envio.findOne({ where: { id, usuario_id }, transaction: t });
+    if (!envio) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Envío no encontrado' });
+    }
+    if (!['Despachado', 'Reprogramado'].includes(envio.estado)) {
+      await t.rollback();
+      return res.status(400).json({ error: `No se puede registrar una devolución desde el estado "${envio.estado}".` });
+    }
+
+    await registrarDevolucionComponentes(envio, items, t);
+
+    const updateData = {};
+    if (marcar_estado) {
+      updateData.estado = 'Devuelto';
+      updateData.estado_logistico = 'Devuelto';
+    }
+    await envio.update(updateData, { transaction: t });
+    await t.commit();
+
+    const result = await Envio.findByPk(envio.id, {
+      include: [
+        { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
+        { model: EnvioItem, as: 'items' }
+      ]
+    });
+    res.json(result);
+  } catch (error) {
+    if (!t.finished) await t.rollback();
+    console.error('Error registrando devolución:', error);
+    res.status(400).json({ error: error.message || 'Error al registrar la devolución' });
+  }
+};
+
+/**
+ * POST /api/envios/:id/perdida — Perdido, gestionado por producto y
+ * cantidad. Body: { items: [{ envio_item_componente_id, cantidad }] }
+ * Solo válido desde Despachado o Reprogramado. Recalcula y persiste el
+ * cargo al courier (registrarPerdidaComponentes) — nunca confía en un
+ * importe enviado por el frontend. Igual que en devolución, `marcar_estado`
+ * decide si esta pérdida además cierra el pedido completo como "Perdido".
+ */
+exports.registrarPerdida = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const usuario_id = req.usuario.id;
+    const { id } = req.params;
+    const { items, marcar_estado } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      await t.rollback();
+      return res.status(400).json({ error: 'Se requiere al menos un ítem perdido' });
+    }
+
+    const envio = await Envio.findOne({ where: { id, usuario_id }, transaction: t });
+    if (!envio) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Envío no encontrado' });
+    }
+    if (!['Despachado', 'Reprogramado'].includes(envio.estado)) {
+      await t.rollback();
+      return res.status(400).json({ error: `No se puede registrar una pérdida desde el estado "${envio.estado}".` });
+    }
+
+    const cargo = await registrarPerdidaComponentes(envio, items, t);
+
+    const updateData = {};
+    if (marcar_estado) {
+      updateData.estado = 'Perdido';
+      updateData.estado_logistico = 'Perdido';
+    }
+    await envio.update(updateData, { transaction: t });
+    await t.commit();
+
+    const result = await Envio.findByPk(envio.id, {
+      include: [
+        { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
+        { model: EnvioItem, as: 'items' }
+      ]
+    });
+    res.json({ ...result.toJSON(), cargo_perdida_courier: cargo });
+  } catch (error) {
+    if (!t.finished) await t.rollback();
+    console.error('Error registrando pérdida:', error);
+    res.status(400).json({ error: error.message || 'Error al registrar la pérdida' });
+  }
+};
+
+/**
+ * POST /api/envios/conteo-por-estado — cuenta pedidos agrupados por
+ * `estado`, respetando los mismos filtros que listEnviosPaginados (para que
+ * los contadores de las pestañas de la bandeja reflejen los filtros
+ * activos). Una sola consulta GROUP BY en vez de una por pestaña.
+ */
+exports.conteoPorEstado = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, metodo_pago_id } = req.body;
+
+    const where = { usuario_id };
+    if (fecha_desde && fecha_hasta) {
+      where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
+    } else if (fecha_desde) {
+      where.dispatchedAt = { [Op.gte]: fecha_desde };
+    } else if (fecha_hasta) {
+      where.dispatchedAt = { [Op.lte]: fecha_hasta };
+    }
+    if (cliente && cliente.trim()) {
+      const term = `%${cliente.trim()}%`;
+      where[Op.or] = [
+        { nombre_cliente: { [Op.iLike]: term } },
+        { apellido_cliente: { [Op.iLike]: term } },
+        { cliente: { [Op.iLike]: term } },
+        { telefono: { [Op.iLike]: term } },
+      ];
+    }
+    if (ciudad && ciudad.trim()) where.ciudad = { [Op.iLike]: `%${ciudad.trim()}%` };
+    if (courier_id && courier_id !== 'TODOS') where.courier_id = courier_id === 'null' ? null : Number(courier_id);
+    if (confirmador && confirmador !== 'TODOS' && confirmador.trim()) where.confirmador = { [Op.iLike]: `%${confirmador.trim()}%` };
+    if (origen && origen !== 'TODOS') where.origen = origen;
+    if (metodo_pago_id && metodo_pago_id !== 'TODOS') where.metodo_pago_id = Number(metodo_pago_id);
+
+    const include = [];
+    if (producto && producto !== 'TODOS') {
+      include.push({
+        model: EnvioItem,
+        as: 'items',
+        attributes: [],
+        where: { producto_id: Number(producto) },
+        required: true,
+      });
+    }
+
+    const filas = await Envio.findAll({
+      where,
+      include,
+      attributes: ['estado', [Sequelize.fn('COUNT', Sequelize.fn('DISTINCT', Sequelize.col('Envio.id'))), 'cantidad']],
+      group: ['estado'],
+      raw: true,
+    });
+
+    const conteos = {};
+    for (const e of ESTADOS_OPERATIVOS) conteos[e] = 0;
+    for (const fila of filas) {
+      conteos[fila.estado] = parseInt(fila.cantidad, 10) || 0;
+    }
+
+    res.json(conteos);
+  } catch (error) {
+    console.error('Error obteniendo conteo por estado:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };

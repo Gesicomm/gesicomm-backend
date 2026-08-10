@@ -99,6 +99,18 @@ const Producto = sequelize.define('Producto', {
     allowNull: false,
     comment: 'Umbral para alertas de reposición.',
   },
+  cantidad_reservada: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    allowNull: false,
+    comment: 'Comprometido por pedidos Confirmados/Preparados, todavía físicamente en el depósito. No se descuenta de cantidad_disponible dos veces — ver envioController.',
+  },
+  cantidad_transito: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    allowNull: false,
+    comment: 'Salió del depósito con un courier (pedido Despachado), pendiente de Entregado/Devuelto/Perdido.',
+  },
   unidad_medida: {
     type: DataTypes.STRING(50),
     allowNull: true,

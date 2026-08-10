@@ -8,6 +8,7 @@ const { verificarPermiso } = require('../middleware/autorizacion');
 const ctrl = require('../controllers/producto.controller');
 const imgCtrl = require('../controllers/imagen.controller');
 const comboRoutes = require('./combos');
+const ofertaRoutes = require('./ofertas');
 
 router.use(verificarToken);
 
@@ -28,5 +29,8 @@ router.delete('/:id/imagenes/:imgId', verificarPermiso('eliminar_productos'), im
 
 // Combos
 router.use('/:productoId/combos', comboRoutes);
+
+// Ofertas comerciales
+router.use('/:productoId/ofertas', ofertaRoutes);
 
 module.exports = router;

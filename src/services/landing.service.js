@@ -21,13 +21,15 @@ const { Op } = require('sequelize');
 const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
-  ProductoImagen, ProductoVariante, LandingEvento, Testimonio, Faq, Envio, EnvioItem,
+  ProductoImagen, ProductoVariante, LandingSeccion, LandingEvento, Testimonio, Faq, Envio, EnvioItem,
+  Oferta, OfertaComponente,
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
 const MAX_FAQ_POR_LANDING = 20;
+const MAX_SECCIONES_POR_LANDING = 30;
 const MAX_ITEMS_CHECKOUT = 40;
 // MVP: una sola landing por tienda, siempre en la raíz (es_home=true) — no
 // hay UI para elegir slug ni marcar "página principal", así que una
@@ -36,6 +38,22 @@ const MAX_ITEMS_CHECKOUT = 40;
 // es el eje que sí está planeado (ver Tienda.js).
 const MAX_LANDINGS_POR_TIENDA = 1;
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const TIPOS_SECCION = new Set([
+  'header',
+  'announcement_bar',
+  'hero',
+  'beneficios',
+  'categorias',
+  'destacados',
+  'productos',
+  'banner',
+  'texto',
+  'como_funciona',
+  'faq',
+  'testimonios',
+  'redes_sociales',
+  'footer',
+]);
 
 class LandingService {
 
@@ -108,6 +126,37 @@ class LandingService {
       payload.faq.forEach((fItem, idx) => {
         if (!fItem?.pregunta?.trim()) errores.push(`FAQ #${idx + 1}: la pregunta es obligatoria.`);
         if (!fItem?.respuesta?.trim()) errores.push(`FAQ #${idx + 1}: la respuesta es obligatoria.`);
+      });
+    }
+    if (Array.isArray(payload.secciones)) {
+      if (payload.secciones.length > MAX_SECCIONES_POR_LANDING) {
+        errores.push(`No se pueden agregar mas de ${MAX_SECCIONES_POR_LANDING} secciones a una landing.`);
+      }
+      payload.secciones.forEach((seccion, idx) => {
+        if (!TIPOS_SECCION.has(seccion?.tipo)) {
+          errores.push(`Seccion #${idx + 1}: el tipo no es valido.`);
+        }
+        const config = seccion?.config_json ?? seccion?.config ?? {};
+        const contenido = seccion?.contenido_json ?? seccion?.contenido ?? {};
+        if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+          errores.push(`Seccion #${idx + 1}: la configuracion debe ser un objeto.`);
+        }
+        if (contenido === null || typeof contenido !== 'object' || Array.isArray(contenido)) {
+          errores.push(`Seccion #${idx + 1}: el contenido debe ser un objeto.`);
+        }
+        for (const link of [contenido.boton_link, contenido.link].filter(Boolean)) {
+          if (!this.linkBannerEsSeguro(link)) {
+            errores.push(`Seccion #${idx + 1}: el link debe empezar con http://, https:// o /.`);
+          }
+        }
+        if (Array.isArray(contenido.links)) {
+          contenido.links.forEach((l, linkIdx) => {
+            const href = l?.href;
+            if (href && !this.linkBannerEsSeguro(href) && !String(href).startsWith('#')) {
+              errores.push(`Seccion #${idx + 1}, link #${linkIdx + 1}: el href no es seguro.`);
+            }
+          });
+        }
       });
     }
     if (payload.banner_boton_link !== undefined && !this.linkBannerEsSeguro(payload.banner_boton_link)) {
@@ -245,6 +294,81 @@ class LandingService {
     })));
   }
 
+  static normalizarSeccion(seccion, idx) {
+    return {
+      tipo: seccion.tipo,
+      nombre_interno: seccion.nombre_interno?.trim ? (seccion.nombre_interno.trim() || null) : null,
+      activo: seccion.activo !== false,
+      orden: seccion.orden !== undefined ? Number(seccion.orden) : idx,
+      config_json: seccion.config_json ?? seccion.config ?? {},
+      contenido_json: seccion.contenido_json ?? seccion.contenido ?? {},
+    };
+  }
+
+  static async sincronizarSecciones(landing_id, secciones = []) {
+    await LandingSeccion.destroy({ where: { landing_id } });
+    if (!secciones.length) return;
+    await LandingSeccion.bulkCreate(secciones.map((s, idx) => ({
+      landing_id,
+      ...this.normalizarSeccion(s, idx),
+    })));
+  }
+
+  static seccionDto(seccion, extra = {}) {
+    return {
+      id: seccion.id || null,
+      tipo: seccion.tipo,
+      nombre_interno: seccion.nombre_interno || null,
+      activo: seccion.activo !== false,
+      orden: Number(seccion.orden) || 0,
+      config: seccion.config_json || {},
+      contenido: seccion.contenido_json || {},
+      ...extra,
+    };
+  }
+
+  static construirSeccionesPublicas(landing, { items, testimonios, faq, banner }) {
+    const guardadas = [...(landing.secciones || [])]
+      .sort((a, b) => a.orden - b.orden)
+      .filter(s => s.activo !== false);
+
+    if (guardadas.length) {
+      return guardadas.map(seccion => {
+        if (seccion.tipo === 'productos') return this.seccionDto(seccion, { items });
+        if (seccion.tipo === 'testimonios') return this.seccionDto(seccion, { items: testimonios });
+        if (seccion.tipo === 'faq') return this.seccionDto(seccion, { items: faq });
+        if (seccion.tipo === 'banner') {
+          return this.seccionDto(seccion, {
+            contenido: {
+              ...(seccion.contenido_json || {}),
+              ...(banner || {}),
+            },
+          });
+        }
+        return this.seccionDto(seccion);
+      });
+    }
+
+    const secciones = [
+      this.seccionDto({ tipo: 'header', nombre_interno: 'Header principal', activo: true, orden: 0, config_json: { sticky: true, mostrar_busqueda: true, mostrar_carrito: true }, contenido_json: { logo_texto: landing.titulo || landing.nombre } }),
+      this.seccionDto({ tipo: 'hero', nombre_interno: 'Hero', activo: true, orden: 10, config_json: {}, contenido_json: { titulo: landing.titulo, descripcion: landing.descripcion } }),
+      this.seccionDto({ tipo: 'beneficios', nombre_interno: 'Beneficios', activo: true, orden: 20, config_json: {}, contenido_json: {} }),
+      this.seccionDto({ tipo: 'categorias', nombre_interno: 'Categorias', activo: true, orden: 30, config_json: {}, contenido_json: {} }),
+      this.seccionDto({ tipo: 'destacados', nombre_interno: 'Productos destacados', activo: true, orden: 40, config_json: {}, contenido_json: {} }),
+    ];
+    if (banner) {
+      secciones.push(this.seccionDto({ tipo: 'banner', nombre_interno: 'Banner', activo: true, orden: 50, config_json: {}, contenido_json: banner }));
+    }
+    secciones.push(
+      this.seccionDto({ tipo: 'productos', nombre_interno: 'Catalogo', activo: true, orden: 60, config_json: {}, contenido_json: { titulo: 'Todos los productos' } }, { items }),
+      this.seccionDto({ tipo: 'testimonios', nombre_interno: 'Opiniones', activo: testimonios.length > 0, orden: 70, config_json: {}, contenido_json: { titulo: 'Opiniones de clientes' } }, { items: testimonios }),
+      this.seccionDto({ tipo: 'faq', nombre_interno: 'Preguntas frecuentes', activo: faq.length > 0, orden: 80, config_json: {}, contenido_json: { titulo: 'Preguntas frecuentes' } }, { items: faq }),
+      this.seccionDto({ tipo: 'footer', nombre_interno: 'Footer', activo: true, orden: 90, config_json: {}, contenido_json: { titulo: landing.titulo, descripcion: landing.descripcion } })
+    );
+
+    return secciones.filter(s => s.activo !== false);
+  }
+
   // ─── Campos simples (comunes a crear/actualizar) ────────────────────────
 
   static camposEditables(payload) {
@@ -321,6 +445,7 @@ class LandingService {
     await this.sincronizarItems(landing.id, items);
     if (payload.testimonios !== undefined) await this.sincronizarTestimonios(landing.id, payload.testimonios);
     if (payload.faq !== undefined) await this.sincronizarFaq(landing.id, payload.faq);
+    if (payload.secciones !== undefined) await this.sincronizarSecciones(landing.id, payload.secciones);
 
     return this.obtener(landing.id, tienda_id);
   }
@@ -359,6 +484,9 @@ class LandingService {
     }
     if (payload.faq !== undefined) {
       await this.sincronizarFaq(landing.id, payload.faq);
+    }
+    if (payload.secciones !== undefined) {
+      await this.sincronizarSecciones(landing.id, payload.secciones);
     }
 
     return this.obtener(landing.id, tienda_id);
@@ -409,6 +537,7 @@ class LandingService {
       where: { id, tienda_id },
       include: [
         { model: LandingItem, as: 'items' },
+        { model: LandingSeccion, as: 'secciones' },
         { model: Testimonio, as: 'testimonios' },
         { model: Faq, as: 'faq' },
       ],
@@ -417,6 +546,7 @@ class LandingService {
       // en orden de inserción, perdiendo el orden que definió el usuario.
       order: [
         [{ model: LandingItem, as: 'items' }, 'orden', 'ASC'],
+        [{ model: LandingSeccion, as: 'secciones' }, 'orden', 'ASC'],
         [{ model: Testimonio, as: 'testimonios' }, 'orden', 'ASC'],
         [{ model: Faq, as: 'faq' }, 'orden', 'ASC'],
       ],
@@ -790,9 +920,15 @@ class LandingService {
 
     const landing = await Landing.findOne({
       where,
-      include: [{ model: LandingItem, as: 'items' }],
+      include: [
+        { model: LandingItem, as: 'items' },
+        { model: LandingSeccion, as: 'secciones' },
+      ],
       // Ver nota en obtener(): el orden va acá, no dentro del include.
-      order: [[{ model: LandingItem, as: 'items' }, 'orden', 'ASC']],
+      order: [
+        [{ model: LandingItem, as: 'items' }, 'orden', 'ASC'],
+        [{ model: LandingSeccion, as: 'secciones' }, 'orden', 'ASC'],
+      ],
     });
     if (!landing) return null;
 
@@ -807,7 +943,7 @@ class LandingService {
     const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
 
-    const [productos, combos, testimonios, faqs] = await Promise.all([
+    const [productos, combos, ofertas, testimonios, faqs] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
           where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
@@ -833,6 +969,17 @@ class LandingService {
           ],
         })
         : Promise.resolve([]),
+      // Ofertas activas de los productos de esta landing — pack/combo ×
+      // normal/order_bump/upsell. Igual que Producto arriba, no se
+      // re-filtra por inquilino_id: los ids ya vienen acotados al
+      // catálogo de esta landing/tienda.
+      idsProducto.length
+        ? Oferta.findAll({
+          where: { producto_ancla_id: { [Op.in]: idsProducto }, activo: true },
+          include: [{ model: OfertaComponente, as: 'componentes', attributes: ['producto_id', 'cantidad'] }],
+          order: [['orden', 'ASC']],
+        })
+        : Promise.resolve([]),
       landing.mostrar_testimonios
         ? Testimonio.findAll({ where: { landing_id: landing.id }, order: [['orden', 'ASC']] })
         : Promise.resolve([]),
@@ -840,6 +987,13 @@ class LandingService {
         ? Faq.findAll({ where: { landing_id: landing.id }, order: [['orden', 'ASC']] })
         : Promise.resolve([]),
     ]);
+
+    const mapaOfertas = new Map(); // producto_ancla_id -> Oferta[]
+    ofertas.forEach(o => {
+      const lista = mapaOfertas.get(o.producto_ancla_id) || [];
+      lista.push(o);
+      mapaOfertas.set(o.producto_ancla_id, lista);
+    });
 
     const referenciasProducto = productos.map(p => p.id);
     const referenciasCombo = combos.map(c => c.id);
@@ -937,6 +1091,19 @@ class LandingService {
         };
       }) : [];
 
+      // Ofertas comerciales del producto (individual siempre es precioEfectivo;
+      // acá van las adicionales: pack x2/x3, order bump, upsell, combo). No se
+      // exponen ni el código interno ni la receta de stock — el checkout solo
+      // necesita el id para volver a resolver todo eso del lado del servidor.
+      const ofertasDto = !esCombo ? (mapaOfertas.get(entidad.id) || []).map(o => ({
+        id: o.id,
+        nombre: o.nombre,
+        tipo_contenido: o.tipo_contenido,
+        estrategia: o.estrategia,
+        precio: parseFloat(o.precio) || 0,
+        descripcion: o.descripcion || null,
+      })) : [];
+
       itemsDto.push({
         // ID público estable — nunca LandingItem.id (cambiaría entre landings para el mismo producto).
         content_id: entidad.slug || `${item.tipo}-${entidad.id}`,
@@ -949,6 +1116,7 @@ class LandingService {
         imagenes: imagenesDto,
         stock: esCombo ? (productoParaFiltros?.cantidad_disponible ?? null) : entidad.cantidad_disponible,
         variantes: variantesDto,
+        ofertas: ofertasDto,
         productos_incluidos: esCombo ? (entidad.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean) : undefined,
         categoria: productoParaFiltros?.categoria?.nombre || null,
         marca: productoParaFiltros?.Marca?.nombre || null,
@@ -960,6 +1128,30 @@ class LandingService {
         creado: item.createdAt,
       });
     }
+
+    const bannerDto = (landing.mostrar_banner && (landing.banner_titulo || landing.banner_imagen)) ? {
+      imagen: landing.banner_imagen,
+      titulo: landing.banner_titulo,
+      subtitulo: landing.banner_subtitulo,
+      boton_texto: landing.banner_boton_texto,
+      boton_link: landing.banner_boton_link,
+    } : null;
+    const testimoniosDto = testimonios.map(t => ({
+      nombre: t.nombre,
+      foto: t.foto,
+      calificacion: t.calificacion,
+      comentario: t.comentario,
+    }));
+    const faqDto = faqs.map(f => ({
+      pregunta: f.pregunta,
+      respuesta: f.respuesta,
+    }));
+    const seccionesDto = this.construirSeccionesPublicas(landing, {
+      items: itemsDto,
+      testimonios: testimoniosDto,
+      faq: faqDto,
+      banner: bannerDto,
+    });
 
     return {
       disponible: true,
@@ -1011,13 +1203,7 @@ class LandingService {
       },
       // null si está apagado o si no se cargó ni imagen ni título — así el
       // frontend público no tiene que repetir esa condición.
-      banner: (landing.mostrar_banner && (landing.banner_titulo || landing.banner_imagen)) ? {
-        imagen: landing.banner_imagen,
-        titulo: landing.banner_titulo,
-        subtitulo: landing.banner_subtitulo,
-        boton_texto: landing.banner_boton_texto,
-        boton_link: landing.banner_boton_link,
-      } : null,
+      banner: bannerDto,
       seo: {
         titulo: landing.seo_titulo || landing.titulo,
         descripcion: landing.seo_descripcion || landing.descripcion || null,
@@ -1044,16 +1230,29 @@ class LandingService {
         tiktok_pixel_id: tienda.tiktok_pixel_id || null,
       },
       items: itemsDto,
-      testimonios: testimonios.map(t => ({
-        nombre: t.nombre,
-        foto: t.foto,
-        calificacion: t.calificacion,
-        comentario: t.comentario,
-      })),
-      faq: faqs.map(f => ({
-        pregunta: f.pregunta,
-        respuesta: f.respuesta,
-      })),
+      secciones: seccionesDto,
+      testimonios: testimoniosDto,
+      faq: faqDto,
+    };
+  }
+
+  static async obtenerProductoPublico(tienda, slug, productoSlug) {
+    const landing = await this.obtenerPublica(tienda, slug);
+    if (landing === null) return null;
+    if (!landing.disponible) return landing;
+
+    const item = (landing.items || []).find(i => i.content_id === productoSlug);
+    if (!item) return null;
+
+    return {
+      ...landing,
+      producto: item,
+      seo: {
+        titulo: item.nombre,
+        descripcion: item.descripcion_larga || item.descripcion || landing.seo?.descripcion || null,
+        keywords: landing.seo?.keywords || null,
+        og_imagen: item.imagen || landing.seo?.og_imagen || null,
+      },
     };
   }
 
@@ -1102,7 +1301,7 @@ class LandingService {
     const idsProducto = landingItems.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = landingItems.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
 
-    const [productos, combos] = await Promise.all([
+    const [productos, combos, ofertasDisponibles] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({ where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' } })
         : Promise.resolve([]),
@@ -1112,10 +1311,17 @@ class LandingService {
           include: [{ model: Producto, as: 'producto_padre', where: { activo: true } }],
         })
         : Promise.resolve([]),
+      idsProducto.length
+        ? Oferta.findAll({
+          where: { producto_ancla_id: { [Op.in]: idsProducto }, activo: true },
+          include: [{ model: OfertaComponente, as: 'componentes' }],
+        })
+        : Promise.resolve([]),
     ]);
 
     const referenciasProducto = productos.map(p => p.id);
     const referenciasCombo = combos.map(c => c.id);
+    const mapaOfertas = new Map(ofertasDisponibles.map(o => [o.id, o]));
 
     const [precios, variantes] = await Promise.all([
       PrecioUsuario.findAll({
@@ -1168,19 +1374,48 @@ class LandingService {
       let stockDisponible = esCombo ? (entidad.producto_padre?.cantidad_disponible ?? null) : entidad.cantidad_disponible;
       let nombreFinal = entidad.nombre;
 
-      if (!esCombo && pedido.variante_id) {
-        const variante = (mapaVariantes.get(entidad.id) || []).find(v => v.id === Number(pedido.variante_id));
-        if (variante) {
-          precioFinal = this.calcularPrecioVariante(base, variante.precio_diferencial, precioMinimo);
-          stockDisponible = variante.stock;
-          nombreFinal = `${entidad.nombre} (${variante.nombre})`;
+      // Oferta (pack/combo × normal/order_bump/upsell): reemplaza precio y
+      // nombre, y su "stock disponible" no es un único número — es la
+      // receta completa (cada componente puede ser un producto distinto),
+      // así que se valida aparte y no participa del chequeo genérico de
+      // abajo.
+      let ofertaResuelta = null;
+      if (!esCombo && pedido.oferta_id) {
+        const candidata = mapaOfertas.get(Number(pedido.oferta_id));
+        if (candidata && candidata.producto_ancla_id === entidad.id) {
+          ofertaResuelta = candidata;
         }
       }
 
-      if (stockDisponible !== null && stockDisponible !== undefined && stockDisponible < cantidad) {
-        const err = new Error(`"${nombreFinal}" no tiene stock suficiente (disponible: ${stockDisponible}).`);
-        err.status = 409;
-        throw err;
+      if (ofertaResuelta) {
+        precioFinal = parseFloat(ofertaResuelta.precio) || 0;
+        nombreFinal = `${entidad.nombre} — ${ofertaResuelta.nombre}`;
+
+        for (const comp of ofertaResuelta.componentes || []) {
+          const prodComp = comp.producto_id === entidad.id ? entidad : mapaProducto.get(comp.producto_id);
+          const stockComp = prodComp ? prodComp.cantidad_disponible : null;
+          const necesario = cantidad * comp.cantidad;
+          if (stockComp !== null && stockComp !== undefined && stockComp < necesario) {
+            const err = new Error(`"${nombreFinal}" no tiene stock suficiente (disponible: ${stockComp}).`);
+            err.status = 409;
+            throw err;
+          }
+        }
+      } else {
+        if (!esCombo && pedido.variante_id) {
+          const variante = (mapaVariantes.get(entidad.id) || []).find(v => v.id === Number(pedido.variante_id));
+          if (variante) {
+            precioFinal = this.calcularPrecioVariante(base, variante.precio_diferencial, precioMinimo);
+            stockDisponible = variante.stock;
+            nombreFinal = `${entidad.nombre} (${variante.nombre})`;
+          }
+        }
+
+        if (stockDisponible !== null && stockDisponible !== undefined && stockDisponible < cantidad) {
+          const err = new Error(`"${nombreFinal}" no tiene stock suficiente (disponible: ${stockDisponible}).`);
+          err.status = 409;
+          throw err;
+        }
       }
 
       itemsResueltos.push({
@@ -1190,6 +1425,9 @@ class LandingService {
         // confirmar (el "stock" de un combo lo da su producto_padre, no
         // hay campo propio que descontar).
         producto_id: esCombo ? null : entidad.id,
+        oferta_id: ofertaResuelta ? ofertaResuelta.id : null,
+        oferta_codigo: ofertaResuelta ? ofertaResuelta.codigo : null,
+        oferta_nombre: ofertaResuelta ? ofertaResuelta.nombre : null,
         nombre_producto: nombreFinal,
         cantidad,
         precio_unitario: precioFinal,

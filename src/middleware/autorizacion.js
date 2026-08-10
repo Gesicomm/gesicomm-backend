@@ -18,6 +18,19 @@
  */
 function verificarPermiso(permisoRequerido) {
   return (req, res, next) => {
+    const rol = req.usuario?.rol;
+    
+    // Bypass para que el rol 'usuario' pueda administrar su propio catálogo
+    if (rol === 'usuario') {
+      const permisosDinamicos = [
+        'ver_productos', 'crear_productos', 'editar_productos', 'eliminar_productos',
+        'ver_combos', 'crear_combos', 'editar_combos', 'activar_combos', 'configurar_combos'
+      ];
+      if (permisosDinamicos.includes(permisoRequerido)) {
+        return next();
+      }
+    }
+
     // Los permisos ahora vendrán inyectados en el token JWT o los podemos buscar en middleware
     const permisosUsuario = req.usuario?.permisos || [];
 

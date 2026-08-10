@@ -1,6 +1,6 @@
 'use strict';
 
-const { Envio, EnvioItem, Courier, Producto, Usuario } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario } = require('../models');
 const { Op, fn, col, literal } = require('sequelize');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
@@ -8,6 +8,23 @@ const { resolverRangoFechas } = require('../utils/rangoFechas');
  * Servicio de Inteligencia Comercial y Analytics de Pedidos/Envíos
  * Ejecuta consultas especializadas en paralelo con Promise.all()
  */
+
+/**
+ * Costo real de mercadería de UN EnvioItem entregado. Preferí siempre el
+ * snapshot de EnvioItemComponente (existe desde que el pedido pasó por
+ * "Confirmado" — ver envioController.descontarStockYSnapshot): ya tiene en
+ * cuenta el multiplicador de stock de una oferta (ej. x3 = 3 unidades
+ * físicas) y el precio_costo vigente en el momento de la venta, no el
+ * actual. Si no hay snapshot (pedidos confirmados antes de que existiera
+ * esta tabla), cae al cálculo directo de siempre (precio_costo actual × cantidad).
+ */
+function costoDeItem(item) {
+  if (item.componentes_vendidos && item.componentes_vendidos.length > 0) {
+    return item.componentes_vendidos.reduce((acc, comp) => acc + (Number(comp.costo_unitario) || 0) * (comp.cantidad || 0), 0);
+  }
+  const costoUnit = item.Producto && item.Producto.precio_costo ? Number(item.Producto.precio_costo) : 0;
+  return costoUnit * (item.cantidad || 1);
+}
 
 // 1. Embudo Integral de Conversión (Funnel)
 async function getResumenFunnel(whereBase) {
@@ -36,9 +53,11 @@ async function getResumenFunnel(whereBase) {
     const stLog = (e.estado_logistico || '').toLowerCase();
     const origen = (e.origen || 'WEB').toUpperCase();
 
-    // Confirmación Comercial
-    const isConfirmado = stCom === 'confirmado' || ['confirmado', 'en tránsito', 'en transito', 'entregado', 'rendido'].includes(st);
-    const isCancelado = stCom === 'cancelado' || stCom === 'rechazado' || ['cancelado', 'rechazado'].includes(st);
+    // Confirmación Comercial — catálogo operativo nuevo (9 valores, ver
+    // envioController.ESTADOS_OPERATIVOS): cualquier estado posterior a
+    // Pendiente implica que el pedido llegó a confirmarse en algún momento.
+    const isConfirmado = stCom === 'confirmado' || ['confirmado', 'preparado', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st);
+    const isCancelado = stCom === 'cancelado' || stCom === 'rechazado' || st === 'cancelado';
 
     if (isConfirmado) confirmados++;
     if (isCancelado) cancelados++;
@@ -52,10 +71,10 @@ async function getResumenFunnel(whereBase) {
     }
 
     // Logística
-    const isDespachado = Boolean(e.courier_id) || ['en tránsito', 'en transito', 'entregado', 'rendido', 'devuelto'].includes(st) || ['asignado', 'en tránsito', 'entregado', 'rendido', 'devuelto'].includes(stLog);
-    const isEntregado = ['entregado', 'rendido'].includes(st) || ['entregado', 'rendido'].includes(stLog);
+    const isDespachado = Boolean(e.courier_id) || ['despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st) || ['asignado', 'despachado', 'entregado', 'devuelto', 'perdido'].includes(stLog);
+    const isEntregado = st === 'entregado' || stLog === 'entregado';
     const isDevuelto = ['devuelto', 'no entregado', 'fallido'].includes(st) || stLog === 'devuelto';
-    const isTransito = ['en tránsito', 'en transito'].includes(st) || stLog === 'en tránsito';
+    const isTransito = st === 'despachado' || stLog === 'despachado';
 
     if (isDespachado) despachados++;
     if (isEntregado) entregados++;
@@ -105,7 +124,10 @@ async function getKpisFinancieros(whereBase) {
       {
         model: EnvioItem,
         as: 'items',
-        include: [{ model: Producto, attributes: ['id', 'precio_costo'] }],
+        include: [
+          { model: Producto, attributes: ['id', 'precio_costo'] },
+          { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
+        ],
       }
     ]
   });
@@ -126,9 +148,9 @@ async function getKpisFinancieros(whereBase) {
     const costoEnvio = Number(e.costo_envio || 0);
     costoLogisticoTotal += costoEnvio;
 
-    const isEntregado = ['entregado', 'rendido'].includes(st);
-    const isConfirmado = ['confirmado', 'en tránsito', 'en transito', 'entregado', 'rendido'].includes(st);
-    const isPerdido = ['cancelado', 'rechazado', 'devuelto'].includes(st);
+    const isEntregado = st === 'entregado';
+    const isConfirmado = ['confirmado', 'preparado', 'despachado', 'reprogramado'].includes(st);
+    const isPerdido = ['cancelado', 'devuelto', 'perdido'].includes(st);
 
     if (isEntregado) {
       facturacionEntregada += monto;
@@ -144,8 +166,7 @@ async function getKpisFinancieros(whereBase) {
 
       if (e.items && e.items.length > 0) {
         for (const item of e.items) {
-          const costoUnit = item.Producto && item.Producto.precio_costo ? Number(item.Producto.precio_costo) : 0;
-          costoMercaderiaEntregada += costoUnit * (item.cantidad || 1);
+          costoMercaderiaEntregada += costoDeItem(item);
         }
       }
     } else if (isConfirmado) {
@@ -187,7 +208,10 @@ async function getProductosAnalytics(whereBase) {
       {
         model: EnvioItem,
         as: 'items',
-        include: [{ model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo'] }],
+        include: [
+          { model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo'] },
+          { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
+        ],
       }
     ]
   });
@@ -196,8 +220,8 @@ async function getProductosAnalytics(whereBase) {
 
   for (const e of envios) {
     const st = (e.estado || '').toLowerCase();
-    const isConfirmado = ['confirmado', 'en tránsito', 'en transito', 'entregado', 'rendido'].includes(st);
-    const isEntregado = ['entregado', 'rendido'].includes(st);
+    const isConfirmado = ['confirmado', 'preparado', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st);
+    const isEntregado = st === 'entregado';
     const isDevuelto = ['devuelto', 'no entregado', 'fallido'].includes(st);
     const canal = (e.origen || 'WEB').toUpperCase();
 
@@ -227,8 +251,7 @@ async function getProductosAnalytics(whereBase) {
         if (isEntregado) {
           p.entregados += 1;
           p.facturacion_total += Number(item.subtotal || item.precio_unitario * (item.cantidad || 1) || 0);
-          const costoUnit = item.Producto && item.Producto.precio_costo ? Number(item.Producto.precio_costo) : 0;
-          p.costo_total += costoUnit * (item.cantidad || 1);
+          p.costo_total += costoDeItem(item);
         }
         if (isDevuelto) p.devueltos += 1;
 
@@ -263,6 +286,71 @@ async function getProductosAnalytics(whereBase) {
   return lista.sort((a, b) => b.unidades_totales - a.unidades_totales);
 }
 
+// 3b. Desglose de Ventas por Oferta dentro de cada Producto
+// (ej. "de las 300 unidades vendidas de Earplugs, 38% fueron pack x3")
+async function getOfertasAnalytics(whereBase) {
+  const envios = await Envio.findAll({
+    where: whereBase,
+    include: [
+      {
+        model: EnvioItem,
+        as: 'items',
+        attributes: ['producto_id', 'oferta_id', 'oferta_codigo', 'oferta_nombre', 'nombre_producto', 'cantidad', 'subtotal'],
+        include: [{ model: Producto, attributes: ['id', 'nombre'] }],
+      }
+    ]
+  });
+
+  const mapProductos = {};
+
+  for (const e of envios) {
+    const st = (e.estado || '').toLowerCase();
+    if (st !== 'entregado') continue;
+
+    for (const item of e.items || []) {
+      if (!item.producto_id) continue;
+
+      if (!mapProductos[item.producto_id]) {
+        mapProductos[item.producto_id] = {
+          producto_id: item.producto_id,
+          producto_nombre: item.Producto ? item.Producto.nombre : item.nombre_producto,
+          unidades_totales: 0,
+          ofertas: {},
+        };
+      }
+      const p = mapProductos[item.producto_id];
+      const cantidad = item.cantidad || 1;
+      p.unidades_totales += cantidad;
+
+      const clave = item.oferta_codigo || '__individual__';
+      if (!p.ofertas[clave]) {
+        p.ofertas[clave] = {
+          oferta_codigo: item.oferta_codigo || null,
+          oferta_nombre: item.oferta_nombre || 'Individual',
+          unidades: 0,
+          facturacion: 0,
+        };
+      }
+      p.ofertas[clave].unidades += cantidad;
+      p.ofertas[clave].facturacion += Number(item.subtotal || 0);
+    }
+  }
+
+  return Object.values(mapProductos)
+    .map(p => ({
+      producto_id: p.producto_id,
+      producto_nombre: p.producto_nombre,
+      unidades_totales: p.unidades_totales,
+      ofertas: Object.values(p.ofertas)
+        .map(o => ({
+          ...o,
+          pct_unidades: p.unidades_totales > 0 ? Number(((o.unidades / p.unidades_totales) * 100).toFixed(1)) : 0,
+        }))
+        .sort((a, b) => b.unidades - a.unidades),
+    }))
+    .sort((a, b) => b.unidades_totales - a.unidades_totales);
+}
+
 // 4. Rendimiento de Confirmadores (Métrica Comercial)
 async function getConfirmadoresAnalytics(whereBase) {
   const envios = await Envio.findAll({
@@ -282,8 +370,8 @@ async function getConfirmadoresAnalytics(whereBase) {
   for (const e of envios) {
     const nombre = (e.confirmador || '').trim() || 'Sin Confirmador Asignado';
     const st = (e.estado || '').toLowerCase();
-    const isConfirmado = ['confirmado', 'en tránsito', 'en transito', 'entregado', 'rendido'].includes(st);
-    const isCancelado = ['cancelado', 'rechazado'].includes(st);
+    const isConfirmado = ['confirmado', 'preparado', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st);
+    const isCancelado = st === 'cancelado';
     const monto = Number(e.monto || 0);
 
     if (!mapConf[nombre]) {
@@ -420,12 +508,12 @@ async function getCouriersAnalytics(whereBase, usuario_id) {
     c.costo_fletes += Number(e.costo_envio || 0);
 
     const st = (e.estado || '').toLowerCase();
-    if (['entregado', 'rendido'].includes(st)) {
+    if (st === 'entregado') {
       c.entregados += 1;
       c.monto_recaudado += Number(e.monto || 0);
-    } else if (['en tránsito', 'en transito'].includes(st)) {
+    } else if (['despachado', 'reprogramado'].includes(st)) {
       c.en_transito += 1;
-    } else if (['devuelto', 'no entregado', 'cancelado', 'rechazado'].includes(st)) {
+    } else if (['devuelto', 'perdido', 'cancelado'].includes(st)) {
       c.devueltos += 1;
     } else {
       c.pendientes += 1;
@@ -475,12 +563,12 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
     t.pedidos += 1;
 
     const st = (e.estado || '').toLowerCase();
-    if (['confirmado', 'en tránsito', 'en transito', 'entregado', 'rendido'].includes(st)) t.confirmados += 1;
-    if (['entregado', 'rendido'].includes(st)) {
+    if (['confirmado', 'preparado', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st)) t.confirmados += 1;
+    if (st === 'entregado') {
       t.entregados += 1;
       t.monto += Number(e.monto || 0);
     }
-    if (['devuelto', 'no entregado', 'cancelado'].includes(st)) t.devueltos += 1;
+    if (['devuelto', 'perdido', 'cancelado'].includes(st)) t.devueltos += 1;
   }
 
   // Ordenar cronológicamente
@@ -592,6 +680,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
     funnel,
     kpisFinancieros,
     rankingProductos,
+    ofertasAnalytics,
     confirmadores,
     couriers,
     tendencias,
@@ -600,6 +689,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
     getResumenFunnel(whereBase),
     getKpisFinancieros(whereBase),
     getProductosAnalytics(whereBase),
+    getOfertasAnalytics(whereBase),
     getConfirmadoresAnalytics(whereBase),
     getCouriersAnalytics(whereBase, usuario_id),
     getTimelineTendencias(whereBase, desde, hasta),
@@ -614,6 +704,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
     funnel,
     kpis: kpisFinancieros,
     ranking_productos: rankingProductos,
+    ofertas: ofertasAnalytics,
     confirmadores,
     couriers,
     tendencias,

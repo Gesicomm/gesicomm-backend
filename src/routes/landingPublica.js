@@ -69,7 +69,9 @@ const limiteCheckout = rateLimit({
 router.get('/', limitePublico, resolverTienda, ctrl.obtenerPorSlug);   // landing es_home de la tienda del hostname
 router.post('/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
 router.post('/checkout', limiteCheckout, resolverTienda, ctrl.crearCheckout);
+router.get('/producto/:productoSlug', limitePublico, resolverTienda, ctrl.obtenerProducto);
 router.get('/:slug', limitePublico, resolverTienda, ctrl.obtenerPorSlug);
+router.get('/:slug/producto/:productoSlug', limitePublico, resolverTienda, ctrl.obtenerProducto);
 router.post('/:slug/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
 router.post('/:slug/checkout', limiteCheckout, resolverTienda, ctrl.crearCheckout);
 

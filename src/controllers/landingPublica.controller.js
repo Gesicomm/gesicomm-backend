@@ -74,6 +74,39 @@ async function obtenerPorSlug(req, res) {
   }
 }
 
+async function obtenerProducto(req, res) {
+  try {
+    let tienda = req.tienda;
+    if (!tienda && req.params.slug) {
+      const l = await Landing.findOne({
+        where: { slug: req.params.slug },
+        include: [{
+          model: Tienda,
+          include: [{ model: Usuario, attributes: ['id', 'activo'] }],
+        }],
+      });
+      if (l && l.Tienda) tienda = l.Tienda;
+    }
+
+    if (!tienda) {
+      return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
+    }
+
+    const resultado = await LandingService.obtenerProductoPublico(
+      tienda,
+      req.params.slug || null,
+      req.params.productoSlug
+    );
+    if (resultado === null) {
+      return res.status(404).json({ message: 'Producto no encontrado.' });
+    }
+    return res.status(200).json(resultado);
+  } catch (err) {
+    console.error('[landing-publica] obtenerProducto:', err.message);
+    return res.status(500).json({ message: 'Error al obtener el producto.' });
+  }
+}
+
 /**
  * El nombre de producto que se guarda nunca sale del cliente: se resuelve
  * contra el catálogo real de la landing. /eventos es público y sin auth, y su
@@ -216,6 +249,7 @@ async function crearCheckout(req, res) {
       items: Array.isArray(body.items) ? body.items.slice(0, 40).map(i => ({
         content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
         variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
+        oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
         cantidad: i?.cantidad,
       })) : [],
     };
@@ -279,4 +313,4 @@ async function registrarEvento(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, registrarEvento, crearCheckout };
+module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, crearCheckout };

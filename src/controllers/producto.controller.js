@@ -21,6 +21,10 @@ async function buscar(req, res) {
     const inquilino_id = req.usuario.tenantId;
     const esAdmin = req.usuario.rol === 'administrador';
     
+    if (req.body.mios_solamente && !esAdmin) {
+      req.body.creado_por = req.usuario.id;
+    }
+    
     const resultado = await ProductoService.buscar(req.body, inquilino_id, esAdmin);
     return res.json(resultado);
   } catch (err) {
@@ -154,7 +158,8 @@ async function actualizar(req, res) {
 async function eliminar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    await ProductoService.eliminar(req.params.id, inquilino_id, req.usuario.id);
+    const esAdmin = req.usuario.rol === 'administrador';
+    await ProductoService.eliminar(req.params.id, inquilino_id, req.usuario.id, esAdmin);
     return res.json({ message: 'Producto dado de baja correctamente.' });
   } catch (err) {
     console.error(err);
