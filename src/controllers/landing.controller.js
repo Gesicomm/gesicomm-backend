@@ -17,6 +17,7 @@
  * POST   /api/mis-landings/:id/seo-imagen → subir imagen OG
  * DELETE /api/mis-landings/:id/seo-imagen → quitar imagen OG
  * POST   /api/mis-landings/:id/testimonio-foto → subir foto de un testimonio (devuelve solo la URL)
+ * POST   /api/mis-landings/:id/seccion-imagen → subir imagen de un campo de sección (devuelve solo la URL)
  * GET    /api/mis-landings/:id/estadisticas → visitas/conversaciones/CTR/productos más consultados
  * POST   /api/mis-landings/:id/estadisticas-rango → ídem, por rango de calendario (filtros dinámicos vía body)
  */
@@ -253,6 +254,32 @@ async function subirTestimonioFoto(req, res) {
   }
 }
 
+/**
+ * Sube UNA imagen para un campo `type: 'image'` de cualquier sección (ej.
+ * el fondo del bloque "banner" del constructor) y devuelve solo la URL —
+ * mismo criterio que subirTestimonioFoto: las secciones se reemplazan en
+ * bloque en cada Guardar (ver sincronizarSecciones), así que tampoco tienen
+ * id estable entre guardados. El frontend pega esta URL en el campo
+ * correspondiente de `contenido` de la sección que esté editando.
+ */
+async function subirImagenSeccion(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) { await ImagenService.borrarArchivoSeguro(req.file?.path); return; }
+
+    if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
+
+    await LandingService.verificarPertenece(req.params.id, tienda.id);
+
+    // Ancho de banner (hero), no de avatar — a diferencia de la foto de testimonio.
+    const url = await ImagenService.guardarArchivo(req.file, { width: 1600, quality: 82 });
+    return res.status(201).json({ url });
+  } catch (err) {
+    await ImagenService.borrarArchivoSeguro(req.file?.path);
+    return manejarError(res, err, 'Error al subir la imagen de la sección.');
+  }
+}
+
 async function estadisticas(req, res) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
@@ -281,5 +308,6 @@ module.exports = {
   subirBanner, eliminarBanner,
   subirSeoImagen, eliminarSeoImagen,
   subirTestimonioFoto,
+  subirImagenSeccion,
   estadisticas, estadisticasRango,
 };
