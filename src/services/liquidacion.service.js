@@ -2,6 +2,7 @@
 
 const { Envio, MetodoPago, Liquidacion, LiquidacionEnvio, Courier, sequelize } = require('../models');
 const { Op } = require('sequelize');
+const { registrarHistorial } = require('../utils/historial');
 
 /**
  * Motor de rendición de couriers — ver plan Gestión de Pedidos, secciones
@@ -139,6 +140,11 @@ async function confirmar({ courier_id, fecha_desde, fecha_hasta, usuario_id, usu
       { estado_financiero: 'liquidado', fecha_rendicion: hoy },
       { where: { id: { [Op.in]: envios.map(e => e.id) } }, transaction: t }
     );
+
+    const codigoLiquidacion = `R-${String(liquidacion.id).padStart(4, '0')}`;
+    for (const e of envios) {
+      await registrarHistorial(e.id, usuario_registro_id, `Incluido en rendición #${codigoLiquidacion}`, t);
+    }
 
     await t.commit();
 

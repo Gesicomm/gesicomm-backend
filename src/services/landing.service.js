@@ -25,6 +25,7 @@ const {
   Oferta, OfertaComponente,
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
+const { registrarHistorial } = require('../utils/historial');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
@@ -1477,6 +1478,8 @@ class LandingService {
       hora: horaPy,
       items: itemsResueltos,
     }, { include: [{ model: EnvioItem, as: 'items' }] });
+
+    await registrarHistorial(nuevoEnvio.id, null, 'Pedido creado automáticamente');
 
     return {
       pedido_id: nuevoEnvio.id,

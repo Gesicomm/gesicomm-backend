@@ -1,0 +1,19 @@
+'use strict';
+
+/**
+ * Historial simple de movimientos de un pedido (ver plan Gestión de
+ * Pedidos sección 24). Una sola función compartida entre envioController.js
+ * y liquidacion.service.js para no repetir el mismo INSERT en dos lugares.
+ * Nunca debe hacer fallar la operación principal — un error al loguear
+ * historial no debería revertir un cambio de estado real.
+ */
+async function registrarHistorial(envio_id, usuario_id, detalle, transaction) {
+  try {
+    const { EnvioHistorial } = require('../models');
+    await EnvioHistorial.create({ envio_id, usuario_id: usuario_id || null, detalle }, { transaction });
+  } catch (err) {
+    console.error('No se pudo registrar historial de pedido:', err.message);
+  }
+}
+
+module.exports = { registrarHistorial };

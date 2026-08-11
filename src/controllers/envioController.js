@@ -1,7 +1,8 @@
-const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Oferta, OfertaComponente, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
+const { registrarHistorial } = require('../utils/historial');
 
 /**
  * Resuelve qué producto(s) y cuántas unidades físicas hay que descontar del
@@ -529,6 +530,7 @@ exports.createEnvio = async (req, res) => {
     // ver landing.service.js/crearCheckout).
     await descontarStockYSnapshot(nuevoEnvio.items || [], t);
     await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
+    await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
 
     await t.commit();
 
@@ -666,6 +668,15 @@ exports.updateEstado = async (req, res) => {
       // Sync legacy para pantallas que todavía puedan leer estado_logistico
       // directamente — el catálogo autoritativo es Envio.estado (ver arriba).
       updateData.estado_logistico = estado;
+
+      await registrarHistorial(envio.id, usuario_id, `${envio.estado} → ${estado}`, t);
+      if (estado === 'Reprogramado') {
+        await registrarHistorial(envio.id, usuario_id, `Reprogramado para ${fecha_reprogramada}${motivo_reprogramacion ? ' — ' + motivo_reprogramacion : ''}`, t);
+      }
+      if (estado === 'Entregado' && updateData.metodo_pago_id) {
+        const metodoUsado = await MetodoPago.findByPk(updateData.metodo_pago_id, { transaction: t });
+        if (metodoUsado) await registrarHistorial(envio.id, usuario_id, `Método de pago: ${metodoUsado.nombre}`, t);
+      }
     }
 
     if (estado_comercial !== undefined) updateData.estado_comercial = estado_comercial;
@@ -765,11 +776,13 @@ exports.registrarDevolucion = async (req, res) => {
     }
 
     await registrarDevolucionComponentes(envio, items, t);
+    await registrarHistorial(envio.id, usuario_id, `Devolución registrada: ${items.length} producto(s)`, t);
 
     const updateData = {};
     if (marcar_estado) {
       updateData.estado = 'Devuelto';
       updateData.estado_logistico = 'Devuelto';
+      await registrarHistorial(envio.id, usuario_id, `${envio.estado} → Devuelto`, t);
     }
     await envio.update(updateData, { transaction: t });
     await t.commit();
@@ -819,11 +832,13 @@ exports.registrarPerdida = async (req, res) => {
     }
 
     const cargo = await registrarPerdidaComponentes(envio, items, t);
+    await registrarHistorial(envio.id, usuario_id, `Pérdida registrada: ${items.length} producto(s), cargo Gs. ${cargo.toLocaleString('es-PY')}`, t);
 
     const updateData = {};
     if (marcar_estado) {
       updateData.estado = 'Perdido';
       updateData.estado_logistico = 'Perdido';
+      await registrarHistorial(envio.id, usuario_id, `${envio.estado} → Perdido`, t);
     }
     await envio.update(updateData, { transaction: t });
     await t.commit();
@@ -904,6 +919,225 @@ exports.conteoPorEstado = async (req, res) => {
     res.json(conteos);
   } catch (error) {
     console.error('Error obteniendo conteo por estado:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/**
+ * POST /api/envios/resumen-entregados — resumen financiero minimalista de
+ * la pestaña "Entregados" (ver plan sección 22). Respeta los mismos
+ * filtros que listEnviosPaginados/conteoPorEstado. "Dinero en poder del
+ * courier" vs. "Cobrado directamente por la tienda" se decide por
+ * MetodoPago.custodia_cobro, igual que en el motor de rendición — nunca por
+ * comparación de texto contra el nombre del método.
+ */
+exports.resumenEntregados = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, metodo_pago_id } = req.body;
+
+    const where = { usuario_id, estado: 'Entregado' };
+    if (fecha_desde && fecha_hasta) {
+      where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
+    } else if (fecha_desde) {
+      where.dispatchedAt = { [Op.gte]: fecha_desde };
+    } else if (fecha_hasta) {
+      where.dispatchedAt = { [Op.lte]: fecha_hasta };
+    }
+    if (cliente && cliente.trim()) {
+      const term = `%${cliente.trim()}%`;
+      where[Op.or] = [
+        { nombre_cliente: { [Op.iLike]: term } },
+        { apellido_cliente: { [Op.iLike]: term } },
+        { cliente: { [Op.iLike]: term } },
+        { telefono: { [Op.iLike]: term } },
+      ];
+    }
+    if (ciudad && ciudad.trim()) where.ciudad = { [Op.iLike]: `%${ciudad.trim()}%` };
+    if (courier_id && courier_id !== 'TODOS') where.courier_id = courier_id === 'null' ? null : Number(courier_id);
+    if (confirmador && confirmador !== 'TODOS' && confirmador.trim()) where.confirmador = { [Op.iLike]: `%${confirmador.trim()}%` };
+    if (origen && origen !== 'TODOS') where.origen = origen;
+    if (metodo_pago_id && metodo_pago_id !== 'TODOS') where.metodo_pago_id = Number(metodo_pago_id);
+
+    const include = [{ model: MetodoPago, attributes: ['id', 'nombre', 'custodia_cobro'] }];
+    if (producto && producto !== 'TODOS') {
+      include.push({
+        model: EnvioItem, as: 'items', attributes: [],
+        where: { producto_id: Number(producto) }, required: true,
+      });
+    }
+
+    const envios = await Envio.findAll({
+      where, include,
+      attributes: ['id', 'monto', 'costo_envio', 'estado_financiero'],
+    });
+
+    let cantidad = 0, montoTotal = 0, dineroCourier = 0, cobradoDirecto = 0, costoTotalCourier = 0, pendientesRendicion = 0;
+    const desglosePorMetodo = new Map();
+
+    for (const e of envios) {
+      cantidad += 1;
+      const monto = Number(e.monto) || 0;
+      const costoEnvio = Number(e.costo_envio) || 0;
+      montoTotal += monto;
+      costoTotalCourier += costoEnvio;
+
+      const custodia = e.MetodoPago ? e.MetodoPago.custodia_cobro : 'negocio';
+      if (custodia === 'courier') dineroCourier += monto; else cobradoDirecto += monto;
+      if (e.estado_financiero === 'pendiente_liquidacion') pendientesRendicion += 1;
+
+      const nombreMetodo = e.MetodoPago ? e.MetodoPago.nombre : 'Sin método';
+      desglosePorMetodo.set(nombreMetodo, (desglosePorMetodo.get(nombreMetodo) || 0) + monto);
+    }
+
+    res.json({
+      entregado: { cantidad, monto_total: montoTotal },
+      dinero_courier: dineroCourier,
+      cobrado_directo: cobradoDirecto,
+      costo_total_courier: costoTotalCourier,
+      saldo_liquidacion: dineroCourier - costoTotalCourier,
+      pendientes_rendicion: pendientesRendicion,
+      desglose_metodo_pago: Array.from(desglosePorMetodo.entries()).map(([metodo_pago, monto]) => ({ metodo_pago, monto })),
+    });
+  } catch (error) {
+    console.error('Error obteniendo resumen de entregados:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/**
+ * POST /api/envios/dashboard-general — pestaña "Dashboard" del módulo
+ * Gestión de Pedidos (ver plan sección 23). Tres bloques compactos, no es
+ * un dashboard general de la empresa: trabajo pendiente, resultado
+ * operativo, desempeño de courier. Filtra por courier/fecha/producto.
+ */
+exports.dashboardGeneralPedidos = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { fecha_desde, fecha_hasta, courier_id, producto } = req.body;
+
+    const where = { usuario_id };
+    if (fecha_desde && fecha_hasta) {
+      where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
+    } else if (fecha_desde) {
+      where.dispatchedAt = { [Op.gte]: fecha_desde };
+    } else if (fecha_hasta) {
+      where.dispatchedAt = { [Op.lte]: fecha_hasta };
+    }
+    if (courier_id && courier_id !== 'TODOS') where.courier_id = courier_id === 'null' ? null : Number(courier_id);
+
+    const include = [{ model: Courier, attributes: ['id', 'nombre'] }];
+    if (producto && producto !== 'TODOS') {
+      include.push({
+        model: EnvioItem, as: 'items', attributes: [],
+        where: { producto_id: Number(producto) }, required: true,
+      });
+    }
+
+    const envios = await Envio.findAll({
+      where, include,
+      attributes: ['id', 'estado', 'estado_financiero', 'fecha_reprogramada', 'courier_id'],
+    });
+
+    const hoy = new Date().toISOString().slice(0, 10);
+
+    // ── Bloque 1 — Trabajo pendiente ──
+    const trabajoPendiente = {
+      pendientes_confirmar: 0,
+      confirmados_preparar: 0,
+      preparados_despachar: 0,
+      despachados_sin_resultado: 0,
+      reprogramados_hoy: 0,
+      reprogramados_vencidos: 0,
+      entregados_pendientes_rendicion: 0,
+    };
+
+    // ── Bloque 2 — Resultado operativo ──
+    const resultadoOperativo = { ingresados: 0, confirmados: 0, entregados: 0, cancelados: 0, devueltos: 0, perdidos: 0 };
+
+    // ── Bloque 3 — Desempeño de courier ──
+    const CONFIRMADO_EN_ADELANTE = ['Confirmado', 'Preparado', 'Despachado', 'Reprogramado', 'Entregado', 'Devuelto', 'Perdido'];
+    const courierMap = new Map(); // courier_id -> { nombre, despachados, entregados, devueltos, perdidos }
+
+    for (const e of envios) {
+      resultadoOperativo.ingresados += 1;
+      if (CONFIRMADO_EN_ADELANTE.includes(e.estado)) resultadoOperativo.confirmados += 1;
+      if (e.estado === 'Entregado') resultadoOperativo.entregados += 1;
+      if (e.estado === 'Cancelado') resultadoOperativo.cancelados += 1;
+      if (e.estado === 'Devuelto') resultadoOperativo.devueltos += 1;
+      if (e.estado === 'Perdido') resultadoOperativo.perdidos += 1;
+
+      if (e.estado === 'Pendiente') trabajoPendiente.pendientes_confirmar += 1;
+      if (e.estado === 'Confirmado') trabajoPendiente.confirmados_preparar += 1;
+      if (e.estado === 'Preparado') trabajoPendiente.preparados_despachar += 1;
+      if (e.estado === 'Despachado') trabajoPendiente.despachados_sin_resultado += 1;
+      if (e.estado === 'Reprogramado') {
+        if (e.fecha_reprogramada === hoy) trabajoPendiente.reprogramados_hoy += 1;
+        else if (e.fecha_reprogramada && e.fecha_reprogramada < hoy) trabajoPendiente.reprogramados_vencidos += 1;
+      }
+      if (e.estado === 'Entregado' && e.estado_financiero === 'pendiente_liquidacion') {
+        trabajoPendiente.entregados_pendientes_rendicion += 1;
+      }
+
+      // Desempeño de courier: solo pedidos que efectivamente salieron a
+      // reparto (Despachado y en adelante) — un pedido Cancelado antes del
+      // despacho nunca aparece acá, no hace falta filtrarlo aparte.
+      if (['Despachado', 'Reprogramado', 'Entregado', 'Devuelto', 'Perdido'].includes(e.estado)) {
+        const key = e.courier_id || 'sin_courier';
+        if (!courierMap.has(key)) {
+          courierMap.set(key, {
+            courier_id: e.courier_id || null,
+            courier_nombre: e.Courier ? e.Courier.nombre : 'Sin courier / propio',
+            despachados: 0, entregados: 0, devueltos: 0, perdidos: 0,
+          });
+        }
+        const c = courierMap.get(key);
+        c.despachados += 1;
+        if (e.estado === 'Entregado') c.entregados += 1;
+        if (e.estado === 'Devuelto') c.devueltos += 1;
+        if (e.estado === 'Perdido') c.perdidos += 1;
+      }
+    }
+
+    const desempenoCourier = Array.from(courierMap.values()).map(c => {
+      const conResultado = c.entregados + c.devueltos + c.perdidos;
+      return { ...c, pct_entrega: conResultado > 0 ? Number(((c.entregados / conResultado) * 100).toFixed(1)) : 0 };
+    }).sort((a, b) => b.despachados - a.despachados);
+
+    res.json({ trabajo_pendiente: trabajoPendiente, resultado_operativo: resultadoOperativo, desempeno_courier: desempenoCourier });
+  } catch (error) {
+    console.error('Error obteniendo dashboard general de pedidos:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/**
+ * GET /api/envios/:id/historial — historial simple de movimientos de un
+ * pedido (ver plan sección 24). Se consulta desde el detalle del pedido,
+ * nunca ocupa espacio permanente en la bandeja.
+ */
+exports.obtenerHistorial = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { id } = req.params;
+
+    const envio = await Envio.findOne({ where: { id, usuario_id } });
+    if (!envio) return res.status(404).json({ error: 'Envío no encontrado' });
+
+    const historial = await EnvioHistorial.findAll({
+      where: { envio_id: id },
+      include: [{ model: Usuario, attributes: ['id', 'nombre'] }],
+      order: [['created_at', 'ASC']],
+    });
+
+    res.json(historial.map(h => ({
+      id: h.id,
+      detalle: h.detalle,
+      usuario: h.Usuario ? h.Usuario.nombre : null,
+      fecha: h.created_at,
+    })));
+  } catch (error) {
+    console.error('Error obteniendo historial del pedido:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };

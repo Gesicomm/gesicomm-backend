@@ -27,4 +27,13 @@ router.post('/:id/perdida', envioController.registrarPerdida);
 // Contador de pedidos por estado, respetando los filtros activos (pestañas de la bandeja)
 router.post('/conteo-por-estado', envioController.conteoPorEstado);
 
+// Resumen financiero minimalista de la pestaña Entregados
+router.post('/resumen-entregados', envioController.resumenEntregados);
+
+// Dashboard general del módulo (3 bloques: trabajo pendiente, resultado operativo, desempeño courier)
+router.post('/dashboard-general', envioController.dashboardGeneralPedidos);
+
+// Historial/trazabilidad simple de un pedido
+router.get('/:id/historial', envioController.obtenerHistorial);
+
 module.exports = router;

@@ -25,6 +25,7 @@ const EnvioItemComponente = require('./EnvioItemComponente');
 const MetodoPago = require('./MetodoPago');
 const Liquidacion = require('./Liquidacion');
 const LiquidacionEnvio = require('./LiquidacionEnvio');
+const EnvioHistorial = require('./EnvioHistorial');
 const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
 const Landing = require('./Landing');
@@ -91,6 +92,12 @@ Liquidacion.hasMany(LiquidacionEnvio, { as: 'envios_incluidos', foreignKey: 'liq
 LiquidacionEnvio.belongsTo(Liquidacion, { foreignKey: 'liquidacion_id' });
 LiquidacionEnvio.belongsTo(Envio, { foreignKey: 'envio_id' });
 Envio.hasOne(LiquidacionEnvio, { foreignKey: 'envio_id' });
+
+// Historial/trazabilidad simple del pedido (ver plan sección 24)
+Envio.hasMany(EnvioHistorial, { as: 'historial', foreignKey: 'envio_id', onDelete: 'CASCADE' });
+EnvioHistorial.belongsTo(Envio, { foreignKey: 'envio_id' });
+Usuario.hasMany(EnvioHistorial, { foreignKey: 'usuario_id' });
+EnvioHistorial.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
 // ============================================================
 // Relaciones de Categoría
@@ -280,6 +287,7 @@ module.exports = {
   MetodoPago,
   Liquidacion,
   LiquidacionEnvio,
+  EnvioHistorial,
   PrecioUsuario,
   Tienda,
   Landing,
