@@ -22,7 +22,7 @@ const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
   ProductoImagen, ProductoVariante, LandingSeccion, LandingEvento, Testimonio, Faq, Envio, EnvioItem,
-  Oferta, OfertaComponente,
+  Oferta, OfertaComponente, sequelize
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 const { registrarHistorial } = require('../utils/historial');
@@ -298,32 +298,88 @@ class LandingService {
   static normalizarSeccion(seccion, idx) {
     return {
       tipo: seccion.tipo,
+      stable_id: seccion.stable_id || null,
+      page_type: seccion.page_type || 'landing',
+      template_id: seccion.template_id || null,
+      schema_version: seccion.schema_version || 1,
       nombre_interno: seccion.nombre_interno?.trim ? (seccion.nombre_interno.trim() || null) : null,
       activo: seccion.activo !== false,
       orden: seccion.orden !== undefined ? Number(seccion.orden) : idx,
-      config_json: seccion.config_json ?? seccion.config ?? {},
-      contenido_json: seccion.contenido_json ?? seccion.contenido ?? {},
+      content_json: seccion.content_json ?? seccion.contenido_json ?? seccion.contenido ?? {},
+      settings_json: seccion.settings_json ?? seccion.config_json ?? seccion.config ?? {},
+      responsive_json: seccion.responsive_json ?? {},
+      visibility_json: seccion.visibility_json ?? { desktop: true, tablet: true, mobile: true },
+      status: seccion.status || 'published',
     };
   }
 
-  static async sincronizarSecciones(landing_id, secciones = []) {
-    await LandingSeccion.destroy({ where: { landing_id } });
-    if (!secciones.length) return;
-    await LandingSeccion.bulkCreate(secciones.map((s, idx) => ({
-      landing_id,
-      ...this.normalizarSeccion(s, idx),
-    })));
+  static async sincronizarSecciones(landing_id, operaciones = []) {
+    // Para simplificar la migración ahora, vamos a soportar tanto el modo array (legacy) como operaciones reales.
+    const esArrayClasico = !operaciones.some(op => op.type === 'ADD' || op.type === 'UPDATE' || op.type === 'DELETE');
+    
+    if (esArrayClasico) {
+      // Legacy path, convertir a operaciones:
+      const existentes = await LandingSeccion.findAll({ where: { landing_id } });
+      const idsPayload = new Set(operaciones.map(s => s.stable_id).filter(Boolean));
+      
+      const ops = [];
+      for (const e of existentes) {
+        if (e.stable_id && !idsPayload.has(e.stable_id)) {
+          ops.push({ type: 'DELETE', stable_id: e.stable_id });
+        }
+      }
+      operaciones.forEach((s, idx) => {
+        if (!s.stable_id) ops.push({ type: 'ADD', payload: { ...s, orden: s.orden ?? idx } });
+        else if (existentes.some(e => e.stable_id === s.stable_id)) ops.push({ type: 'UPDATE', stable_id: s.stable_id, payload: { ...s, orden: s.orden ?? idx } });
+        else ops.push({ type: 'ADD', payload: { ...s, orden: s.orden ?? idx } });
+      });
+      operaciones = ops;
+    }
+
+    const t = await sequelize.transaction();
+    try {
+      for (const op of operaciones) {
+        switch (op.type) {
+          case 'ADD':
+            await LandingSeccion.create({ landing_id, ...this.normalizarSeccion(op.payload, op.payload.orden || 0) }, { transaction: t });
+            break;
+          case 'UPDATE':
+            await LandingSeccion.update(this.normalizarSeccion(op.payload, op.payload.orden || 0), { where: { landing_id, stable_id: op.stable_id }, transaction: t });
+            break;
+          case 'MOVE':
+            await LandingSeccion.update({ orden: op.orden }, { where: { landing_id, stable_id: op.stable_id }, transaction: t });
+            break;
+          case 'DELETE':
+            await LandingSeccion.destroy({ where: { landing_id, stable_id: op.stable_id }, transaction: t });
+            break;
+        }
+      }
+      await t.commit();
+    } catch (e) {
+      await t.rollback();
+      throw e;
+    }
   }
 
   static seccionDto(seccion, extra = {}) {
     return {
       id: seccion.id || null,
+      stable_id: seccion.stable_id || null,
+      page_type: seccion.page_type || 'landing',
+      template_id: seccion.template_id || null,
+      schema_version: seccion.schema_version || 1,
       tipo: seccion.tipo,
       nombre_interno: seccion.nombre_interno || null,
       activo: seccion.activo !== false,
       orden: Number(seccion.orden) || 0,
-      config: seccion.config_json || {},
-      contenido: seccion.contenido_json || {},
+      content_json: seccion.content_json || seccion.contenido_json || {},
+      settings_json: seccion.settings_json || seccion.config_json || {},
+      responsive_json: seccion.responsive_json || {},
+      visibility_json: seccion.visibility_json || { desktop: true, tablet: true, mobile: true },
+      status: seccion.status || 'published',
+      // Mantenemos estas temporalmente para no romper frontends viejos:
+      config: seccion.settings_json || seccion.config_json || {},
+      contenido: seccion.content_json || seccion.contenido_json || {},
       ...extra,
     };
   }
@@ -331,10 +387,10 @@ class LandingService {
   static construirSeccionesPublicas(landing, { items, testimonios, faq, banner }) {
     const guardadas = [...(landing.secciones || [])]
       .sort((a, b) => a.orden - b.orden)
-      .filter(s => s.activo !== false);
+      .filter(s => s.activo !== false && (s.status === 'published' || !s.status));
 
     if (guardadas.length) {
-      return guardadas.map(seccion => {
+      const mapeadas = guardadas.map(seccion => {
         if (seccion.tipo === 'productos') return this.seccionDto(seccion, { items });
         if (seccion.tipo === 'testimonios') return this.seccionDto(seccion, { items: testimonios });
         if (seccion.tipo === 'faq') return this.seccionDto(seccion, { items: faq });
@@ -348,26 +404,33 @@ class LandingService {
         }
         return this.seccionDto(seccion);
       });
+      return {
+        secciones: mapeadas.filter(s => s.page_type === 'landing'),
+        secciones_producto: mapeadas.filter(s => s.page_type === 'product'),
+      };
     }
 
     const secciones = [
-      this.seccionDto({ tipo: 'header', nombre_interno: 'Header principal', activo: true, orden: 0, config_json: { sticky: true, mostrar_busqueda: true, mostrar_carrito: true }, contenido_json: { logo_texto: landing.titulo || landing.nombre } }),
-      this.seccionDto({ tipo: 'hero', nombre_interno: 'Hero', activo: true, orden: 10, config_json: {}, contenido_json: { titulo: landing.titulo, descripcion: landing.descripcion } }),
-      this.seccionDto({ tipo: 'beneficios', nombre_interno: 'Beneficios', activo: true, orden: 20, config_json: {}, contenido_json: {} }),
-      this.seccionDto({ tipo: 'categorias', nombre_interno: 'Categorias', activo: true, orden: 30, config_json: {}, contenido_json: {} }),
-      this.seccionDto({ tipo: 'destacados', nombre_interno: 'Productos destacados', activo: true, orden: 40, config_json: {}, contenido_json: {} }),
+      this.seccionDto({ tipo: 'header', page_type: 'landing', nombre_interno: 'Header principal', activo: true, orden: 0, config_json: { sticky: true, mostrar_busqueda: true, mostrar_carrito: true }, contenido_json: { logo_texto: landing.titulo || landing.nombre } }),
+      this.seccionDto({ tipo: 'hero', page_type: 'landing', nombre_interno: 'Hero', activo: true, orden: 10, config_json: {}, contenido_json: { titulo: landing.titulo, descripcion: landing.descripcion } }),
+      this.seccionDto({ tipo: 'beneficios', page_type: 'landing', nombre_interno: 'Beneficios', activo: true, orden: 20, config_json: {}, contenido_json: {} }),
+      this.seccionDto({ tipo: 'categorias', page_type: 'landing', nombre_interno: 'Categorias', activo: true, orden: 30, config_json: {}, contenido_json: {} }),
+      this.seccionDto({ tipo: 'destacados', page_type: 'landing', nombre_interno: 'Productos destacados', activo: true, orden: 40, config_json: {}, contenido_json: {} }),
     ];
     if (banner) {
-      secciones.push(this.seccionDto({ tipo: 'banner', nombre_interno: 'Banner', activo: true, orden: 50, config_json: {}, contenido_json: banner }));
+      secciones.push(this.seccionDto({ tipo: 'banner', page_type: 'landing', nombre_interno: 'Banner', activo: true, orden: 50, config_json: {}, contenido_json: banner }));
     }
     secciones.push(
-      this.seccionDto({ tipo: 'productos', nombre_interno: 'Catalogo', activo: true, orden: 60, config_json: {}, contenido_json: { titulo: 'Todos los productos' } }, { items }),
-      this.seccionDto({ tipo: 'testimonios', nombre_interno: 'Opiniones', activo: testimonios.length > 0, orden: 70, config_json: {}, contenido_json: { titulo: 'Opiniones de clientes' } }, { items: testimonios }),
-      this.seccionDto({ tipo: 'faq', nombre_interno: 'Preguntas frecuentes', activo: faq.length > 0, orden: 80, config_json: {}, contenido_json: { titulo: 'Preguntas frecuentes' } }, { items: faq }),
-      this.seccionDto({ tipo: 'footer', nombre_interno: 'Footer', activo: true, orden: 90, config_json: {}, contenido_json: { titulo: landing.titulo, descripcion: landing.descripcion } })
+      this.seccionDto({ tipo: 'productos', page_type: 'landing', nombre_interno: 'Catalogo', activo: true, orden: 60, config_json: {}, contenido_json: { titulo: 'Todos los productos' } }, { items }),
+      this.seccionDto({ tipo: 'testimonios', page_type: 'landing', nombre_interno: 'Opiniones', activo: testimonios.length > 0, orden: 70, config_json: {}, contenido_json: { titulo: 'Opiniones de clientes' } }, { items: testimonios }),
+      this.seccionDto({ tipo: 'faq', page_type: 'landing', nombre_interno: 'Preguntas frecuentes', activo: faq.length > 0, orden: 80, config_json: {}, contenido_json: { titulo: 'Preguntas frecuentes' } }, { items: faq }),
+      this.seccionDto({ tipo: 'footer', page_type: 'landing', nombre_interno: 'Footer', activo: true, orden: 90, config_json: {}, contenido_json: { titulo: landing.titulo, descripcion: landing.descripcion } })
     );
 
-    return secciones.filter(s => s.activo !== false);
+    return {
+      secciones: secciones.filter(s => s.activo !== false),
+      secciones_producto: [],
+    };
   }
 
   // ─── Campos simples (comunes a crear/actualizar) ────────────────────────
@@ -1147,7 +1210,7 @@ class LandingService {
       pregunta: f.pregunta,
       respuesta: f.respuesta,
     }));
-    const seccionesDto = this.construirSeccionesPublicas(landing, {
+    const { secciones, secciones_producto } = this.construirSeccionesPublicas(landing, {
       items: itemsDto,
       testimonios: testimoniosDto,
       faq: faqDto,
@@ -1231,7 +1294,8 @@ class LandingService {
         tiktok_pixel_id: tienda.tiktok_pixel_id || null,
       },
       items: itemsDto,
-      secciones: seccionesDto,
+      secciones: secciones,
+      secciones_producto: secciones_producto,
       testimonios: testimoniosDto,
       faq: faqDto,
     };

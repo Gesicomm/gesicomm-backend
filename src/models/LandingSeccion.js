@@ -16,24 +16,22 @@ const LandingSeccion = sequelize.define('LandingSeccion', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  stable_id: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+  },
   tipo: {
-    type: DataTypes.ENUM(
-      'header',
-      'announcement_bar',
-      'hero',
-      'beneficios',
-      'categorias',
-      'destacados',
-      'productos',
-      'banner',
-      'texto',
-      'como_funciona',
-      'faq',
-      'testimonios',
-      'redes_sociales',
-      'footer'
-    ),
+    type: DataTypes.STRING(40),
     allowNull: false,
+  },
+  page_type: {
+    type: DataTypes.STRING(30),
+    allowNull: false,
+    defaultValue: 'landing',
+  },
+  template_id: {
+    type: DataTypes.STRING(60),
+    allowNull: true,
   },
   nombre_interno: {
     type: DataTypes.STRING(120),
@@ -49,15 +47,35 @@ const LandingSeccion = sequelize.define('LandingSeccion', {
     allowNull: false,
     defaultValue: 0,
   },
-  config_json: {
+  content_json: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    defaultValue: {},
+  },
+  settings_json: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    defaultValue: {},
+  },
+  responsive_json: {
     type: DataTypes.JSONB,
     allowNull: false,
     defaultValue: {},
   },
-  contenido_json: {
+  visibility_json: {
     type: DataTypes.JSONB,
     allowNull: false,
-    defaultValue: {},
+    defaultValue: { desktop: true, tablet: true, mobile: true },
+  },
+  status: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'published',
+  },
+  schema_version: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 1,
   },
 }, {
   tableName: 'landing_secciones',
