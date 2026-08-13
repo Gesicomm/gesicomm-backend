@@ -357,10 +357,24 @@ router.post('/logout', verificarToken, (req, res) => {
   auditoria('LOGOUT', { usuarioId: req.usuario.id, ip: req.ip });
 
   const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || (req.headers.host && req.headers.host.includes('localhost'));
+  const isSecure = !isLocalhost && process.env.NODE_ENV === 'production';
   const domain = isLocalhost ? undefined : cookieDomain;
+  const sameSite = isLocalhost ? 'Lax' : 'Strict';
 
-  res.clearCookie('accessToken', { ...(domain && { domain }) });
-  res.clearCookie('refreshToken', { path: '/api/auth/refresh', ...(domain && { domain }) });
+  res.clearCookie('accessToken', { 
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: sameSite,
+    ...(domain && { domain }) 
+  });
+  
+  res.clearCookie('refreshToken', { 
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: sameSite,
+    path: '/api/auth/refresh', 
+    ...(domain && { domain }) 
+  });
 
   return res.json({ message: 'Sesión cerrada correctamente.' });
 });

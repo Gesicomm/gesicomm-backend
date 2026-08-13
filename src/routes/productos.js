@@ -9,6 +9,7 @@ const ctrl = require('../controllers/producto.controller');
 const imgCtrl = require('../controllers/imagen.controller');
 const comboRoutes = require('./combos');
 const ofertaRoutes = require('./ofertas');
+const landingCtrl = require('../controllers/landing.controller');
 
 router.use(verificarToken);
 
@@ -32,5 +33,11 @@ router.use('/:productoId/combos', comboRoutes);
 
 // Ofertas comerciales
 router.use('/:productoId/ofertas', ofertaRoutes);
+
+// Diseño de página propio del producto (page-builder) — mismo permiso que
+// el resto del armador de landings, no editar_productos: es contenido
+// visual de la vidriera, no un dato del catálogo.
+router.get('/:id/pagina-secciones', verificarPermiso('gestionar_landing'), landingCtrl.seccionesProducto);
+router.put('/:id/pagina-secciones', verificarPermiso('gestionar_landing'), landingCtrl.guardarSeccionesProducto);
 
 module.exports = router;

@@ -94,6 +94,54 @@ async function listar(req, res) {
   }
 }
 
+/**
+ * Garantiza y devuelve las 3 páginas fijas del sitio (Inicio/Catálogo/
+ * Contacto) — ver LandingService.asegurarPaginasFijas(). Ruta montada
+ * ANTES de /:id (ver routes/landing.js) para que Express no la capture
+ * como si "paginas" fuera un id.
+ */
+async function paginas(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    const paginas = await LandingService.asegurarPaginasFijas(tienda.id, req.usuario.tenantId);
+    return res.json(paginas);
+  } catch (err) {
+    console.error('[landing] paginas:', err.message);
+    return res.status(500).json({ message: 'Error al obtener las páginas.' });
+  }
+}
+
+/**
+ * Diseño de página propio de un producto — montado en
+ * /api/productos/:id/pagina-secciones (ver routes/productos.js), no bajo
+ * /mis-landings, porque el recurso es "la página de ESTE producto", no
+ * una landing puntual.
+ */
+async function seccionesProducto(req, res) {
+  try {
+    const secciones = await LandingService.obtenerSeccionesProducto(req.params.id, req.usuario.tenantId);
+    return res.json(secciones);
+  } catch (err) {
+    const status = err.message === 'Producto no encontrado.' ? 404 : 500;
+    return res.status(status).json({ message: err.message || 'Error al obtener el diseño del producto.' });
+  }
+}
+
+async function guardarSeccionesProducto(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    const secciones = await LandingService.guardarSeccionesProducto(
+      req.params.id, req.usuario.tenantId, tienda.id, req.body.secciones || []
+    );
+    return res.json(secciones);
+  } catch (err) {
+    const status = err.message === 'Producto no encontrado.' ? 404 : 400;
+    return res.status(status).json({ message: err.message || 'Error al guardar el diseño del producto.' });
+  }
+}
+
 async function crear(req, res) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
@@ -303,7 +351,7 @@ async function estadisticasRango(req, res) {
 }
 
 module.exports = {
-  listar, crear, detalle, actualizar, eliminar, cambiarEstado,
+  listar, paginas, seccionesProducto, guardarSeccionesProducto, crear, detalle, actualizar, eliminar, cambiarEstado,
   subirImagenLandingMiddleware,
   subirBanner, eliminarBanner,
   subirSeoImagen, eliminarSeoImagen,

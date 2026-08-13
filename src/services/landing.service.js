@@ -49,11 +49,18 @@ const TIPOS_SECCION = new Set([
   'productos',
   'banner',
   'texto',
+  'rich_text',
   'como_funciona',
   'faq',
   'testimonios',
   'redes_sociales',
   'footer',
+  'product_detail',
+  'cta',
+  'image_text',
+  'logo_list',
+  'before_after',
+  'scrolling_text',
 ]);
 
 class LandingService {
@@ -298,8 +305,21 @@ class LandingService {
   static normalizarSeccion(seccion, idx) {
     return {
       tipo: seccion.tipo,
-      stable_id: seccion.stable_id || null,
+      // Si no viene stable_id se genera acá — nunca se deja en null. Las
+      // secciones "base" (getSeccionesBase()/getSeccionesCatalogo()/etc,
+      // en el frontend) no traen una hasta el primer Guardar, y sin esto
+      // sincronizarSecciones()/guardarSeccionesProducto() no tienen forma
+      // de reconocerlas en el SIGUIENTE guardado — las tratan como nuevas
+      // y las duplican cada vez (bug real detectado: filas de header/hero/
+      // footer repetidas 3-4 veces en una misma landing tras varios
+      // guardados). Acá se cierra en la raíz, para ambos callers.
+      stable_id: seccion.stable_id || crypto.randomBytes(6).toString('hex'),
       page_type: seccion.page_type || 'landing',
+      // NULL = plantilla "Vista de Producto" compartida (comportamiento de
+      // siempre). Con valor = diseño exclusivo de ESE producto — ver
+      // obtenerProductoPublico(). Solo tiene sentido junto a page_type
+      // 'product'; en 'landing' siempre viaja null.
+      producto_id: seccion.producto_id ? Number(seccion.producto_id) : null,
       template_id: seccion.template_id || null,
       schema_version: seccion.schema_version || 1,
       nombre_interno: seccion.nombre_interno?.trim ? (seccion.nombre_interno.trim() || null) : null,
@@ -361,11 +381,77 @@ class LandingService {
     }
   }
 
+  /**
+   * Secciones del diseño propio de UN producto (page_type='product',
+   * producto_id=X) — independiente de qué landing/página esté editando el
+   * usuario, porque el diseño es una propiedad del producto (ver
+   * obtenerProductoPublico). Devuelve [] si el producto todavía usa la
+   * plantilla compartida (nunca activó diseño propio).
+   */
+  static async obtenerSeccionesProducto(producto_id, inquilino_id) {
+    const producto = await Producto.findOne({ where: { id: producto_id, inquilino_id }, attributes: ['id'] });
+    if (!producto) throw new Error('Producto no encontrado.');
+
+    const secciones = await LandingSeccion.findAll({
+      where: { producto_id, page_type: 'product' },
+      order: [['orden', 'ASC']],
+    });
+    return secciones.map(s => this.seccionDto(s));
+  }
+
+  /**
+   * Reemplaza el diseño propio de un producto — mismo algoritmo de diff
+   * por stable_id que sincronizarSecciones() en modo "array clásico", pero
+   * scopeado por producto_id en vez de landing_id, así que NUNCA toca la
+   * plantilla compartida (producto_id NULL) ni el diseño de otro producto,
+   * sin importar qué payload mande el cliente.
+   */
+  static async guardarSeccionesProducto(producto_id, inquilino_id, tienda_id, secciones = []) {
+    const producto = await Producto.findOne({ where: { id: producto_id, inquilino_id }, attributes: ['id'] });
+    if (!producto) throw new Error('Producto no encontrado.');
+
+    // landing_id es NOT NULL en el schema, pero para estas filas es solo
+    // bookkeeping — la lectura pública nunca filtra por landing_id cuando
+    // hay producto_id (ver obtenerProductoPublico). 'inicio' es un ancla
+    // estable: toda tienda tiene una vía asegurarPaginasFijas().
+    const inicio = await Landing.findOne({ where: { tienda_id, tipo_pagina: 'inicio' }, attributes: ['id'] });
+    if (!inicio) throw new Error('La tienda todavía no tiene una página de Inicio.');
+
+    const existentes = await LandingSeccion.findAll({ where: { producto_id, page_type: 'product' } });
+    const idsPayload = new Set(secciones.map(s => s.stable_id).filter(Boolean));
+
+    const t = await sequelize.transaction();
+    try {
+      for (const e of existentes) {
+        if (e.stable_id && !idsPayload.has(e.stable_id)) {
+          await LandingSeccion.destroy({ where: { producto_id, stable_id: e.stable_id }, transaction: t });
+        }
+      }
+      for (let idx = 0; idx < secciones.length; idx++) {
+        const s = secciones[idx];
+        const normalizado = { ...this.normalizarSeccion(s, idx), page_type: 'product', producto_id };
+        const yaExiste = s.stable_id && existentes.some(e => e.stable_id === s.stable_id);
+        if (yaExiste) {
+          await LandingSeccion.update(normalizado, { where: { producto_id, stable_id: s.stable_id }, transaction: t });
+        } else {
+          await LandingSeccion.create({ landing_id: inicio.id, ...normalizado }, { transaction: t });
+        }
+      }
+      await t.commit();
+    } catch (err) {
+      await t.rollback();
+      throw err;
+    }
+
+    return this.obtenerSeccionesProducto(producto_id, inquilino_id);
+  }
+
   static seccionDto(seccion, extra = {}) {
     return {
       id: seccion.id || null,
       stable_id: seccion.stable_id || null,
       page_type: seccion.page_type || 'landing',
+      producto_id: seccion.producto_id || null,
       template_id: seccion.template_id || null,
       schema_version: seccion.schema_version || 1,
       tipo: seccion.tipo,
@@ -470,9 +556,15 @@ class LandingService {
   // ─── CRUD privado (scopeado por tienda_id) ──────────────────────────────
 
   static async crear(tienda_id, inquilino_id, payload) {
-    const cantidadActual = await Landing.count({ where: { tienda_id } });
+    // Con páginas fijas por rol (ver asegurarPaginasFijas), el cap es "una
+    // por tipo_pagina" — no un total global de 1. En la práctica este
+    // método casi no se llama más: MiLandingEntry.jsx asegura las 3
+    // páginas al entrar al editor, así que siempre hay un :id para editar.
+    // Queda como resguardo si algo llega a pedir crear una landing suelta.
+    const tipoPagina = payload.tipo_pagina || 'inicio';
+    const cantidadActual = await Landing.count({ where: { tienda_id, tipo_pagina: tipoPagina } });
     if (cantidadActual >= MAX_LANDINGS_POR_TIENDA) {
-      throw new Error(`Ya alcanzaste el máximo de ${MAX_LANDINGS_POR_TIENDA} landings.`);
+      throw new Error(`Ya existe una página de tipo "${tipoPagina}" para esta tienda.`);
     }
 
     if (!payload.nombre?.trim()) throw new Error('El nombre es obligatorio.');
@@ -498,11 +590,10 @@ class LandingService {
       nombre: payload.nombre.trim(),
       titulo: payload.titulo?.trim() || payload.nombre.trim(),
       slug,
-      // Con el cap de 1 landing por tienda, siempre es la landing raíz —
-      // no hay ninguna otra con la que competir por el home. El slug se
-      // sigue generando (columna NOT NULL) pero no se usa para resolverla:
-      // obtenerPublica()/obtenerIdParaEvento() la sirven en "/l" directo.
-      es_home: true,
+      tipo_pagina: tipoPagina,
+      // Solo la página 'inicio' es la raíz del hostname — ver
+      // asegurarPaginasFijas() para el alta normal de las 3 páginas fijas.
+      es_home: tipoPagina === 'inicio',
       activo: false,
     });
 
@@ -596,6 +687,79 @@ class LandingService {
     return landings.map(l => l.toJSON());
   }
 
+  /**
+   * Garantiza las 3 páginas fijas del sitio (Inicio/Catálogo/Contacto) —
+   * `findOrCreate` por rol, nunca duplica. Se llama al entrar al armador
+   * (ver GET /mis-landings/paginas), así que una tienda vieja (con su
+   * única landing ya existente, migrada a tipo_pagina='inicio' por
+   * migrate-landing-tipo-pagina.js) termina con Catálogo y Contacto
+   * creadas recién la primera vez que alguien abre el editor después de
+   * este cambio — no hace falta un backfill masivo aparte.
+   *
+   * Bypassa crear()/validarPayload() a propósito: estas filas nacen sin
+   * items ni secciones (el editor las completa con getSeccionesBase() /
+   * getSeccionesCatalogo() / getSeccionesContacto() del lado del cliente
+   * recién al guardar), así que la validación de "al menos un item" de
+   * crear() no aplica acá.
+   */
+  // Campos de identidad visual: las 3 páginas fijas son EL MISMO sitio,
+  // así que Catálogo/Contacto nunca tienen tema propio — siempre reflejan
+  // el de Inicio. No son editables de forma independiente por diseño (ver
+  // asegurarPaginasFijas más abajo, que los re-sincroniza en cada carga).
+  static CAMPOS_TEMA = ['tema_modo', 'color_primario', 'color_fondo', 'color_texto', 'color_tarjeta', 'radio_bordes', 'fuente'];
+
+  static async asegurarPaginasFijas(tienda_id, inquilino_id) {
+    const ROLES = [
+      { tipo_pagina: 'inicio', nombre: 'Inicio', es_home: true },
+      { tipo_pagina: 'catalogo', nombre: 'Catálogo', es_home: false },
+      { tipo_pagina: 'contacto', nombre: 'Contacto', es_home: false },
+    ];
+
+    const existentes = await Landing.findAll({ where: { tienda_id } });
+    const porTipo = new Map(existentes.map(l => [l.tipo_pagina, l]));
+    const inicioExistente = porTipo.get('inicio');
+    const temaInicio = inicioExistente
+      ? Object.fromEntries(this.CAMPOS_TEMA.map(c => [c, inicioExistente[c]]))
+      : {};
+
+    for (const rol of ROLES) {
+      if (porTipo.has(rol.tipo_pagina)) continue;
+      const slug = await this.generarSlugUnico(rol.nombre, tienda_id);
+      await Landing.create({
+        inquilino_id,
+        tienda_id,
+        nombre: rol.nombre,
+        titulo: rol.nombre,
+        slug,
+        tipo_pagina: rol.tipo_pagina,
+        es_home: rol.es_home,
+        activo: false,
+        // Catálogo/Contacto nacen con el tema vigente de Inicio, no con
+        // el default del schema — si Inicio todavía no existe (primera
+        // vez que se llama, se crea antes en este mismo loop por el orden
+        // de ROLES) usan el default, y quedan sincronizadas igual en el
+        // paso de abajo la próxima vez que se llame esta función.
+        ...(rol.tipo_pagina !== 'inicio' ? temaInicio : {}),
+      });
+    }
+
+    // Re-sincroniza SIEMPRE (no solo al crear): si la dueña cambia colores/
+    // fuente desde Inicio, Catálogo y Contacto tienen que reflejarlo la
+    // próxima vez que se abra el armador — no son un tema independiente.
+    const inicioActual = porTipo.get('inicio') || await Landing.findOne({ where: { tienda_id, tipo_pagina: 'inicio' } });
+    if (inicioActual) {
+      const temaActual = Object.fromEntries(this.CAMPOS_TEMA.map(c => [c, inicioActual[c]]));
+      await Landing.update(temaActual, { where: { tienda_id, tipo_pagina: { [Op.in]: ['catalogo', 'contacto'] } } });
+    }
+
+    const paginas = await Landing.findAll({
+      where: { tienda_id },
+      attributes: ['id', 'tipo_pagina', 'slug', 'nombre', 'titulo', 'activo'],
+      order: [['tipo_pagina', 'ASC']],
+    });
+    return paginas.map(p => p.toJSON());
+  }
+
   static async obtener(id, tienda_id) {
     const landing = await Landing.findOne({
       where: { id, tienda_id },
@@ -616,7 +780,18 @@ class LandingService {
       ],
     });
     if (!landing) throw new Error('Landing no encontrada.');
-    return landing.toJSON();
+    const json = landing.toJSON();
+    // Mapear secciones: content_json/settings_json → contenido/config para compatibilidad con frontend
+    if (Array.isArray(json.secciones)) {
+      json.secciones = json.secciones.map(s => ({
+        ...s,
+        contenido_json: s.content_json,
+        config_json: s.settings_json,
+        contenido: s.content_json,
+        config: s.settings_json,
+      }));
+    }
+    return json;
   }
 
   /**
@@ -640,7 +815,8 @@ class LandingService {
     const landing = await Landing.findOne({ where: { id, tienda_id } });
     if (!landing) throw new Error('Landing no encontrada.');
 
-    if (activo) {
+    // Contacto es la única de las 3 páginas fijas sin catálogo propio.
+    if (activo && landing.tipo_pagina !== 'contacto') {
       const cantidadItems = await LandingItem.count({ where: { landing_id: landing.id } });
       if (cantidadItems === 0) throw new Error('No se puede publicar una landing sin productos.');
     }
@@ -1159,14 +1335,29 @@ class LandingService {
       // acá van las adicionales: pack x2/x3, order bump, upsell, combo). No se
       // exponen ni el código interno ni la receta de stock — el checkout solo
       // necesita el id para volver a resolver todo eso del lado del servidor.
-      const ofertasDto = !esCombo ? (mapaOfertas.get(entidad.id) || []).map(o => ({
-        id: o.id,
-        nombre: o.nombre,
-        tipo_contenido: o.tipo_contenido,
-        estrategia: o.estrategia,
-        precio: parseFloat(o.precio) || 0,
-        descripcion: o.descripcion || null,
-      })) : [];
+      const ofertasDto = !esCombo ? (mapaOfertas.get(entidad.id) || []).map(o => {
+        // "unidades" es SOLO para packs (nunca combos, misma razón que ya
+        // documenta el comentario de arriba: no filtrar la receta) — se
+        // deriva del componente que apunta al producto ancla ("Earplugs x3"
+        // = 1 componente {producto_id: earplugs, cantidad: 3}, ver
+        // OfertaComponente.js). Con esto el frontend puede calcular el %
+        // de ahorro (1 - precio/(precio_individual*unidades)) sin que el
+        // backend le mande la receta completa de componentes.
+        let unidades = null;
+        if (o.tipo_contenido === 'pack') {
+          const propio = (o.componentes || []).find(c => c.producto_id === entidad.id);
+          unidades = propio?.cantidad || (o.componentes || []).reduce((s, c) => s + (c.cantidad || 0), 0) || null;
+        }
+        return {
+          id: o.id,
+          nombre: o.nombre,
+          tipo_contenido: o.tipo_contenido,
+          estrategia: o.estrategia,
+          precio: parseFloat(o.precio) || 0,
+          descripcion: o.descripcion || null,
+          unidades,
+        };
+      }) : [];
 
       itemsDto.push({
         // ID público estable — nunca LandingItem.id (cambiaría entre landings para el mismo producto).
@@ -1298,6 +1489,20 @@ class LandingService {
       secciones_producto: secciones_producto,
       testimonios: testimoniosDto,
       faq: faqDto,
+      // Para que el header pueda armar links tipo "Página" entre Inicio/
+      // Catálogo/Contacto (ver HeaderInspector.jsx/HeaderBlock.jsx) — solo
+      // lo mínimo para resolver un href, nada de contenido de la otra
+      // página. slug=null en 'inicio' a propósito: la home se resuelve
+      // siempre en la raíz del hostname (GET /api/l/ sin slug), nunca por
+      // su propio slug — igual que el resto de esta función.
+      paginas_hermanas: (await Landing.findAll({
+        where: { tienda_id: tienda.id, activo: true },
+        attributes: ['tipo_pagina', 'slug', 'titulo', 'nombre'],
+      })).map(p => ({
+        tipo_pagina: p.tipo_pagina,
+        slug: p.tipo_pagina === 'inicio' ? null : p.slug,
+        titulo: p.titulo || p.nombre,
+      })),
     };
   }
 
@@ -1309,8 +1514,31 @@ class LandingService {
     const item = (landing.items || []).find(i => i.content_id === productoSlug);
     if (!item) return null;
 
+    // Diseño propio del producto (ver LandingSeccion.producto_id): es una
+    // propiedad DEL PRODUCTO, no de la página/landing desde la que se
+    // navegó a él — por eso se busca sin filtrar por landing_id. Si no
+    // existe ninguna, se deja `secciones_producto` tal cual vino de
+    // obtenerPublica() (la plantilla compartida de siempre).
+    let seccionesProducto = landing.secciones_producto;
+    if (item.tipo === 'producto') {
+      const producto = await Producto.findOne({
+        where: { slug: productoSlug, inquilino_id: tienda.inquilino_id },
+        attributes: ['id'],
+      });
+      if (producto) {
+        const propias = await LandingSeccion.findAll({
+          where: { producto_id: producto.id, page_type: 'product', activo: true },
+          order: [['orden', 'ASC']],
+        });
+        if (propias.length > 0) {
+          seccionesProducto = propias.map(s => this.seccionDto(s));
+        }
+      }
+    }
+
     return {
       ...landing,
+      secciones_producto: seccionesProducto,
       producto: item,
       seo: {
         titulo: item.nombre,

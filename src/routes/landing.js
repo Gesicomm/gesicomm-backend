@@ -16,6 +16,7 @@ router.use(verificarToken);
 router.use(verificarPermiso('gestionar_landing'));
 
 router.get('/', ctrl.listar);
+router.get('/paginas', ctrl.paginas);
 router.post('/', ctrl.crear);
 router.get('/:id', ctrl.detalle);
 router.put('/:id', ctrl.actualizar);
