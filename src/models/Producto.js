@@ -67,6 +67,11 @@ const Producto = sequelize.define('Producto', {
     allowNull: false,
     defaultValue: 0,
   },
+  precio_tachado: {
+    type: DataTypes.DECIMAL(12, 2),
+    allowNull: true,
+    comment: 'Precio fantasía: precio "antes" que se muestra tachado en la landing para indicar oferta. Ej: producto costaba 300.000, ahora sale 220.000.',
+  },
   descuento_porcentaje: {
     type: DataTypes.DECIMAL(5, 2),
     allowNull: true,

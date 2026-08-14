@@ -1388,6 +1388,14 @@ class LandingService {
         descripcion: esCombo ? entidad.descripcion : entidad.descripcion_corta,
         descripcion_larga: esCombo ? null : entidad.descripcion_larga,
         precio: precioEfectivo,
+        // Precio fantasía: si está seteado en el producto, aparece tachado
+        // en la landing indicando el precio original / "antes".
+        precio_antes: !esCombo && entidad.precio_tachado ? parseFloat(entidad.precio_tachado) : null,
+        // % de descuento calculado desde precio_tachado vs precio efectivo.
+        // Si no hay precio_tachado, descuento_pct = 0 (no se muestra badge).
+        descuento_pct: (!esCombo && entidad.precio_tachado && parseFloat(entidad.precio_tachado) > precioEfectivo)
+          ? Math.round((1 - precioEfectivo / parseFloat(entidad.precio_tachado)) * 100)
+          : 0,
         imagen: imagenesDto[0] || null,
         imagenes: imagenesDto,
         stock: esCombo ? (productoParaFiltros?.cantidad_disponible ?? null) : entidad.cantidad_disponible,
