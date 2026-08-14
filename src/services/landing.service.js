@@ -61,6 +61,7 @@ const TIPOS_SECCION = new Set([
   'logo_list',
   'before_after',
   'scrolling_text',
+  'producto_galeria',
 ]);
 
 class LandingService {
@@ -339,7 +340,16 @@ class LandingService {
     
     if (esArrayClasico) {
       // Legacy path, convertir a operaciones:
-      const existentes = await LandingSeccion.findAll({ where: { landing_id } });
+      //
+      // producto_id: null es CRÍTICO acá — guardarSeccionesProducto()
+      // cuelga el diseño propio de un producto de este mismo landing_id
+      // (ver comentario ahí, es solo bookkeeping porque la columna es NOT
+      // NULL). Sin este filtro, cada Guardar de la landing normal detecta
+      // esas filas como "no están en mi payload" y las BORRA — bug real
+      // que borró el diseño de dos productos durante las pruebas de esta
+      // sesión antes de encontrarlo. Este método nunca debe tocar filas
+      // con producto_id seteado.
+      const existentes = await LandingSeccion.findAll({ where: { landing_id, producto_id: null } });
       const idsPayload = new Set(operaciones.map(s => s.stable_id).filter(Boolean));
       
       const ops = [];
@@ -765,7 +775,15 @@ class LandingService {
       where: { id, tienda_id },
       include: [
         { model: LandingItem, as: 'items' },
-        { model: LandingSeccion, as: 'secciones' },
+        // producto_id: null — SOLO las secciones de la landing en sí. El
+        // diseño propio de cada producto cuelga de este MISMO landing_id
+        // (ver guardarSeccionesProducto: landing_id ahí es bookkeeping,
+        // la columna es NOT NULL), así que sin este filtro el editor de
+        // "Mi landing" cargaba las secciones de TODOS los productos como
+        // si fueran suyas y al guardar las re-creaba como copias —
+        // duplicando header/detalle/beneficios una tanda por guardado.
+        // Ese era el origen real de los duplicados.
+        { model: LandingSeccion, as: 'secciones', required: false, where: { producto_id: null } },
         { model: Testimonio, as: 'testimonios' },
         { model: Faq, as: 'faq' },
       ],
@@ -1162,7 +1180,10 @@ class LandingService {
       where,
       include: [
         { model: LandingItem, as: 'items' },
-        { model: LandingSeccion, as: 'secciones' },
+        // producto_id: null por el mismo motivo que en obtener() — el
+        // diseño propio de un producto lo resuelve obtenerProductoPublico()
+        // aparte, nunca se mezcla con las secciones de la landing.
+        { model: LandingSeccion, as: 'secciones', required: false, where: { producto_id: null } },
       ],
       // Ver nota en obtener(): el orden va acá, no dentro del include.
       order: [
