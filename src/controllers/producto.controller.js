@@ -19,7 +19,7 @@ const ImagenService = require('../services/imagen.service');
 async function buscar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const esAdmin = req.usuario.rol === 'administrador';
+    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
     
     if (req.body.mios_solamente && !esAdmin) {
       req.body.creado_por = req.usuario.id;
@@ -38,7 +38,7 @@ async function crear(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const usuario_id = req.usuario.id;
-    const esAdmin = req.usuario.rol === 'administrador';
+    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
     const { variantes = [], relacionados = [] } = req.body;
 
     const producto = await ProductoService.crear(req.body, inquilino_id, usuario_id, esAdmin, t);
@@ -76,7 +76,7 @@ async function crear(req, res) {
 async function detalle(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const esAdmin = req.usuario.rol === 'administrador';
+    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
     const producto = await ProductoService.detalle(req.params.id, inquilino_id, esAdmin);
     return res.json(producto);
   } catch (err) {
@@ -134,7 +134,7 @@ async function actualizar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const usuario_id = req.usuario.id;
-    const esAdmin = req.usuario.rol === 'administrador';
+    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
     
     const producto = await ProductoService.actualizar(req.params.id, req.body, inquilino_id, usuario_id, esAdmin, t);
 
@@ -158,7 +158,7 @@ async function actualizar(req, res) {
 async function eliminar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const esAdmin = req.usuario.rol === 'administrador';
+    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
     await ProductoService.eliminar(req.params.id, inquilino_id, req.usuario.id, esAdmin);
     return res.json({ message: 'Producto dado de baja correctamente.' });
   } catch (err) {
