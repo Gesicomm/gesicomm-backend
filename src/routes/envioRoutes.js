@@ -36,4 +36,7 @@ router.post('/dashboard-general', envioController.dashboardGeneralPedidos);
 // Historial/trazabilidad simple de un pedido
 router.get('/:id/historial', envioController.obtenerHistorial);
 
+// Eliminar un pedido (solo admin)
+router.delete('/:id', envioController.deleteEnvio);
+
 module.exports = router;

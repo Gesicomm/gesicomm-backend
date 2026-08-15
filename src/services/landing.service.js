@@ -321,7 +321,7 @@ class LandingService {
       // obtenerProductoPublico(). Solo tiene sentido junto a page_type
       // 'product'; en 'landing' siempre viaja null.
       producto_id: seccion.producto_id ? Number(seccion.producto_id) : null,
-      template_id: seccion.template_id || null,
+      template_id: seccion.template_id || seccion.template || null,
       schema_version: seccion.schema_version || 1,
       nombre_interno: seccion.nombre_interno?.trim ? (seccion.nombre_interno.trim() || null) : null,
       activo: seccion.activo !== false,
@@ -476,6 +476,7 @@ class LandingService {
       // Mantenemos estas temporalmente para no romper frontends viejos:
       config: seccion.settings_json || seccion.config_json || {},
       contenido: seccion.content_json || seccion.contenido_json || {},
+      template: seccion.template_id || seccion.template || null,
       ...extra,
     };
   }

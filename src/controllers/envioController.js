@@ -1159,3 +1159,55 @@ exports.getDashboardMetricas = async (req, res) => {
   }
 };
 
+exports.deleteEnvio = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const usuario_id = req.usuario.id;
+    const { id } = req.params;
+
+    if (req.usuario.rol !== 'ADMIN') {
+      await t.rollback();
+      return res.status(403).json({ error: 'Solo los administradores pueden eliminar pedidos' });
+    }
+
+    const envio = await Envio.findOne({
+      where: { id, usuario_id: req.usuario.tenantId },
+      include: [{ model: EnvioItem, as: 'items' }],
+      transaction: t,
+    });
+
+    if (!envio) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Pedido no encontrado' });
+    }
+
+    // Liberar stock si estaba descontado y no liberado
+    if (envio.stock_descontado && !envio.stock_liberado) {
+      // Usamos la misma lógica que se usa al cancelar
+      await liberarStock(envio, envio.items || [], t);
+    }
+
+    // Eliminar historial
+    await EnvioHistorial.destroy({ where: { envio_id: id }, transaction: t });
+
+    // Eliminar componentes de items si existen
+    const itemIds = (envio.items || []).map(i => i.id);
+    if (itemIds.length > 0) {
+      await EnvioItemComponente.destroy({ where: { envio_item_id: { [Op.in]: itemIds } }, transaction: t });
+      await EnvioItem.destroy({ where: { envio_id: id }, transaction: t });
+    }
+
+    // Finalmente eliminar el pedido
+    await envio.destroy({ transaction: t });
+
+    await registrarHistorial(id, usuario_id, 'Pedido eliminado permanentemente', t).catch(() => {});
+
+    await t.commit();
+    res.json({ message: 'Pedido eliminado correctamente' });
+  } catch (error) {
+    if (!t.finished) await t.rollback();
+    console.error('Error al eliminar pedido:', error);
+    res.status(500).json({ error: 'Error interno al eliminar el pedido' });
+  }
+};
+
