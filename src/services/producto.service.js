@@ -2,8 +2,9 @@
 
 const { Op } = require('sequelize');
 const slugify = require('slugify');
-const { sequelize, Producto, HistorialPrecio, ProductoVariante } = require('../models');
+const { sequelize, Producto, HistorialPrecio, ProductoVariante, Oferta, OfertaComponente } = require('../models');
 const { calcularPrecioEfectivo, validarPrecioMinimo } = require('../utils/precio');
+const PricingService = require('./pricing.service');
 
 class ProductoService {
   
@@ -121,6 +122,57 @@ class ProductoService {
     if (!producto) throw new Error('Producto no encontrado.');
 
     return this.serializar(producto, esAdmin);
+  }
+
+  /**
+   * Simulador de precio del admin (tab Precios/Ofertas de ProductForm) —
+   * llama EXACTAMENTE al mismo PricingService.resolverPrecioItem que usa
+   * el checkout público (landing.service.js), para que el número que ve
+   * el administrador nunca pueda divergir del que termina pagando el
+   * cliente. No es una landing (el producto puede no estar publicado
+   * todavía en ninguna), así que resuelve directo por producto_id en vez
+   * de por content_id de un catálogo curado.
+   *
+   * @param {number} producto_id
+   * @param {number} inquilino_id
+   * @param {{cantidad:number, variante_id?:number, oferta_id?:number}} opciones
+   */
+  static async simularPrecio(producto_id, inquilino_id, { cantidad, variante_id, oferta_id } = {}) {
+    const producto = await Producto.findOne({ where: { id: producto_id, inquilino_id } });
+    if (!producto) throw new Error('Producto no encontrado.');
+
+    const [variantesDelProducto, ofertasDelProducto] = await Promise.all([
+      ProductoVariante.findAll({ where: { producto_id, activo: true } }),
+      Oferta.findAll({
+        where: { producto_ancla_id: producto_id, activo: true },
+        include: [{ model: OfertaComponente, as: 'componentes' }],
+      }),
+    ]);
+
+    const resuelto = PricingService.resolverPrecioItem({
+      entidad: producto,
+      esCombo: false,
+      cantidad,
+      ofertaId: oferta_id || null,
+      varianteId: variante_id || null,
+      precioUsuario: undefined, // el simulador del admin ve el precio de lista, no el de un revendedor puntual
+      ofertasDelProducto,
+      variantesDelProducto,
+    });
+
+    return {
+      precio_lista: resuelto.precio_lista,
+      precio_unitario: resuelto.precio_unitario,
+      subtotal: resuelto.subtotal,
+      cantidad: resuelto.cantidad,
+      oferta_aplicada: resuelto.oferta_aplicada
+        ? { id: resuelto.oferta_aplicada.id, nombre: resuelto.oferta_aplicada.nombre, tipo_contenido: resuelto.oferta_aplicada.tipo_contenido }
+        : null,
+      oferta_auto_aplicada: resuelto.oferta_auto_aplicada,
+      variante_aplicada: resuelto.variante_aplicada
+        ? { id: resuelto.variante_aplicada.id, nombre: resuelto.variante_aplicada.nombre }
+        : null,
+    };
   }
 
   static async crear(datos, inquilino_id, usuario_id, esAdmin, transaction) {

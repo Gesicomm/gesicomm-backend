@@ -26,6 +26,7 @@ const {
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 const { registrarHistorial } = require('../utils/historial');
+const PricingService = require('./pricing.service');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
@@ -192,34 +193,13 @@ class LandingService {
     return limpio || null;
   }
 
-  /**
-   * Fórmula de precio real de un item — la usan obtenerPublica() (lo que
-   * VE el visitante) y crearCheckout() (lo que efectivamente se cobra en
-   * el pedido), para que nunca puedan desincronizarse entre sí.
-   *
-   * @param {number} precioBase - precio_base (producto) o precio_total (combo).
-   * @param {number|null} precioMinimo - piso vigente, o null si no tiene.
-   * @param {number|undefined} precioUsuario - precio propio de la vendedora, si fijó uno.
-   * @returns {{base: number, efectivo: number}} `base` (sin piso, ancla para el delta
-   *   de variante) y `efectivo` (con el piso ya aplicado — precio final si no hay variante).
-   */
-  static calcularPrecioBase(precioBase, precioMinimo, precioUsuario) {
-    const base = precioUsuario !== undefined && precioUsuario !== null ? precioUsuario : precioBase;
-    const efectivo = precioMinimo !== null ? Math.max(base, precioMinimo) : base;
-    return { base, efectivo };
-  }
-
-  /**
-   * precio_diferencial es un delta ABSOLUTO que fijó el admin sobre el
-   * precio base (ej: "el talle XL cuesta 10.000 más"). Se aplica sobre
-   * `base` (sin piso) y se vuelve a pisar por precioMinimo — ninguna
-   * variante puede venderse por debajo del piso.
-   */
-  static calcularPrecioVariante(base, precioDiferencial, precioMinimo) {
-    let precio = base + parseFloat(precioDiferencial);
-    if (precioMinimo !== null) precio = Math.max(precio, precioMinimo);
-    return precio;
-  }
+  // calcularPrecioBase/calcularPrecioVariante vivían acá — se movieron a
+  // PricingService (src/services/pricing.service.js), el Pricing Engine
+  // centralizado que ahora también consumen el endpoint de recálculo de
+  // carrito y el simulador de precio del admin. obtenerPublica() (lo que
+  // VE el visitante) y crearCheckout() (lo que efectivamente se cobra)
+  // siguen usando exactamente la misma fórmula entre sí — solo que ahora
+  // vive en un solo lugar en vez de duplicada.
 
   /** Valida que cada item exista, esté activo y pertenezca al mismo inquilino. */
   static async resolverItemsCatalogo(items, inquilino_id) {
@@ -1327,7 +1307,12 @@ class LandingService {
       const precioUsuario = mapaPrecios.get(`${item.tipo}:${entidad.id}`);
       // Nunca se confía en el precio guardado: se recalcula contra el piso VIGENTE,
       // por si precio_minimo subió después de que el usuario fijó su precio.
-      const { base: precioBaseEfectivo, efectivo: precioEfectivo } = this.calcularPrecioBase(precioBase, precioMinimo, precioUsuario);
+      // Descuento por fecha (Producto.descuento_porcentaje + ventana) — un
+      // combo no tiene ventana propia, ya trae precio_total fijo.
+      const precioBaseConDescuento = esCombo
+        ? precioBase
+        : PricingService.aplicarDescuentoFecha(precioBase, entidad.descuento_porcentaje, entidad.descuento_inicio, entidad.descuento_fin);
+      const { base: precioBaseEfectivo, efectivo: precioEfectivo } = PricingService.calcularPrecioBase(precioBaseConDescuento, precioMinimo, precioUsuario);
 
       const galeriaFuente = productoParaFiltros ? (mapaImagenes.get(productoParaFiltros.id) || []) : [];
       // Galería general: todas las imágenes que no son de una variante
@@ -1343,7 +1328,7 @@ class LandingService {
       // vendedora si lo tiene, si no precio_base) y se vuelve a pisar por
       // precio_minimo — ninguna variante puede venderse por debajo del piso.
       const variantesDto = !esCombo ? (mapaVariantes.get(entidad.id) || []).map(v => {
-        const precioVariante = this.calcularPrecioVariante(precioBaseEfectivo, v.precio_diferencial, precioMinimo);
+        const precioVariante = PricingService.calcularPrecioVariante(precioBaseEfectivo, v.precio_diferencial, precioMinimo);
         return {
           id: v.id,
           nombre: v.nombre,
@@ -1370,6 +1355,22 @@ class LandingService {
           const propio = (o.componentes || []).find(c => c.producto_id === entidad.id);
           unidades = propio?.cantidad || (o.componentes || []).reduce((s, c) => s + (c.cantidad || 0), 0) || null;
         }
+        // Order bump: a diferencia de un pack, acá SÍ hace falta mostrar
+        // qué producto se está ofreciendo de más (ej. "Agregá el Mouse por
+        // Gs 15.000" con su propia foto) — sin esto el checkbox del
+        // checkout no tendría nombre ni imagen que mostrar. Se expone solo
+        // nombre/imagen del complementario, nunca cantidades/receta
+        // completa (mismo criterio de privacidad que "unidades" arriba).
+        let productoComplementario = null;
+        if (o.estrategia === 'order_bump') {
+          const compAjeno = (o.componentes || []).find(c => c.producto_id !== entidad.id);
+          const prodAjeno = compAjeno ? mapaProducto.get(compAjeno.producto_id) : null;
+          if (prodAjeno) {
+            const imgs = mapaImagenes.get(prodAjeno.id) || [];
+            const principal = imgs.find(i => i.es_principal) || imgs[0];
+            productoComplementario = { nombre: prodAjeno.nombre, imagen: principal?.url || null };
+          }
+        }
         return {
           id: o.id,
           nombre: o.nombre,
@@ -1378,6 +1379,7 @@ class LandingService {
           precio: parseFloat(o.precio) || 0,
           descripcion: o.descripcion || null,
           unidades,
+          producto_complementario: productoComplementario,
         };
       }) : [];
 
@@ -1580,43 +1582,34 @@ class LandingService {
   }
 
   /**
-   * Checkout público — crea un Envío (Pedido) real en estado "Pendiente" a
-   * partir de lo que completó un visitante anónimo. Es un endpoint sin
-   * autenticación: nunca se confía en precio/monto que mande el cliente,
-   * se resuelve todo contra el catálogo real con calcularPrecioBase()/
-   * calcularPrecioVariante() — la MISMA fórmula que ve el visitante en
-   * obtenerPublica(), para que la landing y lo que efectivamente se cobra
-   * en el pedido nunca puedan desincronizarse.
+   * Núcleo de resolución de carrito compartido por crearCheckout() (crea
+   * el Envío) y recalcularCarrito() (solo lectura, para el recálculo en
+   * vivo del carrito/checkout del frontend) — una sola implementación
+   * para que "lo que se muestra" y "lo que se cobra" nunca puedan
+   * desincronizarse. Nunca se confía en precio/monto que mande el
+   * cliente: todo se resuelve contra el catálogo real vía PricingService
+   * (mismo motor que usa obtenerPublica()).
    *
    * Tampoco se acepta cualquier content_id: solo los que están curados de
    * verdad en ESTA landing (mismo principio que ya aplica
    * obtenerCatalogoParaEvento()/limpiarItems() para el tracking de eventos)
    * — lo que mande el cliente fuera de ese conjunto se ignora en silencio.
    *
-   * No descuenta stock acá — recién se compromete al pasar a "Confirmado"
-   * (ver envioController.updateEstado), porque este endpoint es público y
-   * sin ninguna verificación: descontar al crear expondría el stock real a
-   * cualquiera que complete el formulario sin intención de compra.
-   *
    * @param {object} tienda - instancia de Tienda ya resuelta (con Usuario incluido).
    * @param {string|null} slug - null/undefined → landing es_home de la tienda.
-   * @param {object} datosCliente - { nombre_cliente, ruc, telefono, ciudad, departamento, direccion, referencia, items }
-   * @returns {{pedido_id: number, monto: number, redirigir_whatsapp: boolean}}
+   * @param {Array} items - [{content_id, variante_id?, oferta_id?, cantidad}]
+   * @param {boolean} throwOnStockInsuficiente - true en crearCheckout (corta
+   *   con 409); false en recalcularCarrito (informa stock_suficiente:false
+   *   en el item sin bloquear, para que el frontend avise sin interrumpir).
+   * @returns {{landing, itemsResueltos}}
    */
-  static async crearCheckout(tienda, slug, datosCliente) {
+  static async resolverCarrito(tienda, slug, items, throwOnStockInsuficiente = false) {
     const where = { tienda_id: tienda.id };
     if (slug) where.slug = slug; else where.es_home = true;
 
     const landing = await Landing.findOne({ where, include: [{ model: LandingItem, as: 'items' }] });
     if (!landing) throw new Error('Landing no encontrada.');
     if (!landing.activo || !tienda.activo || !tienda.Usuario?.activo) throw new Error('Esta landing no está disponible.');
-
-    const { nombre_cliente, ruc, razon_social, quiere_factura, telefono, ciudad, departamento, direccion, referencia, items } = datosCliente || {};
-
-    if (!nombre_cliente?.trim()) throw new Error('El nombre y apellido es obligatorio.');
-    if (!telefono?.trim()) throw new Error('El celular es obligatorio.');
-    if (!ciudad?.trim()) throw new Error('La ciudad es obligatoria.');
-    if (!direccion?.trim()) throw new Error('La dirección es obligatoria.');
     if (!Array.isArray(items) || items.length === 0) throw new Error('El carrito está vacío.');
     if (items.length > MAX_ITEMS_CHECKOUT) throw new Error(`No se pueden pedir más de ${MAX_ITEMS_CHECKOUT} ítems distintos.`);
 
@@ -1644,7 +1637,6 @@ class LandingService {
 
     const referenciasProducto = productos.map(p => p.id);
     const referenciasCombo = combos.map(c => c.id);
-    const mapaOfertas = new Map(ofertasDisponibles.map(o => [o.id, o]));
 
     const [precios, variantes] = await Promise.all([
       PrecioUsuario.findAll({
@@ -1683,82 +1675,108 @@ class LandingService {
 
     const itemsResueltos = [];
     for (const pedido of items) {
-      const resuelto = mapaPorContentId.get(pedido?.content_id);
-      if (!resuelto) continue; // no está curado en esta landing — se descarta, nunca se inventa.
-      const { entidad, esCombo } = resuelto;
-      const cantidad = Math.max(1, Math.min(99, Number.parseInt(pedido.cantidad, 10) || 1));
+      const itemLanding = mapaPorContentId.get(pedido?.content_id);
+      if (!itemLanding) continue; // no está curado en esta landing — se descarta, nunca se inventa.
+      const { entidad, esCombo } = itemLanding;
 
-      const precioBase = parseFloat(esCombo ? entidad.precio_total : entidad.precio_base);
-      const precioMinimo = entidad.precio_minimo !== null && entidad.precio_minimo !== undefined ? parseFloat(entidad.precio_minimo) : null;
       const precioUsuario = mapaPrecios.get(`${esCombo ? 'combo' : 'producto'}:${entidad.id}`);
-      const { base, efectivo } = this.calcularPrecioBase(precioBase, precioMinimo, precioUsuario);
+      // "La cantidad decide el precio" (ver PricingService.mejorOfertaParaCantidad):
+      // si no vino oferta_id explícita, el motor busca solo si la cantidad
+      // matchea un pack existente de este producto.
+      const ofertasDelProducto = esCombo ? [] : ofertasDisponibles.filter(o => o.producto_ancla_id === entidad.id);
+      const variantesDelProducto = esCombo ? [] : (mapaVariantes.get(entidad.id) || []);
 
-      let precioFinal = efectivo;
-      let stockDisponible = esCombo ? (entidad.producto_padre?.cantidad_disponible ?? null) : entidad.cantidad_disponible;
-      let nombreFinal = entidad.nombre;
+      const resuelto = PricingService.resolverPrecioItem({
+        entidad,
+        esCombo,
+        cantidad: pedido.cantidad,
+        ofertaId: !esCombo ? pedido.oferta_id : null,
+        varianteId: !esCombo ? pedido.variante_id : null,
+        precioUsuario,
+        ofertasDelProducto,
+        variantesDelProducto,
+      });
 
-      // Oferta (pack/combo × normal/order_bump/upsell): reemplaza precio y
-      // nombre, y su "stock disponible" no es un único número — es la
-      // receta completa (cada componente puede ser un producto distinto),
-      // así que se valida aparte y no participa del chequeo genérico de
-      // abajo.
-      let ofertaResuelta = null;
-      if (!esCombo && pedido.oferta_id) {
-        const candidata = mapaOfertas.get(Number(pedido.oferta_id));
-        if (candidata && candidata.producto_ancla_id === entidad.id) {
-          ofertaResuelta = candidata;
-        }
-      }
-
-      if (ofertaResuelta) {
-        precioFinal = parseFloat(ofertaResuelta.precio) || 0;
-        nombreFinal = `${entidad.nombre} — ${ofertaResuelta.nombre}`;
-
-        for (const comp of ofertaResuelta.componentes || []) {
-          const prodComp = comp.producto_id === entidad.id ? entidad : mapaProducto.get(comp.producto_id);
-          const stockComp = prodComp ? prodComp.cantidad_disponible : null;
-          const necesario = cantidad * comp.cantidad;
-          if (stockComp !== null && stockComp !== undefined && stockComp < necesario) {
-            const err = new Error(`"${nombreFinal}" no tiene stock suficiente (disponible: ${stockComp}).`);
-            err.status = 409;
-            throw err;
-          }
-        }
-      } else {
-        if (!esCombo && pedido.variante_id) {
-          const variante = (mapaVariantes.get(entidad.id) || []).find(v => v.id === Number(pedido.variante_id));
-          if (variante) {
-            precioFinal = this.calcularPrecioVariante(base, variante.precio_diferencial, precioMinimo);
-            stockDisponible = variante.stock;
-            nombreFinal = `${entidad.nombre} (${variante.nombre})`;
-          }
-        }
-
-        if (stockDisponible !== null && stockDisponible !== undefined && stockDisponible < cantidad) {
-          const err = new Error(`"${nombreFinal}" no tiene stock suficiente (disponible: ${stockDisponible}).`);
-          err.status = 409;
-          throw err;
-        }
+      // La "oferta" tiene una receta completa de componentes (puede tocar
+      // más de un producto), por eso usa su propio chequeo en vez del
+      // genérico de cantidad simple.
+      const { suficiente, faltantes } = PricingService.validarStock(resuelto, { mapaProducto });
+      if (!suficiente && throwOnStockInsuficiente) {
+        const primero = faltantes[0];
+        const err = new Error(`"${resuelto.nombre_final}" no tiene stock suficiente (disponible: ${primero.disponible}).`);
+        err.status = 409;
+        throw err;
       }
 
       itemsResueltos.push({
+        content_id: pedido.content_id,
+        // Se hace eco de lo que pidió el cliente (no de lo resuelto) para
+        // que el frontend pueda correlacionar la respuesta con SU línea de
+        // carrito exacta — un mismo content_id puede tener varias líneas
+        // con distinta variante (ver claveCarrito en LandingPublica.jsx).
+        variante_id_solicitada: !esCombo && pedido.variante_id ? Number(pedido.variante_id) : null,
+        oferta_id_solicitada: !esCombo && pedido.oferta_id ? Number(pedido.oferta_id) : null,
         // Los combos no tienen fila propia en Producto — igual que ya pasa
         // con los pedidos cargados a mano (ver envioController.js), un
         // EnvioItem sin producto_id no participa del descuento de stock al
         // confirmar (el "stock" de un combo lo da su producto_padre, no
         // hay campo propio que descontar).
         producto_id: esCombo ? null : entidad.id,
-        oferta_id: ofertaResuelta ? ofertaResuelta.id : null,
-        oferta_codigo: ofertaResuelta ? ofertaResuelta.codigo : null,
-        oferta_nombre: ofertaResuelta ? ofertaResuelta.nombre : null,
-        nombre_producto: nombreFinal,
-        cantidad,
-        precio_unitario: precioFinal,
-        subtotal: precioFinal * cantidad,
+        oferta_id: resuelto.oferta_aplicada ? resuelto.oferta_aplicada.id : null,
+        oferta_codigo: resuelto.oferta_aplicada ? resuelto.oferta_aplicada.codigo : null,
+        oferta_nombre: resuelto.oferta_aplicada ? resuelto.oferta_aplicada.nombre : null,
+        nombre_producto: resuelto.nombre_final,
+        cantidad: resuelto.cantidad,
+        precio_unitario: resuelto.precio_unitario,
+        subtotal: resuelto.subtotal,
+        stock_suficiente: suficiente,
       });
     }
 
     if (!itemsResueltos.length) throw new Error('Ningún producto del carrito está disponible en esta landing.');
+
+    return { landing, itemsResueltos };
+  }
+
+  /**
+   * Recálculo de carrito en vivo — SOLO LECTURA, no crea ningún Envío. Lo
+   * usa el frontend cada vez que cambia cantidad/variante/oferta, para
+   * mostrar el precio real (mismo PricingService que crearCheckout) antes
+   * de llegar al submit final del formulario.
+   *
+   * @returns {{items: Array, subtotal: number, total: number}}
+   */
+  static async recalcularCarrito(tienda, slug, items) {
+    const { itemsResueltos } = await this.resolverCarrito(tienda, slug, items, false);
+    const subtotal = itemsResueltos.reduce((s, i) => s + i.subtotal, 0);
+    return { items: itemsResueltos, subtotal, total: subtotal };
+  }
+
+  /**
+   * Checkout público — crea un Envío (Pedido) real en estado "Pendiente" a
+   * partir de lo que completó un visitante anónimo. Es un endpoint sin
+   * autenticación, por eso resolverCarrito() nunca confía en precio/monto
+   * del cliente.
+   *
+   * No descuenta stock acá — recién se compromete al pasar a "Confirmado"
+   * (ver envioController.updateEstado), porque este endpoint es público y
+   * sin ninguna verificación: descontar al crear expondría el stock real a
+   * cualquiera que complete el formulario sin intención de compra.
+   *
+   * @param {object} tienda - instancia de Tienda ya resuelta (con Usuario incluido).
+   * @param {string|null} slug - null/undefined → landing es_home de la tienda.
+   * @param {object} datosCliente - { nombre_cliente, ruc, telefono, ciudad, departamento, direccion, referencia, items }
+   * @returns {{pedido_id: number, monto: number, redirigir_whatsapp: boolean}}
+   */
+  static async crearCheckout(tienda, slug, datosCliente) {
+    const { nombre_cliente, ruc, razon_social, quiere_factura, telefono, ciudad, departamento, direccion, referencia, items } = datosCliente || {};
+
+    if (!nombre_cliente?.trim()) throw new Error('El nombre y apellido es obligatorio.');
+    if (!telefono?.trim()) throw new Error('El celular es obligatorio.');
+    if (!ciudad?.trim()) throw new Error('La ciudad es obligatoria.');
+    if (!direccion?.trim()) throw new Error('La dirección es obligatoria.');
+
+    const { landing, itemsResueltos } = await this.resolverCarrito(tienda, slug, items, true);
 
     const monto = itemsResueltos.reduce((s, i) => s + i.subtotal, 0);
     const ahora = new Date();
@@ -1769,6 +1787,13 @@ class LandingService {
     const tieneFactura = Boolean(quiere_factura || (ruc && String(ruc).trim()));
     const rucLimpio = ruc?.trim() || null;
     const razonSocialLimpia = razon_social?.trim() || (tieneFactura ? nombre_cliente.trim() : null);
+
+    // itemsResueltos trae content_id/stock_suficiente además de los campos
+    // de EnvioItem — se filtran acá para que el nested-create no dependa
+    // de que Sequelize ignore claves extra en silencio.
+    const itemsParaEnvio = itemsResueltos.map(({ producto_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, subtotal }) => ({
+      producto_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, subtotal,
+    }));
 
     const nuevoEnvio = await Envio.create({
       usuario_id: tienda.usuario_id,
@@ -1798,7 +1823,7 @@ class LandingService {
       // sin importar qué fecha se elija (bug real: así se creó el #46).
       dispatchedAt: fechaPy,
       hora: horaPy,
-      items: itemsResueltos,
+      items: itemsParaEnvio,
     }, { include: [{ model: EnvioItem, as: 'items' }] });
 
     await registrarHistorial(nuevoEnvio.id, null, 'Pedido creado automáticamente');

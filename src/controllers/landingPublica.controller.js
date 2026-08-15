@@ -10,6 +10,8 @@
  * POST /api/l/eventos         → ídem, para la landing es_home.
  * POST /api/l/:slug/checkout  → crea un Envío (Pedido) real, ver landing.service.js#crearCheckout.
  * POST /api/l/checkout        → ídem, para la landing es_home.
+ * POST /api/l/:slug/carrito   → recálculo de carrito en vivo (solo lectura), ver landing.service.js#recalcularCarrito.
+ * POST /api/l/carrito         → ídem, para la landing es_home.
  */
 
 const { Landing, Tienda, Usuario } = require('../models');
@@ -263,6 +265,38 @@ async function crearCheckout(req, res) {
   }
 }
 
+/**
+ * Recálculo de carrito en vivo — SOLO LECTURA, nunca crea un Envío. Mismo
+ * saneo de items que crearCheckout, sin los datos personales del cliente
+ * (acá no hace falta un formulario completo, solo qué hay en el carrito).
+ * Toda la resolución de precio vive en LandingService.recalcularCarrito(),
+ * que reusa el mismo PricingService que ve el visitante y que cobra el
+ * checkout final — nunca una segunda implementación del cálculo.
+ */
+async function recalcularCarrito(req, res) {
+  try {
+    const { tienda } = await resolverTiendaYLanding(req);
+    if (!tienda) {
+      return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
+    }
+
+    const body = req.body || {};
+    const items = Array.isArray(body.items) ? body.items.slice(0, 40).map(i => ({
+      content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
+      variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
+      oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
+      cantidad: i?.cantidad,
+    })) : [];
+
+    const resultado = await LandingService.recalcularCarrito(tienda, req.params.slug || null, items);
+    return res.status(200).json(resultado);
+  } catch (err) {
+    const status = err.status || (err.message?.includes('no encontrada') ? 404 : 400);
+    console.error('[landing-publica] recalcularCarrito:', err.message);
+    return res.status(status).json({ message: err.message || 'Error al recalcular el carrito.' });
+  }
+}
+
 async function registrarEvento(req, res) {
   try {
     const { tienda, landing_id } = await resolverTiendaYLanding(req);
@@ -313,4 +347,4 @@ async function registrarEvento(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, crearCheckout };
+module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, crearCheckout, recalcularCarrito };

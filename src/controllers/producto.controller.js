@@ -86,6 +86,24 @@ async function detalle(req, res) {
   }
 }
 
+/**
+ * Simulador de precio (tab Precios/Ofertas del admin) — ver
+ * ProductoService.simularPrecio: llama al mismo PricingService que el
+ * checkout público, nunca una segunda implementación del cálculo.
+ */
+async function simularPrecio(req, res) {
+  try {
+    const inquilino_id = req.usuario.tenantId;
+    const { cantidad, variante_id, oferta_id } = req.body || {};
+    const resultado = await ProductoService.simularPrecio(req.params.id, inquilino_id, { cantidad, variante_id, oferta_id });
+    return res.json(resultado);
+  } catch (err) {
+    console.error(err);
+    const status = err.message.includes('no encontrado') ? 404 : 400;
+    return res.status(status).json({ message: err.message || 'Error al simular el precio.' });
+  }
+}
+
 async function variantes(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
@@ -168,13 +186,14 @@ async function eliminar(req, res) {
   }
 }
 
-module.exports = { 
-  buscar, 
-  crear, 
-  detalle, 
+module.exports = {
+  buscar,
+  crear,
+  detalle,
+  simularPrecio,
   variantes,
   imagenes,
-  historialPrecios, 
-  actualizar, 
-  eliminar 
+  historialPrecios,
+  actualizar,
+  eliminar
 };

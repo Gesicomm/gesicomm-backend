@@ -69,10 +69,15 @@ const limiteCheckout = rateLimit({
 router.get('/', limitePublico, resolverTienda, ctrl.obtenerPorSlug);   // landing es_home de la tienda del hostname
 router.post('/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
 router.post('/checkout', limiteCheckout, resolverTienda, ctrl.crearCheckout);
+// Recálculo de carrito en vivo: mismo rate limit que el GET (limitePublico)
+// y no limiteCheckout — no crea ningún pedido, es solo lectura, y el
+// frontend lo llama seguido (cada cambio de cantidad/oferta).
+router.post('/carrito', limitePublico, resolverTienda, ctrl.recalcularCarrito);
 router.get('/producto/:productoSlug', limitePublico, resolverTienda, ctrl.obtenerProducto);
 router.get('/:slug', limitePublico, resolverTienda, ctrl.obtenerPorSlug);
 router.get('/:slug/producto/:productoSlug', limitePublico, resolverTienda, ctrl.obtenerProducto);
 router.post('/:slug/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
 router.post('/:slug/checkout', limiteCheckout, resolverTienda, ctrl.crearCheckout);
+router.post('/:slug/carrito', limitePublico, resolverTienda, ctrl.recalcularCarrito);
 
 module.exports = router;
