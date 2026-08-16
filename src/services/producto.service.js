@@ -94,11 +94,17 @@ class ProductoService {
       const { ProductoImagen } = require('../models');
       const productIds = productosSerializados.map(p => p.id);
       const imagenes = await ProductoImagen.findAll({
-        where: { producto_id: { [Op.in]: productIds }, es_principal: true },
-        attributes: ['producto_id', 'url']
+        where: { producto_id: { [Op.in]: productIds } },
+        attributes: ['producto_id', 'url', 'es_principal'],
+        order: [['es_principal', 'DESC'], ['created_at', 'ASC']]
       });
       const imgMap = new Map();
-      imagenes.forEach(img => imgMap.set(img.producto_id, img.url));
+      // As they are ordered by es_principal DESC, the first one encountered per product will be the principal or the oldest one
+      imagenes.forEach(img => {
+        if (!imgMap.has(img.producto_id)) {
+          imgMap.set(img.producto_id, img.url);
+        }
+      });
       
       productosSerializados.forEach(p => {
         p.imagenes = imgMap.has(p.id) ? [{ url: imgMap.get(p.id) }] : [];
