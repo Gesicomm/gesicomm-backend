@@ -327,7 +327,7 @@ class ReporteService {
       },
       {
         model: Producto,
-        attributes: ['precio_costo', 'precio']
+        attributes: ['precio_costo', 'precio_base']
       }
     ];
 
@@ -356,7 +356,7 @@ class ReporteService {
           cancelados: 0,
           total_procesados: 0,
           precio_costo_unitario: item.Producto ? (Number(item.Producto.precio_costo) || 0) : 0,
-          precio_venta_unitario: item.Producto ? (Number(item.Producto.precio) || 0) : 0
+          precio_venta_unitario: item.Producto ? (Number(item.Producto.precio_base) || 0) : 0
         };
       }
       

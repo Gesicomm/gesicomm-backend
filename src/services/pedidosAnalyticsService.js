@@ -41,6 +41,7 @@ async function getResumenFunnel(whereBase) {
   let entregados = 0;
   let devueltos = 0;
   let enTransito = 0;
+  let perdidos = 0;
 
   let webTotal = 0;
   let webConfirmados = 0;
@@ -80,12 +81,17 @@ async function getResumenFunnel(whereBase) {
     if (isEntregado) entregados++;
     if (isDevuelto) devueltos++;
     if (isTransito) enTransito++;
+    
+    const isPerdido = st === 'perdido' || stLog === 'perdido';
+    if (isPerdido) perdidos++;
   }
 
   const pctConfirmacion = totalCreados > 0 ? Number(((confirmados / totalCreados) * 100).toFixed(1)) : 0;
-  const pctDespachados = confirmados > 0 ? Number(((despachados / confirmados) * 100).toFixed(1)) : 0;
-  const pctEntrega = despachados > 0 ? Number(((entregados / despachados) * 100).toFixed(1)) : 0;
-  const pctDevolucion = despachados > 0 ? Number(((devueltos / despachados) * 100).toFixed(1)) : 0;
+  const pctDespachados = totalCreados > 0 ? Number(((despachados / totalCreados) * 100).toFixed(1)) : 0;
+  const pctEntrega = totalCreados > 0 ? Number(((entregados / totalCreados) * 100).toFixed(1)) : 0;
+  const pctDevolucion = totalCreados > 0 ? Number(((devueltos / totalCreados) * 100).toFixed(1)) : 0;
+  const pctPerdida = totalCreados > 0 ? Number(((perdidos / totalCreados) * 100).toFixed(1)) : 0;
+  const pctCancelacion = totalCreados > 0 ? Number(((cancelados / totalCreados) * 100).toFixed(1)) : 0;
 
   const pctWebConf = webTotal > 0 ? Number(((webConfirmados / webTotal) * 100).toFixed(1)) : 0;
   const pctWppConf = whatsappTotal > 0 ? Number(((whatsappConfirmados / whatsappTotal) * 100).toFixed(1)) : 0;
@@ -98,10 +104,13 @@ async function getResumenFunnel(whereBase) {
     en_transito: enTransito,
     entregados,
     devueltos,
+    perdidos,
     tasa_confirmacion: pctConfirmacion,
+    tasa_cancelacion: pctCancelacion,
     tasa_despacho: pctDespachados,
     tasa_entrega: pctEntrega,
     tasa_devolucion: pctDevolucion,
+    tasa_perdida: pctPerdida,
     canales: {
       web: { total: webTotal, confirmados: webConfirmados, tasa: pctWebConf },
       whatsapp: { total: whatsappTotal, confirmados: whatsappConfirmados, tasa: pctWppConf },
@@ -497,6 +506,8 @@ async function getCouriersAnalytics(whereBase, usuario_id) {
         entregados: 0,
         en_transito: 0,
         devueltos: 0,
+        perdidos: 0,
+        cancelados: 0,
         pendientes: 0,
         monto_recaudado: 0,
         costo_fletes: 0,
@@ -513,8 +524,12 @@ async function getCouriersAnalytics(whereBase, usuario_id) {
       c.monto_recaudado += Number(e.monto || 0);
     } else if (['despachado', 'reprogramado'].includes(st)) {
       c.en_transito += 1;
-    } else if (['devuelto', 'perdido', 'cancelado'].includes(st)) {
+    } else if (['devuelto', 'no entregado', 'fallido'].includes(st)) {
       c.devueltos += 1;
+    } else if (st === 'perdido') {
+      c.perdidos = (c.perdidos || 0) + 1;
+    } else if (['cancelado', 'rechazado'].includes(st)) {
+      c.cancelados = (c.cancelados || 0) + 1;
     } else {
       c.pendientes += 1;
     }
@@ -556,7 +571,7 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
     if (!f) continue;
 
     if (!mapTimeline[f]) {
-      mapTimeline[f] = { fecha: f, pedidos: 0, confirmados: 0, entregados: 0, devueltos: 0, monto: 0 };
+      mapTimeline[f] = { fecha: f, pedidos: 0, confirmados: 0, entregados: 0, devueltos: 0, perdidos: 0, cancelados: 0, monto: 0 };
     }
 
     const t = mapTimeline[f];
@@ -568,7 +583,9 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
       t.entregados += 1;
       t.monto += Number(e.monto || 0);
     }
-    if (['devuelto', 'perdido', 'cancelado'].includes(st)) t.devueltos += 1;
+    if (['devuelto', 'no entregado', 'fallido'].includes(st)) t.devueltos += 1;
+    if (st === 'perdido') t.perdidos += 1;
+    if (['cancelado', 'rechazado'].includes(st)) t.cancelados += 1;
   }
 
   // Ordenar cronológicamente
