@@ -241,12 +241,17 @@ exports.listEnvios = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     // La regla del proyecto: endpoints con filtros dinámicos son POST y leen de req.body
-    const { fecha, estado, confirmador, courier_id, origen } = req.body;
+    const { fecha_desde, fecha_hasta, estado, confirmador, courier_id, origen } = req.body;
 
     const where = { usuario_id };
-    if (fecha) {
-      where.dispatchedAt = fecha;
+    if (fecha_desde && fecha_hasta) {
+      where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
+    } else if (fecha_desde) {
+      where.dispatchedAt = { [Op.gte]: fecha_desde };
+    } else if (fecha_hasta) {
+      where.dispatchedAt = { [Op.lte]: fecha_hasta };
     }
+
     if (estado) {
       where.estado = estado;
     }

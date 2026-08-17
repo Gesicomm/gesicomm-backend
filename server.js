@@ -29,6 +29,7 @@ const tiendaRoutes = require('./src/routes/tienda');
 const educacionRoutes = require('./src/routes/educacionRoutes');
 const adminEducacionRoutes = require('./src/routes/adminEducacionRoutes');
 const publicoRoutes = require('./src/routes/publico');
+const reportesRoutes = require('./src/routes/reportes');
 
 const app = express();
 // 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
@@ -166,6 +167,7 @@ app.use('/api/admin/educacion', adminEducacionRoutes);
 app.use('/api/publico', publicoRoutes);
 app.use('/api/l', landingPublicaRoutes);
 app.use('/l', landingHtmlRoutes);
+app.use('/api/reportes', reportesRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {

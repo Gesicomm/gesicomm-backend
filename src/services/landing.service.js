@@ -334,7 +334,17 @@ class LandingService {
       
       const ops = [];
       for (const e of existentes) {
-        if (e.stable_id && !idsPayload.has(e.stable_id)) {
+        // Filas viejas sin stable_id (se guardaron antes de que
+        // normalizarSeccion lo generara siempre): no hay forma de
+        // emparejarlas con el payload, así que el UPDATE nunca las alcanza y
+        // el DELETE de abajo las salteaba — quedaban huérfanas mientras el
+        // payload volvía a insertar las mismas secciones. Resultado: la
+        // página se duplicaba entera al primer Guardar (reproducido: 4
+        // secciones -> 8). El payload es la foto completa de la página, así
+        // que lo correcto es borrarlas por id.
+        if (!e.stable_id) {
+          ops.push({ type: 'DELETE_POR_ID', id: e.id });
+        } else if (!idsPayload.has(e.stable_id)) {
           ops.push({ type: 'DELETE', stable_id: e.stable_id });
         }
       }
@@ -361,6 +371,12 @@ class LandingService {
             break;
           case 'DELETE':
             await LandingSeccion.destroy({ where: { landing_id, stable_id: op.stable_id }, transaction: t });
+            break;
+          case 'DELETE_POR_ID':
+            // Solo para las filas legacy sin stable_id — ver arriba. Va
+            // acotado a producto_id null como todo este método, así que
+            // nunca toca el diseño propio de un producto.
+            await LandingSeccion.destroy({ where: { landing_id, id: op.id, producto_id: null }, transaction: t });
             break;
         }
       }
@@ -1218,7 +1234,17 @@ class LandingService {
       idsProducto.length
         ? Oferta.findAll({
           where: { producto_ancla_id: { [Op.in]: idsProducto }, activo: true },
-          include: [{ model: OfertaComponente, as: 'componentes', attributes: ['producto_id', 'cantidad'] }],
+          include: [{ 
+            model: OfertaComponente, 
+            as: 'componentes', 
+            attributes: ['producto_id', 'cantidad'],
+            include: [{
+              model: Producto,
+              as: 'producto',
+              attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+              include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
+            }]
+          }],
           order: [['orden', 'ASC']],
         })
         : Promise.resolve([]),
@@ -1630,7 +1656,16 @@ class LandingService {
       idsProducto.length
         ? Oferta.findAll({
           where: { producto_ancla_id: { [Op.in]: idsProducto }, activo: true },
-          include: [{ model: OfertaComponente, as: 'componentes' }],
+          include: [{ 
+            model: OfertaComponente, 
+            as: 'componentes',
+            include: [{
+              model: Producto,
+              as: 'producto',
+              attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+              include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
+            }]
+          }],
         })
         : Promise.resolve([]),
     ]);

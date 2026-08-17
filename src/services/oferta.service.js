@@ -10,7 +10,7 @@
  * a partir del catálogo real (precio_costo) al listar.
  */
 
-const { Oferta, OfertaComponente, Producto } = require('../models');
+const { Oferta, OfertaComponente, Producto, ProductoImagen } = require('../models');
 
 const TIPOS_CONTENIDO = ['pack', 'combo'];
 const ESTRATEGIAS = ['normal', 'order_bump', 'upsell'];
@@ -85,7 +85,12 @@ class OfertaService {
       include: [{
         model: OfertaComponente,
         as: 'componentes',
-        include: [{ model: Producto, as: 'producto', attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'] }],
+        include: [{ 
+          model: Producto, 
+          as: 'producto', 
+          attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+          include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
+        }],
       }],
       order: [['orden', 'ASC'], ['created_at', 'ASC']],
     });
