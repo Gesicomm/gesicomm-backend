@@ -1,5 +1,6 @@
 const { Op, fn, col, literal } = require('sequelize');
 const { Envio, EnvioItem, Producto, Oferta, Usuario } = require('../models');
+const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 class ReporteService {
   /**
@@ -155,6 +156,343 @@ class ReporteService {
       paginas: Math.ceil(count / limite),
       actual: pagina,
       items: rows
+    };
+  }
+
+  static async obtenerReporteComisiones(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    const { buscador, confirmador, courierId, courier_id } = filtros;
+    const finalCourierId = courierId || courier_id;
+    const { desde, hasta } = resolverRangoFechas(filtros);
+
+    const whereEnvio = { 
+      usuario_id: usuario_id,
+      estado: 'Entregado'
+    };
+    
+    if (desde && hasta) {
+      whereEnvio.fecha = { [Op.between]: [desde, hasta] };
+    }
+
+    if (buscador) {
+      whereEnvio[Op.or] = [
+        { cliente: { [Op.like]: `%${buscador}%` } },
+        { id: { [Op.like]: `%${buscador}%` } },
+        { telefono: { [Op.like]: `%${buscador}%` } }
+      ];
+    }
+    
+    if (confirmador && confirmador !== 'TODOS') whereEnvio.confirmador = confirmador;
+    if (finalCourierId && finalCourierId !== 'TODOS') whereEnvio.courier_id = finalCourierId;
+
+    const { count, rows } = await Envio.findAndCountAll({
+      where: whereEnvio,
+      attributes: ['id', 'fecha', 'hora', 'confirmador', 'metodo_pago', 'comision_pct_aplicada', 'monto', 'estado'],
+      limit: limite,
+      offset: offset,
+      order: [['id', 'DESC']]
+    });
+
+    const dataTransformada = rows.map(r => {
+      const e = r.toJSON();
+      const pct = Number(e.comision_pct_aplicada) || 0;
+      const costo_comision = Math.round(e.monto * (pct / 100));
+      return {
+        ...e,
+        costo_comision,
+        precio_neto: e.monto - costo_comision
+      };
+    });
+
+    const kpisRaw = await Envio.findAll({
+      where: whereEnvio,
+      attributes: ['monto', 'comision_pct_aplicada']
+    });
+    
+    let totalFacturado = 0;
+    let totalComisiones = 0;
+    
+    kpisRaw.forEach(e => {
+      const monto = Number(e.monto) || 0;
+      const comision = Number(e.comision_pct_aplicada) || 0;
+      totalFacturado += monto;
+      totalComisiones += Math.round(monto * (comision / 100));
+    });
+
+    return {
+      total: count,
+      paginas: Math.ceil(count / limite),
+      actual: pagina,
+      data: dataTransformada,
+      kpis: {
+        total_facturado: totalFacturado,
+        total_comisiones: totalComisiones,
+        total_neto: totalFacturado - totalComisiones
+      }
+    };
+  }
+
+  static async obtenerReporteFacturacion(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    const { buscador, confirmador, courierId, courier_id } = filtros;
+    const finalCourierId = courierId || courier_id;
+    const { desde, hasta } = resolverRangoFechas(filtros);
+
+    const whereEnvio = { 
+      usuario_id: usuario_id,
+      quiere_factura: true,
+      estado: 'Entregado'
+    };
+    
+    if (desde && hasta) {
+      whereEnvio.fecha = { [Op.between]: [desde, hasta] };
+    }
+
+    if (buscador) {
+      whereEnvio[Op.or] = [
+        { cliente: { [Op.like]: `%${buscador}%` } },
+        { id: { [Op.like]: `%${buscador}%` } },
+        { telefono: { [Op.like]: `%${buscador}%` } },
+        { ruc: { [Op.like]: `%${buscador}%` } },
+        { razon_social: { [Op.like]: `%${buscador}%` } }
+      ];
+    }
+    
+    if (confirmador && confirmador !== 'TODOS') whereEnvio.confirmador = confirmador;
+    if (finalCourierId && finalCourierId !== 'TODOS') whereEnvio.courier_id = finalCourierId;
+
+    const { count, rows } = await Envio.findAndCountAll({
+      where: whereEnvio,
+      attributes: ['id', 'fecha', 'confirmador', 'ruc', 'razon_social', 'monto', 'estado'],
+      limit: limite,
+      offset: offset,
+      order: [['id', 'DESC']]
+    });
+
+    const dataTransformada = rows.map(r => {
+      const e = r.toJSON();
+      const iva = Math.round(e.monto * 0.10); 
+      return {
+        ...e,
+        iva
+      };
+    });
+
+    const kpisRaw = await Envio.findAll({
+      where: whereEnvio,
+      attributes: ['monto']
+    });
+    
+    let totalSujeto = 0;
+    let totalIva = 0;
+    
+    kpisRaw.forEach(e => {
+      const monto = Number(e.monto) || 0;
+      totalSujeto += monto;
+      totalIva += Math.round(monto * 0.10);
+    });
+
+    return {
+      total: count,
+      paginas: Math.ceil(count / limite),
+      actual: pagina,
+      data: dataTransformada,
+      kpis: {
+        total_sujeto_iva: totalSujeto,
+        total_iva: totalIva
+      }
+    };
+  }
+
+  static async obtenerReporteProductos(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    const { buscador, confirmador, courierId, courier_id } = filtros;
+    const finalCourierId = courierId || courier_id;
+    const { desde, hasta } = resolverRangoFechas(filtros);
+
+    const whereEnvio = { usuario_id };
+    
+    if (desde && hasta) {
+      whereEnvio.fecha = { [Op.between]: [desde, hasta] };
+    }
+
+    if (confirmador && confirmador !== 'TODOS') whereEnvio.confirmador = confirmador;
+    if (finalCourierId && finalCourierId !== 'TODOS') whereEnvio.courier_id = finalCourierId;
+
+    const includeArray = [
+      {
+        model: Envio,
+        where: whereEnvio,
+        attributes: ['estado']
+      },
+      {
+        model: Producto,
+        attributes: ['precio_costo']
+      }
+    ];
+
+    if (buscador) {
+      includeArray[0].where[Op.or] = [
+        { cliente: { [Op.like]: `%${buscador}%` } },
+        { id: { [Op.like]: `%${buscador}%` } }
+      ];
+    }
+
+    const items = await EnvioItem.findAll({
+      include: includeArray
+    });
+
+    const mapa = {};
+    items.forEach(item => {
+      const p_id = item.producto_id || ('SIN_ID_' + item.nombre_producto);
+      if (!mapa[p_id]) {
+        mapa[p_id] = {
+          id: p_id,
+          nombre: item.nombre_producto,
+          vendidos: 0,
+          ingresos: 0,
+          costo_total: 0,
+          devoluciones: 0,
+          cancelados: 0,
+          total_procesados: 0
+        };
+      }
+      
+      const st = (item.Envio.estado || '').toLowerCase();
+      const cant = Number(item.cantidad) || 0;
+      
+      mapa[p_id].total_procesados += cant;
+      
+      if (st === 'entregado') {
+        mapa[p_id].vendidos += cant;
+        mapa[p_id].ingresos += Number(item.subtotal) || 0;
+        
+        const costoUnitario = item.Producto ? (Number(item.Producto.precio_costo) || 0) : 0;
+        mapa[p_id].costo_total += costoUnitario * cant;
+      } else if (st === 'rechazado' || st === 'devuelto') {
+        mapa[p_id].devoluciones += cant;
+      } else if (st === 'cancelado') {
+        mapa[p_id].cancelados += cant;
+      }
+    });
+
+    let arrayData = Object.values(mapa);
+    
+    // Filtrar adicionales si hubo un buscador por nombre de producto (que no entra en Envio)
+    if (buscador) {
+      const b = buscador.toLowerCase();
+      arrayData = arrayData.filter(p => p.nombre.toLowerCase().includes(b));
+    }
+
+    // Ordenar por ingresos DESC
+    arrayData.sort((a, b) => b.ingresos - a.ingresos);
+
+    const totalCount = arrayData.length;
+    const paginated = arrayData.slice(offset, offset + limite);
+
+    // Calcular KPIs globales
+    const totalUnidades = arrayData.reduce((acc, curr) => acc + curr.vendidos, 0);
+    const totalIngresos = arrayData.reduce((acc, curr) => acc + curr.ingresos, 0);
+    const topProducto = arrayData[0] && arrayData[0].vendidos > 0 ? arrayData[0].nombre : 'Ninguno';
+
+    return {
+      total: totalCount,
+      paginas: Math.ceil(totalCount / limite),
+      actual: pagina,
+      data: paginated,
+      kpis: {
+        total_unidades: totalUnidades,
+        total_ingresos: totalIngresos,
+        producto_estrella: topProducto
+      }
+    };
+  }
+
+  static async obtenerReporteConfirmadores(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    const { buscador, confirmador, courierId, courier_id } = filtros;
+    const finalCourierId = courierId || courier_id;
+    const { desde, hasta } = resolverRangoFechas(filtros);
+
+    const whereEnvio = { usuario_id };
+    
+    if (desde && hasta) {
+      whereEnvio.fecha = { [Op.between]: [desde, hasta] };
+    }
+
+    if (finalCourierId && finalCourierId !== 'TODOS') whereEnvio.courier_id = finalCourierId;
+    if (confirmador && confirmador !== 'TODOS') whereEnvio.confirmador = confirmador;
+
+    const envios = await Envio.findAll({
+      where: whereEnvio,
+      attributes: ['confirmador', 'estado', 'monto']
+    });
+
+    const mapa = {};
+    envios.forEach(e => {
+      const p_id = e.confirmador || 'Sin Asignar';
+      if (!mapa[p_id]) {
+        mapa[p_id] = {
+          nombre: p_id,
+          procesados: 0,
+          entregados: 0,
+          rechazados: 0,
+          ingresos: 0
+        };
+      }
+      
+      const st = (e.estado || '').toLowerCase();
+      mapa[p_id].procesados += 1;
+      
+      if (st === 'entregado') {
+        mapa[p_id].entregados += 1;
+        mapa[p_id].ingresos += Number(e.monto) || 0;
+      } else if (st === 'rechazado' || st === 'devuelto' || st === 'cancelado') {
+        mapa[p_id].rechazados += 1;
+      }
+    });
+
+    let arrayData = Object.values(mapa);
+    
+    if (buscador) {
+      const b = buscador.toLowerCase();
+      arrayData = arrayData.filter(c => c.nombre.toLowerCase().includes(b));
+    }
+
+    arrayData.sort((a, b) => b.ingresos - a.ingresos);
+    
+    const totalCount = arrayData.length;
+    const paginated = arrayData.slice(offset, offset + limite);
+
+    let topConfirmador = 'Ninguno';
+    let totalIngresos = 0;
+    let sumTasa = 0;
+    let confirmadoresValidos = 0;
+
+    arrayData.forEach(c => {
+      totalIngresos += c.ingresos;
+      if (c.procesados > 0) {
+        sumTasa += (c.entregados / c.procesados) * 100;
+        confirmadoresValidos++;
+      }
+    });
+
+    if (arrayData.length > 0 && arrayData[0].entregados > 0) {
+      topConfirmador = arrayData[0].nombre;
+    }
+
+    const tasaCierrePromedio = confirmadoresValidos > 0 ? (sumTasa / confirmadoresValidos) : 0;
+
+    return {
+      total: totalCount,
+      paginas: Math.ceil(totalCount / limite),
+      actual: pagina,
+      data: paginated,
+      kpis: {
+        top_confirmador: topConfirmador,
+        total_ingresos: totalIngresos,
+        tasa_cierre_promedio: tasaCierrePromedio
+      }
     };
   }
 }

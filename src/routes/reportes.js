@@ -39,4 +39,52 @@ router.post('/items', verificarToken, async (req, res) => {
   }
 });
 
+// POST /api/reportes/comisiones
+router.post('/comisiones', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteComisiones(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener comisiones:', error);
+    res.status(500).json({ message: 'Error interno al procesar comisiones' });
+  }
+});
+
+// POST /api/reportes/facturacion
+router.post('/facturacion', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteFacturacion(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de facturacion:', error);
+    res.status(500).json({ error: 'Error al generar reporte de facturacion' });
+  }
+});
+
+// POST /api/reportes/productos
+router.post('/productos', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteProductos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de productos:', error);
+    res.status(500).json({ error: 'Error al generar reporte de productos' });
+  }
+});
+
+// POST /api/reportes/confirmadores
+router.post('/confirmadores', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteConfirmadores(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de confirmadores:', error);
+    res.status(500).json({ error: 'Error al generar reporte de confirmadores' });
+  }
+});
+
 module.exports = router;
