@@ -56,10 +56,25 @@ const Landing = sequelize.define('Landing', {
     comment: 'Landing raíz de la tienda (GET /api/l/ sin slug). Única por tienda.',
   },
   tipo_pagina: {
-    type: DataTypes.ENUM('inicio', 'catalogo', 'contacto'),
-    allowNull: false,
-    defaultValue: 'inicio',
-    comment: 'Rol fijo de la página dentro del sitio de la tienda — única por (tienda_id, tipo_pagina). Independiente de es_home: hoy siempre coinciden (inicio=es_home), pero se mantienen separados para no acoplar "cuál es la raíz del hostname" con "qué rol cumple esta página".',
+    type: DataTypes.ENUM('inicio', 'catalogo', 'contacto', 'funnel'),
+    allowNull: true,
+    defaultValue: 'funnel',
+  },
+  template_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  template_version: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  producto_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  content: {
+    type: DataTypes.JSON,
+    allowNull: true,
   },
   // --- Filtros visibles en la landing pública ---
   mostrar_filtro_categoria: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
@@ -126,7 +141,6 @@ const Landing = sequelize.define('Landing', {
   updatedAt: 'updated_at',
   indexes: [
     { unique: true, fields: ['tienda_id', 'slug'] },
-    { unique: true, fields: ['tienda_id', 'tipo_pagina'] },
     { fields: ['tienda_id'] },
     { fields: ['inquilino_id'] },
   ],

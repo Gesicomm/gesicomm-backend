@@ -50,7 +50,6 @@ const Usuario = sequelize.define('Usuario', {
   plan: {
     type: DataTypes.ENUM('free', 'pago'),
     allowNull: true,
-    comment: 'Elegido en el onboarding, a nivel de cuenta (no por tienda) — hoy 1 tienda por usuario, pero el plan ya queda a nivel cuenta pensando en soportar varias más adelante. null hasta completar el onboarding. Sin cobro integrado — "pago" solo marca la intención.',
   },
   email_verificado: {
     type: DataTypes.BOOLEAN,

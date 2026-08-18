@@ -142,6 +142,34 @@ async function guardarSeccionesProducto(req, res) {
   }
 }
 
+// Phase 4: Schema-driven Editor endpoints
+async function obtenerLandingProducto(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    
+    const landing = await LandingService.obtenerLandingProducto(req.params.id, tienda.id);
+    if (!landing) {
+      return res.status(404).json({ message: 'Landing no instanciada para este producto.' });
+    }
+    return res.json(landing);
+  } catch (err) {
+    return res.status(500).json({ message: err.message || 'Error al obtener la landing del producto.' });
+  }
+}
+
+async function guardarLandingProducto(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    
+    const landing = await LandingService.guardarLandingProducto(req.params.id, tienda.id, req.body.content);
+    return res.json(landing);
+  } catch (err) {
+    return res.status(400).json({ message: err.message || 'Error al guardar la landing del producto.' });
+  }
+}
+
 async function crear(req, res) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
@@ -350,6 +378,26 @@ async function estadisticasRango(req, res) {
   }
 }
 
+/**
+ * Instancia una landing page específica para un producto basada en un template.
+ */
+const instanciarLanding = async (req, res, next) => {
+  try {
+    const { templateId } = req.body;
+    const productoId = req.params.id;
+    const inquilinoId = req.inquilino.id;
+    
+    if (!templateId) {
+      return res.status(400).json({ message: 'Se requiere el ID del template.' });
+    }
+
+    const result = await LandingService.instanciarDesdeTemplate(inquilinoId, productoId, templateId);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   listar, paginas, seccionesProducto, guardarSeccionesProducto, crear, detalle, actualizar, eliminar, cambiarEstado,
   subirImagenLandingMiddleware,
@@ -358,4 +406,7 @@ module.exports = {
   subirTestimonioFoto,
   subirImagenSeccion,
   estadisticas, estadisticasRango,
+  instanciarLanding,
+  obtenerLandingProducto,
+  guardarLandingProducto
 };

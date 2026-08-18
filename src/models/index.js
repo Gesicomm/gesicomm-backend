@@ -28,6 +28,7 @@ const LiquidacionEnvio = require('./LiquidacionEnvio');
 const EnvioHistorial = require('./EnvioHistorial');
 const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
+const LandingTemplate = require('./LandingTemplate');
 const Landing = require('./Landing');
 const LandingItem = require('./LandingItem');
 const LandingSeccion = require('./LandingSeccion');
@@ -36,6 +37,9 @@ const Testimonio = require('./Testimonio');
 const Faq = require('./Faq');
 const SolicitudEliminacion = require('./SolicitudEliminacion');
 const MensajeContacto = require('./MensajeContacto');
+const MetaCampanaInterna = require('./MetaCampanaInterna');
+const MetaReporteImport = require('./MetaReporteImport');
+const MetaReporteFila = require('./MetaReporteFila');
 
 // ============================================================
 // Relaciones existentes
@@ -205,6 +209,10 @@ LandingItem.belongsTo(Landing, { foreignKey: 'landing_id' });
 Landing.hasMany(LandingSeccion, { as: 'secciones', foreignKey: 'landing_id', onDelete: 'CASCADE' });
 LandingSeccion.belongsTo(Landing, { foreignKey: 'landing_id' });
 
+LandingTemplate.hasMany(Landing, { as: 'landings', foreignKey: 'template_id' });
+Landing.belongsTo(LandingTemplate, { as: 'template', foreignKey: 'template_id' });
+
+// Relación de productos con landings (page-builder)
 Landing.hasMany(LandingEvento, { as: 'eventos', foreignKey: 'landing_id', onDelete: 'CASCADE' });
 LandingEvento.belongsTo(Landing, { foreignKey: 'landing_id' });
 
@@ -259,6 +267,27 @@ ProgresoUsuarioLeccion.belongsTo(LeccionEducacion, { foreignKey: 'leccion_id', a
 Usuario.hasMany(SolicitudEliminacion, { foreignKey: 'usuario_id', onDelete: 'SET NULL' });
 SolicitudEliminacion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
+// ============================================================
+// Meta Ads — campañas internas y reportes importados
+// ============================================================
+// SET NULL en las tres direcciones: borrar una integración de Meta, un
+// funnel (Landing) o un import no debe llevarse puesta la campaña interna
+// ni las filas de reporte ya guardadas — son el historial de métricas.
+MetaIntegration.hasMany(MetaCampanaInterna, { foreignKey: 'meta_integration_id', onDelete: 'SET NULL' });
+MetaCampanaInterna.belongsTo(MetaIntegration, { foreignKey: 'meta_integration_id' });
+
+Landing.hasMany(MetaCampanaInterna, { foreignKey: 'landing_id', onDelete: 'SET NULL' });
+MetaCampanaInterna.belongsTo(Landing, { foreignKey: 'landing_id', as: 'funnel' });
+
+Usuario.hasMany(MetaCampanaInterna, { foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+MetaCampanaInterna.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+MetaReporteImport.hasMany(MetaReporteFila, { as: 'filas', foreignKey: 'meta_reporte_import_id', onDelete: 'CASCADE' });
+MetaReporteFila.belongsTo(MetaReporteImport, { foreignKey: 'meta_reporte_import_id' });
+
+MetaCampanaInterna.hasMany(MetaReporteFila, { as: 'filas_reporte', foreignKey: 'meta_campana_interna_id', onDelete: 'SET NULL' });
+MetaReporteFila.belongsTo(MetaCampanaInterna, { foreignKey: 'meta_campana_interna_id', as: 'campana' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -290,6 +319,7 @@ module.exports = {
   EnvioHistorial,
   PrecioUsuario,
   Tienda,
+  LandingTemplate,
   Landing,
   LandingItem,
   LandingSeccion,
@@ -304,4 +334,7 @@ module.exports = {
   ProgresoUsuarioLeccion,
   SolicitudEliminacion,
   MensajeContacto,
+  MetaCampanaInterna,
+  MetaReporteImport,
+  MetaReporteFila,
 };

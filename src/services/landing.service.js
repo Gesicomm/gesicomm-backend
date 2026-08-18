@@ -22,7 +22,7 @@ const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
   ProductoImagen, ProductoVariante, LandingSeccion, LandingEvento, Testimonio, Faq, Envio, EnvioItem,
-  Oferta, OfertaComponente, sequelize
+  Oferta, OfertaComponente, Tienda, LandingTemplate, sequelize
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 const { registrarHistorial } = require('../utils/historial');
@@ -478,6 +478,26 @@ class LandingService {
   }
 
   static construirSeccionesPublicas(landing, { items, testimonios, faq, banner }) {
+    // FASE 5: Commerce Engine para Funnels
+    // Si la landing es un funnel impulsado por schema, ignoramos LandingSeccion y mapeamos el esquema virtual
+    if (landing.tipo_pagina === 'funnel' && landing.template?.schema) {
+      const mapeadas = landing.template.schema.map((bloque, idx) => {
+        const content = landing.content?.[bloque.id] || {};
+        return {
+          id: `virtual-${idx}`,
+          tipo: bloque.type,
+          page_type: 'landing', // En funnels toda la página es el funnel
+          nombre_interno: bloque.id,
+          activo: true,
+          orden: idx,
+          config: { ...(bloque.config || {}), ...(content.config || {}) },
+          contenido: { ...(bloque.contenido || {}), ...(content.contenido || {}) },
+          ancho_mitad: content.ancho_mitad !== undefined ? content.ancho_mitad : (bloque.ancho_mitad || false)
+        };
+      });
+      return { secciones: mapeadas, secciones_producto: [] };
+    }
+
     const guardadas = [...(landing.secciones || [])]
       .sort((a, b) => a.orden - b.orden)
       .filter(s => s.activo !== false && (s.status === 'published' || !s.status));
@@ -1181,6 +1201,7 @@ class LandingService {
         // diseño propio de un producto lo resuelve obtenerProductoPublico()
         // aparte, nunca se mezcla con las secciones de la landing.
         { model: LandingSeccion, as: 'secciones', required: false, where: { producto_id: null } },
+        { model: LandingTemplate, as: 'template', required: false },
       ],
       // Ver nota en obtener(): el orden va acá, no dentro del include.
       order: [
@@ -1640,6 +1661,16 @@ class LandingService {
     if (items.length > MAX_ITEMS_CHECKOUT) throw new Error(`No se pueden pedir más de ${MAX_ITEMS_CHECKOUT} ítems distintos.`);
 
     const landingItems = landing.items || [];
+    
+    // FASE 5: Commerce Engine Integration para Funnels
+    // Inyectamos el producto principal del funnel para que el motor valide y
+    // apruebe tanto el producto ancla como sus Order Bumps agregados al carrito.
+    if (landing.tipo_pagina === 'funnel' && landing.producto_id) {
+      if (!landingItems.find(i => i.tipo === 'producto' && i.referencia_id === landing.producto_id)) {
+        landingItems.push({ tipo: 'producto', referencia_id: landing.producto_id, createdAt: landing.createdAt });
+      }
+    }
+    
     const idsProducto = landingItems.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = landingItems.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
 
@@ -1868,6 +1899,92 @@ class LandingService {
       monto,
       redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp,
     };
+  }
+
+  /**
+   * Fase 2: Instanciar Landing desde Template
+   */
+  static async instanciarDesdeTemplate(inquilinoId, productoId, templateId) {
+    const { LandingTemplate } = require('../models');
+    const template = await LandingTemplate.findByPk(templateId);
+    if (!template) {
+      throw new Error('El template seleccionado no existe.');
+    }
+
+    const tienda = await Tienda.findOne({ where: { inquilino_id: inquilinoId } });
+    if (!tienda) {
+      throw new Error('Tienda no encontrada.');
+    }
+
+    const producto = await Producto.findOne({ where: { id: productoId, inquilino_id: inquilinoId } });
+    if (!producto) {
+      throw new Error('Producto no encontrado.');
+    }
+
+    // Idempotencia: Verificar si ya existe una landing para este producto
+    let landing = await Landing.findOne({
+      where: { tienda_id: tienda.id, producto_id: productoId }
+    });
+
+    if (landing) {
+      // Actualizar la existente (si el comercio cambia de idea y elige otro funnel)
+      await landing.update({
+        template_id: template.id,
+        template_version: template.version,
+        tipo_pagina: 'funnel',
+        content: landing.template_id !== template.id ? {} : landing.content,
+      });
+    } else {
+      // Crear nueva instancia de landing
+      const slugBase = `p-${producto.id}-${crypto.randomBytes(3).toString('hex')}`;
+      
+      landing = await Landing.create({
+        inquilino_id: inquilinoId,
+        tienda_id: tienda.id,
+        producto_id: producto.id,
+        nombre: `Funnel: ${producto.nombre} (${template.name})`,
+        slug: slugify(slugBase, { lower: true, strict: true }),
+        es_home: false,
+        tipo_pagina: 'funnel',
+        template_id: template.id,
+        template_version: template.version,
+        activo: false, // Inicia como borrador
+        content: {}, // Contenido vacío que llenará el wizard
+      });
+    }
+
+    return {
+      message: 'Funnel configurado con éxito',
+      landing_id: landing.id,
+      slug: landing.slug,
+      template_id: template.id,
+      schema: template.schema,
+      content: landing.content
+    };
+  }
+
+  // Phase 4: Schema-driven endpoints for Merchant Editor
+  static async obtenerLandingProducto(producto_id, tienda_id) {
+    const { LandingTemplate } = require('../models');
+    const landing = await Landing.findOne({
+      where: { producto_id, tienda_id },
+      include: [{
+        model: LandingTemplate,
+        as: 'template',
+        attributes: ['id', 'name', 'funnel_type', 'schema', 'design_tokens']
+      }]
+    });
+    return landing;
+  }
+
+  static async guardarLandingProducto(producto_id, tienda_id, content) {
+    const landing = await Landing.findOne({ where: { producto_id, tienda_id } });
+    if (!landing) throw new Error('Landing no encontrada para este producto.');
+    
+    // Solo permitimos actualizar el content
+    landing.content = content || {};
+    await landing.save();
+    return landing;
   }
 }
 

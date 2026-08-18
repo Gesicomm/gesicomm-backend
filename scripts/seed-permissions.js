@@ -21,6 +21,7 @@ const permisosDisponibles = [
   { nombre: 'gestionar_precio_propio', descripcion: 'Definir el precio de venta propio de productos y combos, respetando el precio mínimo' },
   { nombre: 'gestionar_landing', descripcion: 'Crear, editar, publicar y despublicar landings públicas propias' },
   { nombre: 'gestionar_tienda', descripcion: 'Configurar la tienda propia: subdominio, dominio propio, colores, contacto y pixel' },
+  { nombre: 'gestionar_meta_ads', descripcion: 'Crear campañas internas de Meta Ads, importar reportes CSV y ver métricas por producto' },
   // Cumplimiento
   { nombre: 'gestionar_solicitudes_datos', descripcion: 'Ver y resolver solicitudes de eliminación de datos y mensajes del formulario público de contacto' },
 ];
@@ -32,12 +33,12 @@ const rolesBasicos = [
       'ver_dashboard', 'gestionar_usuarios', 'configurar_sistema',
       'ver_combos', 'crear_combos', 'editar_combos', 'activar_combos', 'configurar_combos',
       'ver_productos', 'crear_productos', 'editar_productos', 'eliminar_productos',
-      'ver_analisis_sensibilidad', 'gestionar_solicitudes_datos',
+      'ver_analisis_sensibilidad', 'gestionar_solicitudes_datos', 'gestionar_meta_ads',
     ],
   },
   {
     nombre: 'usuario',
-    permisos: ['ver_dashboard', 'ver_productos', 'ver_combos', 'ver_analisis_sensibilidad', 'gestionar_precio_propio', 'gestionar_landing', 'gestionar_tienda'],
+    permisos: ['ver_dashboard', 'ver_productos', 'ver_combos', 'ver_analisis_sensibilidad', 'gestionar_precio_propio', 'gestionar_landing', 'gestionar_tienda', 'gestionar_meta_ads'],
   },
 ];
 

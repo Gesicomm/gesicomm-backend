@@ -23,6 +23,7 @@ const metodoPagoRoutes = require('./src/routes/metodoPagoRoutes');
 const liquidacionRoutes = require('./src/routes/liquidacionRoutes');
 const vitrinaRoutes = require('./src/routes/vitrina');
 const landingRoutes = require('./src/routes/landing');
+const landingTemplatesRoutes = require('./src/routes/landing-templates');
 const landingPublicaRoutes = require('./src/routes/landingPublica');
 const landingHtmlRoutes = require('./src/routes/landingHtml');
 const tiendaRoutes = require('./src/routes/tienda');
@@ -30,6 +31,7 @@ const educacionRoutes = require('./src/routes/educacionRoutes');
 const adminEducacionRoutes = require('./src/routes/adminEducacionRoutes');
 const publicoRoutes = require('./src/routes/publico');
 const reportesRoutes = require('./src/routes/reportes');
+const metaReportesRoutes = require('./src/routes/metaReportes');
 
 const app = express();
 // 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
@@ -161,6 +163,7 @@ app.use('/api/metodos-pago', metodoPagoRoutes);
 app.use('/api/liquidaciones', liquidacionRoutes);
 app.use('/api/vitrina', vitrinaRoutes);
 app.use('/api/mis-landings', landingRoutes);
+app.use('/api/landing-templates', landingTemplatesRoutes);
 app.use('/api/mi-tienda', tiendaRoutes);
 app.use('/api/educacion', educacionRoutes);
 app.use('/api/admin/educacion', adminEducacionRoutes);
@@ -168,6 +171,7 @@ app.use('/api/publico', publicoRoutes);
 app.use('/api/l', landingPublicaRoutes);
 app.use('/l', landingHtmlRoutes);
 app.use('/api/reportes', reportesRoutes);
+app.use('/api/meta-reportes', metaReportesRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {

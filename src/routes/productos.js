@@ -42,5 +42,10 @@ router.use('/:productoId/ofertas', ofertaRoutes);
 // visual de la vidriera, no un dato del catálogo.
 router.get('/:id/pagina-secciones', verificarPermiso('gestionar_landing'), landingCtrl.seccionesProducto);
 router.put('/:id/pagina-secciones', verificarPermiso('gestionar_landing'), landingCtrl.guardarSeccionesProducto);
+router.post('/:id/instanciar-landing', verificarPermiso('gestionar_landing'), landingCtrl.instanciarLanding);
+
+// Phase 4: Schema-driven Editor routes
+router.get('/:id/landing', verificarPermiso('gestionar_landing'), landingCtrl.obtenerLandingProducto);
+router.put('/:id/landing', verificarPermiso('gestionar_landing'), landingCtrl.guardarLandingProducto);
 
 module.exports = router;
