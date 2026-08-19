@@ -111,6 +111,9 @@ const Landing = sequelize.define('Landing', {
   contacto_telefono: { type: DataTypes.STRING(50), allowNull: true },
   contacto_email: { type: DataTypes.STRING(150), allowNull: true },
   contacto_direccion: { type: DataTypes.STRING(255), allowNull: true },
+  contacto_ciudad: { type: DataTypes.STRING(100), allowNull: true },
+  contacto_pais: { type: DataTypes.STRING(100), allowNull: true },
+  contacto_horarios: { type: DataTypes.STRING(255), allowNull: true, comment: 'Ej: "Lun a Vie de 9 a 18hs". Dato de la página de Contacto, no de redes sociales.' },
   contacto_instagram: { type: DataTypes.STRING(100), allowNull: true },
   contacto_facebook: { type: DataTypes.STRING(100), allowNull: true },
   contacto_tiktok: { type: DataTypes.STRING(100), allowNull: true },
@@ -121,6 +124,8 @@ const Landing = sequelize.define('Landing', {
   contenido_titulo: { type: DataTypes.STRING(150), allowNull: true },
   contenido_texto: { type: DataTypes.TEXT, allowNull: true },
   productos_titulo: { type: DataTypes.STRING(150), allowNull: true, comment: 'Título para la sección de productos destacados' },
+  catalogo_titulo: { type: DataTypes.STRING(150), allowNull: true, comment: 'Título propio de la página de Catálogo completo (/catalogo), independiente de productos_titulo (que es el de la sección "Productos destacados" del home).' },
+  catalogo_descripcion: { type: DataTypes.STRING(300), allowNull: true, comment: 'Subtítulo debajo del título en la página de Catálogo completo (/catalogo). Solo esa página, no la sección "Productos destacados" del home.' },
   // --- Diseño: override por landing. null en color_primario/color_fondo
   // = hereda el de Tienda (comportamiento de siempre). ---
   tema_modo: { type: DataTypes.ENUM('oscuro', 'claro'), allowNull: false, defaultValue: 'oscuro' },

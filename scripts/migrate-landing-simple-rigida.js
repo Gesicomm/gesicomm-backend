@@ -159,6 +159,15 @@ async function migrar() {
       contenido_texto: { type: DataTypes.TEXT, allowNull: true },
       banner_opacidad: { type: DataTypes.INTEGER, allowNull: true },
       productos_titulo: { type: DataTypes.STRING(150), allowNull: true },
+      catalogo_descripcion: { type: DataTypes.STRING(300), allowNull: true },
+      catalogo_titulo: { type: DataTypes.STRING(150), allowNull: true },
+      contacto_ciudad: { type: DataTypes.STRING(100), allowNull: true },
+      contacto_pais: { type: DataTypes.STRING(100), allowNull: true },
+      contacto_horarios: { type: DataTypes.STRING(255), allowNull: true },
+    }, t);
+
+    await agregarColumnasFaltantes(qi, 'landing_items', {
+      mostrar_en_inicio: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     }, t);
 
     const tablas = await qi.showAllTables();

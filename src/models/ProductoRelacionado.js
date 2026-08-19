@@ -24,6 +24,11 @@ const ProductoRelacionado = sequelize.define('ProductoRelacionado', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  orden: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+  },
 }, {
   tableName: 'productos_relacionados',
   timestamps: false,

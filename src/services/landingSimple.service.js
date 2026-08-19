@@ -96,11 +96,19 @@ class LandingSimpleService {
       if (payload[campo] !== undefined) campos[campo] = payload[campo]?.trim ? (payload[campo].trim() || null) : (payload[campo] || null);
     }
     // Contacto — propio de cada landing rígida, no compartido con Tienda.
-    for (const campo of ['contacto_whatsapp', 'contacto_telefono', 'contacto_email', 'contacto_direccion', 'contacto_instagram', 'contacto_facebook', 'contacto_tiktok', 'contacto_youtube', 'contacto_twitter']) {
+    for (const campo of [
+      // Datos de contacto reales (página de Contacto)
+      'contacto_whatsapp', 'contacto_telefono', 'contacto_email',
+      'contacto_direccion', 'contacto_ciudad', 'contacto_pais', 'contacto_horarios',
+      // Redes sociales (pie de la landing)
+      'contacto_instagram', 'contacto_facebook', 'contacto_tiktok', 'contacto_youtube', 'contacto_twitter',
+    ]) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo]?.trim ? (payload[campo].trim() || null) : (payload[campo] || null);
     }
-    // Contenido adicional (título + párrafo, sección fija antes de Contacto) y productos (título).
-    for (const campo of ['contenido_titulo', 'contenido_texto', 'productos_titulo']) {
+    // Contenido adicional (título + párrafo, sección fija antes de Contacto),
+    // productos (título de "Productos destacados") y catálogo (subtítulo de
+    // la página /catalogo completa).
+    for (const campo of ['contenido_titulo', 'contenido_texto', 'productos_titulo', 'catalogo_titulo', 'catalogo_descripcion']) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo]?.trim ? (payload[campo].trim() || null) : (payload[campo] || null);
     }
     // Colores — tema único para toda la landing (no por sección), reutiliza

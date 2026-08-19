@@ -40,6 +40,12 @@ const LandingItem = sequelize.define('LandingItem', {
     allowNull: false,
     defaultValue: 0,
   },
+  mostrar_en_inicio: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: true,
+    comment: 'Solo aplica a landings rígidas: si aparece en "Productos destacados" del home. Siempre aparece en la página de Catálogo completo (/catalogo) sin importar este valor — esa página muestra todos los items de la landing.',
+  },
 }, {
   tableName: 'landing_items',
   timestamps: true,

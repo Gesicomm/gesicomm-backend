@@ -139,6 +139,18 @@ async function faq(req, res) {
   }
 }
 
+async function relacionados(req, res) {
+  try {
+    const inquilino_id = req.usuario.tenantId;
+    const datos = await ProductoService.listarRelacionados(req.params.id, inquilino_id);
+    return res.json(datos);
+  } catch (err) {
+    console.error(err);
+    const status = err.message.includes('no encontrado') ? 404 : 500;
+    return res.status(status).json({ message: err.message || 'Error al obtener los productos relacionados.' });
+  }
+}
+
 async function historialPrecios(req, res) {
   try {
     const { id } = req.params;
@@ -178,6 +190,10 @@ async function actualizar(req, res) {
       await ProductoService.sincronizarFaq(req.params.id, inquilino_id, req.body.faq, t);
     }
 
+    if (req.body.relacionados !== undefined) {
+      await ProductoService.sincronizarRelacionados(req.params.id, inquilino_id, req.body.relacionados, t);
+    }
+
     await t.commit();
     return res.json(producto);
   } catch (err) {
@@ -211,6 +227,7 @@ module.exports = {
   variantes,
   imagenes,
   faq,
+  relacionados,
   historialPrecios,
   actualizar,
   eliminar

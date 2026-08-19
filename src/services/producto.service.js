@@ -367,7 +367,7 @@ class ProductoService {
 
     const camposPermitidos = [
       'nombre', 'sku', 'categoria_id', 'marca_id', 'tags',
-      'descripcion_corta', 'descripcion_larga', 'faq_titulo',
+      'descripcion_corta', 'descripcion_larga', 'faq_titulo', 'relacionados_titulo',
       'precio_costo', 'precio_base', 'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'impuestos_incluidos',
       'cantidad_disponible', 'stock_minimo', 'unidad_medida', 'activo', 'estado_venta', 'destacado',
       'fecha_disponible_desde', 'fecha_disponible_hasta',
@@ -410,6 +410,94 @@ class ProductoService {
       pregunta: f.pregunta.trim(),
       respuesta: f.respuesta.trim(),
       orden: f.orden !== undefined ? Number(f.orden) : idx,
+    })), { transaction });
+  }
+
+  /**
+   * "Productos relacionados" de la página pública de un producto — usa la
+   * curación manual (tabla productos_relacionados) si el comercio eligió
+   * algo; si no, cae en automático: productos con la misma categoria_id
+   * (el mismo tag que ya se arma "a la hora de crear productos", ver
+   * ProductForm.jsx), excluyendo el propio producto. Esta tabla ya existía
+   * (se llenaba al crear un producto) pero nunca se leía en ningún lado —
+   * acá es donde finalmente se resuelve.
+   */
+  static async listarRelacionados(id, inquilino_id) {
+    const { ProductoRelacionado, ProductoImagen } = require('../models');
+    const producto = await Producto.findOne({
+      where: { id, inquilino_id },
+      attributes: ['id', 'categoria_id', 'relacionados_titulo'],
+    });
+    if (!producto) throw new Error('Producto no encontrado.');
+
+    const manuales = await ProductoRelacionado.findAll({
+      where: { producto_id: id },
+      order: [['orden', 'ASC']],
+    });
+
+    let ids = manuales.map(m => m.producto_relacionado_id);
+    let automatico = false;
+
+    if (!ids.length && producto.categoria_id) {
+      automatico = true;
+      const porCategoria = await Producto.findAll({
+        where: {
+          inquilino_id, categoria_id: producto.categoria_id, activo: true,
+          estado_venta: 'en_venta', id: { [Op.ne]: id },
+        },
+        attributes: ['id'],
+        order: [['created_at', 'DESC']],
+        limit: 8,
+      });
+      ids = porCategoria.map(p => p.id);
+    }
+
+    if (!ids.length) return { titulo: producto.relacionados_titulo || null, automatico: false, items: [] };
+
+    const [productos, imagenes] = await Promise.all([
+      Producto.findAll({
+        where: { id: { [Op.in]: ids }, inquilino_id, activo: true },
+        attributes: ['id', 'slug', 'nombre', 'precio_base', 'precio_tachado', 'cantidad_disponible'],
+      }),
+      ProductoImagen.findAll({
+        where: { producto_id: { [Op.in]: ids } },
+        attributes: ['producto_id', 'url', 'es_principal'],
+        order: [['es_principal', 'DESC'], ['created_at', 'ASC']],
+      }),
+    ]);
+
+    const mapaImagen = new Map();
+    imagenes.forEach(img => { if (!mapaImagen.has(img.producto_id)) mapaImagen.set(img.producto_id, img.url); });
+    const mapaProducto = new Map(productos.map(p => [p.id, p]));
+
+    // Se preserva el orden de `ids` (manual, o más reciente primero si es
+    // automático) — no el orden en que Postgres devolvió el findAll.
+    const items = ids.map(pid => mapaProducto.get(pid)).filter(Boolean).map(p => ({
+      id: p.id,
+      slug: p.slug,
+      nombre: p.nombre,
+      precio: parseFloat(p.precio_base),
+      precio_tachado: p.precio_tachado ? parseFloat(p.precio_tachado) : null,
+      imagen: mapaImagen.get(p.id) || null,
+      stock: p.cantidad_disponible,
+    }));
+
+    return { titulo: producto.relacionados_titulo || null, automatico, items };
+  }
+
+  /** Curación manual — reemplaza la lista completa (destroy-all + bulkCreate), mismo criterio que sincronizarFaq. */
+  static async sincronizarRelacionados(id, inquilino_id, relacionadoIds = [], transaction) {
+    const { ProductoRelacionado } = require('../models');
+    const producto = await Producto.findOne({ where: { id, inquilino_id }, attributes: ['id'] });
+    if (!producto) throw new Error('Producto no encontrado.');
+    await ProductoRelacionado.destroy({ where: { producto_id: id }, transaction });
+    const idsLimpios = [...new Set(relacionadoIds.map(Number))].filter(rid => rid && rid !== Number(id));
+    if (!idsLimpios.length) return;
+    await ProductoRelacionado.bulkCreate(idsLimpios.map((rid, idx) => ({
+      inquilino_id,
+      producto_id: id,
+      producto_relacionado_id: rid,
+      orden: idx,
     })), { transaction });
   }
 

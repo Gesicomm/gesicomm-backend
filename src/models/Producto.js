@@ -55,6 +55,11 @@ const Producto = sequelize.define('Producto', {
     type: DataTypes.STRING(255),
     allowNull: true,
   },
+  relacionados_titulo: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+    comment: 'Título de "Productos relacionados" en la página del producto. null = default genérico.',
+  },
   // --- Precios ---
   precio_costo: {
     type: DataTypes.DECIMAL(12, 2),

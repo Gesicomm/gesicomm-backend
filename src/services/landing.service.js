@@ -254,6 +254,7 @@ class LandingService {
       etiqueta: this.normalizarEtiqueta(item.etiqueta),
       precio_ancla: item.precio_ancla != null ? Number(item.precio_ancla) : null,
       orden: item.orden !== undefined ? Number(item.orden) : idx,
+      mostrar_en_inicio: item.mostrar_en_inicio !== false,
     })));
   }
 
@@ -1492,6 +1493,11 @@ class LandingService {
         destacado: esCombo ? false : !!entidad.destacado,
         // Fecha real (LandingItem.created_at) para el badge "Nuevo".
         creado: item.createdAt,
+        // Solo decide si aparece en "Productos destacados" del home — la
+        // página de Catálogo completo (/catalogo) siempre muestra TODOS los
+        // items de la landing sin importar este flag (ver más abajo,
+        // catalogo_items vs items).
+        mostrar_en_inicio: item.mostrar_en_inicio !== false,
       });
     }
 
@@ -1517,6 +1523,12 @@ class LandingService {
       texto: b.texto,
       icono: b.icono || null,
     }));
+    // "Productos destacados" del home = solo los items marcados
+    // mostrar_en_inicio (default true al agregarlos). La página de
+    // Catálogo completo (/catalogo) siempre muestra TODOS los items de la
+    // landing — el comercio puede agregar productos que aparezcan solo ahí
+    // desde el picker, sin que se cuelen en el home.
+    const itemsHomeDto = itemsDto.filter(i => i.mostrar_en_inicio);
     // Los templates rígidos (Fitness/Beauty/Tech/Básico) no usan el
     // constructor de secciones (LandingSeccion) — el render lo decide el
     // frontend público por template.slug, con un componente fijo. Evita el
@@ -1548,6 +1560,9 @@ class LandingService {
         telefono: landing.contacto_telefono || null,
         email: landing.contacto_email || null,
         direccion: landing.contacto_direccion || null,
+        ciudad: landing.contacto_ciudad || null,
+        pais: landing.contacto_pais || null,
+        horarios: landing.contacto_horarios || null,
         instagram: landing.contacto_instagram || null,
         facebook: landing.contacto_facebook || null,
         tiktok: landing.contacto_tiktok || null,
@@ -1561,6 +1576,8 @@ class LandingService {
       // CatalogoPublico.jsx). Faltaba en este DTO: el campo existía en el
       // modelo/editor pero nunca llegaba a la landing pública.
       productos_titulo: landing.productos_titulo || null,
+      catalogo_titulo: landing.catalogo_titulo || null,
+      catalogo_descripcion: landing.catalogo_descripcion || null,
       beneficios: beneficiosDto,
       template: landing.template ? { slug: landing.template.slug, kind: landing.template.kind } : null,
       tienda: {
@@ -1645,7 +1662,8 @@ class LandingService {
         google_analytics_id: tienda.google_analytics_id || null,
         tiktok_pixel_id: tienda.tiktok_pixel_id || null,
       },
-      items: itemsDto,
+      items: esRigida ? itemsHomeDto : itemsDto,
+      catalogo_items: itemsDto,
       secciones: secciones,
       secciones_producto: secciones_producto,
       testimonios: testimoniosDto,
@@ -1681,19 +1699,28 @@ class LandingService {
     // existe ninguna, se deja `secciones_producto` tal cual vino de
     // obtenerPublica() (la plantilla compartida de siempre).
     let seccionesProducto = landing.secciones_producto;
+    // "Productos relacionados" — manual (productos_relacionados) o
+    // automático por categoria_id si no hay curación (ver
+    // ProductoService.listarRelacionados). Antes esta tabla solo se
+    // escribía al crear el producto y nunca llegaba a ningún lado.
+    let relacionados = { titulo: null, automatico: false, items: [] };
     if (item.tipo === 'producto') {
       const producto = await Producto.findOne({
         where: { slug: productoSlug, inquilino_id: tienda.inquilino_id },
         attributes: ['id'],
       });
       if (producto) {
-        const propias = await LandingSeccion.findAll({
-          where: { producto_id: producto.id, page_type: 'product', activo: true },
-          order: [['orden', 'ASC']],
-        });
+        const [propias, relacionadosDto] = await Promise.all([
+          LandingSeccion.findAll({
+            where: { producto_id: producto.id, page_type: 'product', activo: true },
+            order: [['orden', 'ASC']],
+          }),
+          require('./producto.service').listarRelacionados(producto.id, tienda.inquilino_id).catch(() => relacionados),
+        ]);
         if (propias.length > 0) {
           seccionesProducto = propias.map(s => this.seccionDto(s));
         }
+        relacionados = relacionadosDto;
       }
     }
 
@@ -1701,6 +1728,7 @@ class LandingService {
       ...landing,
       secciones_producto: seccionesProducto,
       producto: item,
+      relacionados,
       seo: {
         titulo: item.nombre,
         descripcion: item.descripcion_larga || item.descripcion || landing.seo?.descripcion || null,
