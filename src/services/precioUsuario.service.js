@@ -49,8 +49,8 @@ class PrecioUsuarioService {
       Producto.findAll({
         where: { inquilino_id, activo: true, estado_venta: 'en_venta' },
         attributes: [
-          'id', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_minimo',
-          'cantidad_disponible', 'destacado', 'created_at',
+          'id', 'slug', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_minimo',
+          'precio_tachado', 'cantidad_disponible', 'destacado', 'created_at',
         ],
         include: [
           { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -125,12 +125,14 @@ class PrecioUsuarioService {
         precio_minimo: p.precio_minimo !== null ? parseFloat(p.precio_minimo) : null,
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
+        precio_tachado: p.precio_tachado ? parseFloat(p.precio_tachado) : null,
         imagen: imgMap.get(p.id) || null,
         categoria: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
         stock: p.cantidad_disponible,
         destacado: !!p.destacado,
         creado_en: p.created_at,
+        slug: p.slug,
       };
     });
 

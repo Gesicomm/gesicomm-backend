@@ -23,6 +23,7 @@ const metodoPagoRoutes = require('./src/routes/metodoPagoRoutes');
 const liquidacionRoutes = require('./src/routes/liquidacionRoutes');
 const vitrinaRoutes = require('./src/routes/vitrina');
 const landingRoutes = require('./src/routes/landing');
+const landingSimpleRoutes = require('./src/routes/landingSimple');
 const landingTemplatesRoutes = require('./src/routes/landing-templates');
 const landingPublicaRoutes = require('./src/routes/landingPublica');
 const landingHtmlRoutes = require('./src/routes/landingHtml');
@@ -32,6 +33,9 @@ const adminEducacionRoutes = require('./src/routes/adminEducacionRoutes');
 const publicoRoutes = require('./src/routes/publico');
 const reportesRoutes = require('./src/routes/reportes');
 const metaReportesRoutes = require('./src/routes/metaReportes');
+const costosGastosRoutes = require('./src/routes/costosGastos');
+const categoriasCostosGastosRoutes = require('./src/routes/categoriasCostosGastos');
+const proveedoresRoutes = require('./src/routes/proveedores');
 
 const app = express();
 // 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
@@ -163,6 +167,7 @@ app.use('/api/metodos-pago', metodoPagoRoutes);
 app.use('/api/liquidaciones', liquidacionRoutes);
 app.use('/api/vitrina', vitrinaRoutes);
 app.use('/api/mis-landings', landingRoutes);
+app.use('/api/mis-landings-simples', landingSimpleRoutes);
 app.use('/api/landing-templates', landingTemplatesRoutes);
 app.use('/api/mi-tienda', tiendaRoutes);
 app.use('/api/educacion', educacionRoutes);
@@ -172,6 +177,9 @@ app.use('/api/l', landingPublicaRoutes);
 app.use('/l', landingHtmlRoutes);
 app.use('/api/reportes', reportesRoutes);
 app.use('/api/meta-reportes', metaReportesRoutes);
+app.use('/api/costos-gastos', costosGastosRoutes);
+app.use('/api/categorias-costos-gastos', categoriasCostosGastosRoutes);
+app.use('/api/proveedores', proveedoresRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {
@@ -203,15 +211,19 @@ app.use((err, req, res, next) => {
 const { sequelize } = require('./src/models');
 const { migrarEnvios } = require('./scripts/migrar-envios');
 const { migrarLandingEventos } = require('./scripts/migrar-landing-eventos');
+const CategoriaCostoGastoService = require('./src/services/categoriaCostoGasto.service');
+const { iniciarJobCostosRecurrentes } = require('./src/services/cron/costosRecurrentes.job');
 
 sequelize.sync({ alter: false }).then(async () => {
   try {
     await migrarEnvios();
     await migrarLandingEventos();
+    await CategoriaCostoGastoService.seedDefaults();
   } catch (mErr) {
     logger.error('Error al aplicar migraciones de estructura:', mErr);
   }
   logger.info('Modelos y tabla envios sincronizados con la base de datos.');
+  iniciarJobCostosRecurrentes();
   app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });

@@ -51,6 +51,10 @@ const Producto = sequelize.define('Producto', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
+  faq_titulo: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
   // --- Precios ---
   precio_costo: {
     type: DataTypes.DECIMAL(12, 2),
@@ -70,7 +74,7 @@ const Producto = sequelize.define('Producto', {
   precio_tachado: {
     type: DataTypes.DECIMAL(12, 2),
     allowNull: true,
-    comment: 'Precio fantasía: precio "antes" que se muestra tachado en la landing para indicar oferta. Ej: producto costaba 300.000, ahora sale 220.000.',
+    comment: 'Precio ancla: precio de referencia que se muestra tachado en la landing para indicar oferta. Ej: producto costaba 300.000, ahora sale 220.000.',
   },
   descuento_porcentaje: {
     type: DataTypes.DECIMAL(5, 2),

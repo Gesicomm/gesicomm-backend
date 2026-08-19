@@ -10,6 +10,7 @@ const Marca = require('./Marca');
 const Producto = require('./Producto');
 const ProductoVariante = require('./ProductoVariante');
 const ProductoImagen = require('./ProductoImagen');
+const ProductoFaq = require('./ProductoFaq');
 const ProductoCombo = require('./ProductoCombo');
 const ProductoComboItem = require('./ProductoComboItem');
 const ProductoRelacionado = require('./ProductoRelacionado');
@@ -35,11 +36,15 @@ const LandingSeccion = require('./LandingSeccion');
 const LandingEvento = require('./LandingEvento');
 const Testimonio = require('./Testimonio');
 const Faq = require('./Faq');
+const LandingBeneficio = require('./LandingBeneficio');
 const SolicitudEliminacion = require('./SolicitudEliminacion');
 const MensajeContacto = require('./MensajeContacto');
 const MetaCampanaInterna = require('./MetaCampanaInterna');
 const MetaReporteImport = require('./MetaReporteImport');
 const MetaReporteFila = require('./MetaReporteFila');
+const Proveedor = require('./Proveedor');
+const CategoriaCostoGasto = require('./CategoriaCostoGasto');
+const CostoGasto = require('./CostoGasto');
 
 // ============================================================
 // Relaciones existentes
@@ -151,6 +156,10 @@ ProductoImagen.belongsTo(Producto, { foreignKey: 'producto_id' });
 ProductoVariante.hasMany(ProductoImagen, { as: 'imagenes', foreignKey: 'variante_id' });
 ProductoImagen.belongsTo(ProductoVariante, { foreignKey: 'variante_id' });
 
+// FAQ propia de cada producto ("Todo lo que necesitas saber")
+Producto.hasMany(ProductoFaq, { as: 'faq', foreignKey: 'producto_id', onDelete: 'CASCADE' });
+ProductoFaq.belongsTo(Producto, { foreignKey: 'producto_id' });
+
 // Combos (Multi-producto)
 Inquilino.hasMany(ProductoCombo, { foreignKey: 'inquilino_id' });
 ProductoCombo.belongsTo(Inquilino, { foreignKey: 'inquilino_id' });
@@ -222,6 +231,9 @@ Testimonio.belongsTo(Landing, { foreignKey: 'landing_id' });
 Landing.hasMany(Faq, { as: 'faq', foreignKey: 'landing_id', onDelete: 'CASCADE' });
 Faq.belongsTo(Landing, { foreignKey: 'landing_id' });
 
+Landing.hasMany(LandingBeneficio, { as: 'beneficios', foreignKey: 'landing_id', onDelete: 'CASCADE' });
+LandingBeneficio.belongsTo(Landing, { foreignKey: 'landing_id' });
+
 // ============================================================
 // Relaciones de Educación / Academia
 // ============================================================
@@ -288,6 +300,40 @@ MetaReporteFila.belongsTo(MetaReporteImport, { foreignKey: 'meta_reporte_import_
 MetaCampanaInterna.hasMany(MetaReporteFila, { as: 'filas_reporte', foreignKey: 'meta_campana_interna_id', onDelete: 'SET NULL' });
 MetaReporteFila.belongsTo(MetaCampanaInterna, { foreignKey: 'meta_campana_interna_id', as: 'campana' });
 
+// ============================================================
+// Relaciones de Costos y Gastos (Finanzas)
+// ============================================================
+Usuario.hasMany(Proveedor, { foreignKey: 'usuario_id' });
+Proveedor.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Inquilino.hasMany(CategoriaCostoGasto, { foreignKey: 'inquilino_id' });
+CategoriaCostoGasto.belongsTo(Inquilino, { foreignKey: 'inquilino_id' });
+
+Usuario.hasMany(CostoGasto, { foreignKey: 'usuario_id' });
+CostoGasto.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+CategoriaCostoGasto.hasMany(CostoGasto, { foreignKey: 'categoria_id' });
+CostoGasto.belongsTo(CategoriaCostoGasto, { as: 'categoria', foreignKey: 'categoria_id' });
+
+MetodoPago.hasMany(CostoGasto, { foreignKey: 'metodo_pago_id' });
+CostoGasto.belongsTo(MetodoPago, { as: 'metodo_pago', foreignKey: 'metodo_pago_id' });
+
+Proveedor.hasMany(CostoGasto, { foreignKey: 'proveedor_id' });
+CostoGasto.belongsTo(Proveedor, { as: 'proveedor', foreignKey: 'proveedor_id' });
+
+Producto.hasMany(CostoGasto, { foreignKey: 'producto_id' });
+CostoGasto.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });
+
+ProductoVariante.hasMany(CostoGasto, { foreignKey: 'variante_id' });
+CostoGasto.belongsTo(ProductoVariante, { as: 'variante', foreignKey: 'variante_id' });
+
+Envio.hasMany(CostoGasto, { foreignKey: 'envio_id' });
+CostoGasto.belongsTo(Envio, { as: 'envio', foreignKey: 'envio_id' });
+
+// Auto-referencia: plantilla recurrente → ocurrencias generadas
+CostoGasto.hasMany(CostoGasto, { as: 'ocurrencias', foreignKey: 'parent_recurring_id' });
+CostoGasto.belongsTo(CostoGasto, { as: 'plantilla', foreignKey: 'parent_recurring_id' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -301,6 +347,7 @@ module.exports = {
   Producto,
   ProductoVariante,
   ProductoImagen,
+  ProductoFaq,
   ProductoCombo,
   ProductoComboItem,
   ProductoRelacionado,
@@ -326,6 +373,7 @@ module.exports = {
   LandingEvento,
   Testimonio,
   Faq,
+  LandingBeneficio,
   ModuloEducacion,
   LeccionEducacion,
   Examen,
@@ -337,4 +385,7 @@ module.exports = {
   MetaCampanaInterna,
   MetaReporteImport,
   MetaReporteFila,
+  Proveedor,
+  CategoriaCostoGasto,
+  CostoGasto,
 };

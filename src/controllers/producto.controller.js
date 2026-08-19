@@ -6,6 +6,7 @@
  * GET  /api/productos/:id       → Detalle del producto (sin variantes ni imágenes)
  * GET  /api/productos/:id/variantes → Obtener variantes
  * GET  /api/productos/:id/imagenes  → Obtener imágenes
+ * GET  /api/productos/:id/faq       → Obtener preguntas frecuentes
  * GET  /api/productos/:id/historial-precios → Historial
  * PUT  /api/productos/:id       → Actualizar
  * DELETE /api/productos/:id     → Soft-delete
@@ -19,13 +20,13 @@ const ImagenService = require('../services/imagen.service');
 async function buscar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
+    const esAdmin = req.usuario.rol === 'administrador';
     
     if (req.body.mios_solamente && !esAdmin) {
       req.body.creado_por = req.usuario.id;
     }
     
-    const resultado = await ProductoService.buscar(req.body, inquilino_id, esAdmin);
+    const resultado = await ProductoService.buscar(req.body, inquilino_id, esAdmin, req.usuario.id);
     return res.json(resultado);
   } catch (err) {
     console.error(err);
@@ -38,7 +39,7 @@ async function crear(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const usuario_id = req.usuario.id;
-    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
+    const esAdmin = req.usuario.rol === 'administrador';
     const { variantes = [], relacionados = [] } = req.body;
 
     const producto = await ProductoService.crear(req.body, inquilino_id, usuario_id, esAdmin, t);
@@ -76,8 +77,8 @@ async function crear(req, res) {
 async function detalle(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
-    const producto = await ProductoService.detalle(req.params.id, inquilino_id, esAdmin);
+    const esAdmin = req.usuario.rol === 'administrador';
+    const producto = await ProductoService.detalle(req.params.id, inquilino_id, esAdmin, req.usuario.id);
     return res.json(producto);
   } catch (err) {
     console.error(err);
@@ -126,6 +127,18 @@ async function imagenes(req, res) {
   }
 }
 
+async function faq(req, res) {
+  try {
+    const inquilino_id = req.usuario.tenantId;
+    const preguntas = await ProductoService.listarFaq(req.params.id, inquilino_id);
+    return res.json(preguntas);
+  } catch (err) {
+    console.error(err);
+    const status = err.message.includes('no encontrado') ? 404 : 500;
+    return res.status(status).json({ message: err.message || 'Error al obtener las preguntas frecuentes.' });
+  }
+}
+
 async function historialPrecios(req, res) {
   try {
     const { id } = req.params;
@@ -152,13 +165,17 @@ async function actualizar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const usuario_id = req.usuario.id;
-    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
+    const esAdmin = req.usuario.rol === 'administrador';
     
     const producto = await ProductoService.actualizar(req.params.id, req.body, inquilino_id, usuario_id, esAdmin, t);
 
     if (req.body.variantes !== undefined) {
       await ProductoVarianteService.sincronizar(req.params.id, inquilino_id, req.body.variantes, t);
       await ProductoService.recalcularStockPadre(req.params.id, t);
+    }
+
+    if (req.body.faq !== undefined) {
+      await ProductoService.sincronizarFaq(req.params.id, inquilino_id, req.body.faq, t);
     }
 
     await t.commit();
@@ -176,7 +193,7 @@ async function actualizar(req, res) {
 async function eliminar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const esAdmin = ['administrador', 'usuario'].includes(req.usuario.rol);
+    const esAdmin = req.usuario.rol === 'administrador';
     await ProductoService.eliminar(req.params.id, inquilino_id, req.usuario.id, esAdmin);
     return res.json({ message: 'Producto dado de baja correctamente.' });
   } catch (err) {
@@ -193,6 +210,7 @@ module.exports = {
   simularPrecio,
   variantes,
   imagenes,
+  faq,
   historialPrecios,
   actualizar,
   eliminar

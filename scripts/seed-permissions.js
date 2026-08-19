@@ -24,6 +24,9 @@ const permisosDisponibles = [
   { nombre: 'gestionar_meta_ads', descripcion: 'Crear campañas internas de Meta Ads, importar reportes CSV y ver métricas por producto' },
   // Cumplimiento
   { nombre: 'gestionar_solicitudes_datos', descripcion: 'Ver y resolver solicitudes de eliminación de datos y mensajes del formulario público de contacto' },
+  // Finanzas — Costos y Gastos
+  { nombre: 'ver_costos_gastos', descripcion: 'Ver el listado, detalle y resumen de costos y gastos del negocio' },
+  { nombre: 'gestionar_costos_gastos', descripcion: 'Crear, editar, eliminar y adjuntar comprobantes a costos y gastos, y administrar proveedores y categorías propias' },
 ];
 
 const rolesBasicos = [
@@ -34,11 +37,12 @@ const rolesBasicos = [
       'ver_combos', 'crear_combos', 'editar_combos', 'activar_combos', 'configurar_combos',
       'ver_productos', 'crear_productos', 'editar_productos', 'eliminar_productos',
       'ver_analisis_sensibilidad', 'gestionar_solicitudes_datos', 'gestionar_meta_ads',
+      'ver_costos_gastos', 'gestionar_costos_gastos',
     ],
   },
   {
     nombre: 'usuario',
-    permisos: ['ver_dashboard', 'ver_productos', 'ver_combos', 'ver_analisis_sensibilidad', 'gestionar_precio_propio', 'gestionar_landing', 'gestionar_tienda', 'gestionar_meta_ads'],
+    permisos: ['ver_dashboard', 'ver_productos', 'ver_combos', 'ver_analisis_sensibilidad', 'gestionar_precio_propio', 'gestionar_landing', 'gestionar_tienda', 'gestionar_meta_ads', 'ver_costos_gastos', 'gestionar_costos_gastos'],
   },
 ];
 

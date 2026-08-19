@@ -1,6 +1,6 @@
 'use strict';
 
-const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto } = require('../models');
 const { Op, fn, col, literal } = require('sequelize');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
@@ -207,6 +207,31 @@ async function getKpisFinancieros(whereBase) {
     margen_bruto_estimado: Math.round(margenBrutoEstimado),
     pct_margen_bruto: pctMargenBruto,
   };
+}
+
+// 2b. Costos y Gastos operativos del módulo Finanzas (fuera de whereBase
+// porque CostoGasto no es un Envio: se filtra directo por usuario_id/fecha).
+// Se excluyen a propósito los registros con envio_id (costos "asociados a
+// una venta") para no duplicar lo que getKpisFinancieros ya resta a nivel
+// de pedido (costo_envio, comisión, precio_costo de los ítems) — ver spec
+// del módulo, regla "no duplicar importes cuando un costo ya esté asociado
+// a una venta".
+async function getGastosOperativos(usuario_id, desde, hasta) {
+  const filas = await CostoGasto.findAll({
+    where: {
+      usuario_id,
+      activo: true,
+      envio_id: null,
+      fecha: { [Op.between]: [desde, hasta] },
+    },
+    attributes: ['tipo', [fn('SUM', col('importe')), 'total']],
+    group: ['tipo'],
+    raw: true,
+  });
+
+  const gastos = Number(filas.find(f => f.tipo === 'gasto')?.total || 0);
+  const costosAdicionales = Number(filas.find(f => f.tipo === 'costo')?.total || 0);
+  return { gastos_operativos: gastos, costos_operativos_adicionales: costosAdicionales, total: gastos + costosAdicionales };
 }
 
 // 3. Ranking de Productos (¿Qué se vende, confirma y devuelve más?)
@@ -701,7 +726,8 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
     confirmadores,
     couriers,
     tendencias,
-    rawConf
+    rawConf,
+    gastosOperativos,
   ] = await Promise.all([
     getResumenFunnel(whereBase),
     getKpisFinancieros(whereBase),
@@ -711,7 +737,21 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
     getCouriersAnalytics(whereBase, usuario_id),
     getTimelineTendencias(whereBase, desde, hasta),
     confirmadoresDisponiblesPromise,
+    getGastosOperativos(usuario_id, desde, hasta),
   ]);
+
+  // Ganancia neta = margen bruto (ya neto de COGS/logística/comisión/IVA por
+  // pedido) menos los costos y gastos operativos registrados en el módulo
+  // Finanzas → Costos y Gastos (alquiler, salarios, publicidad, etc.).
+  const gananciaNetaEstimada = kpisFinancieros.margen_bruto_estimado - gastosOperativos.total;
+  const pctMargenNeto = kpisFinancieros.facturacion_entregada > 0
+    ? Number(((gananciaNetaEstimada / kpisFinancieros.facturacion_entregada) * 100).toFixed(1))
+    : 0;
+
+  kpisFinancieros.gastos_operativos = Math.round(gastosOperativos.gastos_operativos);
+  kpisFinancieros.costos_operativos_adicionales = Math.round(gastosOperativos.costos_operativos_adicionales);
+  kpisFinancieros.ganancia_neta_estimada = Math.round(gananciaNetaEstimada);
+  kpisFinancieros.pct_margen_neto = pctMargenNeto;
 
   const smartInsights = getSmartInsights(funnel, kpisFinancieros, rankingProductos, confirmadores, couriers);
   const confirmadoresDisponibles = rawConf.map(r => r.confirmador).filter(Boolean);

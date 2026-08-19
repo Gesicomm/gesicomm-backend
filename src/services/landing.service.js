@@ -21,7 +21,7 @@ const { Op } = require('sequelize');
 const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
-  ProductoImagen, ProductoVariante, LandingSeccion, LandingEvento, Testimonio, Faq, Envio, EnvioItem,
+  ProductoImagen, ProductoVariante, ProductoFaq, LandingSeccion, LandingEvento, Testimonio, Faq, LandingBeneficio, Envio, EnvioItem,
   Oferta, OfertaComponente, Tienda, LandingTemplate, sequelize
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
@@ -108,7 +108,11 @@ class LandingService {
   static linkBannerEsSeguro(link) {
     if (!link) return true;
     const limpio = String(link).trim();
-    return /^https?:\/\//i.test(limpio) || limpio.startsWith('/');
+    // "#ancla" (scroll a una sección de la misma página, ej. el CTA del
+    // hero apuntando a "#productos" en los templates rígidos) no es una
+    // URL ejecutable — mismo criterio de seguridad que "/", solo que sin
+    // navegar.
+    return /^https?:\/\//i.test(limpio) || limpio.startsWith('/') || limpio.startsWith('#');
   }
 
   static validarPayload(payload) {
@@ -248,6 +252,7 @@ class LandingService {
       tipo: item.tipo,
       referencia_id: Number(item.referencia_id),
       etiqueta: this.normalizarEtiqueta(item.etiqueta),
+      precio_ancla: item.precio_ancla != null ? Number(item.precio_ancla) : null,
       orden: item.orden !== undefined ? Number(item.orden) : idx,
     })));
   }
@@ -1181,15 +1186,18 @@ class LandingService {
   // ─── Resolución pública (sin auth) ───────────────────────────────────────
 
   /**
-   * @param {object} tienda - instancia de Tienda ya resuelta por
-   *   middleware/resolverTienda (con Usuario incluido, para chequear
-   *   si el dueño sigue activo).
-   * @param {string|null} slug - null/undefined → landing es_home de la tienda.
-   * @returns {null} nunca existió una landing con ese slug/home en esta tienda (el caller responde 404 real)
-   * @returns {{disponible:false}} la landing existe pero está despublicada, o la tienda/dueño está inactivo
+   * Serializa la vista PÚBLICA (render final) de una Landing.
+   * - Solo incluye productos activos y con precio definido.
+   * - Solo incluye combos activos, y donde producto_padre esté activo.
+   * - Resuelve el precio final (usuario vs base).
+   * - Resuelve el carrito_config de la tienda (minimos, recargos, etc).
+   *
+   * @param {Object} tienda - Tienda completa
+   * @param {string|null} slug - identificador, o null si es la "home"
+   * @param {boolean} preview - true si el admin está viéndola desde el editor
    * @returns {{disponible:true, ...}} landing pública lista para renderizar
    */
-  static async obtenerPublica(tienda, slug) {
+  static async obtenerPublica(tienda, slug, preview = false) {
     const where = { tienda_id: tienda.id };
     if (slug) where.slug = slug; else where.es_home = true;
 
@@ -1211,7 +1219,8 @@ class LandingService {
     });
     if (!landing) return null;
 
-    if (!landing.activo || !tienda.activo || !tienda.Usuario?.activo) return { disponible: false };
+    if (!tienda.activo || !tienda.Usuario?.activo) return { disponible: false };
+    if (!landing.activo && !preview) return { disponible: false };
 
     // No se awaitea — ver comentario en registrarVisita(). Una landing
     // pública nunca debe tardar más porque falló (o tardó) un INSERT de
@@ -1221,8 +1230,12 @@ class LandingService {
     const items = landing.items || [];
     const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
+    // Templates rígidos (Fitness/Beauty/Tech/Básico) — ver landingSimple.
+    // service.js. "Beneficios" es contenido propio de ESAS landings, el
+    // sistema flexible nunca escribe filas ahí.
+    const esRigida = landing.template?.kind === 'rigido';
 
-    const [productos, combos, ofertas, testimonios, faqs] = await Promise.all([
+    const [productos, combos, ofertas, testimonios, faqs, beneficios] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
           where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
@@ -1275,6 +1288,9 @@ class LandingService {
       landing.mostrar_faq
         ? Faq.findAll({ where: { landing_id: landing.id }, order: [['orden', 'ASC']] })
         : Promise.resolve([]),
+      esRigida
+        ? LandingBeneficio.findAll({ where: { landing_id: landing.id }, order: [['orden', 'ASC']] })
+        : Promise.resolve([]),
     ]);
 
     const mapaOfertas = new Map(); // producto_ancla_id -> Oferta[]
@@ -1294,7 +1310,7 @@ class LandingService {
 
     // precios, imagenes y variantes solo dependen de los IDs ya resueltos
     // arriba, no entre sí — en paralelo en vez de uno atrás del otro.
-    const [precios, imagenes, variantes] = await Promise.all([
+    const [precios, imagenes, variantes, preguntas] = await Promise.all([
       PrecioUsuario.findAll({
         where: {
           usuario_id: tienda.usuario_id,
@@ -1322,8 +1338,23 @@ class LandingService {
           order: [['id', 'ASC']],
         })
         : Promise.resolve([]),
+      // FAQ propia de cada Producto ("Todo lo que necesitas saber") — los
+      // combos no tienen, solo productos individuales.
+      idsProducto.length
+        ? ProductoFaq.findAll({
+          where: { producto_id: { [Op.in]: idsProducto } },
+          order: [['orden', 'ASC']],
+        })
+        : Promise.resolve([]),
     ]);
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
+
+    const mapaFaq = new Map(); // producto_id -> {pregunta, respuesta}[]
+    preguntas.forEach(f => {
+      const lista = mapaFaq.get(f.producto_id) || [];
+      lista.push({ pregunta: f.pregunta, respuesta: f.respuesta });
+      mapaFaq.set(f.producto_id, lista);
+    });
 
     const mapaImagenes = new Map(); // producto_id -> [{url, variante_id, es_principal}]
     imagenes.forEach(img => {
@@ -1438,19 +1469,20 @@ class LandingService {
         descripcion: esCombo ? entidad.descripcion : entidad.descripcion_corta,
         descripcion_larga: esCombo ? null : entidad.descripcion_larga,
         precio: precioEfectivo,
-        // Precio fantasía: si está seteado en el producto, aparece tachado
+        // Precio fantasía: si está seteado en la landing por el usuario, o en el producto, aparece tachado
         // en la landing indicando el precio original / "antes".
-        precio_antes: !esCombo && entidad.precio_tachado ? parseFloat(entidad.precio_tachado) : null,
-        // % de descuento calculado desde precio_tachado vs precio efectivo.
-        // Si no hay precio_tachado, descuento_pct = 0 (no se muestra badge).
-        descuento_pct: (!esCombo && entidad.precio_tachado && parseFloat(entidad.precio_tachado) > precioEfectivo)
-          ? Math.round((1 - precioEfectivo / parseFloat(entidad.precio_tachado)) * 100)
+        precio_antes: item.precio_ancla ? parseFloat(item.precio_ancla) : (!esCombo && entidad.precio_tachado ? parseFloat(entidad.precio_tachado) : null),
+        // % de descuento calculado desde precio_antes vs precio efectivo.
+        // Si no hay precio_antes, descuento_pct = 0 (no se muestra badge).
+        descuento_pct: ((item.precio_ancla ? parseFloat(item.precio_ancla) : (!esCombo && entidad.precio_tachado ? parseFloat(entidad.precio_tachado) : null)) > precioEfectivo)
+          ? Math.round((1 - precioEfectivo / (item.precio_ancla ? parseFloat(item.precio_ancla) : (!esCombo && entidad.precio_tachado ? parseFloat(entidad.precio_tachado) : null))) * 100)
           : 0,
         imagen: imagenesDto[0] || null,
         imagenes: imagenesDto,
         stock: esCombo ? (productoParaFiltros?.cantidad_disponible ?? null) : entidad.cantidad_disponible,
         variantes: variantesDto,
         ofertas: ofertasDto,
+        faq: !esCombo ? (mapaFaq.get(entidad.id) || []) : [],
         productos_incluidos: esCombo ? (entidad.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean) : undefined,
         categoria: productoParaFiltros?.categoria?.nombre || null,
         marca: productoParaFiltros?.Marca?.nombre || null,
@@ -1480,12 +1512,24 @@ class LandingService {
       pregunta: f.pregunta,
       respuesta: f.respuesta,
     }));
-    const { secciones, secciones_producto } = this.construirSeccionesPublicas(landing, {
-      items: itemsDto,
-      testimonios: testimoniosDto,
-      faq: faqDto,
-      banner: bannerDto,
-    });
+    const beneficiosDto = beneficios.map(b => ({
+      titulo: b.titulo,
+      texto: b.texto,
+      icono: b.icono || null,
+    }));
+    // Los templates rígidos (Fitness/Beauty/Tech/Básico) no usan el
+    // constructor de secciones (LandingSeccion) — el render lo decide el
+    // frontend público por template.slug, con un componente fijo. Evita el
+    // cómputo (y el acoplamiento) del árbol de secciones flexible para
+    // esas landings.
+    const { secciones, secciones_producto } = esRigida
+      ? { secciones: [], secciones_producto: [] }
+      : this.construirSeccionesPublicas(landing, {
+        items: itemsDto,
+        testimonios: testimoniosDto,
+        faq: faqDto,
+        banner: bannerDto,
+      });
 
     return {
       disponible: true,
@@ -1493,6 +1537,32 @@ class LandingService {
       es_home: landing.es_home,
       titulo: landing.titulo,
       descripcion: landing.descripcion,
+      // Identidad/contacto propios de los templates rígidos — ver
+      // landingSimple.service.js. En landings del sistema flexible quedan
+      // en null (columnas nunca escritas ahí). Nombre distinto de
+      // "contacto" (más abajo, el contacto heredado de Tienda) a propósito:
+      // son dos conceptos distintos, no se pueden fusionar en una clave.
+      logo_imagen: landing.logo_imagen || null,
+      contacto_landing: {
+        whatsapp: landing.contacto_whatsapp || null,
+        telefono: landing.contacto_telefono || null,
+        email: landing.contacto_email || null,
+        direccion: landing.contacto_direccion || null,
+        instagram: landing.contacto_instagram || null,
+        facebook: landing.contacto_facebook || null,
+        tiktok: landing.contacto_tiktok || null,
+        youtube: landing.contacto_youtube || null,
+        twitter: landing.contacto_twitter || null,
+      },
+      contenido_titulo: landing.contenido_titulo || null,
+      contenido_texto: landing.contenido_texto || null,
+      // Título de "Productos destacados" (home) — también lo usa la página
+      // de Catálogo completo si el comercio lo personalizó (ver
+      // CatalogoPublico.jsx). Faltaba en este DTO: el campo existía en el
+      // modelo/editor pero nunca llegaba a la landing pública.
+      productos_titulo: landing.productos_titulo || null,
+      beneficios: beneficiosDto,
+      template: landing.template ? { slug: landing.template.slug, kind: landing.template.kind } : null,
       tienda: {
         nombre: tienda.nombre,
         subdominio: tienda.subdominio,
@@ -1500,7 +1570,19 @@ class LandingService {
       // primario/fondo: null en la landing = hereda el default de Tienda.
       // "claro" nunca hereda el fondo oscuro de la tienda (pensado para
       // dark mode) — si no hay override, usa un neutro claro razonable.
-      tema: {
+      // Para landings rígidas NUNCA se hereda el color de Tienda: cada una
+      // de las 4 tiene su propia paleta por defecto (ver DEFAULT_TEMA en
+      // templates/*.jsx del frontend) que el frontend aplica cuando estos
+      // 3 campos vienen null. Heredar de Tienda acá mezclaría el branding
+      // del sistema flexible con el de un template que nunca lo pidió.
+      tema: esRigida ? {
+        modo: landing.tema_modo,
+        primario: landing.color_primario || null,
+        secundario: null,
+        fondo: landing.color_fondo || null,
+        texto: landing.color_texto || null,
+        tarjeta: landing.color_tarjeta || null,
+      } : {
         modo: landing.tema_modo,
         primario: landing.color_primario || tienda.color_primario,
         secundario: tienda.color_secundario,

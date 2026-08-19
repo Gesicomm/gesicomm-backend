@@ -20,6 +20,7 @@ router.get('/:id', verificarPermiso('ver_productos'), ctrl.detalle);
 router.get('/:id/historial-precios', verificarPermiso('ver_productos'), ctrl.historialPrecios);
 router.get('/:id/variantes', verificarPermiso('ver_productos'), ctrl.variantes);
 router.get('/:id/imagenes', verificarPermiso('ver_productos'), ctrl.imagenes);
+router.get('/:id/faq', verificarPermiso('ver_productos'), ctrl.faq);
 // Simulador de precio (tab Precios/Ofertas) — solo lectura, mismo permiso
 // que ver el producto.
 router.post('/:id/simular-precio', verificarPermiso('ver_productos'), ctrl.simularPrecio);

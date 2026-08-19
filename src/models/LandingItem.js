@@ -30,6 +30,11 @@ const LandingItem = sequelize.define('LandingItem', {
     allowNull: true,
     comment: 'Agrupación propia del usuario dentro de esta landing (ej: "Ofertas").',
   },
+  precio_ancla: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Precio tachado / ancla configurado por el usuario para este item en esta landing.',
+  },
   orden: {
     type: DataTypes.INTEGER,
     allowNull: false,

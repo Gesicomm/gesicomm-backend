@@ -65,7 +65,23 @@ async function obtenerPorSlug(req, res) {
     if (!tienda) {
       return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
     }
-    const resultado = await LandingService.obtenerPublica(tienda, req.params.slug || null);
+
+    let preview = false;
+    const token = req.cookies?.accessToken;
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret-key-12345');
+        // Si el usuario dueño del tenant es el mismo de la tienda
+        if (payload.tenantId === tienda.usuario_id) {
+          preview = true;
+        }
+      } catch (e) {
+        // Token inválido, se procesa como público normal
+      }
+    }
+
+    const resultado = await LandingService.obtenerPublica(tienda, req.params.slug || null, preview);
     if (resultado === null) {
       return res.status(404).json({ message: 'Landing no encontrada.' });
     }

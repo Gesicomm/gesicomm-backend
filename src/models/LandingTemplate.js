@@ -25,6 +25,16 @@ const LandingTemplate = sequelize.define('LandingTemplate', {
     allowNull: false,
     defaultValue: 'direct_sale',
   },
+  kind: {
+    // VARCHAR + validación en la app, no ENUM de Postgres — mismo criterio
+    // que Landing.tipo_pagina (ver scripts/migrate-landing-tipo-pagina.js):
+    // este proyecto evita crear tipos ENUM a mano en migraciones puntuales.
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'flexible',
+    validate: { isIn: [['flexible', 'rigido']] },
+    comment: '"rigido" = uno de los 3 templates fijos (Fitness/Beauty/Tech): estructura hardcodeada en el frontend, el comercio solo edita contenido. "flexible" = sistema de constructor (LandingSeccion) existente.',
+  },
   version: {
     type: DataTypes.INTEGER,
     allowNull: false,

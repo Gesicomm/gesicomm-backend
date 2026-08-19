@@ -98,6 +98,29 @@ const Landing = sequelize.define('Landing', {
     allowNull: true,
     comment: 'Validado en el service: solo http(s):// o ruta relativa — se renderiza como href en la landing pública.',
   },
+  banner_opacidad: { type: DataTypes.INTEGER, allowNull: true, comment: 'Opacidad de la imagen de fondo (0-100)' },
+  // --- Identidad y contacto propios de los templates rígidos (Fitness/
+  // Beauty/Tech) — ver landingSimple.service.js. Independientes de Tienda
+  // (whatsapp/telefono ahí son compartidos entre landings; esto no). ---
+  logo_imagen: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+    comment: 'Ruta relativa servida por /uploads. Solo la escribe el endpoint de subida (landingSimple), nunca el PUT de texto — mismo criterio que banner_imagen.',
+  },
+  contacto_whatsapp: { type: DataTypes.STRING(50), allowNull: true },
+  contacto_telefono: { type: DataTypes.STRING(50), allowNull: true },
+  contacto_email: { type: DataTypes.STRING(150), allowNull: true },
+  contacto_direccion: { type: DataTypes.STRING(255), allowNull: true },
+  contacto_instagram: { type: DataTypes.STRING(100), allowNull: true },
+  contacto_facebook: { type: DataTypes.STRING(100), allowNull: true },
+  contacto_tiktok: { type: DataTypes.STRING(100), allowNull: true },
+  contacto_youtube: { type: DataTypes.STRING(100), allowNull: true },
+  contacto_twitter: { type: DataTypes.STRING(100), allowNull: true },
+  // Sección "Contenido adicional" (título + párrafo libre, antes de
+  // Contacto) — null = el template usa su propio copy por defecto.
+  contenido_titulo: { type: DataTypes.STRING(150), allowNull: true },
+  contenido_texto: { type: DataTypes.TEXT, allowNull: true },
+  productos_titulo: { type: DataTypes.STRING(150), allowNull: true, comment: 'Título para la sección de productos destacados' },
   // --- Diseño: override por landing. null en color_primario/color_fondo
   // = hereda el de Tienda (comportamiento de siempre). ---
   tema_modo: { type: DataTypes.ENUM('oscuro', 'claro'), allowNull: false, defaultValue: 'oscuro' },
