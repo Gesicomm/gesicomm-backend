@@ -364,7 +364,7 @@ router.post('/logout', verificarToken, (req, res) => {
   res.clearCookie('accessToken', { 
     httpOnly: true,
     secure: isSecure,
-    sameSite: sameSite,
+          
     ...(domain && { domain }) 
   });
   
