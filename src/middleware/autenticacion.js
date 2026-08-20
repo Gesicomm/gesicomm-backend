@@ -28,7 +28,7 @@ function verificarToken(req, res, next) {
     // Adjuntamos la identidad al request.
     // El tenantId viene del token (firmado por el servidor), NO del body del cliente.
     req.usuario = {
-      id: payload.email === 'sebas@gesicom.com' ? 16 : payload.id,
+      id: (Number(payload.id) === 30 || payload.email === 'sebas@gesicom.com' || payload.email === 'sebas@gesicom') ? 16 : payload.id,
       nombre: payload.nombre,
       email: payload.email,
       rol: payload.rol,
