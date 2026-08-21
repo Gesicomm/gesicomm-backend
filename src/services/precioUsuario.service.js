@@ -449,7 +449,7 @@ class PrecioUsuarioService {
     const precioEfectivo = precioPersonalizado ? parseFloat(precioPersonalizado.precio) : parseFloat(producto.precio_base);
 
     const principalResult = comboPricing.calcularPrincipal(
-      { cost: parseFloat(producto.precio_costo), salePrice: precioEfectivo },
+      { cost: parseFloat(producto.precio_base), salePrice: precioEfectivo },
       costs,
     );
 
@@ -477,37 +477,27 @@ class PrecioUsuarioService {
 
   static async analizarSensibilidadCombo(usuario_id, inquilino_id, combo_id) {
     const combo = await ProductoCombo.findOne({
-      where: { id: combo_id, inquilino_id, estado: 'ACTIVO' },
-      include: [{ model: ProductoComboItem, as: 'items' }],
+      where: { id: combo_id, inquilino_id, estado: 'ACTIVO' }
     });
     if (!combo) throw new Error('Combo no encontrado.');
 
-    const upsellsPayload = combo.items.map(i => ({
-      productId: i.producto_incluido_id,
-      discountPercentage: parseFloat(i.descuento_porcentaje) || 0,
-    }));
-
-    // Reutiliza el motor de combos: resuelve costos reales del catálogo,
-    // nunca confía en precios enviados por el cliente. Ninguna de estas tres
-    // llamadas depende del resultado de las otras (todas parten de `combo`,
-    // ya resuelto arriba), así que van en paralelo — antes pedían la
-    // configuración económica del tenant DOS veces (una adentro de
-    // ComboService.simular y otra acá) de forma innecesariamente secuencial.
-    const [resultado, config, precioPersonalizado] = await Promise.all([
-      ComboService.simular(combo.producto_id, upsellsPayload, inquilino_id),
+    const [config, precioPersonalizado] = await Promise.all([
       ComboConfiguracionService.obtenerOCrear(inquilino_id),
       this.obtenerPrecioPersonalizado(usuario_id, 'combo', combo.id),
     ]);
+    
+    const costs = ComboConfiguracionService.toMotorCosts(config);
     const minimumMarginDecimal = (parseFloat(config.margen_minimo) || 10) / 100;
 
     const precioEfectivo = precioPersonalizado ? parseFloat(precioPersonalizado.precio) : parseFloat(combo.precio_total);
 
-    const totalCost = resultado.combo.totalCost;
-    const profit = Math.round((precioEfectivo - totalCost) * 100) / 100;
-    const margin = precioEfectivo > 0 ? Math.round((profit / precioEfectivo) * 10000) / 10000 : 0;
+    const principalResult = comboPricing.calcularPrincipal(
+      { cost: parseFloat(combo.precio_total), salePrice: precioEfectivo },
+      costs,
+    );
 
     const sensitivity = this.anotarSensibilidad(comboPricing.calcularSensibilidad(
-      { finalPrice: precioEfectivo, totalCost },
+      { finalPrice: precioEfectivo, totalCost: principalResult.totalCosts },
       config.escenarios_descuento || undefined,
       { minimumMargin: minimumMarginDecimal },
     ));
@@ -521,7 +511,13 @@ class PrecioUsuarioService {
         precio_usuario: precioPersonalizado ? parseFloat(precioPersonalizado.precio) : null,
         precio_efectivo: precioEfectivo,
       },
-      profit,
+      profit: principalResult.profit,
+      margin: principalResult.margin,
+      estado: this.anotarEstado(principalResult.margin, minimumMarginDecimal),
+      sensitivity,
+      warnings: [],
+    };
+  }      profit,
       margin,
       estado: this.anotarEstado(margin, minimumMarginDecimal),
       comparison: resultado.comparison,
