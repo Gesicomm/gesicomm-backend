@@ -58,6 +58,10 @@ async function crear(req, res) {
       );
     }
 
+    if (req.body.faq !== undefined) {
+      await ProductoService.sincronizarFaq(producto.id, inquilino_id, req.body.faq, t);
+    }
+
     await t.commit();
     return res.status(201).json(producto);
   } catch (err) {

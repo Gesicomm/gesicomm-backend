@@ -38,6 +38,11 @@ const Producto = sequelize.define('Producto', {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
+  proveedor_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'FK al Proveedor (opcional, para reportes y filtros)',
+  },
   tags: {
     type: DataTypes.JSON,
     allowNull: true,
@@ -75,6 +80,11 @@ const Producto = sequelize.define('Producto', {
     type: DataTypes.DECIMAL(12, 2),
     allowNull: false,
     defaultValue: 0,
+  },
+  precio_dolar: {
+    type: DataTypes.DECIMAL(12, 2),
+    allowNull: true,
+    comment: 'Costo del producto en USD (precio de compra al proveedor). Base para recalcular precio_costo/precio_base cuando cambia la cotización.',
   },
   precio_tachado: {
     type: DataTypes.DECIMAL(12, 2),

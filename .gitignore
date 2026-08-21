@@ -15,3 +15,6 @@ logs/
 # Sistema operativo
 .DS_Store
 Thumbs.db
+
+# Datos fuente de importaciones puntuales (imágenes/planillas), no versionar
+scripts/data/
