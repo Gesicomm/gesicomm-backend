@@ -186,14 +186,8 @@ class PrecioUsuarioService {
     
     let provFilter = '';
     if (filtroProveedor) {
-      const { Proveedor } = require('../models');
-      const prov = await Proveedor.findOne({ where: { nombre: filtroProveedor, inquilino_id } });
-      if (prov) {
-        replacements.proveedor_id = prov.id;
-        provFilter = 'AND p.proveedor_id = :proveedor_id';
-      } else {
-        return { items: [], total: 0, page: 1, totalPages: 0, categorias: [], proveedores: [] };
-      }
+      replacements.filtroProveedor = filtroProveedor;
+      provFilter = 'AND p.proveedor_id IN (SELECT id FROM proveedores WHERE nombre = :filtroProveedor)';
     }
 
     let searchFilter = '';

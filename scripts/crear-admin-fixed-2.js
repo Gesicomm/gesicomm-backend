@@ -1,0 +1,63 @@
+require('dotenv').config();
+const { Usuario, Rol, sequelize, Inquilino } = require('../src/models');
+const bcrypt = require('bcryptjs');
+
+async function main() {
+  try {
+    await sequelize.authenticate();
+    
+    // Check if role exists
+    let adminRole = await Rol.findOne({ where: { nombre: 'admin' } });
+    if (!adminRole) {
+      console.log('Role "admin" not found. Looking for available roles...');
+      const allRoles = await Rol.findAll();
+      console.log('Available roles:', allRoles.map(r => r.nombre));
+      
+      // Try 'administrador' if 'admin' is not there
+      adminRole = await Rol.findOne({ where: { nombre: 'administrador' } });
+    }
+    
+    if (!adminRole) {
+      console.log('Could not find admin role. Exiting.');
+      return;
+    }
+
+    // Try to find a tenant to assign this admin to
+    let inquilino = await Inquilino.findOne();
+    const inquilinoId = inquilino ? inquilino.id : 1;
+    console.log('Asignando al inquilino ID:', inquilinoId);
+
+    const email = 'admin@gesicom.com';
+    const password = 'Admin123';
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const [user, created] = await Usuario.findOrCreate({
+      where: { correo_electronico: email },
+      defaults: {
+        nombre: 'Admin Gesicom',
+        correo_electronico: email,
+        contrasena_hash: hashedPassword,
+        rol_id: adminRole.id,
+        inquilino_id: inquilinoId,
+        activo: true
+      }
+    });
+
+    if (created) {
+      console.log('Usuario admin creado exitosamente:', email);
+    } else {
+      console.log('El usuario ya existía. Actualizando password...');
+      user.contrasena_hash = hashedPassword;
+      user.rol_id = adminRole.id;
+      user.inquilino_id = inquilinoId;
+      await user.save();
+      console.log('Usuario admin actualizado exitosamente:', email);
+    }
+  } catch (error) {
+    console.error('Error al crear usuario:', error);
+  } finally {
+    process.exit(0);
+  }
+}
+
+main();
