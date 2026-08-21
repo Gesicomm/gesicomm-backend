@@ -302,10 +302,18 @@ class PrecioUsuarioService {
         INNER JOIN productos p ON p.categoria_id = c.id 
         WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
         ORDER BY c.nombre ASC
+      `, { replacements: { inquilino_id }, type: sequelize.QueryTypes.SELECT }),
+      sequelize.query(`
+        SELECT DISTINCT pr.nombre 
+        FROM proveedores pr 
+        INNER JOIN productos p ON p.proveedor_id = pr.id 
+        WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
+        ORDER BY pr.nombre ASC
       `, { replacements: { inquilino_id }, type: sequelize.QueryTypes.SELECT })
     ]);
 
-    const categoriasUnicas = categoriasUnicasData.map(c => c.nombre);
+    const categoriasUnicas = categoriasUnicasData ? categoriasUnicasData.map(c => c.nombre) : [];
+    const proveedoresUnicos = proveedoresUnicasData ? proveedoresUnicasData.map(p => p.nombre) : [];
 
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
 
