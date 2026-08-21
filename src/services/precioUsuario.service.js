@@ -165,7 +165,7 @@ class PrecioUsuarioService {
     static async listarCatalogoPaginado(usuario_id, inquilino_id, filtros = {}) {
     const { sequelize, Categoria } = require('../models');
     const {
-      page = 1, limit = 10, busqueda = '', filtroCategoria = '', orden = 'nombre', tipo = 'todos'
+      page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', orden = 'nombre', tipo = 'todos'
     } = filtros;
     const offset = (page - 1) * limit;
 
@@ -180,6 +180,19 @@ class PrecioUsuarioService {
         catFilter = 'AND p.categoria_id = :categoria_id';
       } else {
         return { items: [], total: 0, page: 1, totalPages: 0, categorias: [] };
+      }
+    }
+
+    
+    let provFilter = '';
+    if (filtroProveedor) {
+      const { Proveedor } = require('../models');
+      const prov = await Proveedor.findOne({ where: { nombre: filtroProveedor, inquilino_id } });
+      if (prov) {
+        replacements.proveedor_id = prov.id;
+        provFilter = 'AND p.proveedor_id = :proveedor_id';
+      } else {
+        return { items: [], total: 0, page: 1, totalPages: 0, categorias: [], proveedores: [] };
       }
     }
 
@@ -201,6 +214,7 @@ class PrecioUsuarioService {
       LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
       WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
       ${catFilter}
+      ${provFilter}
       ${searchFilter.replace(/c\./g, 'p.').replace(/descripcion/g, 'descripcion_corta')}
     `;
 
@@ -212,6 +226,7 @@ class PrecioUsuarioService {
       LEFT JOIN precios_usuario pu ON pu.tipo = 'combo' AND pu.referencia_id = c.id AND pu.usuario_id = :usuario_id
       WHERE c.inquilino_id = :inquilino_id AND c.estado = 'ACTIVO'
       ${catFilter}
+      ${provFilter}
       ${searchFilter}
     `;
 
@@ -240,9 +255,9 @@ class PrecioUsuarioService {
     const idsProductos = paginatedItems.filter(i => i.tipo === 'producto').map(i => i.id);
     const idsCombos = paginatedItems.filter(i => i.tipo === 'combo').map(i => i.id);
 
-    const { Producto, ProductoCombo, ProductoComboItem, ProductoImagen, PrecioUsuario, Marca } = require('../models');
+    const { Producto, ProductoCombo, ProductoComboItem, ProductoImagen, PrecioUsuario, Marca, Proveedor } = require('../models');
 
-    const [productos, combos, precios, categoriasUnicasData] = await Promise.all([
+    const [productos, combos, precios, categoriasUnicasData, proveedoresUnicasData] = await Promise.all([
       idsProductos.length ? Producto.findAll({
         where: { id: { [require('sequelize').Op.in]: idsProductos } },
         attributes: [
@@ -252,6 +267,7 @@ class PrecioUsuarioService {
         include: [
           { association: 'categoria', attributes: ['id', 'nombre'] },
           { model: Marca, attributes: ['id', 'nombre'] },
+          { model: Proveedor, as: 'proveedor', attributes: ['id', 'nombre'] },
         ]
       }) : [],
       idsCombos.length ? ProductoCombo.findAll({
@@ -272,6 +288,7 @@ class PrecioUsuarioService {
             include: [
               { association: 'categoria', attributes: ['id', 'nombre'] },
               { model: Marca, attributes: ['id', 'nombre'] },
+          { model: Proveedor, as: 'proveedor', attributes: ['id', 'nombre'] },
             ],
           },
         ]
@@ -327,6 +344,7 @@ class PrecioUsuarioService {
         imagen: imgMap.get(p.id) || null,
         categoria: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
+        proveedor: p.proveedor?.nombre || null,
         stock: p.cantidad_disponible,
         destacado: !!p.destacado,
         creado_en: p.created_at,
@@ -351,6 +369,7 @@ class PrecioUsuarioService {
         imagen: padre ? (imgMap.get(padre.id) || null) : null,
         categoria: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
+        proveedor: padre?.proveedor?.nombre || null,
         stock: padre?.cantidad_disponible ?? null,
         destacado: false,
         creado_en: c.created_at,
@@ -367,7 +386,8 @@ class PrecioUsuarioService {
       total, 
       page: parseInt(page), 
       totalPages: Math.ceil(total / limit),
-      categorias: categoriasUnicas
+      categorias: categoriasUnicas,
+      proveedores: proveedoresUnicos
     };
   }
 
