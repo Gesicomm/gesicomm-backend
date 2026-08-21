@@ -98,10 +98,13 @@ async function manejarSolicitudPublica(req, res) {
   }
 
   const esBot = BOT_UA_RE.test(req.headers['user-agent'] || '');
-  // Siempre la raíz del hostname: con el cap de una landing por tienda
-  // (siempre es_home), esa es la URL pública real sea cual sea el path
-  // por el que se haya llegado acá (/, /l, o /l/:slug).
-  const destino = `https://${req.hostname}`;
+  // La home de la tienda es la raíz pelada; un funnel/landing con slug
+  // propio cuelga directo de esa raíz (https://<tienda>.gesicomm.com/mi-promo),
+  // sin el viejo prefijo "/l". El og:url tiene que ser esa URL canónica y
+  // no la raíz, o al compartir un funnel el preview enlaza a otra página.
+  const destino = req.params.slug
+    ? `https://${req.hostname}/${req.params.slug}`
+    : `https://${req.hostname}`;
 
   if (!esBot) {
     res.setHeader('X-Accel-Redirect', '/_frontend-shell/');

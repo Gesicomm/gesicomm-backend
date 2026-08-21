@@ -142,11 +142,10 @@ async function vincularFila(req, res) {
 
 async function metricasPorProducto(req, res) {
   try {
-    const metricas = await MetaReportesService.metricasPorProducto(req.usuario.tenantId, req.query);
+    const metricas = await MetaReportesService.metricasPorProducto(req.usuario.tenantId, req.usuario.id, req.query);
     return res.json(metricas);
   } catch (err) {
-    console.error('[meta-reportes] metricasPorProducto:', err.message);
-    return res.status(500).json({ message: 'Error al calcular métricas por producto.' });
+    return manejarError(res, err, 'Error al calcular métricas por producto.');
   }
 }
 

@@ -16,6 +16,7 @@ const ctrl = require('../controllers/precioUsuario.controller');
 router.use(verificarToken);
 
 router.get('/catalogo', verificarPermiso('ver_productos'), ctrl.catalogo);
+router.post('/catalogo-paginado', verificarPermiso('ver_productos'), ctrl.catalogoPaginado);
 
 router.put('/productos/:id/precio', verificarPermiso('gestionar_precio_propio'), ctrl.guardarPrecioProducto);
 router.put('/combos/:id/precio', verificarPermiso('gestionar_precio_propio'), ctrl.guardarPrecioCombo);

@@ -857,7 +857,13 @@ class LandingService {
     if (!landing) throw new Error('Landing no encontrada.');
 
     // Contacto es la única de las 3 páginas fijas sin catálogo propio.
-    if (activo && landing.tipo_pagina !== 'contacto') {
+    // Un funnel de producto individual (FunnelSelector/MerchantEditor)
+    // nunca tiene LandingItem — su producto vive en Landing.producto_id
+    // directo — así que se valida aparte, o "publicar" siempre fallaría
+    // con "sin productos" aunque sí tenga uno.
+    if (activo && landing.tipo_pagina === 'funnel') {
+      if (!landing.producto_id) throw new Error('No se puede publicar un funnel sin producto.');
+    } else if (activo && landing.tipo_pagina !== 'contacto') {
       const cantidadItems = await LandingItem.count({ where: { landing_id: landing.id } });
       if (cantidadItems === 0) throw new Error('No se puede publicar una landing sin productos.');
     }
@@ -1228,13 +1234,32 @@ class LandingService {
     // tracking.
     this.registrarVisita(landing.id);
 
-    const items = landing.items || [];
+    // Un funnel nunca tiene LandingItem: su único producto vive en
+    // Landing.producto_id (ver cambiarEstado()). Se sintetiza acá el
+    // LandingItem que le faltaría para que todo el pipeline de abajo
+    // (precios, variantes, ofertas, imágenes, FAQ) lo resuelva igual que a
+    // cualquier producto de una landing normal, sin duplicar esa lógica.
+    const items = (landing.tipo_pagina === 'funnel' && landing.producto_id && !(landing.items || []).length)
+      ? [{
+        tipo: 'producto',
+        referencia_id: landing.producto_id,
+        precio_ancla: null,
+        etiqueta: null,
+        mostrar_en_inicio: true,
+        createdAt: landing.createdAt,
+      }]
+      : (landing.items || []);
     const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
     // Templates rígidos (Fitness/Beauty/Tech/Básico) — ver landingSimple.
     // service.js. "Beneficios" es contenido propio de ESAS landings, el
     // sistema flexible nunca escribe filas ahí.
     const esRigida = landing.template?.kind === 'rigido';
+    // Embudo de un solo producto (ver funnel.service.js). También escribe
+    // beneficios propios, así que entra en la misma consulta que las
+    // rígidas — sin esto la sección "Beneficios rápidos" del embudo
+    // llegaba siempre vacía al frontend.
+    const esFunnel = landing.template?.kind === 'funnel';
 
     const [productos, combos, ofertas, testimonios, faqs, beneficios] = await Promise.all([
       idsProducto.length
@@ -1289,7 +1314,7 @@ class LandingService {
       landing.mostrar_faq
         ? Faq.findAll({ where: { landing_id: landing.id }, order: [['orden', 'ASC']] })
         : Promise.resolve([]),
-      esRigida
+      (esRigida || esFunnel)
         ? LandingBeneficio.findAll({ where: { landing_id: landing.id }, order: [['orden', 'ASC']] })
         : Promise.resolve([]),
     ]);
@@ -1547,6 +1572,13 @@ class LandingService {
       disponible: true,
       slug: landing.slug,
       es_home: landing.es_home,
+      // El front lo usa para saber que en un funnel la landing ES la página
+      // del producto (no hay :productId en la URL) — ver LandingPublica.jsx.
+      tipo_pagina: landing.tipo_pagina,
+      // Contenido propio del embudo (propuesta de valor, CTA, franja de
+      // confianza) — ver funnel.service.js#normalizarContent. En el resto
+      // de las landings va vacío.
+      content: esFunnel ? (landing.content || {}) : undefined,
       titulo: landing.titulo,
       descripcion: landing.descripcion,
       // Identidad/contacto propios de los templates rígidos — ver
@@ -2014,14 +2046,17 @@ class LandingService {
   /**
    * Fase 2: Instanciar Landing desde Template
    */
-  static async instanciarDesdeTemplate(inquilinoId, productoId, templateId) {
+  static async instanciarDesdeTemplate(inquilinoId, tiendaId, productoId, templateId) {
     const { LandingTemplate } = require('../models');
     const template = await LandingTemplate.findByPk(templateId);
     if (!template) {
       throw new Error('El template seleccionado no existe.');
     }
 
-    const tienda = await Tienda.findOne({ where: { inquilino_id: inquilinoId } });
+    // tiendaId ya viene resuelto por usuario_id (resolverTiendaPropia en el
+    // controller) — buscar de nuevo solo por inquilino_id acá sería volver
+    // a introducir el bug: un tenant puede tener más de una Tienda.
+    const tienda = await Tienda.findOne({ where: { id: tiendaId, inquilino_id: inquilinoId } });
     if (!tienda) {
       throw new Error('Tienda no encontrada.');
     }

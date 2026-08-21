@@ -10,8 +10,15 @@ const {
   MetaIntegration,
   Landing,
   Producto,
+  Envio,
+  EnvioItem,
 } = require('../models');
 const { parsearCSV } = require('../utils/csvParser');
+
+// Gasto de Ads en Paraguay se reporta sin IVA en el export de Meta —
+// se aplica acá el mismo ajuste que ya usaba la planilla manual del
+// usuario para que el CPA refleje el costo real.
+const MULTIPLICADOR_IVA = 1.1;
 
 // Alfabeto sin caracteres ambiguos (sin 0/O, 1/I/L) para que el código sea
 // fácil de leer/tipear cuando el usuario lo pega a mano en Meta Ads Manager.
@@ -35,8 +42,8 @@ function generarCodigoAleatorio() {
 const MAPEO_COLUMNAS = {
   'inicio del informe': { campo: 'fecha_inicio', tipo: 'fecha' },
   'fin del informe': { campo: 'fecha_fin', tipo: 'fecha' },
-  'nombre de la campaña': { campo: 'nombre_campana_meta', tipo: 'texto' },
-  'entrega de la campaña': { campo: 'entrega', tipo: 'texto' },
+  'nombre de la campana': { campo: 'nombre_campana_meta', tipo: 'texto' },
+  'entrega de la campana': { campo: 'entrega', tipo: 'texto' },
   'presupuesto del conjunto de anuncios': { campo: 'presupuesto', tipo: 'decimal' },
   'tipo de presupuesto del conjunto de anuncios': { campo: 'tipo_presupuesto', tipo: 'texto' },
   'importe gastado (pyg)': { campo: 'importe_gastado', tipo: 'decimal' },
@@ -49,17 +56,17 @@ const MAPEO_COLUMNAS = {
   'clics en el enlace': { campo: 'clics_enlace', tipo: 'entero' },
   'cpc (costo por clic en el enlace) (pyg)': { campo: 'cpc', tipo: 'decimal' },
   'ctr (porcentaje de clics en el enlace)': { campo: 'ctr', tipo: 'decimal' },
-  'visitas a la página de destino': { campo: 'visitas_pagina', tipo: 'entero' },
-  'costo por visita a la página de destino (pyg)': { campo: 'costo_por_visita', tipo: 'decimal' },
+  'visitas a la pagina de destino': { campo: 'visitas_pagina', tipo: 'entero' },
+  'costo por visita a la pagina de destino (pyg)': { campo: 'costo_por_visita', tipo: 'decimal' },
   'pagos iniciados': { campo: 'pagos_iniciados', tipo: 'entero' },
   'costo por pago iniciado (pyg)': { campo: 'costo_por_pago_iniciado', tipo: 'decimal' },
-  'valor de conversión de compras': { campo: 'valor_conversion_compras', tipo: 'decimal' },
+  'valor de conversion de compras': { campo: 'valor_conversion_compras', tipo: 'decimal' },
   'roas de compras en el sitio web': { campo: 'roas', tipo: 'decimal' },
   'compras': { campo: 'compras', tipo: 'entero' },
   'costo por compra (pyg)': { campo: 'costo_por_compra', tipo: 'decimal' },
   'frecuencia': { campo: 'frecuencia', tipo: 'decimal' },
-  'porcentaje de compras por visitas a la página de destino': { campo: 'pct_compra_por_visita', tipo: 'decimal' },
-  'porcentaje de visitas a la página de destino por clics en el enlace': { campo: 'pct_visita_por_clic', tipo: 'decimal' },
+  'porcentaje de compras por visitas a la pagina de destino': { campo: 'pct_compra_por_visita', tipo: 'decimal' },
+  'porcentaje de visitas a la pagina de destino por clics en el enlace': { campo: 'pct_visita_por_clic', tipo: 'decimal' },
 };
 
 function normalizarHeader(h) {
@@ -279,7 +286,7 @@ class MetaReportesService {
     if (headers.length === 0 || filas.length === 0) {
       throw new Error('El archivo está vacío o no se pudo leer como CSV.');
     }
-    if (!headers.some(h => normalizarHeader(h) === 'nombre de la campaña')) {
+    if (!headers.some(h => normalizarHeader(h) === 'nombre de la campana')) {
       throw new Error('El CSV no tiene la columna "Nombre de la campaña" — ¿es un export de Meta Ads Manager?');
     }
 
@@ -410,64 +417,204 @@ class MetaReportesService {
     return fila;
   }
 
-  /** Agregado de métricas por producto. Si una campaña cubre varios
-   * productos, cada uno de esos productos recibe el 100% de las
-   * métricas de esa campaña (no se prorratea el gasto). */
-  static async metricasPorProducto(inquilino_id, filtros = {}) {
-    const whereFilas = { inquilino_id };
-    if (filtros.desde || filtros.hasta) {
-      whereFilas.fecha_inicio = {};
-      if (filtros.desde) whereFilas.fecha_inicio[Op.gte] = filtros.desde;
-      if (filtros.hasta) whereFilas.fecha_inicio[Op.lte] = filtros.hasta;
+  /**
+   * Agregado de métricas por producto — cruza el gasto de Meta Ads
+   * (importado vía CSV) con los pedidos reales del módulo de Envíos
+   * (Courier), para llegar al mismo tipo de P&L que el usuario ya
+   * llevaba a mano: CPA, tasa de confirmación, tasa de entrega, costo
+   * de producto/envío, facturación y utilidad bruta — todo por producto.
+   *
+   * Decisiones de negocio (confirmadas con el usuario, no inventadas):
+   *  - Gasto de Ads se multiplica por MULTIPLICADOR_IVA antes de calcular
+   *    cualquier CPA (el export de Meta no incluye IVA).
+   *  - Pedidos/Confirmados/Entregados salen de TODOS los Envíos que
+   *    incluyen el producto en el rango de fechas, sin importar si están
+   *    vinculados a una campaña específica — el campo Envio.campaign_name
+   *    es texto libre tipeado a mano y hoy no se puede usar como join
+   *    confiable. Si se filtra por `campana_id`, ese filtro solo acota
+   *    el gasto de Ads (a esa campaña puntual); confirmados/entregados
+   *    siguen siendo los del producto completo en el período.
+   *  - Costo del Producto = Producto.precio_costo (estático, no snapshot
+   *    histórico). Precio de Venta = facturación real / unidades
+   *    entregadas (promedio ponderado). Costo de Envío = promedio de
+   *    Envio.costo_envio entre los envíos entregados que incluyen el
+   *    producto (no se prorratea entre productos de un mismo envío).
+   *  - Si una campaña cubre varios productos, cada producto recibe el
+   *    100% del gasto de esa campaña (no se prorratea).
+   *  - Envio es privado por usuario_id (cada cuenta ve solo sus propios
+   *    pedidos, nunca los de otra cuenta del mismo tenant) — mismo
+   *    criterio que pedidosAnalyticsService.getAnalyticsCompleto.
+   */
+  static async metricasPorProducto(inquilino_id, usuario_id, filtros = {}) {
+    const page = Math.max(1, parseInt(filtros.page, 10) || 1);
+    const pageSize = Math.min(50, Math.max(1, parseInt(filtros.page_size, 10) || 12));
+    const { fecha_desde, fecha_hasta } = filtros;
+
+    // 1. Resolver el set de productos objetivo (filtros de producto/campaña + paginación)
+    let idsForzados = null; // null = "todos los productos activos del tenant"
+    let campanaFiltro = null;
+    if (filtros.campana_id) {
+      campanaFiltro = await MetaCampanaInterna.findOne({ where: { id: filtros.campana_id, inquilino_id } });
+      if (!campanaFiltro) throw new Error('Campaña no encontrada.');
+      idsForzados = campanaFiltro.producto_ids || [];
+    }
+    if (filtros.producto_id) {
+      const pid = parseInt(filtros.producto_id, 10);
+      idsForzados = idsForzados ? idsForzados.filter((id) => id === pid) : [pid];
     }
 
+    let productosPagina, total;
+    if (idsForzados) {
+      const productos = await Producto.findAll({
+        where: { id: { [Op.in]: idsForzados.length ? idsForzados : [-1] }, inquilino_id },
+        attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base'],
+        order: [['nombre', 'ASC']],
+      });
+      total = productos.length;
+      productosPagina = productos.slice((page - 1) * pageSize, page * pageSize);
+    } else {
+      const { rows, count } = await Producto.findAndCountAll({
+        where: { inquilino_id, activo: true },
+        attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base'],
+        order: [['nombre', 'ASC']],
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
+      });
+      productosPagina = rows;
+      total = count;
+    }
+
+    const idsPagina = productosPagina.map((p) => p.id);
+    const totalPaginas = Math.max(1, Math.ceil(total / pageSize));
+    if (idsPagina.length === 0) {
+      return { productos: [], total, page, page_size: pageSize, total_paginas: totalPaginas };
+    }
+
+    // 2. Gasto de Meta Ads por producto (opcionalmente acotado a 1 campaña)
+    const whereFilas = { inquilino_id, meta_campana_interna_id: { [Op.ne]: null } };
+    if (campanaFiltro) whereFilas.meta_campana_interna_id = campanaFiltro.id;
+    if (fecha_desde) whereFilas.fecha_fin = { [Op.gte]: fecha_desde };
+    if (fecha_hasta) whereFilas.fecha_inicio = { [Op.lte]: fecha_hasta };
+
     const filas = await MetaReporteFila.findAll({
-      where: { ...whereFilas, meta_campana_interna_id: { [Op.ne]: null } },
-      include: [{ model: MetaCampanaInterna, as: 'campana', attributes: ['id', 'producto_ids', 'nombre_display'] }],
+      where: whereFilas,
+      attributes: ['importe_gastado'],
+      include: [{ model: MetaCampanaInterna, as: 'campana', attributes: ['id', 'producto_ids'] }],
     });
 
-    const acumPorProducto = new Map();
+    const gastoPorProducto = new Map();
     for (const filaModel of filas) {
       const fila = filaModel.toJSON();
-      const productoIds = fila.campana?.producto_ids || [];
-      for (const productoId of productoIds) {
-        if (!acumPorProducto.has(productoId)) {
-          acumPorProducto.set(productoId, {
-            producto_id: productoId,
-            gasto: 0, compras: 0, valor_conversion: 0, impresiones: 0,
-            clics_enlace: 0, alcance: 0, campanas: new Set(),
-          });
-        }
-        const acc = acumPorProducto.get(productoId);
-        acc.gasto += Number(fila.importe_gastado) || 0;
-        acc.compras += Number(fila.compras) || 0;
-        acc.valor_conversion += Number(fila.valor_conversion_compras) || 0;
-        acc.impresiones += Number(fila.impresiones) || 0;
-        acc.clics_enlace += Number(fila.clics_enlace) || 0;
-        acc.alcance += Number(fila.alcance) || 0;
-        acc.campanas.add(fila.campana.id);
+      const gasto = Number(fila.importe_gastado) || 0;
+      for (const pid of (fila.campana?.producto_ids || [])) {
+        if (!idsPagina.includes(pid)) continue;
+        gastoPorProducto.set(pid, (gastoPorProducto.get(pid) || 0) + gasto);
       }
     }
 
-    const productoIds = [...acumPorProducto.keys()];
-    const productos = productoIds.length
-      ? await Producto.findAll({ where: { id: { [Op.in]: productoIds }, inquilino_id }, attributes: ['id', 'nombre', 'sku'] })
-      : [];
-    const mapaProductos = new Map(productos.map(p => [p.id, p.toJSON()]));
+    // 3. Pedidos/Confirmados/Entregados + facturación real, desde Envíos
+    const whereEnvio = { usuario_id };
+    if (fecha_desde && fecha_hasta) {
+      whereEnvio[Op.or] = [
+        { dispatchedAt: { [Op.between]: [fecha_desde, fecha_hasta] } },
+        { fecha: { [Op.between]: [fecha_desde, fecha_hasta] } },
+      ];
+    } else if (fecha_desde) {
+      whereEnvio[Op.or] = [{ dispatchedAt: { [Op.gte]: fecha_desde } }, { fecha: { [Op.gte]: fecha_desde } }];
+    } else if (fecha_hasta) {
+      whereEnvio[Op.or] = [{ dispatchedAt: { [Op.lte]: fecha_hasta } }, { fecha: { [Op.lte]: fecha_hasta } }];
+    }
 
-    return [...acumPorProducto.values()].map(acc => ({
-      producto_id: acc.producto_id,
-      producto: mapaProductos.get(acc.producto_id) || null,
-      gasto: acc.gasto,
-      compras: acc.compras,
-      valor_conversion: acc.valor_conversion,
-      roas: acc.gasto > 0 ? acc.valor_conversion / acc.gasto : 0,
-      costo_por_compra: acc.compras > 0 ? acc.gasto / acc.compras : 0,
-      impresiones: acc.impresiones,
-      clics_enlace: acc.clics_enlace,
-      alcance: acc.alcance,
-      cantidad_campanas: acc.campanas.size,
-    })).sort((a, b) => b.gasto - a.gasto);
+    const envios = await Envio.findAll({
+      where: whereEnvio,
+      attributes: ['id', 'estado', 'estado_comercial', 'estado_logistico', 'costo_envio'],
+      include: [{
+        model: EnvioItem,
+        as: 'items',
+        attributes: ['producto_id', 'cantidad', 'subtotal'],
+        where: { producto_id: { [Op.in]: idsPagina } },
+        required: true,
+      }],
+    });
+
+    // Clasificación de estado — mismo criterio que pedidosAnalyticsService
+    // (catálogo operativo de 9 estados, ver envioController.ESTADOS_OPERATIVOS).
+    const acumPedidos = new Map();
+    for (const envioModel of envios) {
+      const envio = envioModel.toJSON();
+      const st = (envio.estado || '').toLowerCase();
+      const stCom = (envio.estado_comercial || '').toLowerCase();
+      const stLog = (envio.estado_logistico || '').toLowerCase();
+      const isConfirmado = stCom === 'confirmado' || ['confirmado', 'preparado', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st);
+      const isEntregado = st === 'entregado' || stLog === 'entregado';
+
+      const productosDelEnvio = new Set();
+      for (const item of envio.items) {
+        if (!idsPagina.includes(item.producto_id)) continue;
+        if (!acumPedidos.has(item.producto_id)) {
+          acumPedidos.set(item.producto_id, {
+            pedidos: 0, confirmados: 0, entregados: 0,
+            unidadesEntregadas: 0, facturacion: 0,
+            sumaCostoEnvio: 0, countCostoEnvio: 0,
+          });
+        }
+        const acc = acumPedidos.get(item.producto_id);
+
+        if (!productosDelEnvio.has(item.producto_id)) {
+          productosDelEnvio.add(item.producto_id);
+          acc.pedidos += 1;
+          if (isConfirmado) acc.confirmados += 1;
+          if (isEntregado) {
+            acc.entregados += 1;
+            acc.sumaCostoEnvio += Number(envio.costo_envio) || 0;
+            acc.countCostoEnvio += 1;
+          }
+        }
+        if (isEntregado) {
+          acc.unidadesEntregadas += item.cantidad || 0;
+          acc.facturacion += item.subtotal || 0;
+        }
+      }
+    }
+
+    // 4. Combinar todo por producto
+    const productos = productosPagina.map((productoModel) => {
+      const prod = productoModel.toJSON();
+      const gasto = gastoPorProducto.get(prod.id) || 0;
+      const gastoConIva = gasto * MULTIPLICADOR_IVA;
+      const ped = acumPedidos.get(prod.id) || {
+        pedidos: 0, confirmados: 0, entregados: 0,
+        unidadesEntregadas: 0, facturacion: 0,
+        sumaCostoEnvio: 0, countCostoEnvio: 0,
+      };
+
+      const costoProducto = prod.precio_costo != null ? Number(prod.precio_costo) : 0;
+      const costoEnvioProm = ped.countCostoEnvio > 0 ? ped.sumaCostoEnvio / ped.countCostoEnvio : 0;
+      const precioVentaProm = ped.unidadesEntregadas > 0 ? ped.facturacion / ped.unidadesEntregadas : Number(prod.precio_base) || 0;
+      const utilidadBruta = ped.facturacion - (costoEnvioProm * ped.entregados) - (costoProducto * ped.unidadesEntregadas) - gastoConIva;
+
+      return {
+        producto_id: prod.id,
+        producto: { id: prod.id, nombre: prod.nombre, sku: prod.sku },
+        gasto_ads: gastoConIva,
+        pedidos: ped.pedidos,
+        cpa: ped.pedidos > 0 ? gastoConIva / ped.pedidos : 0,
+        confirmados: ped.confirmados,
+        pct_confirmacion: ped.pedidos > 0 ? (ped.confirmados / ped.pedidos) * 100 : 0,
+        cpa_confirmado: ped.confirmados > 0 ? gastoConIva / ped.confirmados : 0,
+        entregados: ped.entregados,
+        pct_entrega: ped.confirmados > 0 ? (ped.entregados / ped.confirmados) * 100 : 0,
+        cpa_entregado: ped.entregados > 0 ? gastoConIva / ped.entregados : 0,
+        costo_producto: costoProducto,
+        costo_envio: costoEnvioProm,
+        precio_venta: precioVentaProm,
+        facturacion: ped.facturacion,
+        utilidad_bruta: utilidadBruta,
+        margen_bruto: ped.facturacion > 0 ? utilidadBruta / ped.facturacion : 0,
+      };
+    });
+
+    return { productos, total, page, page_size: pageSize, total_paginas: totalPaginas };
   }
 }
 

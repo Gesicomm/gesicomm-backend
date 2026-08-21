@@ -385,13 +385,21 @@ const instanciarLanding = async (req, res, next) => {
   try {
     const { templateId } = req.body;
     const productoId = req.params.id;
-    const inquilinoId = req.inquilino.id;
-    
+    const inquilinoId = req.usuario.tenantId;
+
     if (!templateId) {
       return res.status(400).json({ message: 'Se requiere el ID del template.' });
     }
 
-    const result = await LandingService.instanciarDesdeTemplate(inquilinoId, productoId, templateId);
+    // La tienda se resuelve por usuario_id (resolverTiendaPropia), no por
+    // inquilino_id — un tenant puede tener más de una Tienda (varios
+    // usuarios/empleados), y buscar solo por inquilino_id agarra una
+    // cualquiera. Antes de este fix, instanciar un funnel podía crearlo
+    // bajo la tienda de OTRO usuario del mismo tenant.
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+
+    const result = await LandingService.instanciarDesdeTemplate(inquilinoId, tienda.id, productoId, templateId);
     res.json(result);
   } catch (error) {
     next(error);

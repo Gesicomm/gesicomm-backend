@@ -221,6 +221,10 @@ LandingSeccion.belongsTo(Landing, { foreignKey: 'landing_id' });
 LandingTemplate.hasMany(Landing, { as: 'landings', foreignKey: 'template_id' });
 Landing.belongsTo(LandingTemplate, { as: 'template', foreignKey: 'template_id' });
 
+// Un embudo (template.kind='funnel') vende UN producto — ver
+// funnel.service.js. En el resto de las landings producto_id es null.
+Landing.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });
+
 // Relación de productos con landings (page-builder)
 Landing.hasMany(LandingEvento, { as: 'eventos', foreignKey: 'landing_id', onDelete: 'CASCADE' });
 LandingEvento.belongsTo(Landing, { foreignKey: 'landing_id' });
@@ -320,6 +324,9 @@ CostoGasto.belongsTo(MetodoPago, { as: 'metodo_pago', foreignKey: 'metodo_pago_i
 
 Proveedor.hasMany(CostoGasto, { foreignKey: 'proveedor_id' });
 CostoGasto.belongsTo(Proveedor, { as: 'proveedor', foreignKey: 'proveedor_id' });
+
+Proveedor.hasMany(Producto, { foreignKey: 'proveedor_id' });
+Producto.belongsTo(Proveedor, { as: 'proveedor', foreignKey: 'proveedor_id' });
 
 Producto.hasMany(CostoGasto, { foreignKey: 'producto_id' });
 CostoGasto.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });

@@ -22,6 +22,17 @@ async function catalogo(req, res) {
   }
 }
 
+
+async function catalogoPaginado(req, res) {
+  try {
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(req.usuario.id, req.usuario.tenantId, req.body);
+    return res.json(resultado);
+  } catch (err) {
+    console.error('[vitrina] catalogoPaginado:', err.message);
+    return res.status(500).json({ message: 'Error al obtener el catálogo paginado.' });
+  }
+}
+
 async function guardarPrecioProducto(req, res) {
   try {
     const resultado = await PrecioUsuarioService.guardarPrecioProducto(
@@ -74,4 +85,4 @@ async function sensibilidadCombo(req, res) {
   }
 }
 
-module.exports = { catalogo, guardarPrecioProducto, guardarPrecioCombo, sensibilidadProducto, sensibilidadCombo };
+module.exports = { catalogo, catalogoPaginado, guardarPrecioProducto, guardarPrecioCombo, sensibilidadProducto, sensibilidadCombo };
