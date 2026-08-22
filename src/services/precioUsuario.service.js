@@ -517,13 +517,6 @@ class PrecioUsuarioService {
       sensitivity,
       warnings: [],
     };
-  }      profit,
-      margin,
-      estado: this.anotarEstado(margin, minimumMarginDecimal),
-      comparison: resultado.comparison,
-      sensitivity,
-      warnings: resultado.warnings,
-    };
   }
 }
 
