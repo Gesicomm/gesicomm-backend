@@ -109,6 +109,12 @@ const Producto = sequelize.define('Producto', {
     allowNull: true,
     comment: 'Costo del producto en USD (precio de compra al proveedor). Base para recalcular precio_costo/precio_base cuando cambia la cotización.',
   },
+  es_dolar: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
+    allowNull: false,
+    comment: 'Si es true, el costo base es en dolares y se calcula en guaranies según el precio_dolar del proveedor.',
+  },
   precio_tachado: {
     type: DataTypes.DECIMAL(12, 2),
     allowNull: true,

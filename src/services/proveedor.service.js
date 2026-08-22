@@ -5,7 +5,7 @@ const { Proveedor } = require('../models');
 
 class ProveedorService {
   static serializar(proveedor) {
-    return { id: proveedor.id, nombre: proveedor.nombre, activo: proveedor.activo };
+    return { id: proveedor.id, nombre: proveedor.nombre, activo: proveedor.activo, precio_dolar: proveedor.precio_dolar };
   }
 
   static async buscar(filtros, usuario_id) {
@@ -26,7 +26,7 @@ class ProveedorService {
       total: count,
       pagina: parseInt(page),
       total_paginas: Math.ceil(count / parseInt(limit)),
-      proveedores: rows.map(this.serializar),
+      proveedores: rows.map(this.serializar.bind(this)),
     };
   }
 
@@ -37,7 +37,8 @@ class ProveedorService {
     const existente = await Proveedor.findOne({ where: { usuario_id, nombre: { [Op.iLike]: nombre } } });
     if (existente) return this.serializar(existente);
 
-    const proveedor = await Proveedor.create({ usuario_id, nombre });
+    const precio_dolar = datos.precio_dolar !== undefined ? datos.precio_dolar : null;
+    const proveedor = await Proveedor.create({ usuario_id, nombre, precio_dolar });
     return this.serializar(proveedor);
   }
 
@@ -51,6 +52,7 @@ class ProveedorService {
       proveedor.nombre = nombre;
     }
     if (datos.activo !== undefined) proveedor.activo = datos.activo;
+    if (datos.precio_dolar !== undefined) proveedor.precio_dolar = datos.precio_dolar;
 
     await proveedor.save();
     return this.serializar(proveedor);

@@ -25,6 +25,11 @@ const Proveedor = sequelize.define('Proveedor', {
     defaultValue: true,
     allowNull: false,
   },
+  precio_dolar: {
+    type: DataTypes.DECIMAL(12, 2),
+    allowNull: true,
+    comment: 'Precio del dolar específico para este proveedor',
+  },
 }, {
   tableName: 'proveedores',
   timestamps: true,

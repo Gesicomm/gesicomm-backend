@@ -104,6 +104,14 @@ class FunnelService {
     for (const campo of ['color_primario', 'color_fondo', 'color_texto']) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo] || null;
     }
+    // Redes sociales y contacto
+    const camposContacto = [
+      'contacto_whatsapp', 'contacto_instagram', 'contacto_facebook', 
+      'contacto_tiktok', 'contacto_youtube', 'contacto_twitter'
+    ];
+    for (const campo of camposContacto) {
+      if (payload[campo] !== undefined) campos[campo] = String(payload[campo] || '').trim() || null;
+    }
     return campos;
   }
 

@@ -58,7 +58,7 @@ class ProductoService {
 
   static async buscar(filtros, inquilino_id, esAdmin, usuarioId = null) {
     const {
-      texto, categoria_id, marca_id, activo, destacado,
+      texto, categoria_id, marca_id, proveedor_id, activo, destacado,
       precio_min, precio_max, stock_bajo, sin_stock, con_ofertas,
       con_variantes, ordenar_por, page = 1, limit = 10,
       creado_por
@@ -70,6 +70,7 @@ class ProductoService {
     if (destacado !== undefined) where.destacado = destacado;
     if (categoria_id) where.categoria_id = categoria_id;
     if (marca_id) where.marca_id = marca_id;
+    if (proveedor_id) where.proveedor_id = proveedor_id;
     if (precio_min !== undefined) where.precio_base = { ...where.precio_base, [Op.gte]: precio_min };
     if (precio_max !== undefined) where.precio_base = { ...where.precio_base, [Op.lte]: precio_max };
     if (sin_stock) {
@@ -129,7 +130,7 @@ class ProductoService {
         // tienda (https://<tienda>.gesicomm.com/<slug>) — lo usa el wizard
         // de campañas para mostrar el link del anuncio sin tener que pedir
         // el detalle de cada producto por separado.
-        'id', 'nombre', 'slug', 'sku', 'tags', 'precio_base', 'precio_costo', 'precio_dolar', 'precio_tachado',
+        'id', 'nombre', 'slug', 'sku', 'tags', 'precio_base', 'precio_costo', 'precio_dolar', 'es_dolar', 'precio_tachado',
         'descuento_porcentaje',
         'cantidad_disponible', 'stock_minimo',
         'estado_venta', 'activo', 'destacado', 'categoria_id', 'marca_id', 'proveedor_id', 'creado_por'
@@ -261,7 +262,7 @@ class ProductoService {
     const {
       nombre, categoria_id, marca_id, proveedor_id, tags,
       descripcion_corta, descripcion_larga, faq_titulo,
-      precio_costo, precio_minimo, precio_base, precio_dolar,
+      precio_costo, precio_minimo, precio_base, precio_dolar, es_dolar,
       descuento_porcentaje, descuento_inicio, descuento_fin, impuestos_incluidos,
       cantidad_disponible, stock_minimo, unidad_medida,
       activo, estado_venta, destacado, fecha_disponible_desde, fecha_disponible_hasta,
@@ -286,6 +287,7 @@ class ProductoService {
       propuesta_valor, beneficios, confianza, preguntas_frecuentes, sobre_este_producto,
       precio_costo: precio_costo ? parseFloat(precio_costo) : null,
       precio_dolar: precio_dolar ? parseFloat(precio_dolar) : null,
+      es_dolar: !!es_dolar,
       precio_minimo: esAdmin && precio_minimo ? parseFloat(precio_minimo) : null,
       precio_base: precioBaseNum,
       precio_tachado: precioAncla ? parseFloat(precioAncla) : null,
@@ -380,7 +382,7 @@ class ProductoService {
     const camposPermitidos = [
       'nombre', 'sku', 'categoria_id', 'marca_id', 'proveedor_id', 'tags',
       'descripcion_corta', 'descripcion_larga', 'faq_titulo', 'relacionados_titulo',
-      'precio_costo', 'precio_dolar', 'precio_base', 'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'impuestos_incluidos',
+      'precio_costo', 'precio_dolar', 'es_dolar', 'precio_base', 'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'impuestos_incluidos',
       'cantidad_disponible', 'stock_minimo', 'unidad_medida', 'activo', 'estado_venta', 'destacado',
       'fecha_disponible_desde', 'fecha_disponible_hasta',
       'meta_titulo', 'meta_descripcion', 'peso', 'dimensiones', 'tipo_producto',
