@@ -122,8 +122,7 @@ class ProductoService {
     };
     const order = ordenes[ordenar_por] || ordenes.recientes;
 
-    // Sin eager loading (include), consulta directa
-    const { rows: productos, count } = await Producto.findAndCountAll({
+    const queryParams = {
       where,
       attributes: [
         // slug: es la URL pública del producto dentro de la landing de la
@@ -136,9 +135,14 @@ class ProductoService {
         'estado_venta', 'activo', 'destacado', 'categoria_id', 'marca_id', 'proveedor_id', 'creado_por'
       ],
       order,
-      limit: parseInt(limit),
-      offset,
-    });
+    };
+
+    if (!filtros.sin_limite && !filtros.sinLimite) {
+      queryParams.limit = parseInt(limit);
+      queryParams.offset = offset;
+    }
+
+    const { rows: productos, count } = await Producto.findAndCountAll(queryParams);
 
     const productosSerializados = productos.map(p => this.serializar(p, esAdmin, usuarioId));
 
