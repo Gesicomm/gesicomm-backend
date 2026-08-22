@@ -56,6 +56,29 @@ const Producto = sequelize.define('Producto', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
+  sobre_este_producto: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+  propuesta_valor: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+  beneficios: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: [],
+  },
+  confianza: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: [],
+  },
+  preguntas_frecuentes: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: [],
+  },
   faq_titulo: {
     type: DataTypes.STRING(255),
     allowNull: true,

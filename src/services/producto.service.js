@@ -262,6 +262,7 @@ class ProductoService {
       cantidad_disponible, stock_minimo, unidad_medida,
       activo, estado_venta, destacado, fecha_disponible_desde, fecha_disponible_hasta,
       slug: slugManual, meta_titulo, meta_descripcion,
+      propuesta_valor, beneficios, confianza, preguntas_frecuentes, sobre_este_producto,
     } = datos;
 
     const precioBaseNum = parseFloat(precio_base);
@@ -278,6 +279,7 @@ class ProductoService {
       proveedor_id: proveedor_id || null,
       tags: tags || [],
       descripcion_corta, descripcion_larga, faq_titulo: faq_titulo || null,
+      propuesta_valor, beneficios, confianza, preguntas_frecuentes, sobre_este_producto,
       precio_costo: precio_costo ? parseFloat(precio_costo) : null,
       precio_dolar: precio_dolar ? parseFloat(precio_dolar) : null,
       precio_minimo: esAdmin && precio_minimo ? parseFloat(precio_minimo) : null,
@@ -378,6 +380,7 @@ class ProductoService {
       'cantidad_disponible', 'stock_minimo', 'unidad_medida', 'activo', 'estado_venta', 'destacado',
       'fecha_disponible_desde', 'fecha_disponible_hasta',
       'meta_titulo', 'meta_descripcion', 'peso', 'dimensiones', 'tipo_producto',
+      'propuesta_valor', 'beneficios', 'confianza', 'preguntas_frecuentes', 'sobre_este_producto',
     ];
     // precio_minimo: piso de precio — solo el admin puede fijarlo, incluso
     // sobre productos que no creó (ver serializar()).

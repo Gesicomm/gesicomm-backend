@@ -9,6 +9,7 @@ const {
   MetaReporteFila,
   MetaIntegration,
   Landing,
+  LandingTemplate,
   Producto,
   Envio,
   EnvioItem,
@@ -184,7 +185,15 @@ class MetaReportesService {
 
     const campanas = await MetaCampanaInterna.findAll({
       where,
-      include: [{ model: Landing, as: 'funnel', attributes: ['id', 'nombre', 'titulo', 'tipo_pagina'] }],
+      include: [{
+        model: Landing,
+        as: 'funnel',
+        attributes: ['id', 'nombre', 'titulo', 'slug', 'tipo_pagina'],
+        // El frontend necesita distinguir un embudo real (template.kind
+        // 'funnel') de una landing de tienda vieja vinculada por el flujo
+        // legacy — solo el primero tiene un editor propio (/funnel/:id).
+        include: [{ model: LandingTemplate, as: 'template', attributes: ['kind'] }],
+      }],
       order: [['created_at', 'DESC']],
     });
 
@@ -206,7 +215,15 @@ class MetaReportesService {
   static async obtenerCampana(id, inquilino_id) {
     const campana = await MetaCampanaInterna.findOne({
       where: { id, inquilino_id },
-      include: [{ model: Landing, as: 'funnel', attributes: ['id', 'nombre', 'titulo', 'tipo_pagina'] }],
+      include: [{
+        model: Landing,
+        as: 'funnel',
+        attributes: ['id', 'nombre', 'titulo', 'slug', 'tipo_pagina'],
+        // El frontend necesita distinguir un embudo real (template.kind
+        // 'funnel') de una landing de tienda vieja vinculada por el flujo
+        // legacy — solo el primero tiene un editor propio (/funnel/:id).
+        include: [{ model: LandingTemplate, as: 'template', attributes: ['kind'] }],
+      }],
     });
     if (!campana) throw new Error('Campaña no encontrada.');
     return campana;

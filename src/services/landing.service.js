@@ -1510,6 +1510,12 @@ class LandingService {
         ofertas: ofertasDto,
         faq: !esCombo ? (mapaFaq.get(entidad.id) || []) : [],
         productos_incluidos: esCombo ? (entidad.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean) : undefined,
+        // Campos de marketing — solo aplica a productos simples (no combos)
+        propuesta_valor: !esCombo ? (entidad.propuesta_valor || null) : null,
+        beneficios: !esCombo ? (entidad.beneficios || []) : [],
+        confianza: !esCombo ? (entidad.confianza || []) : [],
+        preguntas_frecuentes: !esCombo ? (entidad.preguntas_frecuentes || []) : [],
+        sobre_este_producto: !esCombo ? (entidad.sobre_este_producto || null) : null,
         categoria: productoParaFiltros?.categoria?.nombre || null,
         marca: productoParaFiltros?.Marca?.nombre || null,
         etiqueta: item.etiqueta,
@@ -1624,7 +1630,13 @@ class LandingService {
       // templates/*.jsx del frontend) que el frontend aplica cuando estos
       // 3 campos vienen null. Heredar de Tienda acá mezclaría el branding
       // del sistema flexible con el de un template que nunca lo pidió.
-      tema: esRigida ? {
+      // Un embudo (esFunnel) es rígido igual que las landings de tienda: su
+      // paleta default vive en el FRONTEND por slug de template (ver
+      // funnelThemeUtils.js), nunca en Tienda.color_fondo — antes caía en
+      // la rama de abajo (pensada para el sistema flexible), que sin
+      // landing.tema_modo='claro' terminaba heredando el fondo oscuro de
+      // la tienda y el embudo salía negro sin que el comercio lo pidiera.
+      tema: (esRigida || esFunnel) ? {
         modo: landing.tema_modo,
         primario: landing.color_primario || null,
         secundario: null,
