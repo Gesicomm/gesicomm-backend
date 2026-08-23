@@ -115,7 +115,7 @@ class LandingSimpleService {
     // las columnas color_primario/fondo/texto ya existentes en Landing.
     // La validación de formato hexadecimal ya la hace
     // LandingService.validarPayload (ver actualizar() acá abajo).
-    for (const campo of ['color_primario', 'color_fondo', 'color_texto']) {
+    for (const campo of ['color_primario', 'color_fondo', 'color_texto', 'content']) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo] || null;
     }
     return campos;

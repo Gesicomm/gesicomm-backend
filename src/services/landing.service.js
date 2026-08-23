@@ -556,7 +556,7 @@ class LandingService {
 
   static camposEditables(payload) {
     const campos = {};
-    for (const campo of ['nombre', 'titulo', 'descripcion']) {
+    for (const campo of ['nombre', 'titulo', 'descripcion', 'content']) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo] || null;
     }
     for (const flag of [
@@ -1765,6 +1765,21 @@ class LandingService {
           seccionesProducto = propias.map(s => this.seccionDto(s));
         }
         relacionados = relacionadosDto;
+        
+        // Inyectar el precio ancla y etiqueta de la landing actual a los productos relacionados
+        if (relacionados && relacionados.items && landing.items) {
+          relacionados.items = relacionados.items.map(relItem => {
+            const lItem = landing.items.find(i => i.content_id === relItem.slug || (Number(i.referencia_id) === Number(relItem.id) && i.tipo === 'producto'));
+            if (lItem) {
+              return {
+                ...relItem,
+                precio_ancla: lItem.precio_ancla || relItem.precio_tachado || null,
+                etiqueta: lItem.etiqueta || null
+              };
+            }
+            return relItem;
+          });
+        }
       }
     }
 
