@@ -147,10 +147,22 @@ async function relacionados(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const datos = await ProductoService.listarRelacionados(req.params.id, inquilino_id);
+    
+    // Si se pasa landing_id, filtrar a nivel backend
+    if (req.query.landing_id && datos && datos.items) {
+      const { LandingItem } = require('../models');
+      const landingItems = await LandingItem.findAll({ 
+        where: { landing_id: req.query.landing_id, tipo: 'producto' },
+        attributes: ['referencia_id']
+      });
+      const idsEnCatalogo = new Set(landingItems.map(i => Number(i.referencia_id)));
+      datos.items = datos.items.filter(r => idsEnCatalogo.has(Number(r.id)));
+    }
+    
     return res.json(datos);
   } catch (err) {
     console.error(err);
-    const status = err.message.includes('no encontrado') ? 404 : 500;
+    const status = err.message && err.message.includes('no encontrado') ? 404 : 500;
     return res.status(status).json({ message: err.message || 'Error al obtener los productos relacionados.' });
   }
 }
