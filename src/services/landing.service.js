@@ -1768,7 +1768,9 @@ class LandingService {
         
         // Inyectar el precio ancla y etiqueta de la landing actual a los productos relacionados
         if (relacionados && relacionados.items && landing.items) {
-          relacionados.items = relacionados.items.map(relItem => {
+          relacionados.items = relacionados.items.filter(relItem => 
+            landing.items.some(i => i.content_id === relItem.slug || (Number(i.referencia_id) === Number(relItem.id) && i.tipo === 'producto'))
+          ).map(relItem => {
             const lItem = landing.items.find(i => i.content_id === relItem.slug || (Number(i.referencia_id) === Number(relItem.id) && i.tipo === 'producto'));
             if (lItem) {
               return {
