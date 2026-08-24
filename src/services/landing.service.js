@@ -1399,6 +1399,34 @@ class LandingService {
     const mapaProducto = new Map(productos.map(p => [p.id, p]));
     const mapaCombo = new Map(combos.map(c => [c.id, c]));
 
+    // Los componentes de una oferta de checkout (el producto que suma un
+    // order bump, o los que arma un combo) casi nunca están curados en la
+    // landing — el comercio elige el bump de TODO su catálogo. Sin esto la
+    // casilla del checkout salía sin nombre ni foto del producto ofrecido,
+    // porque `mapaProducto`/`mapaImagenes` solo tienen los items de la
+    // landing. Se traen solo nombre e imagen: nada de precios ni stock, que
+    // no se muestran y no hace falta exponer.
+    const idsComponentesAjenos = [...new Set(
+      ofertas.flatMap(o => (o.componentes || []).map(c => c.producto_id))
+    )].filter(id => !mapaProducto.has(id));
+
+    if (idsComponentesAjenos.length) {
+      const [productosAjenos, imagenesAjenas] = await Promise.all([
+        Producto.findAll({ where: { id: { [Op.in]: idsComponentesAjenos } }, attributes: ['id', 'nombre'] }),
+        ProductoImagen.findAll({
+          where: { producto_id: { [Op.in]: idsComponentesAjenos }, variante_id: null },
+          attributes: ['producto_id', 'variante_id', 'url', 'es_principal'],
+          order: [['es_principal', 'DESC'], ['orden', 'ASC']],
+        }),
+      ]);
+      productosAjenos.forEach(p => mapaProducto.set(p.id, p));
+      imagenesAjenas.forEach(img => {
+        const lista = mapaImagenes.get(img.producto_id) || [];
+        lista.push({ url: img.url, variante_id: img.variante_id, es_principal: img.es_principal });
+        mapaImagenes.set(img.producto_id, lista);
+      });
+    }
+
     const itemsDto = [];
     for (const item of items) {
       const entidad = item.tipo === 'producto' ? mapaProducto.get(item.referencia_id) : mapaCombo.get(item.referencia_id);
@@ -1459,41 +1487,67 @@ class LandingService {
           const propio = (o.componentes || []).find(c => c.producto_id === entidad.id);
           unidades = propio?.cantidad || (o.componentes || []).reduce((s, c) => s + (c.cantidad || 0), 0) || null;
         }
-        // Order bump: a diferencia de un pack, acá SÍ hace falta mostrar
-        // qué producto se está ofreciendo de más (ej. "Agregá el Mouse por
-        // Gs 15.000" con su propia foto) — sin esto el checkbox del
-        // checkout no tendría nombre ni imagen que mostrar. Se expone solo
-        // nombre/imagen del complementario, nunca cantidades/receta
-        // completa (mismo criterio de privacidad que "unidades" arriba).
+        // Ofertas de checkout (order bump / combo): a diferencia de un pack,
+        // acá SÍ hace falta mostrar QUÉ se está ofreciendo de más (ej.
+        // "Agregá el Mouse por Gs 15.000" con su propia foto) — sin esto la
+        // casilla del checkout no tendría nombre ni imagen que mostrar. Se
+        // exponen solo nombre/imagen, nunca cantidades ni la receta completa
+        // (mismo criterio de privacidad que "unidades" arriba).
+        const esOfertaCheckout = o.estrategia === 'order_bump' || o.estrategia === 'combo';
         let productoComplementario = null;
-        if (o.estrategia === 'order_bump') {
-          const compAjeno = (o.componentes || []).find(c => c.producto_id !== entidad.id);
-          const prodAjeno = compAjeno ? mapaProducto.get(compAjeno.producto_id) : null;
-          if (prodAjeno) {
-            const imgs = mapaImagenes.get(prodAjeno.id) || [];
+        let productosIncluidos = [];
+        if (esOfertaCheckout) {
+          const resolverProducto = (productoId) => {
+            const prod = mapaProducto.get(productoId);
+            if (!prod) return null;
+            const imgs = mapaImagenes.get(prod.id) || [];
             const principal = imgs.find(i => i.es_principal) || imgs[0];
-            productoComplementario = { nombre: prodAjeno.nombre, imagen: principal?.url || null };
-          }
+            return { nombre: prod.nombre, imagen: principal?.url || null };
+          };
+          // Un combo se muestra como paquete completo ("3 productos x
+          // 120.000"), así que lista TODOS sus productos — el ancla incluido.
+          // Un order bump es un agregado, así que muestra solo lo que suma.
+          const componentes = o.estrategia === 'combo'
+            ? (o.componentes || [])
+            : (o.componentes || []).filter(c => c.producto_id !== entidad.id);
+          productosIncluidos = componentes.map(c => resolverProducto(c.producto_id)).filter(Boolean);
+          productoComplementario = productosIncluidos[0] || null;
         }
+        // Los DOS precios (ver Oferta.js). `precio` se mantiene por
+        // compatibilidad con lecturas viejas, pero apunta al normal: el
+        // promocional del bump nunca debe pisar el precio de venta normal.
+        const precioNormal = parseFloat(o.precio_normal ?? o.precio) || 0;
+        const precioBump = (o.precio_order_bump === null || o.precio_order_bump === undefined)
+          ? null : (parseFloat(o.precio_order_bump) || 0);
         return {
           id: o.id,
           nombre: o.nombre,
           tipo_contenido: o.tipo_contenido,
           estrategia: o.estrategia,
-          precio: parseFloat(o.precio) || 0,
+          precio: precioNormal,
+          precio_normal: precioNormal,
+          precio_order_bump: precioBump,
+          // Lo que se cobra realmente si el visitante la acepta por su canal
+          // — el frontend muestra ESTO, no adivina cuál de los dos aplica.
+          precio_efectivo: esOfertaCheckout ? (precioBump ?? precioNormal) : precioNormal,
           descripcion: o.descripcion || null,
           unidades,
           producto_complementario: productoComplementario,
+          productos_incluidos: productosIncluidos,
         };
       }) : [];
+
+      // Lo que el comercio personalizó de este producto EN ESTA LANDING
+      // (ver overrideDeProducto). Pisa el catálogo global sin tocarlo.
+      const override = esCombo ? null : this.overrideDeProducto(landing.content, entidad.id);
 
       itemsDto.push({
         // ID público estable — nunca LandingItem.id (cambiaría entre landings para el mismo producto).
         content_id: entidad.slug || `${item.tipo}-${entidad.id}`,
         tipo: item.tipo,
         nombre: entidad.nombre,
-        descripcion: esCombo ? entidad.descripcion : entidad.descripcion_corta,
-        descripcion_larga: esCombo ? null : entidad.descripcion_larga,
+        descripcion: esCombo ? entidad.descripcion : (override?.descripcion || entidad.descripcion_corta),
+        descripcion_larga: esCombo ? null : (override?.descripcion || entidad.descripcion_larga),
         precio: precioEfectivo,
         // Precio fantasía: si está seteado en la landing por el usuario, o en el producto, aparece tachado
         // en la landing indicando el precio original / "antes".
@@ -1508,14 +1562,15 @@ class LandingService {
         stock: esCombo ? (productoParaFiltros?.cantidad_disponible ?? null) : entidad.cantidad_disponible,
         variantes: variantesDto,
         ofertas: ofertasDto,
-        faq: !esCombo ? (mapaFaq.get(entidad.id) || []) : [],
+        faq: !esCombo ? (override?.faq || mapaFaq.get(entidad.id) || []) : [],
+        faq_titulo: !esCombo ? (override?.faq_titulo || entidad.faq_titulo || null) : null,
         productos_incluidos: esCombo ? (entidad.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean) : undefined,
         // Campos de marketing — solo aplica a productos simples (no combos)
         propuesta_valor: !esCombo ? (entidad.propuesta_valor || null) : null,
         beneficios: !esCombo ? (entidad.beneficios || []) : [],
         confianza: !esCombo ? (entidad.confianza || []) : [],
         preguntas_frecuentes: !esCombo ? (entidad.preguntas_frecuentes || []) : [],
-        sobre_este_producto: !esCombo ? (entidad.sobre_este_producto || null) : null,
+        sobre_este_producto: !esCombo ? (override?.descripcion || entidad.sobre_este_producto || null) : null,
         categoria: productoParaFiltros?.categoria?.nombre || null,
         marca: productoParaFiltros?.Marca?.nombre || null,
         etiqueta: item.etiqueta,
@@ -1729,6 +1784,26 @@ class LandingService {
     };
   }
 
+  /**
+   * Personalización de un producto hecha DENTRO de esta landing.
+   *
+   * Vive en Landing.content.productos["<id>"] y pisa lo que trae el catálogo
+   * global. Existe porque un Producto es compartido por todo el inquilino:
+   * si el armador de landings escribiera la descripción/FAQ/relacionados
+   * sobre el Producto, un comercio le cambiaría la ficha a todos los demás
+   * (y encima chocaba con la regla de "solo podés editar productos que
+   * creaste", que dejaba a medio mundo sin poder tocar su propia landing).
+   *
+   * Forma: { descripcion, faq_titulo, faq: [{pregunta,respuesta}],
+   *          relacionados_titulo, relacionados: [productoId] }
+   * Cualquier clave ausente cae al valor del producto.
+   */
+  static overrideDeProducto(contenidoLanding, productoId) {
+    const porProducto = contenidoLanding?.productos;
+    if (!porProducto || typeof porProducto !== 'object' || Array.isArray(porProducto)) return null;
+    return porProducto[String(productoId)] || null;
+  }
+
   static async obtenerProductoPublico(tienda, slug, productoSlug) {
     const landing = await this.obtenerPublica(tienda, slug);
     if (landing === null) return null;
@@ -1754,12 +1829,18 @@ class LandingService {
         attributes: ['id'],
       });
       if (producto) {
+        // Los relacionados elegidos EN ESTA LANDING mandan sobre la curación
+        // global del producto — ver overrideDeProducto().
+        const override = this.overrideDeProducto(landing.content, producto.id);
         const [propias, relacionadosDto] = await Promise.all([
           LandingSeccion.findAll({
             where: { producto_id: producto.id, page_type: 'product', activo: true },
             order: [['orden', 'ASC']],
           }),
-          require('./producto.service').listarRelacionados(producto.id, tienda.inquilino_id).catch(() => relacionados),
+          require('./producto.service').listarRelacionados(producto.id, tienda.inquilino_id, {
+            idsForzados: Array.isArray(override?.relacionados) ? override.relacionados : null,
+            titulo: override?.relacionados_titulo || null,
+          }).catch(() => relacionados),
         ]);
         if (propias.length > 0) {
           seccionesProducto = propias.map(s => this.seccionDto(s));
@@ -1900,6 +1981,19 @@ class LandingService {
     const mapaProducto = new Map(productos.map(p => [p.id, p]));
     const mapaCombo = new Map(combos.map(c => [c.id, c]));
 
+    // Mapa SOLO para chequear stock. Va aparte de `mapaProducto` a
+    // propósito: ese decide qué se puede comprar en esta landing y no puede
+    // crecer, o un visitante podría pedir un producto que no está curado
+    // acá. Este, en cambio, tiene que incluir los componentes de las ofertas
+    // — un order bump ofrece cualquier producto del catálogo, no solo los de
+    // la landing, y sin esto su stock no se validaba contra nada. Los
+    // productos ya vienen cargados en el include de las ofertas, así que no
+    // cuesta ninguna consulta extra.
+    const mapaStock = new Map(mapaProducto);
+    ofertasDisponibles.forEach(o => (o.componentes || []).forEach(c => {
+      if (c.producto && !mapaStock.has(c.producto.id)) mapaStock.set(c.producto.id, c.producto);
+    }));
+
     // content_id público (slug || "<tipo>-<id>") → item real de ESTA
     // landing — mismo identificador que le entrega obtenerPublica() al
     // navegador, así el carrito arma sus items con el mismo id que acá.
@@ -1937,7 +2031,7 @@ class LandingService {
       // La "oferta" tiene una receta completa de componentes (puede tocar
       // más de un producto), por eso usa su propio chequeo en vez del
       // genérico de cantidad simple.
-      const { suficiente, faltantes } = PricingService.validarStock(resuelto, { mapaProducto });
+      const { suficiente, faltantes } = PricingService.validarStock(resuelto, { mapaProducto: mapaStock });
       if (!suficiente && throwOnStockInsuficiente) {
         const primero = faltantes[0];
         const err = new Error(`"${resuelto.nombre_final}" no tiene stock suficiente (disponible: ${primero.disponible}).`);
@@ -1965,6 +2059,12 @@ class LandingService {
         nombre_producto: resuelto.nombre_final,
         cantidad: resuelto.cantidad,
         precio_unitario: resuelto.precio_unitario,
+        // Canal y precio de referencia — con esto la reportería separa la
+        // venta incremental (order bump / combo de checkout) de la venta
+        // normal sin volver a unir contra la oferta, que puede editarse o
+        // darse de baja después (ver migrations/add_precios_order_bump.sql).
+        origen_venta: resuelto.origen_venta,
+        precio_normal: resuelto.precio_normal,
         subtotal: resuelto.subtotal,
         stock_suficiente: suficiente,
       });
@@ -2028,8 +2128,8 @@ class LandingService {
     // itemsResueltos trae content_id/stock_suficiente además de los campos
     // de EnvioItem — se filtran acá para que el nested-create no dependa
     // de que Sequelize ignore claves extra en silencio.
-    const itemsParaEnvio = itemsResueltos.map(({ producto_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, subtotal }) => ({
-      producto_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, subtotal,
+    const itemsParaEnvio = itemsResueltos.map(({ producto_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, precio_normal, origen_venta, subtotal }) => ({
+      producto_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, precio_normal, origen_venta, subtotal,
     }));
 
     const nuevoEnvio = await Envio.create({

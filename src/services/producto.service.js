@@ -437,7 +437,15 @@ class ProductoService {
    * (se llenaba al crear un producto) pero nunca se leía en ningún lado —
    * acá es donde finalmente se resuelve.
    */
-  static async listarRelacionados(id, inquilino_id) {
+  /**
+   * @param {object} [opciones]
+   * @param {number[]|null} [opciones.idsForzados] - relacionados elegidos en
+   *   UNA landing concreta (Landing.content.productos[].relacionados). Si
+   *   vienen, mandan sobre la curación global del producto y sobre el relleno
+   *   automático por categoría: son de esa landing, no del producto.
+   * @param {string|null} [opciones.titulo] - título propio de esa landing.
+   */
+  static async listarRelacionados(id, inquilino_id, { idsForzados = null, titulo = null } = {}) {
     const { ProductoRelacionado, ProductoImagen } = require('../models');
     const producto = await Producto.findOne({
       where: { id, inquilino_id },
@@ -453,7 +461,11 @@ class ProductoService {
     let ids = manuales.map(m => m.producto_relacionado_id);
     let automatico = false;
 
-    if (!ids.length && producto.categoria_id) {
+    // La elección de la landing gana: es una curación explícita del comercio
+    // para esa página, no un default que haya que completar.
+    if (Array.isArray(idsForzados)) {
+      ids = idsForzados.map(Number).filter(Boolean);
+    } else if (!ids.length && producto.categoria_id) {
       automatico = true;
       const porCategoria = await Producto.findAll({
         where: {
@@ -467,7 +479,8 @@ class ProductoService {
       ids = porCategoria.map(p => p.id);
     }
 
-    if (!ids.length) return { titulo: producto.relacionados_titulo || null, automatico: false, items: [] };
+    const tituloFinal = titulo || producto.relacionados_titulo || null;
+    if (!ids.length) return { titulo: tituloFinal, automatico: false, items: [] };
 
     const [productos, imagenes] = await Promise.all([
       Producto.findAll({
@@ -497,7 +510,7 @@ class ProductoService {
       stock: p.cantidad_disponible,
     }));
 
-    return { titulo: producto.relacionados_titulo || null, automatico, items };
+    return { titulo: tituloFinal, automatico, items };
   }
 
   /** Curación manual — reemplaza la lista completa (destroy-all + bulkCreate), mismo criterio que sincronizarFaq. */

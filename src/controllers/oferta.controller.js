@@ -16,7 +16,13 @@ const { rollbackSeguro } = require('../utils/transaction');
 async function listarPorProducto(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const ofertas = await OfertaService.listarPorProducto(req.params.productoId, inquilino_id);
+    // ?soloActivas=true — la baja de una oferta es lógica (activo=false), así
+    // que sin esto quien la acaba de borrar la sigue viendo en la lista y
+    // parece que el borrado no hizo nada. La pantalla de administración de
+    // ofertas sí las quiere todas (muestra un badge "Inactivo"), por eso es
+    // opt-in y no el comportamiento por defecto.
+    const soloActivas = req.query.soloActivas === 'true';
+    const ofertas = await OfertaService.listarPorProducto(req.params.productoId, inquilino_id, { soloActivas });
     return res.json(ofertas);
   } catch (err) {
     console.error('[oferta] listarPorProducto:', err.message);

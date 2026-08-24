@@ -215,7 +215,14 @@ async function actualizar(req, res) {
   } catch (err) {
     await rollbackSeguro(t);
     console.error(err);
-    return res.status(err.message.includes('Validación') ? 422 : (err.message.includes('no encontrado') ? 404 : 500)).json({ 
+    // "No tenés permiso..." es 403, no 500: el frontend necesita poder
+    // distinguir "no te corresponde editar esto" de "se rompió algo" para
+    // no descartar el resto de un guardado que sí funcionó.
+    const status = err.message.includes('Validación') ? 422
+      : err.message.includes('no encontrado') ? 404
+      : err.message.includes('No tienes permiso') ? 403
+      : 500;
+    return res.status(status).json({ 
       message: err.message || 'Error al actualizar producto.',
       errores: err.errores 
     });

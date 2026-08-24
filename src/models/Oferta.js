@@ -16,9 +16,20 @@ const sequelize = require('../config/database');
  * - tipo_contenido: QUÉ contiene la oferta (pack = cantidad del mismo
  *   producto, combo = productos distintos agrupados).
  * - estrategia: CÓMO/DÓNDE se presenta (normal = selector en la ficha del
- *   producto, order_bump = ofrecida en el carrito, upsell = ofrecida cuando
- *   producto_ancla_id ya está en el carrito). Es una dimensión independiente
- *   de tipo_contenido — un combo puede ser upsell, un pack puede ser order_bump.
+ *   producto, order_bump = ofrecida como agregado en el checkout, combo =
+ *   paquete de varios productos a precio fijo ofrecido también en el
+ *   checkout, upsell = ofrecida cuando producto_ancla_id ya está en el
+ *   carrito). Es una dimensión independiente de tipo_contenido — un combo
+ *   puede ser upsell, un pack puede ser order_bump.
+ *
+ * PRECIOS — son DOS, deliberadamente separados (ver migrations/
+ * add_precios_order_bump.sql):
+ * - precio_normal: lo que vale la oferta por su canal habitual. Es el
+ *   precio de referencia de la reportería.
+ * - precio_order_bump: lo que se cobra SOLO si el cliente la acepta como
+ *   order bump en el checkout. Antes había un único `precio`, así que
+ *   configurar un bump pisaba el precio de venta normal de la misma oferta
+ *   y después no se podía saber si una venta salió de un bump o no.
  */
 const Oferta = sequelize.define('Oferta', {
   id: {
@@ -51,10 +62,28 @@ const Oferta = sequelize.define('Oferta', {
     defaultValue: 'pack',
   },
   estrategia: {
-    type: DataTypes.ENUM('normal', 'order_bump', 'upsell'),
+    type: DataTypes.ENUM('normal', 'order_bump', 'upsell', 'combo'),
     allowNull: false,
     defaultValue: 'normal',
   },
+  precio_normal: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    validate: { min: 0 },
+    comment: 'Precio por el canal habitual (ficha del producto / combo). Referencia para reportería.',
+  },
+  precio_order_bump: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    validate: { min: 0 },
+    comment: 'Precio promocional al aceptarla como order bump en el checkout. NULL = no se ofrece como bump.',
+  },
+  /**
+   * Legado: era el único precio antes de separar normal/order_bump. Se
+   * sigue escribiendo en espejo de precio_normal para no romper lecturas
+   * viejas (reportes, integraciones). Nada nuevo debería leerlo.
+   */
   precio: {
     type: DataTypes.INTEGER,
     allowNull: false,

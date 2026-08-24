@@ -26,42 +26,68 @@ class ReporteService {
     const totalPedidos = await Envio.count({ where: whereEnvio });
     const ticketPromedio = totalPedidos > 0 ? Math.round(totalVentas / totalPedidos) : 0;
 
-    // Conteo detallado por estrategia usando raw SQL para evitar problemas de alias
+    // Conteo por canal de venta. Sale de envio_items.origen_venta — un
+    // snapshot escrito al vender — y no de un JOIN contra ofertas_producto:
+    // esa oferta puede editarse, cambiar de estrategia o darse de baja
+    // después, y entonces las ventas históricas se reclasificaban solas.
+    //
+    // Además separa importe de precio normal e importe realmente cobrado:
+    // la diferencia es el descuento que costaron los order bumps, que es lo
+    // que hace falta para saber si el bump conviene o no.
     const sequelize = Envio.sequelize;
-    const [itemsCount] = await sequelize.query(`
-      SELECT 
-        op.estrategia,
-        op.tipo_contenido,
-        COUNT(ei.id) AS cantidad_vendidos
+    const itemsCount = await sequelize.query(`
+      SELECT
+        ei.origen_venta,
+        COUNT(ei.id)                                          AS lineas,
+        COALESCE(SUM(ei.cantidad), 0)                         AS unidades,
+        COALESCE(SUM(ei.subtotal), 0)                         AS importe_cobrado,
+        COALESCE(SUM(COALESCE(ei.precio_normal, ei.precio_unitario) * ei.cantidad), 0) AS importe_normal
       FROM envio_items ei
       INNER JOIN envios e ON ei.envio_id = e.id
-        AND e.estado = 'Entregado'
+      WHERE e.estado = 'Entregado'
         AND e.usuario_id = :usuario_id
-      LEFT JOIN ofertas_producto op ON ei.oferta_id = op.id
-      GROUP BY op.estrategia, op.tipo_contenido
+      GROUP BY ei.origen_venta
     `, {
       replacements: { usuario_id },
       type: sequelize.QueryTypes.SELECT
     });
 
-    let orderBumps = 0;
-    let upsells = 0;
-    let bundles = 0;
+    const porOrigen = {};
+    let importeOrderBump = 0;
+    let descuentoOrderBump = 0;
 
-    (Array.isArray(itemsCount) ? itemsCount : [itemsCount]).filter(Boolean).forEach(row => {
-      const cant = parseInt(row.cantidad_vendidos, 10) || 0;
-      if (row.estrategia === 'order_bump') orderBumps += cant;
-      if (row.estrategia === 'upsell') upsells += cant;
-      if (row.tipo_contenido === 'combo') bundles += cant;
+    (itemsCount || []).filter(Boolean).forEach(row => {
+      const origen = row.origen_venta || 'normal';
+      const unidades = parseInt(row.unidades, 10) || 0;
+      const cobrado = parseInt(row.importe_cobrado, 10) || 0;
+      const normal = parseInt(row.importe_normal, 10) || 0;
+      porOrigen[origen] = {
+        lineas: parseInt(row.lineas, 10) || 0,
+        unidades,
+        importe_cobrado: cobrado,
+        importe_normal: normal,
+        descuento_concedido: normal - cobrado,
+      };
+      if (origen === 'order_bump' || origen === 'combo') {
+        importeOrderBump += cobrado;
+        descuentoOrderBump += normal - cobrado;
+      }
     });
 
     return {
       ventas_totales: totalVentas,
       pedidos: totalPedidos,
       ticket_promedio: ticketPromedio,
-      order_bumps: orderBumps,
-      upsells: upsells,
-      bundles: bundles
+      order_bumps: porOrigen.order_bump?.unidades || 0,
+      upsells: porOrigen.upsell?.unidades || 0,
+      // "bundles" = combos vendidos dentro del checkout.
+      bundles: porOrigen.combo?.unidades || 0,
+      ventas_normales: porOrigen.normal?.unidades || 0,
+      // Cuánto facturaron las ofertas de checkout y cuánto costó el
+      // descuento promocional con el que se consiguió esa facturación.
+      importe_incremental: importeOrderBump,
+      descuento_incremental: descuentoOrderBump,
+      por_origen: porOrigen,
     };
   }
 

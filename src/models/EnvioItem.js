@@ -39,10 +39,21 @@ const EnvioItem = sequelize.define('EnvioItem', {
     allowNull: false,
     defaultValue: 1,
   },
+  origen_venta: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'normal',
+    comment: 'Canal por el que se vendió esta línea: normal | order_bump | upsell | combo. Snapshot, no se recalcula uniendo contra la oferta (que puede editarse o darse de baja después).',
+  },
   precio_unitario: {
     type: DataTypes.INTEGER,
     allowNull: false,
     defaultValue: 0,
+  },
+  precio_normal: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Precio unitario que habría tenido esta línea por el canal normal. Contra precio_unitario da el descuento concedido por el order bump.',
   },
   subtotal: {
     type: DataTypes.INTEGER,

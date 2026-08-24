@@ -21,6 +21,14 @@
 
 const { calcularPrecioEfectivo } = require('../utils/precio');
 
+/**
+ * Canales por los que puede venderse una línea. Los de checkout
+ * ('order_bump', 'combo') son los únicos que pueden cobrar
+ * Oferta.precio_order_bump en vez de Oferta.precio_normal.
+ */
+const ORIGENES = ['normal', 'order_bump', 'upsell', 'combo'];
+const ORIGENES_CHECKOUT = ['order_bump', 'combo'];
+
 class PricingService {
   /**
    * base = precio propio de la vendedora si lo fijó, si no el precio de
@@ -69,6 +77,34 @@ class PricingService {
       o.estrategia === 'normal' &&
       (o.componentes || []).some(c => c.producto_id === productoAnclaId && c.cantidad === cantidad)
     ) || null;
+  }
+
+  /**
+   * De qué canal viene esta línea. Sale de cómo está configurada la oferta
+   * (Oferta.estrategia), nunca de lo que declare el cliente: el checkout es
+   * un endpoint público, y dejar que el navegador dijera "esto es un order
+   * bump" sería dejarle elegir el precio promocional de cualquier oferta.
+   */
+  static resolverOrigen(oferta) {
+    return ORIGENES.includes(oferta?.estrategia) ? oferta.estrategia : 'normal';
+  }
+
+  /**
+   * Los DOS precios de una oferta (ver Oferta.js). `precio_normal` es el de
+   * su canal habitual; `precio_order_bump` es el promocional que solo se
+   * cobra si se aceptó dentro del checkout. Sin precio de bump cargado se
+   * cobra el normal — nunca 0, que sería regalar el producto porque el
+   * usuario dejó un campo vacío.
+   *
+   * El fallback a `precio` cubre ofertas anteriores a la migración que
+   * separó ambos precios (migrations/add_precios_order_bump.sql).
+   */
+  static precioDeOferta(oferta, origenVenta) {
+    const normal = parseFloat(oferta.precio_normal ?? oferta.precio) || 0;
+    if (!ORIGENES_CHECKOUT.includes(origenVenta)) return { aplicado: normal, normal };
+    const bump = oferta.precio_order_bump;
+    const aplicado = (bump === null || bump === undefined) ? normal : (parseFloat(bump) || 0);
+    return { aplicado, normal };
   }
 
   /**
@@ -139,14 +175,25 @@ class PricingService {
     }
 
     let stockFinal = stockDisponible;
+    // Canal de esta línea. Se registra en EnvioItem.origen_venta para que la
+    // reportería pueda separar venta normal de venta incremental sin volver
+    // a unir contra la oferta (que puede cambiar después).
+    let origenVenta = 'normal';
+    let precioNormalUnitario = precioFinal;
+
     if (ofertaResuelta) {
-      const precioOferta = parseFloat(ofertaResuelta.precio) || 0;
-      precioFinal = ofertaEsAutoMatch ? precioOferta / cantidadFinal : precioOferta;
+      origenVenta = this.resolverOrigen(ofertaResuelta);
+      const { aplicado, normal } = this.precioDeOferta(ofertaResuelta, origenVenta);
+      // Auto-match: oferta.precio YA es el total de esa cantidad exacta, no
+      // el de un bulto — ver el comentario de arriba.
+      precioFinal = ofertaEsAutoMatch ? aplicado / cantidadFinal : aplicado;
+      precioNormalUnitario = ofertaEsAutoMatch ? normal / cantidadFinal : normal;
       nombreFinal = `${entidad.nombre} — ${ofertaResuelta.nombre}`;
     } else if (!esCombo && varianteId) {
       varianteResuelta = variantesDelProducto.find(v => v.id === Number(varianteId));
       if (varianteResuelta) {
         precioFinal = this.calcularPrecioVariante(base, varianteResuelta.precio_diferencial, precioMinimo);
+        precioNormalUnitario = precioFinal;
         stockFinal = varianteResuelta.stock;
         nombreFinal = `${entidad.nombre} (${varianteResuelta.nombre})`;
       }
@@ -159,6 +206,11 @@ class PricingService {
       nombre_final: nombreFinal,
       precio_lista: precioLista,
       precio_unitario: precioFinal,
+      // Lo que habría costado esta misma línea por el canal normal. Igual a
+      // precio_unitario salvo cuando el order bump aplicó su precio
+      // promocional — la diferencia es el descuento concedido.
+      precio_normal: precioNormalUnitario,
+      origen_venta: origenVenta,
       subtotal: precioFinal * cantidadFinal,
       // Para el chequeo de stock del producto ancla mismo (no de los
       // componentes de una oferta, ver validarStock).
