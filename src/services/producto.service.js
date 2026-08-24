@@ -53,6 +53,11 @@ class ProductoService {
     // precio_minimo: piso de precio que solo define el admin — invisible e
     // inmodificable para el rol 'usuario', incluso en sus propios productos.
     if (!esAdmin) delete data.precio_minimo;
+    // Misma regla que actualizar() y que los endpoints de imágenes. Se
+    // expone resuelta para que el frontend no tenga que volver a deducirla
+    // (y pueda esconder lo que no se va a poder guardar, en vez de dejar
+    // intentarlo y fallar).
+    data.puede_editar = esAdmin || (usuarioId != null && data.creado_por === usuarioId);
     return data;
   }
 

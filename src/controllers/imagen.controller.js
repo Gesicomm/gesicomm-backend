@@ -33,6 +33,30 @@ const upload = multer({
   },
 });
 
+/**
+ * Las imágenes de un Producto son del producto, no de quien las sube: el
+ * catálogo es compartido por todo el inquilino, así que cambiarlas se las
+ * cambia a cualquier otro comercio que venda lo mismo. Se aplica la misma
+ * regla que ProductoService.actualizar — admin, o quien lo creó.
+ *
+ * Devuelve el producto si puede seguir, o null habiendo ya respondido.
+ */
+async function productoEditablePorUsuario(req, res) {
+  const producto = await Producto.findOne({
+    where: { id: req.params.id, inquilino_id: req.usuario.tenantId },
+  });
+  if (!producto) {
+    res.status(404).json({ message: 'Producto no encontrado.' });
+    return null;
+  }
+  const esAdmin = req.usuario.rol === 'administrador';
+  if (!esAdmin && producto.creado_por !== req.usuario.id) {
+    res.status(403).json({ message: 'No tienes permiso para modificar las imágenes de un producto que no creaste.' });
+    return null;
+  }
+  return producto;
+}
+
 function subirImagenMiddleware(req, res, next) {
   upload.single('imagen')(req, res, (err) => {
     if (!err) return next();
@@ -50,10 +74,12 @@ async function subirImagen(req, res) {
 
     if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
 
-    const producto = await Producto.findOne({ where: { id, inquilino_id } });
+    const producto = await productoEditablePorUsuario(req, res);
     if (!producto) {
+      // Ya respondió 404/403. El archivo temporal se borra igual: multer lo
+      // dejó escrito en disco antes de llegar hasta acá.
       await ImagenService.borrarArchivoSeguro(req.file.path);
-      return res.status(404).json({ message: 'Producto no encontrado.' });
+      return;
     }
 
     const imagen = await ImagenService.subir(id, inquilino_id, req.file, req.body);
@@ -67,6 +93,7 @@ async function subirImagen(req, res) {
 async function actualizarImagen(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
+    if (!await productoEditablePorUsuario(req, res)) return;
     const imagen = await ImagenService.actualizar(req.params.imgId, req.params.id, inquilino_id, req.body);
     return res.json(imagen);
   } catch (err) {
@@ -79,6 +106,7 @@ async function actualizarImagen(req, res) {
 async function eliminarImagen(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
+    if (!await productoEditablePorUsuario(req, res)) return;
     await ImagenService.eliminar(req.params.imgId, req.params.id, inquilino_id);
     return res.json({ message: 'Imagen eliminada.' });
   } catch (err) {
