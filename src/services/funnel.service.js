@@ -35,6 +35,10 @@ const CLAVES_ESTRUCTURALES = [
 const MAX_BENEFICIOS = 6;
 const MAX_CONFIANZA = 3;
 const MAX_OPINIONES = 12;
+// Un embudo ofrece pocas cosas en el checkout a propósito: cada opción
+// extra es una decisión más entre el comprador y la compra. "Venta con
+// complemento" usa exactamente una.
+const MAX_OFERTAS_CHECKOUT = 3;
 
 // Set cerrado: el comercio elige de esta lista, no escribe un icono libre
 // (un icono arbitrario rompería el render y permitiría inyectar markup).
@@ -87,6 +91,19 @@ class FunnelService {
         .filter(c => c && ICONOS_CONFIANZA.has(c.icono) && String(c.texto || '').trim())
         .slice(0, MAX_CONFIANZA)
         .map(c => ({ icono: c.icono, texto: String(c.texto).trim().slice(0, 60) }));
+    }
+    // Ofertas que se ofrecen DENTRO del checkout (order bump / combo) — es
+    // la lista de ids que lee FunnelCheckout.jsx. El complemento del embudo
+    // "Venta con complemento" vive acá: no es una sección de la página, es
+    // una regla del recorrido de compra. Se guardan solo ids enteros; qué
+    // producto/precio tiene cada oferta lo resuelve el backend contra
+    // Oferta en el checkout, nunca este JSON.
+    if (content.ofertas_producto_vista !== undefined) {
+      const lista = Array.isArray(content.ofertas_producto_vista) ? content.ofertas_producto_vista : [];
+      out.ofertas_producto_vista = lista
+        .map(Number)
+        .filter(n => Number.isInteger(n) && n > 0)
+        .slice(0, MAX_OFERTAS_CHECKOUT);
     }
     return out;
   }

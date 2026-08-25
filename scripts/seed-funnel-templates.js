@@ -30,6 +30,26 @@ const TEMPLATES = [
       modo: 'claro',
     },
   },
+  {
+    name: 'Venta con complemento',
+    slug: 'venta-complemento',
+    description: 'Aumentá el valor de cada compra. Vendé tu producto principal y ofrecé un complemento relacionado durante el proceso de compra.',
+    // La página es la MISMA que Venta Directa: el complemento no es una
+    // sección del template, es una regla del recorrido de compra que se
+    // ofrece en el checkout (ver FunnelCheckout.jsx). Por eso comparte
+    // funnel_type y schema vacío — lo que cambia es la estrategia, no el
+    // layout.
+    funnel_type: 'direct_sale',
+    kind: 'funnel',
+    version: 1,
+    status: 'published',
+    schema: [],
+    design_tokens: {
+      acento: '#111827',
+      acento_secundario: '#FFFFFF',
+      modo: 'claro',
+    },
+  },
 ];
 
 (async () => {

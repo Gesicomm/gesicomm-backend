@@ -1809,7 +1809,14 @@ class LandingService {
     if (landing === null) return null;
     if (!landing.disponible) return landing;
 
-    const item = (landing.items || []).find(i => i.content_id === productoSlug);
+    // catalogo_items, no items: en las plantillas rígidas `items` son solo
+    // los destacados del home y `catalogo_items` el catálogo completo (ver
+    // obtenerPublica). Buscar acá contra `items` devolvía 404 en la página de
+    // cualquier producto que estuviera en el catálogo sin estar destacado —
+    // justo los que el catálogo linkea. mostrar_en_inicio decide dónde
+    // aparece un producto, nunca si su página existe.
+    const catalogoCompleto = landing.catalogo_items?.length ? landing.catalogo_items : (landing.items || []);
+    const item = catalogoCompleto.find(i => i.content_id === productoSlug);
     if (!item) return null;
 
     // Diseño propio del producto (ver LandingSeccion.producto_id): es una
