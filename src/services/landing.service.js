@@ -1639,7 +1639,19 @@ class LandingService {
       // Contenido propio del embudo (propuesta de valor, CTA, franja de
       // confianza) — ver funnel.service.js#normalizarContent. En el resto
       // de las landings va vacío.
-      content: esFunnel ? (landing.content || {}) : undefined,
+      // Un funnel publica su `content` entero: ahí vive la estructura de
+      // bloques del armador que el navegador tiene que renderizar.
+      //
+      // Una plantilla rígida NO lo publica (es estado del editor: overrides
+      // por producto, borradores) — pero sí necesita la configuración de
+      // ofertas de checkout. Sin esto `ofertas_carrito`/`ofertas_producto_
+      // vista` nunca llegaban al navegador en plantillas rígidas, así que el
+      // order bump no aparecía jamás en el checkout ni como sugerencia del
+      // carrito, por más que estuviera bien configurado y activo.
+      content: esFunnel ? (landing.content || {}) : {
+        ofertas_carrito: landing.content?.ofertas_carrito || [],
+        ofertas_producto_vista: landing.content?.ofertas_producto_vista || [],
+      },
       titulo: landing.titulo,
       descripcion: landing.descripcion,
       // Identidad/contacto propios de los templates rígidos — ver
