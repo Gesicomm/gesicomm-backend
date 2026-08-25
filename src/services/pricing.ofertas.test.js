@@ -36,6 +36,9 @@ const BUMP = {
   componentes: [{ producto_id: 178, cantidad: 1 }],
 };
 
+// Combo: se elige en la FICHA del producto (no en el checkout). Conserva un
+// precio_order_bump de datos viejos a propósito, para verificar que ya no se
+// cobra.
 const COMBO_CHECKOUT = {
   id: 3,
   estrategia: 'combo',
@@ -75,9 +78,12 @@ describe('precioDeOferta — los dos precios de una oferta', () => {
     expect(PricingService.precioDeOferta(BUMP, 'normal')).toEqual({ aplicado: 60000, normal: 60000 });
   });
 
-  test('por canal de checkout cobra el promocional', () => {
+  test('solo el order bump cobra el promocional', () => {
     expect(PricingService.precioDeOferta(BUMP, 'order_bump')).toEqual({ aplicado: 5000, normal: 60000 });
-    expect(PricingService.precioDeOferta(COMBO_CHECKOUT, 'combo')).toEqual({ aplicado: 120000, normal: 150000 });
+    // Un combo se elige en la ficha del producto, antes de comprar: siempre
+    // se cobra su precio normal, aunque tuviera un promocional guardado de
+    // cuando los combos vivían en el checkout.
+    expect(PricingService.precioDeOferta(COMBO_CHECKOUT, 'combo')).toEqual({ aplicado: 150000, normal: 150000 });
   });
 
   test('sin promocional cargado cae al normal, no a 0', () => {
@@ -125,10 +131,12 @@ describe('resolverPrecioItem — el bump no puede pisar el precio normal', () =>
     expect(principal.subtotal + bump.subtotal).toBe(227222);
   });
 
-  test('un combo de checkout se cobra a su precio promocional', () => {
+  test('un combo se cobra a su precio normal, no al promocional', () => {
     const r = resolver({ ofertaId: COMBO_CHECKOUT.id });
-    expect(r.precio_unitario).toBe(120000);
+    expect(r.precio_unitario).toBe(150000);
     expect(r.precio_normal).toBe(150000);
+    // El origen igual queda registrado: la reportería sigue pudiendo separar
+    // una venta por combo de una venta suelta.
     expect(r.origen_venta).toBe('combo');
   });
 
@@ -163,5 +171,53 @@ describe('resolverPrecioItem — el bump no puede pisar el precio normal', () =>
     expect(r.precio_unitario).toBe(232222);
     expect(r.precio_normal).toBe(232222);
     expect(r.origen_venta).toBe('normal');
+  });
+});
+
+describe('ofertaVigente — activo dice si existe, las fechas si está corriendo', () => {
+  const hoy = '2026-09-15';
+  const base = { activo: true, fecha_inicio: null, fecha_fin: null };
+
+  test('sin fechas, siempre vigente', () => {
+    expect(PricingService.ofertaVigente(base, hoy)).toBe(true);
+  });
+
+  test('inactiva nunca es vigente, tenga las fechas que tenga', () => {
+    expect(PricingService.ofertaVigente({ ...base, activo: false }, hoy)).toBe(false);
+  });
+
+  test('antes de empezar y después de terminar, no', () => {
+    expect(PricingService.ofertaVigente({ ...base, fecha_inicio: '2026-09-16' }, hoy)).toBe(false);
+    expect(PricingService.ofertaVigente({ ...base, fecha_fin: '2026-09-14' }, hoy)).toBe(false);
+  });
+
+  test('los extremos entran (una promo "hasta el 15" vale todo el 15)', () => {
+    expect(PricingService.ofertaVigente({ ...base, fecha_inicio: hoy }, hoy)).toBe(true);
+    expect(PricingService.ofertaVigente({ ...base, fecha_fin: hoy }, hoy)).toBe(true);
+  });
+
+  test('acepta fechas con hora, comparando solo el día', () => {
+    expect(PricingService.ofertaVigente({ ...base, fecha_fin: '2026-09-15T00:00:00.000Z' }, hoy)).toBe(true);
+  });
+
+  test('una oferta vencida no se cobra ni mandando su oferta_id a mano', () => {
+    // resolverPrecioItem compara contra la fecha real de hoy, así que la
+    // ventana tiene que estar en el pasado de verdad para no depender de
+    // cuándo se corra el test.
+    const vencido = { ...PACK_NORMAL, fecha_inicio: '2020-01-01', fecha_fin: '2020-01-31' };
+    const r = PricingService.resolverPrecioItem({
+      entidad: PRODUCTO, esCombo: false, cantidad: 1, ofertaId: PACK_NORMAL.id,
+      ofertasDelProducto: [vencido],
+    });
+    expect(r.oferta_aplicada).toBeNull();
+    expect(r.precio_unitario).toBe(222222);
+  });
+
+  test('una oferta futura tampoco se aplica todavía', () => {
+    const futura = { ...PACK_NORMAL, fecha_inicio: '2099-01-01' };
+    const r = PricingService.resolverPrecioItem({
+      entidad: PRODUCTO, esCombo: false, cantidad: 2, ofertasDelProducto: [futura],
+    });
+    expect(r.oferta_aplicada).toBeNull();
   });
 });

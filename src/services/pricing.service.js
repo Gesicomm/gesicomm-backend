@@ -27,7 +27,10 @@ const { calcularPrecioEfectivo } = require('../utils/precio');
  * Oferta.precio_order_bump en vez de Oferta.precio_normal.
  */
 const ORIGENES = ['normal', 'order_bump', 'upsell', 'combo'];
-const ORIGENES_CHECKOUT = ['order_bump', 'combo'];
+// Solo el order bump se acepta dentro del checkout y cobra el precio
+// promocional. Un combo se elige en la ficha del producto (antes de
+// comprar) y se cobra a su precio_normal — ver Oferta.js.
+const ORIGENES_CHECKOUT = ['order_bump'];
 
 class PricingService {
   /**
@@ -77,6 +80,25 @@ class PricingService {
       o.estrategia === 'normal' &&
       (o.componentes || []).some(c => c.producto_id === productoAnclaId && c.cantidad === cantidad)
     ) || null;
+  }
+
+  /**
+   * ¿La oferta está corriendo hoy? `activo` dice si existe; las fechas dicen
+   * si está vigente. Se compara en fechas locales (YYYY-MM-DD), no en
+   * timestamps: una promo "hasta el 30" vale todo el día 30 en Paraguay, y
+   * comparar contra un Date con hora la cortaría a medianoche UTC.
+   *
+   * @param {string} [hoy] - YYYY-MM-DD; por defecto la fecha de hoy en Paraguay.
+   */
+  static ofertaVigente(oferta, hoy) {
+    if (!oferta) return false;
+    if (oferta.activo === false) return false;
+    const dia = hoy || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Asuncion' });
+    const desde = oferta.fecha_inicio ? String(oferta.fecha_inicio).slice(0, 10) : null;
+    const hasta = oferta.fecha_fin ? String(oferta.fecha_fin).slice(0, 10) : null;
+    if (desde && dia < desde) return false;
+    if (hasta && dia > hasta) return false;
+    return true;
   }
 
   /**
@@ -165,11 +187,14 @@ class PricingService {
     //    — no hay "bultos" que multiplicar.
     let ofertaEsAutoMatch = false;
     if (!esCombo) {
+      // Solo se consideran las que están corriendo hoy: una promo vencida no
+      // se puede cobrar aunque el cliente mande su oferta_id a mano.
+      const vigentes = ofertasDelProducto.filter(o => this.ofertaVigente(o));
       if (ofertaId) {
-        const candidata = ofertasDelProducto.find(o => o.id === Number(ofertaId));
+        const candidata = vigentes.find(o => o.id === Number(ofertaId));
         if (candidata && candidata.producto_ancla_id === entidad.id) ofertaResuelta = candidata;
       } else {
-        ofertaResuelta = this.mejorOfertaParaCantidad(entidad.id, cantidadFinal, ofertasDelProducto);
+        ofertaResuelta = this.mejorOfertaParaCantidad(entidad.id, cantidadFinal, vigentes);
         ofertaEsAutoMatch = !!ofertaResuelta;
       }
     }

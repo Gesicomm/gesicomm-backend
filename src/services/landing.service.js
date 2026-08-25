@@ -1320,7 +1320,11 @@ class LandingService {
     ]);
 
     const mapaOfertas = new Map(); // producto_ancla_id -> Oferta[]
-    ofertas.forEach(o => {
+    // Solo las que están corriendo hoy: `activo` ya viene filtrado por la
+    // consulta, pero una oferta con ventana de fechas puede estar activa y
+    // aun así no corresponder todavía (o haber vencido). Ver
+    // PricingService.ofertaVigente.
+    ofertas.filter(o => PricingService.ofertaVigente(o)).forEach(o => {
       const lista = mapaOfertas.get(o.producto_ancla_id) || [];
       lista.push(o);
       mapaOfertas.set(o.producto_ancla_id, lista);
@@ -1493,10 +1497,13 @@ class LandingService {
         // casilla del checkout no tendría nombre ni imagen que mostrar. Se
         // exponen solo nombre/imagen, nunca cantidades ni la receta completa
         // (mismo criterio de privacidad que "unidades" arriba).
-        const esOfertaCheckout = o.estrategia === 'order_bump' || o.estrategia === 'combo';
+        // Un order bump se ofrece DENTRO del checkout; un combo se elige
+        // antes, en la ficha del producto. Los dos necesitan mostrar qué
+        // traen, pero solo el bump cobra el precio promocional.
+        const esOrderBump = o.estrategia === 'order_bump';
         let productoComplementario = null;
         let productosIncluidos = [];
-        if (esOfertaCheckout) {
+        if (esOrderBump || o.estrategia === 'combo') {
           const resolverProducto = (productoId) => {
             const prod = mapaProducto.get(productoId);
             if (!prod) return null;
@@ -1529,8 +1536,12 @@ class LandingService {
           precio_order_bump: precioBump,
           // Lo que se cobra realmente si el visitante la acepta por su canal
           // — el frontend muestra ESTO, no adivina cuál de los dos aplica.
-          precio_efectivo: esOfertaCheckout ? (precioBump ?? precioNormal) : precioNormal,
+          precio_efectivo: esOrderBump ? (precioBump ?? precioNormal) : precioNormal,
           descripcion: o.descripcion || null,
+          // Imagen propia de la oferta; si no tiene, el frontend cae a la del
+          // producto (no se resuelve acá para no inventar una que no eligió).
+          imagen: o.imagen_url || null,
+          vigencia: { desde: o.fecha_inicio || null, hasta: o.fecha_fin || null },
           unidades,
           producto_complementario: productoComplementario,
           productos_incluidos: productosIncluidos,

@@ -21,9 +21,9 @@ describe('normalizarPrecios', () => {
       .toEqual({ precio_normal: 60000, precio_order_bump: 5000, precio: 60000 });
   });
 
-  test('un combo de checkout también admite promocional propio', () => {
+  test('un combo NO guarda promocional: se elige en la ficha y se vende al normal', () => {
     expect(OfertaService.normalizarPrecios({ estrategia: 'combo', precio_normal: 150000, precio_order_bump: 120000 }))
-      .toEqual({ precio_normal: 150000, precio_order_bump: 120000, precio: 150000 });
+      .toEqual({ precio_normal: 150000, precio_order_bump: null, precio: 150000 });
   });
 
   test('editar el promocional NO toca el precio normal ya guardado', () => {
@@ -90,11 +90,38 @@ describe('validarPayload', () => {
     expect(() => OfertaService.validarPayload({ ...base, estrategia: 'nope' })).toThrow(/estrategia inválida/);
   });
 
-  test('rechaza un promocional negativo', () => {
-    expect(() => OfertaService.validarPayload({ ...base, precio_order_bump: -1 })).toThrow(/order bump no puede ser negativo/);
+  test('rechaza un promocional negativo o en 0', () => {
+    expect(() => OfertaService.validarPayload({ ...base, precio_order_bump: -1 })).toThrow(/mayor a 0/);
+    expect(() => OfertaService.validarPayload({ ...base, precio_order_bump: 0 })).toThrow(/mayor a 0/);
   });
 
   test('acepta promocional null', () => {
     expect(() => OfertaService.validarPayload({ ...base, precio_order_bump: null })).not.toThrow();
+  });
+
+  test('el precio de la oferta tiene que ser mayor a 0', () => {
+    expect(() => OfertaService.validarPayload({ ...base, precio_normal: 0 })).toThrow(/mayor a 0/);
+    expect(() => OfertaService.validarPayload({ ...base, precio_normal: -1 })).toThrow(/mayor a 0/);
+    expect(() => OfertaService.validarPayload({ ...base, precio_normal: 1 })).not.toThrow();
+  });
+
+  test('la fecha de fin no puede ser anterior a la de inicio', () => {
+    expect(() => OfertaService.validarPayload({ ...base, fecha_inicio: '2026-09-10', fecha_fin: '2026-09-01' }))
+      .toThrow(/fecha de fin/);
+    expect(() => OfertaService.validarPayload({ ...base, fecha_inicio: '2026-09-01', fecha_fin: '2026-09-10' })).not.toThrow();
+    // Un solo extremo, o ninguno, es válido: significa "sin límite por ese lado".
+    expect(() => OfertaService.validarPayload({ ...base, fecha_inicio: '2026-09-01' })).not.toThrow();
+    expect(() => OfertaService.validarPayload({ ...base, fecha_fin: '2026-09-01' })).not.toThrow();
+  });
+});
+
+describe('normalizarExtras', () => {
+  test('vacío se guarda como NULL, no como cadena vacía', () => {
+    expect(OfertaService.normalizarExtras({ imagen_url: '  ', fecha_inicio: '', fecha_fin: '' }))
+      .toEqual({ imagen_url: null, fecha_inicio: null, fecha_fin: null });
+  });
+
+  test('lo que no viene en el payload no se toca', () => {
+    expect(OfertaService.normalizarExtras({ fecha_fin: '2026-12-31' })).toEqual({ fecha_fin: '2026-12-31' });
   });
 });

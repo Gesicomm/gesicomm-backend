@@ -13,14 +13,24 @@
 const { Oferta, OfertaComponente, Producto, ProductoImagen } = require('../models');
 
 const TIPOS_CONTENIDO = ['pack', 'combo'];
+// 'combo' sigue aceptado por compatibilidad con una fila legacy (ya
+// inactiva) de cuando existió como oferta de checkout multi-producto. Nada
+// en el frontend actual permite crear una nueva: los paquetes son
+// estrategia='normal' (mismo producto, más unidades) y solo el order_bump
+// vive en el checkout. Ver ProductCheckoutOfertas.jsx.
 const ESTRATEGIAS = ['normal', 'order_bump', 'upsell', 'combo'];
 
 /**
  * Estrategias que se presentan DENTRO del checkout (no en la ficha del
  * producto). Son las únicas que pueden tener precio_order_bump y las
  * únicas que la reportería cuenta como "venta incremental".
+ *
+ * El 'combo' NO está acá: se elige ANTES de comprar, en la ficha del
+ * producto, como una forma más de comprarlo ("1 unidad / 2 x precio
+ * especial / 3 x precio especial"). Por eso se vende siempre a su
+ * precio_normal y no tiene precio promocional de checkout.
  */
-const ESTRATEGIAS_CHECKOUT = ['order_bump', 'combo'];
+const ESTRATEGIAS_CHECKOUT = ['order_bump'];
 
 class OfertaService {
 
@@ -76,9 +86,15 @@ class OfertaService {
     if (estrategia !== undefined && !ESTRATEGIAS.includes(estrategia)) {
       throw new Error(`estrategia inválida. Valores permitidos: ${ESTRATEGIAS.join(', ')}.`);
     }
-    if (parseFloat(precio_normal) < 0) throw new Error('El precio normal de la oferta no puede ser negativo.');
-    if (precio_order_bump !== null && precio_order_bump !== undefined && parseFloat(precio_order_bump) < 0) {
-      throw new Error('El precio de order bump no puede ser negativo.');
+    // Estrictamente mayor a 0: una oferta a precio 0 no es una promoción, es
+    // regalar el producto — y casi siempre viene de un campo que quedó vacío
+    // (pasó de verdad: se guardaron ofertas en 0 y se mostraban sin precio).
+    if (!(parseFloat(precio_normal) > 0)) throw new Error('El precio de la oferta tiene que ser mayor a 0.');
+    if (precio_order_bump !== null && precio_order_bump !== undefined && !(parseFloat(precio_order_bump) > 0)) {
+      throw new Error('El precio de order bump tiene que ser mayor a 0.');
+    }
+    if (payload.fecha_inicio && payload.fecha_fin && String(payload.fecha_fin) < String(payload.fecha_inicio)) {
+      throw new Error('La fecha de fin no puede ser anterior a la de inicio.');
     }
   }
 
@@ -129,6 +145,20 @@ class OfertaService {
   }
 
   /**
+   * Campos opcionales de presentación y vigencia. Vacío se guarda como NULL,
+   * no como cadena vacía: NULL en fecha_inicio/fecha_fin significa "sin
+   * límite por ese lado" (ver PricingService.ofertaVigente), y '' rompería
+   * esa lectura.
+   */
+  static normalizarExtras(payload) {
+    const extras = {};
+    if (payload.imagen_url !== undefined) extras.imagen_url = payload.imagen_url?.trim() || null;
+    if (payload.fecha_inicio !== undefined) extras.fecha_inicio = payload.fecha_inicio || null;
+    if (payload.fecha_fin !== undefined) extras.fecha_fin = payload.fecha_fin || null;
+    return extras;
+  }
+
+  /**
    * Lista las ofertas activas (o todas, si se pide) de un producto, con sus
    * componentes y el costo/margen calculado en vivo contra el catálogo
    * actual — esto es solo informativo para la pantalla de administración,
@@ -175,6 +205,9 @@ class OfertaService {
 
     const precioBump = oferta.precio_order_bump === null || oferta.precio_order_bump === undefined
       ? null : parseFloat(oferta.precio_order_bump) || 0;
+    // Para la pantalla de administración: distinguir "existe" (activo) de
+    // "está corriendo hoy" (vigente), que con fechas son cosas distintas.
+    oferta.vigente = require('./pricing.service').ofertaVigente(oferta);
     oferta.ganancia_order_bump = precioBump !== null ? precioBump - costo : null;
     oferta.margen_order_bump_pct = precioBump > 0
       ? Number((((precioBump - costo) / precioBump) * 100).toFixed(1)) : null;
@@ -207,6 +240,7 @@ class OfertaService {
       tipo_contenido: tipoContenido,
       estrategia,
       ...precios,
+      ...this.normalizarExtras(payload),
       descripcion: payload.descripcion?.trim() || null,
       activo: payload.activo === undefined ? true : !!payload.activo,
       orden: payload.orden || 0,
@@ -230,6 +264,10 @@ class OfertaService {
       nombre: payload.nombre ?? oferta.nombre,
       tipo_contenido: payload.tipo_contenido,
       estrategia: payload.estrategia,
+      // Las fechas se validan una contra otra, así que hay que mirar la
+      // combinación resultante y no solo lo que vino en este payload.
+      fecha_inicio: payload.fecha_inicio !== undefined ? payload.fecha_inicio : oferta.fecha_inicio,
+      fecha_fin: payload.fecha_fin !== undefined ? payload.fecha_fin : oferta.fecha_fin,
       ...precios,
     });
 
@@ -246,7 +284,7 @@ class OfertaService {
     // valores actuales cuando el payload no los trae, y borrar
     // precio_order_bump al pasar la oferta a una estrategia que no es de
     // checkout es parte de lo que tiene que pasar.
-    Object.assign(updates, precios);
+    Object.assign(updates, precios, this.normalizarExtras(payload));
     if (payload.descripcion !== undefined) updates.descripcion = payload.descripcion?.trim() || null;
     if (payload.activo !== undefined) updates.activo = !!payload.activo;
     if (payload.orden !== undefined) updates.orden = payload.orden;
