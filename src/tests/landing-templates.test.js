@@ -20,6 +20,7 @@ describe('Funnels & Landing Templates Unit Tests', () => {
   let testTiendaId;
   let testProductoId;
   let testTemplateId;
+  let testUsuarioId;
 
   beforeAll(async () => {
     // 1. Crear Inquilino de prueba
@@ -39,6 +40,7 @@ describe('Funnels & Landing Templates Unit Tests', () => {
       correo_electronico: 'test' + Date.now() + '@jest.com',
       contrasena_hash: '123',
     });
+    testUsuarioId = user.id;
 
     // 2. Crear Tienda de prueba
     const tienda = await Tienda.create({
@@ -104,6 +106,7 @@ describe('Funnels & Landing Templates Unit Tests', () => {
 
   test('should fail to instantiate if templateId is missing', async () => {
     const req = {
+      usuario: { id: testUsuarioId, tenantId: testInquilinoId },
       inquilino: { id: testInquilinoId },
       params: { id: testProductoId },
       body: {} // Missing templateId
@@ -118,6 +121,7 @@ describe('Funnels & Landing Templates Unit Tests', () => {
 
   test('should successfully instantiate a landing from a template (flujo normal)', async () => {
     const req = {
+      usuario: { id: testUsuarioId, tenantId: testInquilinoId },
       inquilino: { id: testInquilinoId },
       params: { id: testProductoId },
       body: { templateId: testTemplateId }
@@ -154,6 +158,7 @@ describe('Funnels & Landing Templates Unit Tests', () => {
     });
 
     const req = {
+      usuario: { id: testUsuarioId, tenantId: testInquilinoId },
       inquilino: { id: testInquilinoId },
       params: { id: testProductoId },
       body: { templateId: tpl2.id }
@@ -178,6 +183,7 @@ describe('Funnels & Landing Templates Unit Tests', () => {
 
   test('should fail if product does not exist or belongs to another inquilino (caso borde)', async () => {
     const req = {
+      usuario: { id: testUsuarioId, tenantId: testInquilinoId },
       inquilino: { id: testInquilinoId },
       params: { id: 999999 }, // No existe
       body: { templateId: testTemplateId }

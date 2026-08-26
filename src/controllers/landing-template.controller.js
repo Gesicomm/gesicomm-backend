@@ -10,7 +10,7 @@ exports.listar = async (req, res, next) => {
     const where = { status: 'published' };
     // ?kind=rigido → los 3 templates fijos (Fitness/Beauty/Tech) para el
     // selector nuevo. Sin query param devuelve todo, igual que antes.
-    if (req.query.kind === 'rigido' || req.query.kind === 'flexible') {
+    if (req.query?.kind === 'rigido' || req.query?.kind === 'flexible') {
       where.kind = req.query.kind;
     }
     const templates = await LandingTemplate.findAll({

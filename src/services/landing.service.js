@@ -1519,6 +1519,13 @@ class LandingService {
             : (o.componentes || []).filter(c => c.producto_id !== entidad.id);
           productosIncluidos = componentes.map(c => resolverProducto(c.producto_id)).filter(Boolean);
           productoComplementario = productosIncluidos[0] || null;
+          // Cuántas unidades del complemento entran al aceptar el bump. No es
+          // filtrar la receta: es lo que el comprador va a recibir, y sin
+          // esto un bump de "2 × Aceite" se ofrecía como si fuera uno solo.
+          if (esOrderBump && componentes.length === 1) {
+            const cant = Number(componentes[0].cantidad) || 1;
+            if (cant > 1) unidades = cant;
+          }
         }
         // Los DOS precios (ver Oferta.js). `precio` se mantiene por
         // compatibilidad con lecturas viejas, pero apunta al normal: el
