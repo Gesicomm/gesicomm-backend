@@ -27,6 +27,10 @@
  * obvia a la base y le avisa al comercio qué se le quitó.
  */
 
+// Versión clavada (sin ^) a propósito: desde sanitize-html 2.14 la
+// dependencia htmlparser2 es ESM puro y Jest (CJS, sin babel configurado
+// en este proyecto) no la puede cargar — los tests del sanitizador
+// revientan al require(). Ver src/tests/landing-codigo.test.js.
 const sanitizeHtml = require('sanitize-html');
 
 // Límites por campo — un lienzo en blanco es una landing, no una app.
@@ -70,6 +74,10 @@ const OPCIONES_HTML = {
     'g', 'defs', 'lineargradient', 'radialgradient', 'stop', 'use', 'symbol',
     'desc', 'mask', 'clippath', 'text', 'tspan',
     'iframe', 'canvas', 'progress', 'meter', 'output',
+    // <link> para hojas de estilo externas (Google Fonts es el caso real).
+    // Cargar un script por acá no sirve: el CSP del documento solo admite
+    // script inline. Ver construirDocumentoCodigo.js.
+    'link',
   ],
   allowedAttributes: {
     '*': ATRIBUTOS_GLOBALES,
@@ -88,6 +96,7 @@ const OPCIONES_HTML = {
     optgroup: [...ATRIBUTOS_GLOBALES, 'label', 'disabled'],
     button: [...ATRIBUTOS_GLOBALES, 'type', 'name', 'value', 'disabled'],
     label: [...ATRIBUTOS_GLOBALES, 'for'],
+    link: [...ATRIBUTOS_GLOBALES, 'rel', 'href', 'as', 'type', 'media', 'crossorigin', 'referrerpolicy'],
     details: [...ATRIBUTOS_GLOBALES, 'open'],
     dialog: [...ATRIBUTOS_GLOBALES, 'open'],
     canvas: [...ATRIBUTOS_GLOBALES, 'width', 'height'],

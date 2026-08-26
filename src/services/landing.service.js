@@ -1260,6 +1260,10 @@ class LandingService {
     // rígidas — sin esto la sección "Beneficios rápidos" del embudo
     // llegaba siempre vacía al frontend.
     const esFunnel = landing.template?.kind === 'funnel';
+    // Lienzo en blanco (ver landingCodigo.service.js): no tiene secciones
+    // ni beneficios ni banner — todo lo que se ve es el HTML/CSS/JS que
+    // escribió el comercio, ya sanitizado al guardarse.
+    const esCodigo = landing.template?.kind === 'codigo';
 
     const [productos, combos, ofertas, testimonios, faqs, beneficios] = await Promise.all([
       idsProducto.length
@@ -1666,10 +1670,19 @@ class LandingService {
       // vista` nunca llegaban al navegador en plantillas rígidas, así que el
       // order bump no aparecía jamás en el checkout ni como sugerencia del
       // carrito, por más que estuviera bien configurado y activo.
-      content: esFunnel ? (landing.content || {}) : {
+      //
+      // Un lienzo en blanco publica SOLO su código: nada del resto de
+      // `content` (overrides por producto, borradores) tiene sentido ahí.
+      content: esFunnel ? (landing.content || {}) : (esCodigo ? {
+        codigo: {
+          html: landing.content?.codigo?.html || '',
+          css: landing.content?.codigo?.css || '',
+          js: landing.content?.codigo?.js || '',
+        },
+      } : {
         ofertas_carrito: landing.content?.ofertas_carrito || [],
         ofertas_producto_vista: landing.content?.ofertas_producto_vista || [],
-      },
+      }),
       titulo: landing.titulo,
       descripcion: landing.descripcion,
       // Identidad/contacto propios de los templates rígidos — ver

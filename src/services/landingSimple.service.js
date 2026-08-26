@@ -16,8 +16,20 @@
  * del constructor flexible.
  */
 
+const { Op } = require('sequelize');
 const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate } = require('../models');
 const LandingService = require('./landing.service');
+const LandingCodigoService = require('./landingCodigo.service');
+
+// Los dos modos que administra este servicio, ambos "una landing por
+// tienda, el comercio no arma estructura":
+//   - 'rigido' → uno de los 4 templates fijos (Fitness/Beauty/Tech/Básico).
+//   - 'codigo' → lienzo en blanco, el HTML/CSS/JS lo escribe el comercio
+//     (ver landingCodigo.service.js).
+// Todo lo compartido (slug, es_home, publicar/despublicar, borrar) es
+// idéntico en los dos; lo único que cambia es qué se puede editar.
+const KINDS_EDITOR = ['rigido', 'codigo'];
+const SLUG_LIENZO_BLANCO = 'lienzo-blanco';
 
 // Claves que un intento de modificar la ESTRUCTURA de la landing usaría —
 // se rechazan explícitamente (400), no se ignoran en silencio. Independiente
@@ -74,6 +86,39 @@ const DEFAULTS_POR_TEMPLATE = {
   },
 };
 
+/**
+ * Punto de partida del lienzo en blanco — deliberadamente mínimo: una
+ * sección y tres reglas de CSS, lo justo para que el comercio vea de una
+ * dónde escribe y cómo se refleja. No es un template: se puede borrar
+ * entero sin romper nada.
+ */
+function codigoInicial(nombreTienda) {
+  const nombre = (nombreTienda || 'Tu marca').trim();
+  return {
+    html: [
+      '<section class="hero">',
+      `  <h1>${nombre}</h1>`,
+      '  <p>Escribí acá el HTML de tu landing. El CSS y el JavaScript van en las otras pestañas.</p>',
+      '  <a class="cta" href="#contacto">Quiero saber más</a>',
+      '</section>',
+    ].join('\n'),
+    css: [
+      'body { margin: 0; font-family: system-ui, sans-serif; background: #0b0b0f; color: #fff; }',
+      '.hero { min-height: 70vh; display: grid; place-content: center; gap: 16px; text-align: center; padding: 48px 24px; }',
+      '.hero h1 { font-size: clamp(32px, 6vw, 64px); margin: 0; }',
+      '.hero p { margin: 0; opacity: .7; max-width: 46ch; }',
+      '.cta { justify-self: center; padding: 14px 28px; border-radius: 999px; background: #fff; color: #000; font-weight: 700; text-decoration: none; }',
+    ].join('\n'),
+    js: [
+      '// Tu JavaScript corre aislado en un iframe: no ve la sesión de la',
+      '// tienda ni puede llamar a servidores externos.',
+      "document.querySelector('.cta')?.addEventListener('click', () => {",
+      "  console.log('clic en el CTA');",
+      '});',
+    ].join('\n'),
+  };
+}
+
 class LandingSimpleService {
 
   static rechazarClavesEstructurales(payload) {
@@ -83,8 +128,24 @@ class LandingSimpleService {
     }
   }
 
-  /** Único whitelist de escritura del modo rígido — nunca Object.assign(landing, payload). */
-  static camposEditables(payload) {
+  /**
+   * Único whitelist de escritura de este módulo — nunca
+   * Object.assign(landing, payload).
+   *
+   * @param {string} kind 'rigido' | 'codigo'. En el lienzo en blanco casi
+   *   nada de esto aplica (no hay hero, ni beneficios, ni colores de tema:
+   *   los pinta el CSS del comercio) y sobre todo NO se acepta `content`
+   *   crudo — el código entra por la clave `codigo` de actualizar(), que
+   *   es la que pasa por LandingCodigoService.
+   */
+  static camposEditables(payload, kind = 'rigido') {
+    if (kind === 'codigo') {
+      const campos = {};
+      for (const campo of ['titulo', 'descripcion', 'seo_titulo', 'seo_descripcion']) {
+        if (payload[campo] !== undefined) campos[campo] = payload[campo]?.trim() || null;
+      }
+      return campos;
+    }
     const campos = {};
     // Identidad — "titulo" es el nombre público del comercio, reutilizado
     // tal cual como en el sistema flexible.
@@ -153,16 +214,27 @@ class LandingSimpleService {
     return template;
   }
 
+  /** El template del lienzo en blanco es único y global (lo siembra
+   * scripts/seed-landing-lienzo-blanco.js) — no se elige de una grilla,
+   * así que se resuelve por slug y no por id. */
+  static async obtenerTemplateLienzoBlanco() {
+    const template = await LandingTemplate.findOne({ where: { slug: SLUG_LIENZO_BLANCO, kind: 'codigo' } });
+    if (!template) {
+      throw new Error('El lienzo en blanco todavía no está disponible. Ejecutá scripts/seed-landing-lienzo-blanco.js.');
+    }
+    return template;
+  }
+
   /**
-   * Todas las lecturas/escrituras de acá exigen kind='rigido' en el join
-   * con el template — defensa en profundidad: aunque la tabla "landings"
-   * sea compartida con el sistema flexible, esta clase nunca puede tocar
-   * una fila que no haya nacido de uno de los 3 templates rígidos.
+   * Todas las lecturas/escrituras de acá exigen kind 'rigido' o 'codigo'
+   * en el join con el template — defensa en profundidad: aunque la tabla
+   * "landings" sea compartida con el sistema flexible, esta clase nunca
+   * puede tocar una fila que no haya nacido de uno de esos dos modos.
    */
   static async buscarPropia(id, tienda_id) {
     const landing = await Landing.findOne({
       where: { id, tienda_id },
-      include: [{ model: LandingTemplate, as: 'template', required: true, where: { kind: 'rigido' } }],
+      include: [{ model: LandingTemplate, as: 'template', required: true, where: { kind: { [Op.in]: KINDS_EDITOR } } }],
     });
     if (!landing) throw new Error('Landing no encontrada.');
     return landing;
@@ -172,7 +244,7 @@ class LandingSimpleService {
     const landings = await Landing.findAll({
       where: { tienda_id },
       include: [
-        { model: LandingTemplate, as: 'template', required: true, where: { kind: 'rigido' } },
+        { model: LandingTemplate, as: 'template', required: true, where: { kind: { [Op.in]: KINDS_EDITOR } } },
         { model: LandingItem, as: 'items', attributes: ['id'] },
       ],
       order: [['created_at', 'DESC']],
@@ -180,19 +252,19 @@ class LandingSimpleService {
     return landings.map(l => l.toJSON());
   }
 
-  static async crear(tienda_id, inquilino_id, template_id) {
-    const template = await this.obtenerTemplateRigido(template_id);
-    const defaults = DEFAULTS_POR_TEMPLATE[template.slug];
-
+  /**
+   * Parte común de crear() y crearLienzoBlanco(): la landing de este
+   * módulo ES la landing principal de la tienda — se sirve en la raíz del
+   * subdominio (https://sub.gesicomm.com/), no en /l/:slug (ver
+   * resolverTienda.js / LandingService.obtenerPublica: es_home=true es lo
+   * que resuelve GET /api/l/ sin slug). es_home es única por tienda a
+   * nivel aplicación (sin constraint de DB) — se desactiva cualquier otra
+   * landing que la tuviera antes de crear esta.
+   */
+  static async _crearFila(tienda_id, inquilino_id, template, extra = {}) {
     const slug = await LandingService.generarSlugUnico(template.name, tienda_id);
-    // La landing rígida ES la landing principal de la tienda — se sirve en
-    // la raíz del subdominio (https://sub.gesicomm.com/), no en /l/:slug
-    // (ver resolverTienda.js / LandingService.obtenerPublica: es_home=true
-    // es lo que resuelve GET /api/l/ sin slug). es_home es única por
-    // tienda a nivel aplicación (sin constraint de DB) — se desactiva
-    // cualquier otra landing que la tuviera antes de crear esta.
     await Landing.update({ es_home: false }, { where: { tienda_id, es_home: true } });
-    const landing = await Landing.create({
+    return Landing.create({
       inquilino_id,
       tienda_id,
       template_id: template.id,
@@ -202,7 +274,16 @@ class LandingSimpleService {
       tipo_pagina: 'funnel',
       es_home: true,
       activo: false,
-      // FAQ y Hero(banner) son secciones fijas en los 3 templates rígidos
+      ...extra,
+    });
+  }
+
+  static async crear(tienda_id, inquilino_id, template_id) {
+    const template = await this.obtenerTemplateRigido(template_id);
+    const defaults = DEFAULTS_POR_TEMPLATE[template.slug];
+
+    const landing = await this._crearFila(tienda_id, inquilino_id, template, {
+      // FAQ y Hero(banner) son secciones fijas en los 4 templates rígidos
       // (no un toggle opcional como en el sistema flexible) — se activan
       // siempre al crear, así obtenerPublica() nunca las omite.
       mostrar_faq: true,
@@ -218,11 +299,28 @@ class LandingSimpleService {
     return this.obtener(landing.id, tienda_id);
   }
 
+  /**
+   * Lienzo en blanco: misma fila Landing que el modo rígido (mismo slug,
+   * mismo es_home, mismo publicar/despublicar), pero sin nada de la
+   * estructura fija — ni banner, ni FAQ, ni beneficios, ni items. Todo lo
+   * que se ve sale de content.codigo, que el comercio escribe a mano.
+   */
+  static async crearLienzoBlanco(tienda_id, inquilino_id, nombreTienda) {
+    const template = await this.obtenerTemplateLienzoBlanco();
+    const landing = await this._crearFila(tienda_id, inquilino_id, template, {
+      titulo: nombreTienda || template.name,
+      mostrar_faq: false,
+      mostrar_banner: false,
+      content: { codigo: codigoInicial(nombreTienda) },
+    });
+    return this.obtener(landing.id, tienda_id);
+  }
+
   static async obtener(id, tienda_id) {
     const landing = await Landing.findOne({
       where: { id, tienda_id },
       include: [
-        { model: LandingTemplate, as: 'template', required: true, where: { kind: 'rigido' } },
+        { model: LandingTemplate, as: 'template', required: true, where: { kind: { [Op.in]: KINDS_EDITOR } } },
         { model: LandingItem, as: 'items' },
         { model: Faq, as: 'faq' },
         { model: LandingBeneficio, as: 'beneficios' },
@@ -237,10 +335,46 @@ class LandingSimpleService {
     return landing.toJSON();
   }
 
+  /**
+   * Guardado del lienzo en blanco. Nada de items/faq/beneficios/secciones
+   * acá: en este modo la landing es exactamente lo que el comercio
+   * escribió, y lo único que se persiste del código es lo que devuelve
+   * LandingCodigoService.sanitizar() — el payload crudo nunca toca la fila.
+   *
+   * Las advertencias ("te saqué los <script> del HTML") viajan en el DTO
+   * como `codigo_advertencias`; no se guardan, son del guardado que las
+   * generó.
+   */
+  static async actualizarCodigo(landing, tienda_id, payload) {
+    let advertencias = [];
+    if (payload.codigo !== undefined) {
+      const limpio = LandingCodigoService.sanitizar(payload.codigo);
+      advertencias = limpio.advertencias;
+      landing.content = {
+        ...(landing.content || {}),
+        codigo: { html: limpio.html, css: limpio.css, js: limpio.js },
+      };
+      landing.changed('content', true);
+    }
+    Object.assign(landing, this.camposEditables(payload, 'codigo'));
+    await landing.save();
+    const dto = await this.obtener(landing.id, tienda_id);
+    return { ...dto, codigo_advertencias: advertencias };
+  }
+
   static async actualizar(id, tienda_id, inquilino_id, payload) {
     this.rechazarClavesEstructurales(payload);
 
     const landing = await this.buscarPropia(id, tienda_id);
+
+    if (landing.template?.kind === 'codigo') {
+      return this.actualizarCodigo(landing, tienda_id, payload);
+    }
+    if (payload.codigo !== undefined) {
+      const err = new Error('Validación fallida.');
+      err.errores = ['Esta landing usa un template: el código a mano solo existe en el lienzo en blanco.'];
+      throw err;
+    }
 
     const errores = [
       ...LandingService.validarPayload(payload),

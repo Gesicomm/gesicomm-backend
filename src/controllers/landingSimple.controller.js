@@ -7,6 +7,7 @@
  *
  * GET    /api/mis-landings-simples          → listar mis landings rígidas
  * POST   /api/mis-landings-simples          → crear desde un template rígido
+ * POST   /api/mis-landings-simples/lienzo-blanco → crear una landing de código
  * GET    /api/mis-landings-simples/:id      → detalle
  * PUT    /api/mis-landings-simples/:id      → actualizar contenido permitido
  * DELETE /api/mis-landings-simples/:id      → eliminar
@@ -95,6 +96,22 @@ async function crear(req, res) {
     return res.status(201).json(landing);
   } catch (err) {
     return manejarError(res, err, 'Error al crear la landing.');
+  }
+}
+
+/**
+ * Lienzo en blanco — no recibe template_id: el template de código es uno
+ * solo y global (slug 'lienzo-blanco'), lo resuelve el servicio. El
+ * frontend nunca tiene que conocer su id.
+ */
+async function crearLienzoBlanco(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    const landing = await LandingSimpleService.crearLienzoBlanco(tienda.id, req.usuario.tenantId, tienda.nombre);
+    return res.status(201).json(landing);
+  } catch (err) {
+    return manejarError(res, err, 'Error al crear la landing en blanco.');
   }
 }
 
@@ -214,7 +231,7 @@ async function eliminarHeroImagen(req, res) {
 }
 
 module.exports = {
-  listar, crear, detalle, actualizar, eliminar, cambiarEstado,
+  listar, crear, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
   subirImagenMiddleware,
   subirLogo, eliminarLogo,
   subirHeroImagen, eliminarHeroImagen,
