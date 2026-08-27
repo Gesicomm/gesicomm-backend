@@ -31,12 +31,27 @@ describe('LandingCodigoService.sanitizar', () => {
       expect(advertencias.join(' ')).toMatch(/script/i);
     });
 
-    it('descarta atributos de evento inline', () => {
-      const { html, advertencias } = LandingCodigoService.sanitizar({
-        html: '<button onclick="robar()" onmouseover="x()">Click</button>',
+    // Ver el CONTRATO en la cabecera del servicio: los onclick sobreviven
+    // porque el HTML solo se renderiza dentro del iframe sandbox, y sin
+    // ellos no funciona ninguna plantilla pegada de afuera.
+    it('conserva atributos de evento inline', () => {
+      const { html } = LandingCodigoService.sanitizar({
+        html: '<button onclick="siguiente()" onmouseover="resaltar()">Click</button>',
       });
-      expect(html).toBe('<button>Click</button>');
-      expect(advertencias.join(' ')).toMatch(/evento/i);
+      expect(html).toBe('<button onclick="siguiente()" onmouseover="resaltar()">Click</button>');
+    });
+
+    it('aplica el blocklist del JS también a los atributos de evento', () => {
+      expect(() => LandingCodigoService.sanitizar({
+        html: `<button onclick="fetch('//evil')">x</button>`,
+      })).toThrow('Validación fallida.');
+
+      try {
+        LandingCodigoService.sanitizar({ html: '<div onload="document.cookie">x</div>' });
+        throw new Error('debió lanzar');
+      } catch (err) {
+        expect(err.errores.join(' ')).toMatch(/atributo de evento/i);
+      }
     });
 
     it('descarta href javascript: pero deja mailto/tel', () => {
@@ -135,6 +150,61 @@ describe('LandingCodigoService.sanitizar', () => {
         expect(err.errores.join(' ')).toMatch(/fetch/);
         expect(err.errores.join(' ')).toMatch(/document\.cookie/);
       }
+    });
+  });
+
+  // El caso real: el comercio pega una plantilla entera en la pestaña
+  // HTML. Antes quedaba una landing muerta — el <style> y el <script> se
+  // descartaban y sobrevivía solo el marcado pelado.
+  describe('documento HTML completo pegado en la pestaña HTML', () => {
+    const documento = [
+      '<!DOCTYPE html>',
+      '<html lang="es"><head>',
+      '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">',
+      '<style>:root { --radius: 26px; } .hero { min-height: 100vh; }</style>',
+      '</head><body>',
+      '<section class="hero"><h1>Hola</h1></section>',
+      '<button onclick="siguiente()">Siguiente</button>',
+      '<script>function siguiente() { console.log(1); }</script>',
+      '</body></html>',
+    ].join('\n');
+
+    it('reparte <style> y <script> en sus campos y deja solo el <body>', () => {
+      const r = LandingCodigoService.sanitizar({ html: documento });
+      expect(r.html).not.toMatch(/<!doctype|<html[\s>]|<head[\s>]|<style|<script/i);
+      expect(r.html).toContain('<section class="hero">');
+      expect(r.css).toContain('--radius: 26px');
+      expect(r.js).toContain('function siguiente()');
+      expect(r.advertencias.join(' ')).toMatch(/página completa/i);
+    });
+
+    it('rescata el <link> del <head> para no perder la fuente', () => {
+      const { html } = LandingCodigoService.sanitizar({ html: documento });
+      expect(html).toContain('fonts.googleapis.com');
+    });
+
+    it('suma lo extraído DESPUÉS de lo que ya había en css/js', () => {
+      const r = LandingCodigoService.sanitizar({
+        html: documento,
+        css: 'body { background: #000; }',
+        js: 'const inicial = 1;',
+      });
+      expect(r.css.indexOf('background: #000')).toBeLessThan(r.css.indexOf('--radius'));
+      expect(r.js.indexOf('const inicial')).toBeLessThan(r.js.indexOf('function siguiente'));
+    });
+
+    it('descarta <script src> externo y lo avisa', () => {
+      const r = LandingCodigoService.sanitizar({
+        html: '<html><body><p>x</p><script src="https://cdn.test/a.js"></script></body></html>',
+      });
+      expect(r.js).toBe('');
+      expect(r.advertencias.join(' ')).toMatch(/script src/i);
+    });
+
+    it('no toca un fragmento normal (sin doctype/html/body)', () => {
+      const r = LandingCodigoService.sanitizar({ html: '<section><h1>Hola</h1></section>' });
+      expect(r.html).toBe('<section><h1>Hola</h1></section>');
+      expect(r.advertencias).toHaveLength(0);
     });
   });
 

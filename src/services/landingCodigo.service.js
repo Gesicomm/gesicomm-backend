@@ -25,6 +25,15 @@
  *
  * La capa 2 es la que realmente contiene; la 1 evita que llegue basura
  * obvia a la base y le avisa al comercio qué se le quitó.
+ *
+ * CONTRATO: el HTML que sale de acá se renderiza SIEMPRE dentro de ese
+ * iframe sandbox y en ningún otro lado. Por eso se aceptan atributos de
+ * evento inline (onclick="..."): sin ellos no funciona ninguna plantilla
+ * pegada de afuera, y dentro del sandbox no son más peligrosos que el
+ * <script> que igual se permite. Su contenido pasa por el MISMO blocklist
+ * que la pestaña JS. Si algún día este HTML se inyectara en una página
+ * que no sea el iframe (un SSR de la landing, por ejemplo), hay que
+ * sacarlos antes.
  */
 
 // Versión clavada (sin ^) a propósito: desde sanitize-html 2.14 la
@@ -49,6 +58,10 @@ const IFRAMES_PERMITIDOS = [
 const ATRIBUTOS_GLOBALES = [
   'class', 'id', 'style', 'title', 'role', 'lang', 'dir', 'hidden', 'tabindex',
   'data-*', 'aria-*',
+  // Ver CONTRATO en la cabecera: se aceptan porque todo esto corre dentro
+  // del iframe sandbox, y su contenido se revisa con revisarJs() igual que
+  // la pestaña JS.
+  'on*',
 ];
 
 // Atributos de SVG inline — las landings de código los usan para íconos.
@@ -175,7 +188,113 @@ const JS_PROHIBIDO = [
   { re: /<\s*\/?\s*script\b/i, motivo: 'etiquetas <script> dentro del JS' },
 ];
 
+// Marcas de que lo pegado en la pestaña HTML no es un fragmento sino una
+// página entera. Es el caso normal: el comercio copia una plantilla de
+// afuera (o se la genera una IA) y la pega tal cual en el primer campo.
+const ES_DOCUMENTO_COMPLETO = /<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]/i;
+
+/** Concatena dos bloques de código sin dejar líneas en blanco de más. */
+function unir(existente, agregado) {
+  const a = String(existente || '').trim();
+  const b = String(agregado || '').trim();
+  if (!a) return b;
+  if (!b) return a;
+  return `${a}\n\n${b}`;
+}
+
 class LandingCodigoService {
+
+  /**
+   * Desarma un documento HTML completo en los tres campos del editor: el
+   * contenido de los <style> va al CSS, el de los <script> al JS, y del
+   * resto se conserva solo lo que había dentro del <body>.
+   *
+   * Sin esto, pegar una plantilla entera daba una landing muerta: el
+   * sanitizador descartaba <style> y <script> (van en otras pestañas) y
+   * quedaba el marcado pelado, sin estilos ni interacción.
+   *
+   * Es una separación por regex, no un parseo: alcanza porque lo único
+   * que se busca son los bloques <style>/<script> de primer nivel y el
+   * cuerpo. Lo que salga de acá igual pasa por sanitizeHtml después.
+   *
+   * @returns {{html: string, css: string, js: string, advertencias: string[]}}
+   *   css/js son lo EXTRAÍDO (hay que sumarlo a lo que ya tenía el campo).
+   */
+  static separarDocumentoCompleto(htmlOriginal) {
+    const original = String(htmlOriginal || '');
+    if (!ES_DOCUMENTO_COMPLETO.test(original)) {
+      return { html: original, css: '', js: '', advertencias: [] };
+    }
+
+    const advertencias = [];
+    const estilos = [];
+    const scripts = [];
+    let resto = original;
+
+    resto = resto.replace(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi, (_m, cuerpo) => {
+      estilos.push(cuerpo.trim());
+      return '';
+    });
+
+    resto = resto.replace(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi, (_m, atributos, cuerpo) => {
+      // Un <script src="..."> no se puede traer: el CSP del documento solo
+      // admite script inline, así que cargarlo nunca funcionaría.
+      if (/\bsrc\s*=/i.test(atributos)) {
+        advertencias.push('Se quitó un <script src="..."> externo: la landing no puede cargar scripts de otros servidores.');
+      } else if (cuerpo.trim()) {
+        scripts.push(cuerpo.trim());
+      }
+      return '';
+    });
+
+    // Los <link rel="stylesheet"> viven en el <head>, que se descarta más
+    // abajo — se rescatan antes para no perder la fuente de Google.
+    const links = [];
+    resto.replace(/<link\b[^>]*>/gi, (m) => { links.push(m); return m; });
+
+    const cuerpo = resto.match(/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i);
+    if (cuerpo) {
+      resto = cuerpo[1];
+    } else {
+      resto = resto
+        .replace(/<!doctype[^>]*>/gi, '')
+        .replace(/<\/?(html|head|body)\b[^>]*>/gi, '');
+    }
+    // El <head> quedó afuera: se reinyectan los <link> que tenía.
+    const linksFueraDelCuerpo = links.filter(l => !resto.includes(l));
+    if (linksFueraDelCuerpo.length) resto = `${linksFueraDelCuerpo.join('\n')}\n${resto}`;
+
+    if (estilos.length) advertencias.push(`Pegaste una página completa: el contenido de ${estilos.length === 1 ? 'su <style>' : `sus ${estilos.length} <style>`} se movió a la pestaña CSS.`);
+    if (scripts.length) advertencias.push(`Pegaste una página completa: el contenido de ${scripts.length === 1 ? 'su <script>' : `sus ${scripts.length} <script>`} se movió a la pestaña JavaScript.`);
+    if (!estilos.length && !scripts.length) advertencias.push('Pegaste una página completa: se conservó solo lo que había dentro del <body>.');
+
+    return {
+      html: resto.trim(),
+      css: estilos.join('\n\n'),
+      js: scripts.join('\n\n'),
+      advertencias,
+    };
+  }
+
+  /**
+   * Los onclick="..." y demás atributos de evento son JavaScript y se
+   * revisan con las mismas reglas que la pestaña JS — si no, poner el
+   * código en un onclick sería la forma trivial de saltear el blocklist.
+   *
+   * @returns {string[]} motivos (vacío = OK)
+   */
+  static revisarEventosInline(html) {
+    const errores = new Set();
+    const re = /\son[a-z]+\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+    let m;
+    while ((m = re.exec(String(html || ''))) !== null) {
+      const codigo = m[1] ?? m[2] ?? m[3] ?? '';
+      for (const motivo of this.revisarJs(codigo)) {
+        errores.add(motivo.replace('El JavaScript no puede usar', 'Un atributo de evento del HTML (onclick, etc.) no puede usar'));
+      }
+    }
+    return [...errores];
+  }
 
   static limpiarCss(css) {
     const advertencias = [];
@@ -199,9 +318,6 @@ class LandingCodigoService {
     }
     if (/<\s*style\b/i.test(original)) {
       advertencias.push('Se quitaron etiquetas <style> del HTML: el CSS va en la pestaña CSS.');
-    }
-    if (/\son[a-z]+\s*=/i.test(original)) {
-      advertencias.push('Se quitaron atributos de evento (onclick, onload, ...): enganchá los eventos desde la pestaña JS con addEventListener.');
     }
     return { html: limpio, advertencias };
   }
@@ -228,16 +344,31 @@ class LandingCodigoService {
       throw err;
     }
 
-    const errores = [];
-    const html = String(codigo.html ?? '');
-    const css = String(codigo.css ?? '');
-    const js = String(codigo.js ?? '');
+    // Si vino una página entera en el campo HTML, primero se reparte en
+    // los tres campos y recién después se valida — así los límites y el
+    // blocklist se aplican sobre lo que realmente se va a guardar.
+    const separado = this.separarDocumentoCompleto(codigo.html);
+    const html = separado.html;
+    // Pegar una página entera encima de un CSS que ya existía deja dos
+    // hojas de estilo compitiendo (típico: el código de arranque del
+    // lienzo todavía puesto). Se avisa en vez de borrar por las dudas:
+    // decidir qué sobra es del comercio, no de acá.
+    if (separado.css && String(codigo.css ?? '').trim()) {
+      separado.advertencias.push('Revisá la pestaña CSS: arriba quedó el CSS que ya tenías y abajo el de la página que pegaste. Si no lo usás, borralo — puede pisarte estilos.');
+    }
+    // Lo extraído va DESPUÉS de lo que ya había en el campo: en CSS gana
+    // la última regla, así lo recién pegado pisa al código de arranque en
+    // vez de quedar tapado por él.
+    const css = unir(String(codigo.css ?? ''), separado.css);
+    const js = unir(String(codigo.js ?? ''), separado.js);
 
+    const errores = [];
     if (Buffer.byteLength(html, 'utf8') > MAX_HTML) errores.push(`El HTML supera el máximo de ${MAX_HTML / 1024} KB.`);
     if (Buffer.byteLength(css, 'utf8') > MAX_CSS) errores.push(`El CSS supera el máximo de ${MAX_CSS / 1024} KB.`);
     if (Buffer.byteLength(js, 'utf8') > MAX_JS) errores.push(`El JavaScript supera el máximo de ${MAX_JS / 1024} KB.`);
 
     errores.push(...this.revisarJs(js));
+    errores.push(...this.revisarEventosInline(html));
 
     if (errores.length) {
       const err = new Error('Validación fallida.');
@@ -252,7 +383,7 @@ class LandingCodigoService {
       html: htmlLimpio.html,
       css: cssLimpio.css,
       js,
-      advertencias: [...htmlLimpio.advertencias, ...cssLimpio.advertencias],
+      advertencias: [...separado.advertencias, ...htmlLimpio.advertencias, ...cssLimpio.advertencias],
     };
   }
 }

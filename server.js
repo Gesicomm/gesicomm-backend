@@ -124,6 +124,13 @@ app.use((req, res, next) => (
 // ============================================================
 // 3. Parsers
 // ============================================================
+// El lienzo en blanco manda el HTML/CSS/JS entero de una landing en el
+// body — con 10kb no entra ni una página chica. Se declara ANTES del
+// parser global: body-parser marca req._body al parsear, así que el de
+// abajo ve el body ya leído y no lo vuelve a medir. El límite real por
+// campo (y el 422 con el motivo) lo pone landingCodigo.service.js; esto
+// es solo el techo del transporte.
+app.use('/api/mis-landings-simples', express.json({ limit: '600kb' }));
 app.use(express.json({ limit: '10kb' })); // Límite de tamaño para prevenir ataques
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 // Servir imágenes de productos subidas
@@ -201,6 +208,14 @@ app.use((err, req, res, next) => {
     metodo: req.method,
     ip: req.ip,
   });
+
+  // 413 del body parser: decirle "error interno" al cliente manda a
+  // buscar el problema al lugar equivocado — es el request que no entra.
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    return res.status(413).json({
+      message: 'El contenido enviado es demasiado grande.',
+    });
+  }
 
   // Solo enviamos un mensaje genérico al cliente
   res.status(err.status || 500).json({
