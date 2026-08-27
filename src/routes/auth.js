@@ -448,6 +448,32 @@ router.get('/me', verificarToken, (req, res) => {
 });
 
 // ============================================================
+// GET /api/auth/service-token
+//
+// Emite un JWT de corta vida para que el frontend llame a otros
+// backends de Gesicomm (ej. Automation Hub) sin exponer la cookie
+// de sesión ni ampliar su dominio a otros subdominios. Firmado con
+// un secreto propio (SERVICE_JWT_SECRET), no con JWT_SECRET.
+// ============================================================
+router.get('/service-token', verificarToken, (req, res) => {
+  if (!process.env.SERVICE_JWT_SECRET) {
+    console.error('[service-token] Falta SERVICE_JWT_SECRET en el entorno.');
+    return res.status(500).json({ message: 'Error de configuración del servidor.' });
+  }
+
+  const payload = {
+    id: req.usuario.id,
+    rol: req.usuario.rol,
+    permisos: req.usuario.permisos,
+    tenantId: req.usuario.tenantId,
+  };
+
+  const token = jwt.sign(payload, process.env.SERVICE_JWT_SECRET, { expiresIn: '5m' });
+
+  return res.json({ token, expiresIn: 300 });
+});
+
+// ============================================================
 // POST /api/auth/forgot-password
 // ============================================================
 router.post('/forgot-password', limiteAuth, validar(esquemaRecuperarPassword), async (req, res) => {
