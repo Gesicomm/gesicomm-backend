@@ -88,6 +88,32 @@ const Producto = sequelize.define('Producto', {
     allowNull: true,
     comment: 'Título de "Productos relacionados" en la página del producto. null = default genérico.',
   },
+  /**
+   * Qué juego de campos usa la ficha de este producto. Existe porque la
+   * página de producto de cada template rígido pide información distinta:
+   * suplementos necesita ingredientes con su dosis, electrónica necesita
+   * especificaciones, "en la caja" y una comparativa. No es lo mismo que
+   * `tipo_producto` (físico/digital), que es otra dimensión.
+   *
+   * Texto y no ENUM a propósito: sumar un rubro sería otra migración y la
+   * lista la maneja la aplicación. null = genérico, se comporta como antes.
+   */
+  ficha_rubro: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+  },
+  /**
+   * Campos propios del rubro, con la forma que define el frontend (ver
+   * templates/tech/fichaTech.js y templates/fitness/fichaFitness.js). JSON
+   * y no columnas sueltas porque cada rubro tiene su juego de campos y van
+   * a seguir apareciendo rubros: una columna por campo obliga a migrar
+   * cada vez.
+   */
+  ficha_datos: {
+    type: DataTypes.JSONB,
+    allowNull: false,
+    defaultValue: {},
+  },
   // --- Precios ---
   precio_costo: {
     type: DataTypes.DECIMAL(12, 2),

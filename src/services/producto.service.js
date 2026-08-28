@@ -273,6 +273,7 @@ class ProductoService {
       activo, estado_venta, destacado, fecha_disponible_desde, fecha_disponible_hasta,
       slug: slugManual, meta_titulo, meta_descripcion,
       propuesta_valor, beneficios, confianza, preguntas_frecuentes, sobre_este_producto,
+      ficha_rubro, ficha_datos,
     } = datos;
 
     const precioBaseNum = parseFloat(precio_base);
@@ -290,6 +291,10 @@ class ProductoService {
       tags: tags || [],
       descripcion_corta, descripcion_larga, faq_titulo: faq_titulo || null,
       propuesta_valor, beneficios, confianza, preguntas_frecuentes, sobre_este_producto,
+      // Rubro de ficha y sus campos propios. `ficha_datos` nunca es null:
+      // la columna es NOT NULL DEFAULT '{}' y el frontend espera un objeto.
+      ficha_rubro: ficha_rubro || null,
+      ficha_datos: ficha_datos || {},
       precio_costo: precio_costo ? parseFloat(precio_costo) : null,
       precio_dolar: precio_dolar ? parseFloat(precio_dolar) : null,
       es_dolar: !!es_dolar,
@@ -392,6 +397,7 @@ class ProductoService {
       'fecha_disponible_desde', 'fecha_disponible_hasta',
       'meta_titulo', 'meta_descripcion', 'peso', 'dimensiones', 'tipo_producto',
       'propuesta_valor', 'beneficios', 'confianza', 'preguntas_frecuentes', 'sobre_este_producto',
+      'ficha_rubro', 'ficha_datos',
     ];
     // precio_minimo: piso de precio — solo el admin puede fijarlo, incluso
     // sobre productos que no creó (ver serializar()).

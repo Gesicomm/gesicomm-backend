@@ -1593,6 +1593,17 @@ class LandingService {
         // `content` al final de este DTO: del resto del override por producto
         // no se publica nada.
         ficha: !esCombo ? (override?.ficha || null) : null,
+        // Ídem para la ficha de Electrónica & Tecnología: solo lo que este
+        // producto pisa en esta landing. El navegador la mezcla con
+        // `content.ficha_tech` y con los campos del producto usando el
+        // mismo módulo que usa el editor (templates/tech/fichaTech.js).
+        ficha_tech: !esCombo ? (override?.ficha_tech || null) : null,
+        // Rubro y campos propios del rubro, cargados en Mis Productos
+        // (especificaciones, "en la caja", comparativa para Tecnología;
+        // ingredientes para Suplementos). Son DEL PRODUCTO, así que valen
+        // en todas sus landings sin volver a cargarlos.
+        ficha_rubro: !esCombo ? (entidad.ficha_rubro || null) : null,
+        ficha_datos: !esCombo ? (entidad.ficha_datos || {}) : {},
         faq: !esCombo ? (override?.faq || mapaFaq.get(entidad.id) || []) : [],
         faq_titulo: !esCombo ? (override?.faq_titulo || entidad.faq_titulo || null) : null,
         productos_incluidos: esCombo ? (entidad.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean) : undefined,
@@ -1698,6 +1709,7 @@ class LandingService {
         // los haya cambiado. Los overrides POR PRODUCTO siguen sin publicarse
         // en bloque — cada item trae solo el suyo, en `ficha`.
         ficha_fitness: landing.content?.ficha_fitness || null,
+        ficha_tech: landing.content?.ficha_tech || null,
       }),
       titulo: landing.titulo,
       descripcion: landing.descripcion,
