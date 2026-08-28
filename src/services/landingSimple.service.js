@@ -20,6 +20,7 @@ const { Op } = require('sequelize');
 const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate } = require('../models');
 const LandingService = require('./landing.service');
 const LandingCodigoService = require('./landingCodigo.service');
+const PaginaFactory = require('../factories/PaginaFactory');
 
 // Los dos modos que administra este servicio, ambos "una landing por
 // tienda, el comercio no arma estructura":
@@ -264,15 +265,13 @@ class LandingSimpleService {
   static async _crearFila(tienda_id, inquilino_id, template, extra = {}) {
     const slug = await LandingService.generarSlugUnico(template.name, tienda_id);
     await Landing.update({ es_home: false }, { where: { tienda_id, es_home: true } });
-    return Landing.create({
+    return PaginaFactory.crearInicio({
       inquilino_id,
       tienda_id,
       template_id: template.id,
       nombre: template.name,
       titulo: template.name,
       slug,
-      tipo_pagina: 'inicio',
-      es_home: true,
       activo: false,
       ...extra,
     });
