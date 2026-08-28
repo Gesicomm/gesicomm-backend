@@ -31,6 +31,8 @@ const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
 const LandingTemplate = require('./LandingTemplate');
 const Landing = require('./Landing');
+const Funnel = require('./Funnel');
+const TiendaPagina = require('./TiendaPagina');
 const LandingItem = require('./LandingItem');
 const LandingSeccion = require('./LandingSeccion');
 const LandingEvento = require('./LandingEvento');
@@ -375,6 +377,8 @@ module.exports = {
   Tienda,
   LandingTemplate,
   Landing,
+  Funnel,
+  TiendaPagina,
   LandingItem,
   LandingSeccion,
   LandingEvento,

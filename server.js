@@ -7,6 +7,7 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const { logger } = require('./src/utils/logger');
+const { validarEsquema } = require('./src/utils/validarEsquema');
 
 // Rutas
 const path = require('path');
@@ -37,6 +38,7 @@ const metaReportesRoutes = require('./src/routes/metaReportes');
 const costosGastosRoutes = require('./src/routes/costosGastos');
 const categoriasCostosGastosRoutes = require('./src/routes/categoriasCostosGastos');
 const proveedoresRoutes = require('./src/routes/proveedores');
+const healthRoutes = require('./src/routes/health');
 
 const app = express();
 // 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
@@ -189,6 +191,7 @@ app.use('/api/meta-reportes', metaReportesRoutes);
 app.use('/api/costos-gastos', costosGastosRoutes);
 app.use('/api/categorias-costos-gastos', categoriasCostosGastosRoutes);
 app.use('/api/proveedores', proveedoresRoutes);
+app.use('/api/health', healthRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {
@@ -240,6 +243,16 @@ sequelize.sync({ alter: false }).then(async () => {
     logger.error('Error al aplicar migraciones de estructura:', mErr);
   }
   logger.info('Modelos y tabla envios sincronizados con la base de datos.');
+
+  // Validar que el esquema de la BD coincide con los modelos
+  try {
+    await validarEsquema(sequelize);
+  } catch (err) {
+    logger.error(err.message);
+    console.error(err.message);
+    process.exit(1);
+  }
+
   iniciarJobCostosRecurrentes();
   app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
