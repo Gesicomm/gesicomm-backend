@@ -159,6 +159,26 @@ class OfertaService {
   }
 
   /**
+   * Imagen propia de la oferta (Oferta.imagen_url) — UNA sola, no una
+   * galería: una tarjeta de paquete en la ficha muestra exactamente una
+   * foto. Se guarda en la Oferta y no en la landing a propósito: la misma
+   * oferta se administra desde la carga de productos y desde el armador de
+   * landing, y tiene que ser la misma foto en los dos lados.
+   *
+   * @returns {{imagen_url: string|null, anterior: string|null}} `anterior`
+   *   es la URL que se reemplaza, para que el controller borre ese archivo
+   *   del disco (mismo contrato que LandingService._actualizarImagenCampo).
+   */
+  static async actualizarImagen(id, inquilino_id, url) {
+    const oferta = await Oferta.findOne({ where: { id, inquilino_id } });
+    if (!oferta) throw new Error('Oferta no encontrada.');
+    const anterior = oferta.imagen_url;
+    oferta.imagen_url = url;
+    await oferta.save();
+    return { imagen_url: oferta.imagen_url, anterior };
+  }
+
+  /**
    * Lista las ofertas activas (o todas, si se pide) de un producto, con sus
    * componentes y el costo/margen calculado en vivo contra el catálogo
    * actual — esto es solo informativo para la pantalla de administración,

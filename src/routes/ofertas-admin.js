@@ -16,4 +16,10 @@ router.use(verificarToken);
 router.put('/:id', verificarPermiso('editar_productos'), ofertaCtrl.actualizar);
 router.delete('/:id', verificarPermiso('editar_productos'), ofertaCtrl.eliminar);
 
+// Imagen propia de la oferta (una sola). Se administra tanto desde la carga
+// de productos como desde el armador de landing — por eso vive acá, en las
+// rutas por id de oferta, y no anidada bajo el producto.
+router.post('/:id/imagen', verificarPermiso('editar_productos'), ofertaCtrl.subirImagenMiddleware, ofertaCtrl.subirImagen);
+router.delete('/:id/imagen', verificarPermiso('editar_productos'), ofertaCtrl.quitarImagen);
+
 module.exports = router;

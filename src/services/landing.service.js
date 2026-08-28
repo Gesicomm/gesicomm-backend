@@ -1584,6 +1584,15 @@ class LandingService {
         stock: esCombo ? (productoParaFiltros?.cantidad_disponible ?? null) : entidad.cantidad_disponible,
         variantes: variantesDto,
         ofertas: ofertasDto,
+        // Ficha rediseñada del template Fitness: SOLO las secciones que este
+        // producto pisa en esta landing. Se publica cruda (no resuelta) a
+        // propósito: el navegador la mezcla con `content.ficha_fitness` y con
+        // los campos de marketing de más abajo usando el MISMO módulo que usa
+        // el editor (templates/fitness/fichaFitness.js), así preview y
+        // publicada no pueden dar resultados distintos. Ver la nota de
+        // `content` al final de este DTO: del resto del override por producto
+        // no se publica nada.
+        ficha: !esCombo ? (override?.ficha || null) : null,
         faq: !esCombo ? (override?.faq || mapaFaq.get(entidad.id) || []) : [],
         faq_titulo: !esCombo ? (override?.faq_titulo || entidad.faq_titulo || null) : null,
         productos_incluidos: esCombo ? (entidad.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean) : undefined,
@@ -1682,6 +1691,13 @@ class LandingService {
       } : {
         ofertas_carrito: landing.content?.ofertas_carrito || [],
         ofertas_producto_vista: landing.content?.ofertas_producto_vista || [],
+        // Defaults de la ficha de producto que comparten todos los productos
+        // de esta landing (barra de anuncio, garantías, cierre…). Es
+        // configuración de presentación, no estado del editor: sin esto la
+        // ficha publicada caería en los textos de fábrica aunque el comercio
+        // los haya cambiado. Los overrides POR PRODUCTO siguen sin publicarse
+        // en bloque — cada item trae solo el suyo, en `ficha`.
+        ficha_fitness: landing.content?.ficha_fitness || null,
       }),
       titulo: landing.titulo,
       descripcion: landing.descripcion,

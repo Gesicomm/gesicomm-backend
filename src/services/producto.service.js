@@ -421,7 +421,7 @@ class ProductoService {
   }
 
   static async sincronizarFaq(id, inquilino_id, faq = [], transaction) {
-    const producto = await Producto.findOne({ where: { id, inquilino_id }, attributes: ['id'] });
+    const producto = await Producto.findOne({ where: { id, inquilino_id }, attributes: ['id'], transaction });
     if (!producto) throw new Error('Producto no encontrado.');
     await ProductoFaq.destroy({ where: { producto_id: id }, transaction });
     if (!faq.length) return;
@@ -521,7 +521,7 @@ class ProductoService {
   /** Curación manual — reemplaza la lista completa (destroy-all + bulkCreate), mismo criterio que sincronizarFaq. */
   static async sincronizarRelacionados(id, inquilino_id, relacionadoIds = [], transaction) {
     const { ProductoRelacionado } = require('../models');
-    const producto = await Producto.findOne({ where: { id, inquilino_id }, attributes: ['id'] });
+    const producto = await Producto.findOne({ where: { id, inquilino_id }, attributes: ['id'], transaction });
     if (!producto) throw new Error('Producto no encontrado.');
     await ProductoRelacionado.destroy({ where: { producto_id: id }, transaction });
     const idsLimpios = [...new Set(relacionadoIds.map(Number))].filter(rid => rid && rid !== Number(id));
