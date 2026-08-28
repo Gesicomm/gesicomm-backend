@@ -271,7 +271,7 @@ class LandingSimpleService {
       nombre: template.name,
       titulo: template.name,
       slug,
-      tipo_pagina: 'funnel',
+      tipo_pagina: 'inicio',
       es_home: true,
       activo: false,
       ...extra,
