@@ -20,7 +20,9 @@ function verificarPermiso(permisoRequerido) {
   return (req, res, next) => {
     const rol = req.usuario?.rol;
     
-    // Bypass para que el rol 'usuario' o 'solo_pedidos' pueda administrar su propio catálogo
+    if (rol === 'administrador') {
+      return next();
+    }
     if (rol === 'usuario' || rol === 'solo_pedidos') {
       const permisosDinamicos = [
         'ver_productos', 'crear_productos', 'editar_productos', 'eliminar_productos',
