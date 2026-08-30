@@ -12,5 +12,9 @@ const router = express.Router({ mergeParams: true });
 
 router.get('/', verificarPermiso('ver_productos'), ofertaCtrl.listarPorProducto);
 router.post('/', verificarPermiso('editar_productos'), ofertaCtrl.crear);
+router.put('/:id', verificarPermiso('editar_productos'), ofertaCtrl.actualizar);
+router.delete('/:id', verificarPermiso('editar_productos'), ofertaCtrl.eliminar);
+router.post('/:id/imagen', verificarPermiso('editar_productos'), ofertaCtrl.subirImagenMiddleware, ofertaCtrl.subirImagen);
+router.delete('/:id/imagen', verificarPermiso('editar_productos'), ofertaCtrl.quitarImagen);
 
 module.exports = router;
