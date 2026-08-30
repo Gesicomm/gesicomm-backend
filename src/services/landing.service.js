@@ -1598,6 +1598,8 @@ class LandingService {
         // `content.ficha_tech` y con los campos del producto usando el
         // mismo módulo que usa el editor (templates/tech/fichaTech.js).
         ficha_tech: !esCombo ? (override?.ficha_tech || null) : null,
+        // Ídem para la ficha de Beauty & Skin Care
+        ficha_beauty: !esCombo ? (override?.ficha_beauty || null) : null,
         // Rubro y campos propios del rubro, cargados en Mis Productos
         // (especificaciones, "en la caja", comparativa para Tecnología;
         // ingredientes para Suplementos). Son DEL PRODUCTO, así que valen
