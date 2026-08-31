@@ -68,6 +68,11 @@ class BuilderFunnelService {
   /** Único GLOBAL: /f/<slug> es un path del host público del builder. */
   static async generarSlugUnico(nombre) {
     const base = slugify(String(nombre || ''), { lower: true, strict: true }) || 'funnel';
+    
+    if (!esSlugReservado(base) && !(await BuilderFunnel.findOne({ where: { slug: base } }))) {
+      return base;
+    }
+
     let slug;
     do {
       slug = `${base}-${crypto.randomBytes(3).toString('hex')}`.slice(0, MAX_SLUG);

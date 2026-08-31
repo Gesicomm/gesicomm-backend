@@ -134,6 +134,11 @@ class BuilderPageService {
    */
   static async generarSlugUnico(nombre, ambito = {}) {
     const base = slugify(String(nombre || ''), { lower: true, strict: true }) || 'pagina';
+    
+    if (!esSlugReservado(base) && !(await this.slugOcupado(base, ambito))) {
+      return base;
+    }
+
     let slug;
     do {
       slug = `${base}-${crypto.randomBytes(3).toString('hex')}`.slice(0, MAX_SLUG);
