@@ -188,7 +188,6 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.ENUM('pendiente_liquidacion', 'liquidado'),
     allowNull: false,
     defaultValue: 'pendiente_liquidacion',
-    comment: 'Independiente del estado operativo — si el pedido ya entró en una Liquidacion de courier.',
   },
   fecha_reprogramada: {
     type: DataTypes.DATEONLY,

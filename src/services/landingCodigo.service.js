@@ -337,7 +337,24 @@ class LandingCodigoService {
    * @param {{html?: string, css?: string, js?: string}} codigo
    * @returns {{html: string, css: string, js: string, advertencias: string[]}}
    */
-  static sanitizar(codigo) {
+  /**
+   * @param {{html?: string, css?: string, js?: string}} codigo
+   * @param {{maxHtml?: number, maxCss?: number, maxJs?: number, maxTotal?: number}} [opciones]
+   *   Límites en bytes. Los defaults son los de una landing y NO cambian:
+   *   quien no pasa `opciones` obtiene exactamente el comportamiento de
+   *   siempre. El Page Builder pasa los suyos, más altos, porque una
+   *   página generada por una IA fácilmente pasa los 200 KB de HTML sola
+   *   (ver builderPageVersion.service.js). Es una extensión, no un fork:
+   *   este sigue siendo el ÚNICO sanitizador del proyecto.
+   */
+  static sanitizar(codigo, opciones = {}) {
+    const {
+      maxHtml = MAX_HTML,
+      maxCss = MAX_CSS,
+      maxJs = MAX_JS,
+      maxTotal = Infinity,
+    } = opciones;
+
     if (codigo === null || typeof codigo !== 'object' || Array.isArray(codigo)) {
       const err = new Error('Validación fallida.');
       err.errores = ['El código de la landing debe ser un objeto {html, css, js}.'];
@@ -363,9 +380,16 @@ class LandingCodigoService {
     const js = unir(String(codigo.js ?? ''), separado.js);
 
     const errores = [];
-    if (Buffer.byteLength(html, 'utf8') > MAX_HTML) errores.push(`El HTML supera el máximo de ${MAX_HTML / 1024} KB.`);
-    if (Buffer.byteLength(css, 'utf8') > MAX_CSS) errores.push(`El CSS supera el máximo de ${MAX_CSS / 1024} KB.`);
-    if (Buffer.byteLength(js, 'utf8') > MAX_JS) errores.push(`El JavaScript supera el máximo de ${MAX_JS / 1024} KB.`);
+    const bytesHtml = Buffer.byteLength(html, 'utf8');
+    const bytesCss = Buffer.byteLength(css, 'utf8');
+    const bytesJs = Buffer.byteLength(js, 'utf8');
+
+    if (bytesHtml > maxHtml) errores.push(`El HTML supera el máximo de ${Math.round(maxHtml / 1024)} KB.`);
+    if (bytesCss > maxCss) errores.push(`El CSS supera el máximo de ${Math.round(maxCss / 1024)} KB.`);
+    if (bytesJs > maxJs) errores.push(`El JavaScript supera el máximo de ${Math.round(maxJs / 1024)} KB.`);
+    if (bytesHtml + bytesCss + bytesJs > maxTotal) {
+      errores.push(`El total de HTML + CSS + JavaScript supera el máximo de ${Math.round(maxTotal / 1024)} KB.`);
+    }
 
     errores.push(...this.revisarJs(js));
     errores.push(...this.revisarEventosInline(html));
@@ -383,6 +407,7 @@ class LandingCodigoService {
       html: htmlLimpio.html,
       css: cssLimpio.css,
       js,
+      bytes: bytesHtml + bytesCss + bytesJs,
       advertencias: [...separado.advertencias, ...htmlLimpio.advertencias, ...cssLimpio.advertencias],
     };
   }

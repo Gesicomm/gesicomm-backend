@@ -30,6 +30,32 @@ function esAppPrincipal(hostname) {
     || hostname === APP_HOSTNAME;
 }
 
+/**
+ * La consulta sola, sin middleware alrededor. La comparten las dos
+ * versiones de abajo para que la lógica de resolución exista una sola vez.
+ *
+ * @param {string} hostname
+ * @returns {Promise<object|null>} null = app principal o no hay tienda
+ */
+async function buscarTiendaPorHostname(hostname) {
+  const limpio = (hostname || '').toLowerCase();
+  if (esAppPrincipal(limpio)) return null;
+
+  // Se incluye Usuario (solo id/activo) porque obtenerPublica() necesita
+  // saber si el dueño de la tienda sigue activo, sin otra consulta.
+  const includeUsuario = [{ model: Usuario, attributes: ['id', 'activo'] }];
+
+  if (limpio.endsWith(`.${BASE_DOMAIN}`)) {
+    const sub = limpio.slice(0, -(`.${BASE_DOMAIN}`.length));
+    return Tienda.findOne({ where: { subdominio: sub, activo: true }, include: includeUsuario });
+  }
+
+  return Tienda.findOne({
+    where: { dominio_propio: limpio, dominio_propio_verificado: true, activo: true },
+    include: includeUsuario,
+  });
+}
+
 async function resolverTienda(req, res, next) {
   try {
     const hostname = (req.hostname || '').toLowerCase();
@@ -39,21 +65,7 @@ async function resolverTienda(req, res, next) {
       return next();
     }
 
-    let tienda = null;
-    // Se incluye Usuario (solo id/activo) porque obtenerPublica() necesita
-    // saber si el dueño de la tienda sigue activo, sin otra consulta.
-    const includeUsuario = [{ model: Usuario, attributes: ['id', 'activo'] }];
-
-    if (hostname.endsWith(`.${BASE_DOMAIN}`)) {
-      const sub = hostname.slice(0, -(`.${BASE_DOMAIN}`.length));
-      tienda = await Tienda.findOne({ where: { subdominio: sub, activo: true }, include: includeUsuario });
-    } else {
-      tienda = await Tienda.findOne({
-        where: { dominio_propio: hostname, dominio_propio_verificado: true, activo: true },
-        include: includeUsuario,
-      });
-    }
-
+    const tienda = await buscarTiendaPorHostname(hostname);
     if (!tienda) {
       return res.status(404).json({ message: 'No se encontró ninguna tienda en este dominio.' });
     }
@@ -66,4 +78,31 @@ async function resolverTienda(req, res, next) {
   }
 }
 
-module.exports = { resolverTienda, esAppPrincipal, BASE_DOMAIN, APP_HOSTNAME };
+/**
+ * Igual que resolverTienda, pero si el hostname no es de ninguna tienda
+ * deja `req.tienda = null` y sigue, en vez de responder 404.
+ *
+ * Existe porque *.gesicomm.com dejó de ser exclusivo de las tiendas:
+ * ahora también viven ahí los subdominios del Page Builder
+ * (calcula.gesicomm.com). El handler necesita poder preguntar "¿no es una
+ * tienda? probemos con una página del builder" antes de rendirse, y con
+ * el middleware original nunca llegaba a ejecutarse.
+ */
+async function resolverTiendaOpcional(req, res, next) {
+  try {
+    req.tienda = await buscarTiendaPorHostname(req.hostname);
+  } catch (err) {
+    console.error('[resolverTiendaOpcional]', err.message);
+    req.tienda = null;
+  }
+  return next();
+}
+
+module.exports = {
+  resolverTienda,
+  resolverTiendaOpcional,
+  buscarTiendaPorHostname,
+  esAppPrincipal,
+  BASE_DOMAIN,
+  APP_HOSTNAME,
+};

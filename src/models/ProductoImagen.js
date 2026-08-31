@@ -26,7 +26,6 @@ const ProductoImagen = sequelize.define('ProductoImagen', {
   variante_id: {
     type: DataTypes.INTEGER,
     allowNull: true,
-    defaultValue: null,
     comment: 'Si no es null, la imagen pertenece a esta variante específica (ej: foto del color rojo).',
   },
   url: {

@@ -27,6 +27,7 @@ const {
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 const { registrarHistorial } = require('../utils/historial');
 const PricingService = require('./pricing.service');
+const PaymentService = require('./payments/paymentService');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
@@ -1805,6 +1806,7 @@ class LandingService {
       // Qué pasa después de crear el pedido — ver CartDrawer.jsx.
       checkout: {
         redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp,
+        pasarelas: await PaymentService.getPublicGateways(tienda.usuario_id),
       },
       // null si está apagado o si no se cargó ni imagen ni título — así el
       // frontend público no tiene que repetir esa condición.
@@ -2243,12 +2245,35 @@ class LandingService {
       items: itemsParaEnvio,
     }, { include: [{ model: EnvioItem, as: 'items' }] });
 
+    // Procesar pasarela de pago si fue solicitada (ej. payment_method === 'pagopar')
+    const paymentMethod = datosCliente?.payment_method?.toLowerCase();
+    let paymentData = null;
+    
+    if (paymentMethod === 'pagopar') {
+      try {
+        // En la fase 2 se integrará la URL de retorno real
+        const returnUrl = 'https://api.gesicomm.com'; 
+        const trx = await PaymentService.createTransaction(nuevoEnvio, 'pagopar', returnUrl);
+        paymentData = {
+          payment_url: trx.payment_url,
+          hash_pedido: trx.hash_pedido,
+        };
+      } catch (error) {
+        console.error('[LandingService] Error al crear transacción de pago:', error.message);
+        // Podríamos hacer rollback del envío, o dejarlo como Pendiente de pago manual.
+        // Como el modelo asume Efectivo por defecto (hasta ahora), lo dejamos pasar
+        // pero avisamos al frontend del error.
+        paymentData = { error: error.message };
+      }
+    }
+
     await registrarHistorial(nuevoEnvio.id, null, 'Pedido creado automáticamente');
 
     return {
       pedido_id: nuevoEnvio.id,
       monto,
       redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp,
+      payment_data: paymentData,
     };
   }
 

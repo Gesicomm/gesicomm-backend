@@ -213,4 +213,42 @@ describe('LandingCodigoService.sanitizar', () => {
     expect(() => LandingCodigoService.sanitizar(null)).toThrow('Validación fallida.');
     expect(() => LandingCodigoService.sanitizar([])).toThrow('Validación fallida.');
   });
+
+  /**
+   * El Page Builder reutiliza este mismo sanitizador con límites propios,
+   * más altos (ver builderPageVersion.service.js). Estos tests fijan el
+   * contrato de esa extensión: llamarlo SIN opciones tiene que seguir
+   * comportándose exactamente como antes, o la extensión habría cambiado
+   * en silencio el comportamiento de las landings.
+   */
+  describe('límites por parámetro (contrato con el Page Builder)', () => {
+
+    it('sin opciones usa los límites de una landing, como siempre', () => {
+      const html = `<p>${'a'.repeat(LandingCodigoService.MAX_HTML)}</p>`;
+      expect(() => LandingCodigoService.sanitizar({ html }))
+        .toThrow('Validación fallida.');
+    });
+
+    it('con un límite más alto, ese mismo HTML entra', () => {
+      const html = `<p>${'a'.repeat(LandingCodigoService.MAX_HTML)}</p>`;
+      const r = LandingCodigoService.sanitizar({ html }, { maxHtml: 500 * 1024 });
+      expect(r.html).toContain('<p>');
+    });
+
+    it('el tope total corta aunque cada campo entre en el suyo', () => {
+      expect(() => LandingCodigoService.sanitizar(
+        { html: `<p>${'a'.repeat(60 * 1024)}</p>`, css: `/*${'b'.repeat(60 * 1024)}*/` },
+        { maxTotal: 100 * 1024 },
+      )).toThrow('Validación fallida.');
+    });
+
+    it('devuelve el tamaño en bytes de lo que quedó', () => {
+      const r = LandingCodigoService.sanitizar({ html: '<p>hola</p>', css: 'p{color:red}' });
+      expect(r.bytes).toBe(
+        Buffer.byteLength(r.html, 'utf8')
+        + Buffer.byteLength(r.css, 'utf8')
+        + Buffer.byteLength(r.js, 'utf8'),
+      );
+    });
+  });
 });

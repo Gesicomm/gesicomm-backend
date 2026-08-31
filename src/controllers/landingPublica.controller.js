@@ -17,6 +17,7 @@
 const { Landing, Tienda, Usuario } = require('../models');
 const LandingService = require('../services/landing.service');
 const MetaCapiService = require('../services/metaCapi.service');
+const BuilderPublicPageService = require('../services/builderPublicPage.service');
 
 const EVENTOS_PERMITIDOS = new Set(['Contact', 'AddToCart', 'InitiateCheckout', 'ViewContent', 'Lead']);
 const MAX_CONTENT_IDS = 40;
@@ -63,6 +64,26 @@ async function obtenerPorSlug(req, res) {
     }
 
     if (!tienda) {
+      // *.gesicomm.com ya no es exclusivo de las tiendas: ahí también
+      // viven los subdominios del Page Builder (calcula.gesicomm.com).
+      // Se resuelve acá, en la MISMA request, y no con un endpoint aparte
+      // que el SPA tendría que consultar primero: eso le agregaría una
+      // vuelta de red a cada visita de tienda, que son las que hoy tienen
+      // tráfico real.
+      const registro = await BuilderPublicPageService.resolverHostname(req.hostname);
+      if (registro) {
+        try {
+          const pagina = await BuilderPublicPageService.porHostname(registro, req.params.slug || null);
+          return res.json({ tipo: 'builder', disponible: true, ...pagina });
+        } catch (err) {
+          return res.status(err.status || 404).json({
+            message: err.message,
+            tipo: 'builder',
+            en_construccion: !!err.enConstruccion,
+          });
+        }
+      }
+
       return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
     }
 
@@ -264,6 +285,7 @@ async function crearCheckout(req, res) {
       departamento: limpiarTexto(body.departamento, 100),
       direccion: limpiarTexto(body.direccion, 255),
       referencia: limpiarTexto(body.referencia, MAX_TEXTO_LARGO),
+      payment_method: limpiarTexto(body.payment_method, 50),
       items: Array.isArray(body.items) ? body.items.slice(0, 40).map(i => ({
         content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
         variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,

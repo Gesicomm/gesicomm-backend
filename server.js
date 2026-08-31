@@ -29,6 +29,8 @@ const funnelRoutes = require('./src/routes/funnel');
 const landingTemplatesRoutes = require('./src/routes/landing-templates');
 const landingPublicaRoutes = require('./src/routes/landingPublica');
 const landingHtmlRoutes = require('./src/routes/landingHtml');
+const builderPublicaRoutes = require('./src/routes/builderPublica');
+const builderHtmlRoutes = require('./src/routes/builderHtml');
 const tiendaRoutes = require('./src/routes/tienda');
 const educacionRoutes = require('./src/routes/educacionRoutes');
 const adminEducacionRoutes = require('./src/routes/adminEducacionRoutes');
@@ -38,7 +40,10 @@ const metaReportesRoutes = require('./src/routes/metaReportes');
 const costosGastosRoutes = require('./src/routes/costosGastos');
 const categoriasCostosGastosRoutes = require('./src/routes/categoriasCostosGastos');
 const proveedoresRoutes = require('./src/routes/proveedores');
+const pageBuilderRoutes = require('./src/routes/pageBuilder');
 const healthRoutes = require('./src/routes/health');
+const paymentGatewaysRoutes = require('./src/routes/payment-gateways');
+const webhooksRoutes = require('./src/routes/webhooks');
 
 const app = express();
 // 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
@@ -79,7 +84,11 @@ const allowedOrigins = [
 // desde un origen fijo: cada tienda tiene el suyo (<sub>.gesicomm.com o su
 // dominio propio verificado), así que su Origin nunca puede estar en una
 // whitelist estática.
-const RUTAS_PUBLICAS_TIENDA = /^\/(api\/l|l)(\/|$)/;
+// /api/pb y /pb son las del Page Builder: mismo caso que las de tienda —
+// cada página vive en su propio hostname (calcula.gesicomm.com, o el
+// dominio propio del usuario), así que su Origin tampoco puede estar en
+// una whitelist estática.
+const RUTAS_PUBLICAS_TIENDA = /^\/(api\/l|l|api\/pb|pb)(\/|$)/;
 
 const corsApp = cors({
   origin: function (origin, callback) {
@@ -133,6 +142,12 @@ app.use((req, res, next) => (
 // campo (y el 422 con el motivo) lo pone landingCodigo.service.js; esto
 // es solo el techo del transporte.
 app.use('/api/mis-landings-simples', express.json({ limit: '600kb' }));
+// Mismo motivo que la línea de arriba: una página del Page Builder manda
+// su HTML/CSS/JS entero en el body. El techo de producto son 600 KB
+// sumando los tres campos (lo valida builderPageVersion.service.js con un
+// 422); acá va 1mb porque serializar 600 KB de HTML a JSON, con todo el
+// escapado de comillas, pasa holgadamente de 600 kb en el transporte.
+app.use('/api/page-builder', express.json({ limit: '1mb' }));
 app.use(express.json({ limit: '10kb' })); // Límite de tamaño para prevenir ataques
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 // Servir imágenes de productos subidas
@@ -186,12 +201,17 @@ app.use('/api/admin/educacion', adminEducacionRoutes);
 app.use('/api/publico', publicoRoutes);
 app.use('/api/l', landingPublicaRoutes);
 app.use('/l', landingHtmlRoutes);
+app.use('/api/pb', builderPublicaRoutes);
+app.use('/pb', builderHtmlRoutes);
 app.use('/api/reportes', reportesRoutes);
 app.use('/api/meta-reportes', metaReportesRoutes);
 app.use('/api/costos-gastos', costosGastosRoutes);
 app.use('/api/categorias-costos-gastos', categoriasCostosGastosRoutes);
 app.use('/api/proveedores', proveedoresRoutes);
+app.use('/api/page-builder', pageBuilderRoutes);
 app.use('/api/health', healthRoutes);
+app.use('/api/config/payment-gateways', paymentGatewaysRoutes);
+app.use('/api/webhooks', webhooksRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {

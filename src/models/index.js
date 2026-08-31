@@ -47,6 +47,16 @@ const MetaReporteFila = require('./MetaReporteFila');
 const Proveedor = require('./Proveedor');
 const CategoriaCostoGasto = require('./CategoriaCostoGasto');
 const CostoGasto = require('./CostoGasto');
+// Page Builder — módulo de páginas y funnels de código.
+// ⚠️ BuilderFunnel NO es Funnel: ver la cabecera de BuilderFunnel.js.
+const BuilderProject = require('./BuilderProject');
+const BuilderFunnel = require('./BuilderFunnel');
+const BuilderPage = require('./BuilderPage');
+const BuilderPageVersion = require('./BuilderPageVersion');
+const BuilderFunnelPage = require('./BuilderFunnelPage');
+const BuilderDomain = require('./BuilderDomain');
+const PaymentGateway = require('./PaymentGateway');
+const PaymentTransaction = require('./PaymentTransaction');
 
 // ============================================================
 // Relaciones existentes
@@ -343,6 +353,78 @@ CostoGasto.belongsTo(Envio, { as: 'envio', foreignKey: 'envio_id' });
 CostoGasto.hasMany(CostoGasto, { as: 'ocurrencias', foreignKey: 'parent_recurring_id' });
 CostoGasto.belongsTo(CostoGasto, { as: 'plantilla', foreignKey: 'parent_recurring_id' });
 
+// ============================================================
+// Page Builder
+//
+//   BuilderProject
+//     ├── BuilderPage    (funnel_id NULL → suelta)
+//     └── BuilderFunnel
+//           ├── BuilderPage        (funnel_id = X)
+//           └── BuilderFunnelPage  (orden + página de entrada)
+//
+//   BuilderPage ──< BuilderPageVersion   (versiones inmutables)
+//
+// ⚠️ BuilderFunnel no tiene nada que ver con Funnel (embudo de un producto
+//    sobre la tabla `landings`). Ver la cabecera de BuilderFunnel.js.
+//
+// ⚠️ NADA de esto se asocia con Tienda, y es a propósito: una página del
+//    Page Builder es independiente, no pertenece a ninguna tienda. El
+//    dueño es Usuario.
+// ============================================================
+Usuario.hasMany(BuilderProject, { foreignKey: 'usuario_id' });
+BuilderProject.belongsTo(Usuario, { as: 'dueño', foreignKey: 'usuario_id' });
+
+BuilderProject.hasMany(BuilderFunnel, { as: 'funnels', foreignKey: 'proyecto_id' });
+BuilderFunnel.belongsTo(BuilderProject, { as: 'proyecto', foreignKey: 'proyecto_id' });
+BuilderFunnel.belongsTo(Usuario, { as: 'dueño', foreignKey: 'usuario_id' });
+
+// Todas las páginas del proyecto, sueltas y de funnel. Para listar solo
+// las sueltas hay que filtrar funnel_id IS NULL — lo hace el service, no
+// un scope, para que quede a la vista en la consulta.
+BuilderProject.hasMany(BuilderPage, { as: 'paginas', foreignKey: 'proyecto_id' });
+BuilderPage.belongsTo(BuilderProject, { as: 'proyecto', foreignKey: 'proyecto_id' });
+
+BuilderFunnel.hasMany(BuilderPage, { as: 'paginas', foreignKey: 'funnel_id' });
+BuilderPage.belongsTo(BuilderFunnel, { as: 'funnel', foreignKey: 'funnel_id' });
+BuilderPage.belongsTo(Usuario, { as: 'dueño', foreignKey: 'usuario_id' });
+
+BuilderPage.hasMany(BuilderPageVersion, { as: 'versiones', foreignKey: 'pagina_id' });
+BuilderPageVersion.belongsTo(BuilderPage, { as: 'pagina', foreignKey: 'pagina_id' });
+BuilderPageVersion.belongsTo(Usuario, { as: 'autor', foreignKey: 'creado_por' });
+
+// Los dos punteros que separan lo que se edita de lo que ve el visitante.
+// Son FK circulares con la tabla de arriba: en la base se agregan con un
+// ALTER posterior (ver la migración).
+BuilderPage.belongsTo(BuilderPageVersion, { as: 'draft', foreignKey: 'draft_version_id' });
+BuilderPage.belongsTo(BuilderPageVersion, { as: 'publicada', foreignKey: 'published_version_id' });
+
+// El orden del funnel vive solo acá.
+BuilderFunnel.hasMany(BuilderFunnelPage, { as: 'pasos', foreignKey: 'funnel_id' });
+BuilderFunnelPage.belongsTo(BuilderFunnel, { as: 'funnel', foreignKey: 'funnel_id' });
+// hasOne y no hasMany: UNIQUE (pagina_id) en la base limita una página a
+// un solo funnel (ver BuilderFunnelPage.js).
+BuilderPage.hasOne(BuilderFunnelPage, { as: 'paso', foreignKey: 'pagina_id' });
+BuilderFunnelPage.belongsTo(BuilderPage, { as: 'pagina', foreignKey: 'pagina_id' });
+
+// Registro de hostnames: cada página suelta o funnel se publica en su
+// propia dirección (calcula.gesicomm.com, t2e.com.py). El target es una
+// página O un funnel, nunca los dos (CHECK en la base).
+Usuario.hasMany(BuilderDomain, { foreignKey: 'usuario_id' });
+BuilderDomain.belongsTo(Usuario, { as: 'dueño', foreignKey: 'usuario_id' });
+BuilderDomain.belongsTo(BuilderFunnel, { as: 'funnel', foreignKey: 'funnel_id' });
+BuilderDomain.belongsTo(BuilderPage, { as: 'pagina', foreignKey: 'pagina_id' });
+BuilderFunnel.hasMany(BuilderDomain, { as: 'hostnames', foreignKey: 'funnel_id' });
+BuilderPage.hasMany(BuilderDomain, { as: 'hostnames', foreignKey: 'pagina_id' });
+
+// ============================================================
+// Relaciones de Pasarelas de Pago
+// ============================================================
+Usuario.hasMany(PaymentGateway, { as: 'payment_gateways', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+PaymentGateway.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' });
+
+Envio.hasOne(PaymentTransaction, { as: 'payment_transaction', foreignKey: 'envio_id', onDelete: 'CASCADE' });
+PaymentTransaction.belongsTo(Envio, { as: 'envio', foreignKey: 'envio_id' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -399,4 +481,12 @@ module.exports = {
   Proveedor,
   CategoriaCostoGasto,
   CostoGasto,
+  BuilderProject,
+  BuilderFunnel,
+  BuilderPage,
+  BuilderPageVersion,
+  BuilderFunnelPage,
+  BuilderDomain,
+  PaymentGateway,
+  PaymentTransaction,
 };

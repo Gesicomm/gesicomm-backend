@@ -56,19 +56,16 @@ const MetaCampanaInterna = sequelize.define('MetaCampanaInterna', {
     type: DataTypes.ENUM('whatsapp', 'web'),
     allowNull: false,
     defaultValue: 'web',
-    comment: 'Canal principal de la campaña, elegido a mano al crearla (todavía no existe en Meta para poder derivarlo del objective, a diferencia de la tabla "en vivo").',
   },
   codigo: {
     type: DataTypes.STRING(12),
     allowNull: false,
     unique: true,
-    comment: 'Token corto embebido en nombre_interno, usado para matchear filas de reporte. Inmutable.',
   },
   nombre_interno: {
     type: DataTypes.STRING(255),
     allowNull: false,
     unique: true,
-    comment: 'Texto completo a copiar como nombre de campaña en Meta Ads Manager, ej: "[GSC-A3F9K1] Cejas - The Converter".',
   },
   nombre_display: {
     type: DataTypes.STRING(150),

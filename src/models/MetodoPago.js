@@ -30,7 +30,6 @@ const MetodoPago = sequelize.define('MetodoPago', {
     type: DataTypes.ENUM('negocio', 'courier'),
     allowNull: false,
     defaultValue: 'negocio',
-    comment: 'Quién tiene físicamente el dinero cobrado con este método: "courier" (efectivo, transferencia a su cuenta — debe rendir monto-costo_envio) o "negocio" (transferencia a la cuenta de la empresa, POS — la tienda le debe el costo_envio al courier). Reemplaza comparaciones de texto hardcodeadas en el motor de rendición.',
   },
   activo: {
     type: DataTypes.BOOLEAN,

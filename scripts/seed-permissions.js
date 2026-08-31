@@ -22,6 +22,11 @@ const permisosDisponibles = [
   { nombre: 'gestionar_landing', descripcion: 'Crear, editar, publicar y despublicar landings públicas propias' },
   { nombre: 'gestionar_tienda', descripcion: 'Configurar la tienda propia: subdominio, dominio propio, colores, contacto y pixel' },
   { nombre: 'gestionar_meta_ads', descripcion: 'Crear campañas internas de Meta Ads, importar reportes CSV y ver métricas por producto' },
+  // Page Builder — el permiso existe desde ya, pero routes/pageBuilder.js
+  // todavía usa soloAdministrador: el módulo no está liberado a los
+  // usuarios. Cuando se libere, se cambian dos líneas ahí y este permiso
+  // pasa a ser el que manda.
+  { nombre: 'gestionar_paginas', descripcion: 'Crear, editar, versionar y publicar páginas y funnels del Page Builder' },
   // Cumplimiento
   { nombre: 'gestionar_solicitudes_datos', descripcion: 'Ver y resolver solicitudes de eliminación de datos y mensajes del formulario público de contacto' },
   // Finanzas — Costos y Gastos

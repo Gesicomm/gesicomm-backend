@@ -43,10 +43,13 @@ const express = require('express');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
 
-const { resolverTienda } = require('../middleware/resolverTienda');
+const { resolverTiendaOpcional } = require('../middleware/resolverTienda');
 const LandingService = require('../services/landing.service');
-
-const BOT_UA_RE = /facebookexternalhit|Facebot|WhatsApp|Twitterbot|LinkedInBot|Googlebot|Slackbot|TelegramBot|Discordbot|Pinterest|Bingbot/i;
+const BuilderPublicPageService = require('../services/builderPublicPage.service');
+// La deteccion de bots y el HTML de Open Graph viven en utils/ogHtml.js:
+// los comparte con routes/builderHtml.js (Page Builder). Tener dos copias
+// garantizaba que en unos meses una tuviera twitter:card y la otra no.
+const { esBot, paginaOg } = require('../utils/ogHtml');
 
 const limiteHtml = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -59,45 +62,17 @@ const limiteHtml = rateLimit({
   },
 });
 
-function escapeHtml(valor = '') {
-  return String(valor).replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
-}
-
-function paginaOg({ titulo, descripcion, imagen, url, keywords }) {
-  const t = escapeHtml(titulo);
-  const d = escapeHtml(descripcion);
-  const u = escapeHtml(url);
-  const imgTag = imagen ? `<meta property="og:image" content="${escapeHtml(imagen)}">\n<meta name="twitter:card" content="summary_large_image">` : '';
-  const keywordsTag = keywords ? `<meta name="keywords" content="${escapeHtml(keywords)}">` : '';
-  return `<!doctype html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<title>${t}</title>
-<meta name="description" content="${d}">
-${keywordsTag}
-<meta property="og:type" content="website">
-<meta property="og:title" content="${t}">
-<meta property="og:description" content="${d}">
-<meta property="og:url" content="${u}">
-${imgTag}
-</head>
-<body>
-<h1>${t}</h1>
-<p>${d}</p>
-<a href="${u}">Ver catálogo</a>
-</body>
-</html>`;
-}
-
 async function manejarSolicitudPublica(req, res) {
+  // *.gesicomm.com dejó de ser exclusivo de las tiendas: ahí también viven
+  // los subdominios del Page Builder (calcula.gesicomm.com). Si el
+  // hostname no es de ninguna tienda, antes de dar 404 hay que preguntarle
+  // al builder. Por eso el middleware de acá abajo es la variante
+  // "opcional" de resolverTienda, que no corta con 404 por su cuenta.
   if (!req.tienda) {
-    return res.status(404).send('No se encontró ninguna tienda en este dominio.');
+    return manejarPaginaDelBuilder(req, res);
   }
 
-  const esBot = BOT_UA_RE.test(req.headers['user-agent'] || '');
+  const esUnBot = esBot(req.headers['user-agent']);
   // La home de la tienda es la raíz pelada; un funnel/landing con slug
   // propio cuelga directo de esa raíz (https://<tienda>.gesicomm.com/mi-promo),
   // sin el viejo prefijo "/l". El og:url tiene que ser esa URL canónica y
@@ -106,7 +81,7 @@ async function manejarSolicitudPublica(req, res) {
     ? `https://${req.hostname}/${req.params.slug}`
     : `https://${req.hostname}`;
 
-  if (!esBot) {
+  if (!esUnBot) {
     res.setHeader('X-Accel-Redirect', '/_frontend-shell/');
     return res.status(200).end();
   }
@@ -120,6 +95,7 @@ async function manejarSolicitudPublica(req, res) {
         descripcion: 'Este catálogo no está disponible en este momento.',
         imagen: null,
         url: destino,
+        cta: 'Ver catálogo',
       }));
     }
 
@@ -140,6 +116,7 @@ async function manejarSolicitudPublica(req, res) {
       imagen: imagenAbsoluta,
       url: destino,
       keywords: seo.keywords || null,
+      cta: 'Ver catálogo',
     }));
   } catch (err) {
     console.error('[landing-html] error:', err.message);
@@ -147,7 +124,53 @@ async function manejarSolicitudPublica(req, res) {
   }
 }
 
-router.use(limiteHtml, resolverTienda);
+/**
+ * El hostname no es de ninguna tienda: puede ser una página del Page
+ * Builder. Mismo trato que una landing — al humano se le sirve el SPA vía
+ * X-Accel-Redirect y al bot un HTML con las meta tags de Open Graph.
+ *
+ * La lógica de armado la comparte con routes/builderHtml.js a través de
+ * utils/ogHtml.js; lo único propio de acá es el orden de resolución
+ * (primero tienda, después builder).
+ */
+async function manejarPaginaDelBuilder(req, res) {
+  const registro = await BuilderPublicPageService.resolverHostname(req.hostname);
+
+  if (!registro) {
+    return res.status(404).send('No se encontró ninguna tienda ni página en este dominio.');
+  }
+
+  if (!esBot(req.headers['user-agent'])) {
+    res.setHeader('X-Accel-Redirect', '/_frontend-shell/');
+    return res.status(200).end();
+  }
+
+  const destino = req.params.slug
+    ? `https://${req.hostname}/${req.params.slug}`
+    : `https://${req.hostname}`;
+
+  try {
+    const { seo } = await BuilderPublicPageService.porHostname(registro, req.params.slug || null);
+    const imagen = seo.og_imagen ? `${req.protocol}://${req.get('host')}${seo.og_imagen}` : null;
+
+    return res.status(200).send(paginaOg({
+      titulo: seo.og_titulo || seo.titulo,
+      descripcion: seo.og_descripcion || seo.descripcion,
+      imagen,
+      favicon: seo.favicon,
+      url: destino,
+    }));
+  } catch (err) {
+    return res.status(err.status === 404 ? 404 : 500).send(paginaOg({
+      titulo: err.enConstruccion ? 'Página en construcción' : 'Página no encontrada',
+      descripcion: err.enConstruccion ? 'Volvé en un rato.' : '',
+      imagen: null,
+      url: destino,
+    }));
+  }
+}
+
+router.use(limiteHtml, resolverTiendaOpcional);
 router.get('/', manejarSolicitudPublica);
 router.get('/:slug', manejarSolicitudPublica);
 

@@ -61,7 +61,6 @@ const ProductoCombo = sequelize.define('ProductoCombo', {
     type: DataTypes.ENUM('BORRADOR', 'ACTIVO', 'INACTIVO'),
     allowNull: false,
     defaultValue: 'BORRADOR',
-    comment: 'BORRADOR = en configuración. ACTIVO = publicado. INACTIVO = desactivado.',
   },
   fecha_inicio: {
     type: DataTypes.DATE,

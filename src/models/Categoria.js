@@ -20,7 +20,6 @@ const Categoria = sequelize.define('Categoria', {
   parent_id: {
     type: DataTypes.INTEGER,
     allowNull: true,
-    defaultValue: null,
     comment: 'Auto-referencia para subcategorías. NULL = categoría raíz.',
   },
   nombre: {

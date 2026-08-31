@@ -20,7 +20,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const router = express.Router();
 
-const { resolverTienda } = require('../middleware/resolverTienda');
+const { resolverTiendaOpcional } = require('../middleware/resolverTienda');
 const ctrl = require('../controllers/landingPublica.controller');
 
 const limitePublico = rateLimit({
@@ -66,18 +66,18 @@ const limiteCheckout = rateLimit({
 // El rate limit corre antes que resolverTienda a propósito (igual que
 // antes): así una ráfaga de tráfico abusivo se corta sin gastar una
 // consulta a la base por request.
-router.get('/', limitePublico, resolverTienda, ctrl.obtenerPorSlug);   // landing es_home de la tienda del hostname
-router.post('/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
-router.post('/checkout', limiteCheckout, resolverTienda, ctrl.crearCheckout);
+router.get('/', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);   // landing es_home de la tienda del hostname
+router.post('/eventos', limiteEventos, resolverTiendaOpcional, ctrl.registrarEvento);
+router.post('/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheckout);
 // Recálculo de carrito en vivo: mismo rate limit que el GET (limitePublico)
 // y no limiteCheckout — no crea ningún pedido, es solo lectura, y el
 // frontend lo llama seguido (cada cambio de cantidad/oferta).
-router.post('/carrito', limitePublico, resolverTienda, ctrl.recalcularCarrito);
-router.get('/producto/:productoSlug', limitePublico, resolverTienda, ctrl.obtenerProducto);
-router.get('/:slug', limitePublico, resolverTienda, ctrl.obtenerPorSlug);
-router.get('/:slug/producto/:productoSlug', limitePublico, resolverTienda, ctrl.obtenerProducto);
-router.post('/:slug/eventos', limiteEventos, resolverTienda, ctrl.registrarEvento);
-router.post('/:slug/checkout', limiteCheckout, resolverTienda, ctrl.crearCheckout);
-router.post('/:slug/carrito', limitePublico, resolverTienda, ctrl.recalcularCarrito);
+router.post('/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
+router.get('/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
+router.get('/:slug', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);
+router.get('/:slug/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
+router.post('/:slug/eventos', limiteEventos, resolverTiendaOpcional, ctrl.registrarEvento);
+router.post('/:slug/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheckout);
+router.post('/:slug/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
 
 module.exports = router;
