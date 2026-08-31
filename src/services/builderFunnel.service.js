@@ -180,6 +180,14 @@ class BuilderFunnelService {
   /** Borra el funnel Y sus páginas (ON DELETE CASCADE). La UI confirma antes. */
   static async eliminar(id, usuario_id) {
     const funnel = await this.buscarPropio(id, usuario_id);
+    
+    // El modelo BuilderDomain tiene un CHECK que exige tener o pagina_id o funnel_id.
+    // Si la FK en la base hace SET NULL por defecto (o Sequelize lo intenta),
+    // borrar el funnel dejaría los dominios huérfanos, rompiendo el CHECK.
+    // Borramos los dominios a mano primero.
+    const { BuilderDomain } = require('../models');
+    await BuilderDomain.destroy({ where: { funnel_id: funnel.id } });
+
     await funnel.destroy();
     return true;
   }

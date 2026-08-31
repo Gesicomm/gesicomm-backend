@@ -317,6 +317,11 @@ class BuilderPageService {
 
   static async eliminar(id, usuario_id) {
     const pagina = await this.buscarPropia(id, usuario_id);
+
+    // Evitamos violar chk_builder_domains_target (igual que al borrar funnel).
+    const { BuilderDomain } = require('../models');
+    await BuilderDomain.destroy({ where: { pagina_id: pagina.id } });
+
     // Las versiones se van por ON DELETE CASCADE, y el paso del funnel
     // también (ver la migración). No hace falta borrarlos a mano.
     await pagina.destroy();
