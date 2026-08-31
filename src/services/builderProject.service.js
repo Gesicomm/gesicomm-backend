@@ -169,6 +169,23 @@ class BuilderProjectService {
   /** Cascada: se lleva funnels, páginas, versiones y pasos. La UI confirma. */
   static async eliminar(id, usuario_id) {
     const proyecto = await this.buscarPropio(id, usuario_id);
+    
+    // Al igual que con funnels y páginas, borrar el proyecto dispara un CASCADE
+    // que borrará funnels y páginas, y eso intentará hacer SET NULL en builder_domains,
+    // rompiendo el CHECK chk_builder_domains_target.
+    // Borramos los dominios a mano primero.
+    const { BuilderDomain, BuilderFunnel, BuilderPage } = require('../models');
+    
+    const funnels = await BuilderFunnel.findAll({ where: { proyecto_id: proyecto.id }, attributes: ['id'] });
+    const paginas = await BuilderPage.findAll({ where: { proyecto_id: proyecto.id }, attributes: ['id'] });
+    
+    if (funnels.length) {
+      await BuilderDomain.destroy({ where: { funnel_id: funnels.map(f => f.id) } });
+    }
+    if (paginas.length) {
+      await BuilderDomain.destroy({ where: { pagina_id: paginas.map(p => p.id) } });
+    }
+
     await proyecto.destroy();
     return true;
   }
