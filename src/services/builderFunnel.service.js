@@ -185,8 +185,14 @@ class BuilderFunnelService {
     // Si la FK en la base hace SET NULL por defecto (o Sequelize lo intenta),
     // borrar el funnel dejaría los dominios huérfanos, rompiendo el CHECK.
     // Borramos los dominios a mano primero.
-    const { BuilderDomain } = require('../models');
+    const { BuilderDomain, BuilderPage } = require('../models');
     await BuilderDomain.destroy({ where: { funnel_id: funnel.id } });
+
+    // Sequelize, por defecto, si no se especifica onDelete: 'CASCADE' en las
+    // asociaciones hasMany, al borrar el padre hace un UPDATE a SET NULL de los
+    // hijos antes de borrar. Eso hace que las páginas pasen a ser "sueltas" en
+    // vez de borrarse junto al funnel. Las borramos a mano para evitarlo.
+    await BuilderPage.destroy({ where: { funnel_id: funnel.id } });
 
     await funnel.destroy();
     return true;

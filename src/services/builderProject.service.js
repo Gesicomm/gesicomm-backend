@@ -186,6 +186,11 @@ class BuilderProjectService {
       await BuilderDomain.destroy({ where: { pagina_id: paginas.map(p => p.id) } });
     }
 
+    // Para evitar que Sequelize intercepte y haga un UPDATE SET NULL,
+    // destruimos las páginas y funnels explícitamente primero.
+    await BuilderPage.destroy({ where: { proyecto_id: proyecto.id } });
+    await BuilderFunnel.destroy({ where: { proyecto_id: proyecto.id } });
+
     await proyecto.destroy();
     return true;
   }
