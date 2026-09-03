@@ -47,6 +47,7 @@ const MetaReporteFila = require('./MetaReporteFila');
 const Proveedor = require('./Proveedor');
 const CategoriaCostoGasto = require('./CategoriaCostoGasto');
 const CostoGasto = require('./CostoGasto');
+const CanalVenta = require('./CanalVenta');
 // Page Builder — módulo de páginas y funnels de código.
 // ⚠️ BuilderFunnel NO es Funnel: ver la cabecera de BuilderFunnel.js.
 const BuilderProject = require('./BuilderProject');
@@ -87,6 +88,11 @@ Envio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
 Courier.hasMany(Envio, { foreignKey: 'courier_id' });
 Envio.belongsTo(Courier, { foreignKey: 'courier_id' });
+
+// SET NULL y no CASCADE: desactivar o borrar un canal no puede llevarse
+// puestos los pedidos que entraron por él (su `origen` histórico sigue ahí).
+CanalVenta.hasMany(Envio, { foreignKey: 'canal_venta_id', onDelete: 'SET NULL' });
+Envio.belongsTo(CanalVenta, { as: 'canal_venta', foreignKey: 'canal_venta_id' });
 
 Envio.hasMany(EnvioItem, { as: 'items', foreignKey: 'envio_id', onDelete: 'CASCADE' });
 EnvioItem.belongsTo(Envio, { foreignKey: 'envio_id' });
@@ -480,6 +486,7 @@ module.exports = {
   MetaReporteFila,
   Proveedor,
   CategoriaCostoGasto,
+  CanalVenta,
   CostoGasto,
   BuilderProject,
   BuilderFunnel,

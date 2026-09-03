@@ -1057,6 +1057,16 @@ class LandingService {
     const landing = await Landing.findOne({ where: { id, tienda_id }, attributes: ['id'] });
     if (!landing) throw new Error('Landing no encontrada.');
 
+    // Filtro por producto: solo aplica a los eventos con items[] (AddToCart,
+    // InitiateCheckout, Contact/Lead) o custom_data.content_name — un
+    // 'visita' es un pageview de la landing completa, sin producto asociado,
+    // así que ese total queda sin filtrar (ver visitas_sin_filtrar abajo).
+    let productoNombreFiltro = null;
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      const producto = await Producto.findOne({ where: { id: filtros.producto_id }, attributes: ['nombre'] });
+      productoNombreFiltro = producto ? producto.nombre.trim().toLowerCase() : '__sin_coincidencia__';
+    }
+
     const { desde, hasta } = resolverRangoFechas(filtros);
     const desdeDate = new Date(`${desde}T00:00:00`);
     const hastaDate = new Date(`${hasta}T23:59:59.999`);
@@ -1122,6 +1132,15 @@ class LandingService {
     const intencionesYaValorizadas = new Set();
 
     todosEventos.forEach(c => {
+      if (productoNombreFiltro) {
+        const items = Array.isArray(c.payload?.items) ? c.payload.items : null;
+        const nombreSuelto = c.payload?.custom_data?.content_name;
+        const coincide = items
+          ? items.some(it => (it?.nombre || '').trim().toLowerCase() === productoNombreFiltro)
+          : (nombreSuelto || '').trim().toLowerCase() === productoNombreFiltro;
+        if (!coincide) return;
+      }
+
       const dia = formatYMD(c.created_at);
       const diaStat = serieMap.get(dia);
 
@@ -1188,6 +1207,10 @@ class LandingService {
       valor_carritos: valorCarritosTotal,
       serie: [...serieMap.values()],
       productos_mas_consultados,
+      // Con filtro de producto activo, "visitas" sigue siendo el total de la
+      // landing completa — un pageview no lleva producto asociado, no hay
+      // forma honesta de partirlo. El frontend lo aclara con esta bandera.
+      visitas_sin_filtrar: Boolean(productoNombreFiltro),
     };
   }
 
@@ -1585,14 +1608,6 @@ class LandingService {
         stock: esCombo ? (productoParaFiltros?.cantidad_disponible ?? null) : entidad.cantidad_disponible,
         variantes: variantesDto,
         ofertas: ofertasDto,
-        // Ficha rediseñada del template Fitness: SOLO las secciones que este
-        // producto pisa en esta landing. Se publica cruda (no resuelta) a
-        // propósito: el navegador la mezcla con `content.ficha_fitness` y con
-        // los campos de marketing de más abajo usando el MISMO módulo que usa
-        // el editor (templates/fitness/fichaFitness.js), así preview y
-        // publicada no pueden dar resultados distintos. Ver la nota de
-        // `content` al final de este DTO: del resto del override por producto
-        // no se publica nada.
         ficha: !esCombo ? (override?.ficha || null) : null,
         // Ídem para la ficha de Electrónica & Tecnología: solo lo que este
         // producto pisa en esta landing. El navegador la mezcla con

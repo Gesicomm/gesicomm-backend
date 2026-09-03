@@ -97,10 +97,17 @@ const Envio = sequelize.define('Envio', {
     allowNull: true,
   },
   // --- Atribución comercial y canales (Escalabilidad ERP) ---
+  // Valor histórico de texto libre. Se conserva como snapshot de los
+  // pedidos anteriores al catálogo de canales; lo que manda ahora es
+  // canal_venta_id (ver CanalVenta).
   origen: {
     type: DataTypes.STRING(50),
     allowNull: false,
     defaultValue: 'WEB',
+  },
+  canal_venta_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
   },
   campaign_name: {
     type: DataTypes.STRING(255),

@@ -412,9 +412,28 @@ class LandingSimpleService {
     return landing.toJSON();
   }
 
+  /**
+   * Borra la landing y, si era la principal del sitio, se lleva también sus
+   * páginas satélite. Catálogo y Contacto no existen por sí solas: las crea
+   * LandingService.asegurarPaginasFijas junto a la home y solo se sirven
+   * como parte de ese mismo sitio. Al borrar únicamente la home quedaban
+   * colgadas, apuntando a una tienda que ya no tiene página principal — y
+   * como `listar()` de LandingService devuelve todas, después reaparecían
+   * como si el comercio todavía tuviera una landing.
+   *
+   * Los funnels (tipo_pagina 'funnel') NO se tocan: son páginas de producto
+   * con vida propia, no satélites de la home.
+   */
   static async eliminar(id, tienda_id) {
     const landing = await this.buscarPropia(id, tienda_id);
+    const eraPrincipal = Boolean(landing.es_home) || landing.tipo_pagina === 'inicio';
     await landing.destroy();
+
+    if (eraPrincipal) {
+      await Landing.destroy({
+        where: { tienda_id, tipo_pagina: { [Op.in]: ['catalogo', 'contacto'] } },
+      });
+    }
     return true;
   }
 

@@ -1,6 +1,6 @@
 'use strict';
 
-const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto, CategoriaCostoGasto, PaymentTransaction, CanalVenta } = require('../models');
 const { Op, fn, col, literal } = require('sequelize');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
@@ -27,10 +27,10 @@ function costoDeItem(item) {
 }
 
 // 1. Embudo Integral de Conversión (Funnel)
-async function getResumenFunnel(whereBase) {
+async function getResumenFunnel(whereBase, canalesCatalogo = []) {
   const envios = await Envio.findAll({
     where: whereBase,
-    attributes: ['id', 'estado', 'estado_comercial', 'estado_logistico', 'courier_id', 'origen', 'monto'],
+    attributes: ['id', 'estado', 'estado_comercial', 'estado_logistico', 'courier_id', 'origen', 'canal_venta_id', 'monto'],
     raw: true,
   });
 
@@ -43,10 +43,25 @@ async function getResumenFunnel(whereBase) {
   let enTransito = 0;
   let perdidos = 0;
 
-  let webTotal = 0;
-  let webConfirmados = 0;
-  let whatsappTotal = 0;
-  let whatsappConfirmados = 0;
+  // Contadores por canal — 'landing' es su propio bucket (checkout propio con
+  // formulario, ver landing.service.js crearCheckout) en vez de diluirse en
+  // "otros": es la única forma de armar el Embudo de Formularios Web.
+  // Los buckets salen del catálogo `canales_venta` (tabla, no constantes):
+  // agregar un canal es cargar una fila, no tocar este archivo. Se indexan
+  // por id y por slug para poder ubicar tanto un pedido ya migrado
+  // (canal_venta_id) como uno viejo que todavía tiene el `origen` de texto.
+  const canales = {};
+  const canalPorId = new Map();
+  const canalPorSlug = new Map();
+  for (const c of canalesCatalogo) {
+    canales[c.slug] = { canal_id: c.id, nombre: c.nombre, total: 0, cancelados: 0, confirmados: 0, entregados: 0 };
+    canalPorId.set(c.id, canales[c.slug]);
+    canalPorSlug.set(c.slug, canales[c.slug]);
+  }
+  // "Sin canal" recoge los pedidos que todavía no tienen canal asignado y
+  // cuyo `origen` histórico no coincide con ninguno del catálogo. Existe
+  // para que ningún pedido (ni su facturación) desaparezca del reporte.
+  canales.sin_canal = { canal_id: null, nombre: 'Sin canal', total: 0, cancelados: 0, confirmados: 0, entregados: 0 };
 
   for (const e of envios) {
     const st = (e.estado || '').toLowerCase();
@@ -60,30 +75,31 @@ async function getResumenFunnel(whereBase) {
     const isConfirmado = stCom === 'confirmado' || ['confirmado', 'preparado', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st);
     const isCancelado = stCom === 'cancelado' || stCom === 'rechazado' || st === 'cancelado';
 
-    if (isConfirmado) confirmados++;
-    if (isCancelado) cancelados++;
-
-    if (origen === 'WEB') {
-      webTotal++;
-      if (isConfirmado) webConfirmados++;
-    } else if (origen === 'WHATSAPP') {
-      whatsappTotal++;
-      if (isConfirmado) whatsappConfirmados++;
-    }
-
     // Logística
     const isDespachado = Boolean(e.courier_id) || ['despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st) || ['asignado', 'despachado', 'entregado', 'devuelto', 'perdido'].includes(stLog);
     const isEntregado = st === 'entregado' || stLog === 'entregado';
     const isDevuelto = ['devuelto', 'no entregado', 'fallido'].includes(st) || stLog === 'devuelto';
     const isTransito = st === 'despachado' || stLog === 'despachado';
+    const isPerdido = st === 'perdido' || stLog === 'perdido';
 
+    if (isConfirmado) confirmados++;
+    if (isCancelado) cancelados++;
     if (isDespachado) despachados++;
     if (isEntregado) entregados++;
     if (isDevuelto) devueltos++;
     if (isTransito) enTransito++;
-    
-    const isPerdido = st === 'perdido' || stLog === 'perdido';
     if (isPerdido) perdidos++;
+
+    // Primero el canal asignado; si el pedido todavía no fue migrado, se
+    // intenta ubicar por el `origen` de texto. El guion bajo se normaliza a
+    // guion porque los slugs del catálogo usan guion (META_ADS → meta-ads).
+    const canal = canalPorId.get(e.canal_venta_id)
+      || canalPorSlug.get(origen.toLowerCase().replace(/_/g, '-'))
+      || canales.sin_canal;
+    canal.total++;
+    if (isCancelado) canal.cancelados++;
+    if (isConfirmado) canal.confirmados++;
+    if (isEntregado) canal.entregados++;
   }
 
   const pctConfirmacion = totalCreados > 0 ? Number(((confirmados / totalCreados) * 100).toFixed(1)) : 0;
@@ -93,8 +109,13 @@ async function getResumenFunnel(whereBase) {
   const pctPerdida = totalCreados > 0 ? Number(((perdidos / totalCreados) * 100).toFixed(1)) : 0;
   const pctCancelacion = totalCreados > 0 ? Number(((cancelados / totalCreados) * 100).toFixed(1)) : 0;
 
-  const pctWebConf = webTotal > 0 ? Number(((webConfirmados / webTotal) * 100).toFixed(1)) : 0;
-  const pctWppConf = whatsappTotal > 0 ? Number(((whatsappConfirmados / whatsappTotal) * 100).toFixed(1)) : 0;
+  // tasa por canal = confirmados/total, para no romper nada que ya la consuma;
+  // efectividad (entregados/total) queda como campo aparte para el Embudo
+  // WhatsApp / Formularios Web, que necesitan ambas cosas.
+  for (const canal of Object.values(canales)) {
+    canal.tasa = canal.total > 0 ? Number(((canal.confirmados / canal.total) * 100).toFixed(1)) : 0;
+    canal.efectividad = canal.total > 0 ? Number(((canal.entregados / canal.total) * 100).toFixed(1)) : 0;
+  }
 
   return {
     total_creados: totalCreados,
@@ -111,17 +132,7 @@ async function getResumenFunnel(whereBase) {
     tasa_entrega: pctEntrega,
     tasa_devolucion: pctDevolucion,
     tasa_perdida: pctPerdida,
-    canales: {
-      web: { total: webTotal, confirmados: webConfirmados, tasa: pctWebConf },
-      whatsapp: { total: whatsappTotal, confirmados: whatsappConfirmados, tasa: pctWppConf },
-      otros: {
-        total: totalCreados - (webTotal + whatsappTotal),
-        confirmados: confirmados - (webConfirmados + whatsappConfirmados),
-        tasa: (totalCreados - (webTotal + whatsappTotal)) > 0
-          ? Number((((confirmados - (webConfirmados + whatsappConfirmados)) / (totalCreados - (webTotal + whatsappTotal))) * 100).toFixed(1))
-          : 0,
-      }
-    }
+    canales,
   };
 }
 
@@ -199,6 +210,11 @@ async function getKpisFinancieros(whereBase) {
     valor_perdido: valorPerdido,
     ticket_promedio: ticketPromedio,
     costo_logistico_total: costoLogisticoTotal,
+    // El que realmente entra en margen_bruto_estimado es el de los pedidos
+    // ENTREGADOS; `costo_logistico_total` incluye además los que no se
+    // entregaron. Se exponen los dos para que la tarjeta de Rentabilidad
+    // pueda mostrar el importe que efectivamente se restó y cierre la cuenta.
+    costo_logistico_entregados: costoLogisticoEntregados,
     costo_logistico_por_entrega: costoLogisticoPorEntrega,
     costo_mercaderia_entregada: costoMercaderiaEntregada,
     costo_comision_total: Math.round(costoComisionTotal),
@@ -231,7 +247,23 @@ async function getGastosOperativos(usuario_id, desde, hasta) {
 
   const gastos = Number(filas.find(f => f.tipo === 'gasto')?.total || 0);
   const costosAdicionales = Number(filas.find(f => f.tipo === 'costo')?.total || 0);
-  return { gastos_operativos: gastos, costos_operativos_adicionales: costosAdicionales, total: gastos + costosAdicionales };
+
+  // Desglose por categoría (Alquiler, Salarios, Publicidad/Meta Ads, etc.) —
+  // no existe un concepto fijo de "gasto de Meta Ads" en el sistema: si el
+  // usuario carga su gasto publicitario como CostoGasto con esa categoría,
+  // este desglose es lo que lo saca a la luz en el dashboard.
+  const filasCategoria = await CostoGasto.findAll({
+    where: { usuario_id, activo: true, envio_id: null, fecha: { [Op.between]: [desde, hasta] } },
+    attributes: [[fn('SUM', col('importe')), 'total']],
+    include: [{ model: CategoriaCostoGasto, as: 'categoria', attributes: ['nombre'] }],
+    group: ['categoria.id', 'categoria.nombre'],
+    raw: true,
+  });
+  const porCategoria = filasCategoria
+    .map(f => ({ categoria: f['categoria.nombre'] || 'Sin categoría', total: Number(f.total || 0) }))
+    .sort((a, b) => b.total - a.total);
+
+  return { gastos_operativos: gastos, costos_operativos_adicionales: costosAdicionales, total: gastos + costosAdicionales, por_categoria: porCategoria };
 }
 
 // 3. Ranking de Productos (¿Qué se vende, confirma y devuelve más?)
@@ -269,6 +301,11 @@ async function getProductosAnalytics(whereBase) {
             sku: item.Producto ? item.Producto.sku : null,
             total_pedidos: 0,
             unidades_totales: 0,
+            // Unidades de pedidos ENTREGADOS. `unidades_totales` cuenta las
+            // de todos los pedidos (pendientes y cancelados incluidos), así
+            // que no es comparable con facturacion_total/costo_total, que
+            // solo suman entregados. "Cuántas vendí de verdad" es esta.
+            unidades_entregadas: 0,
             confirmados: 0,
             entregados: 0,
             devueltos: 0,
@@ -284,6 +321,7 @@ async function getProductosAnalytics(whereBase) {
         if (isConfirmado) p.confirmados += 1;
         if (isEntregado) {
           p.entregados += 1;
+          p.unidades_entregadas += (item.cantidad || 1);
           p.facturacion_total += Number(item.subtotal || item.precio_unitario * (item.cantidad || 1) || 0);
           p.costo_total += costoDeItem(item);
         }
@@ -581,12 +619,25 @@ async function getCouriersAnalytics(whereBase, usuario_id) {
   return lista.sort((a, b) => b.total_asignados - a.total_asignados);
 }
 
-// 6. Timeline de Tendencias (Sparklines)
+// 6. Timeline de Tendencias (Sparklines) — incluye costo/ganancia por día
+// para el gráfico de "Evolución de Ventas" del dashboard: mismo cálculo de
+// costo por pedido que ya usa getKpisFinancieros (costo_envio + costo de
+// mercadería vía costoDeItem + comisión + IVA estimado), solo que acumulado
+// día por día en vez de para todo el período.
 async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
   const envios = await Envio.findAll({
     where: whereBase,
-    attributes: ['id', 'fecha', 'dispatchedAt', 'estado', 'monto'],
-    raw: true,
+    attributes: ['id', 'fecha', 'dispatchedAt', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura'],
+    include: [
+      {
+        model: EnvioItem,
+        as: 'items',
+        include: [
+          { model: Producto, attributes: ['id', 'precio_costo'] },
+          { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
+        ],
+      }
+    ]
   });
 
   const mapTimeline = {};
@@ -596,7 +647,7 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
     if (!f) continue;
 
     if (!mapTimeline[f]) {
-      mapTimeline[f] = { fecha: f, pedidos: 0, confirmados: 0, entregados: 0, devueltos: 0, perdidos: 0, cancelados: 0, monto: 0 };
+      mapTimeline[f] = { fecha: f, pedidos: 0, confirmados: 0, entregados: 0, devueltos: 0, perdidos: 0, cancelados: 0, monto: 0, costo: 0, ganancia: 0 };
     }
 
     const t = mapTimeline[f];
@@ -606,7 +657,19 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
     if (['confirmado', 'preparado', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st)) t.confirmados += 1;
     if (st === 'entregado') {
       t.entregados += 1;
-      t.monto += Number(e.monto || 0);
+      const monto = Number(e.monto || 0);
+      const comisionPct = Number(e.comision_pct_aplicada || 0);
+      const costoComision = monto * (comisionPct / 100);
+      const iva = e.quiere_factura ? monto * 0.10 : 0;
+      let costoMercaderia = 0;
+      if (e.items && e.items.length > 0) {
+        for (const item of e.items) costoMercaderia += costoDeItem(item);
+      }
+      const costoOrden = Number(e.costo_envio || 0) + costoMercaderia + costoComision + iva;
+
+      t.monto += monto;
+      t.costo += costoOrden;
+      t.ganancia += monto - costoOrden;
     }
     if (['devuelto', 'no entregado', 'fallido'].includes(st)) t.devueltos += 1;
     if (st === 'perdido') t.perdidos += 1;
@@ -614,8 +677,70 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
   }
 
   // Ordenar cronológicamente
-  const timeline = Object.values(mapTimeline).sort((a, b) => a.fecha.localeCompare(b.fecha));
+  const timeline = Object.values(mapTimeline)
+    .map(t => ({ ...t, costo: Math.round(t.costo), ganancia: Math.round(t.ganancia) }))
+    .sort((a, b) => a.fecha.localeCompare(b.fecha));
   return timeline;
+}
+
+// 6b. Pagos Online — cuenta transacciones realmente cobradas (Pagopar u otro
+// gateway configurado), respetando los mismos filtros activos (fecha,
+// producto, origen, etc.) que el resto del dashboard.
+async function getPagosOnlineAnalytics(whereBase) {
+  const pagos = await PaymentTransaction.findAll({
+    where: { status: 'PAID' },
+    attributes: ['id', 'amount'],
+    include: [{ model: Envio, as: 'envio', attributes: [], where: whereBase, required: true }],
+    raw: true,
+  });
+
+  return {
+    pagos_realizados: pagos.length,
+    monto_pagado: pagos.reduce((acc, p) => acc + Number(p.amount || 0), 0),
+  };
+}
+
+// Filtros dinámicos: el frontend no hardcodea listas, las pide acá. Mismo
+// patrón que confirmadoresDisponiblesPromise más abajo.
+
+// Productos con alguna actividad histórica del inquilino (para el <select>
+// del filtro por producto) — sin acotar por rango de fechas, igual que ya
+// hace confirmadoresDisponiblesPromise, para que la lista no "desaparezca"
+// productos al cambiar de período.
+async function getProductosDisponibles(usuario_id) {
+  const filas = await EnvioItem.findAll({
+    attributes: [[fn('DISTINCT', col('EnvioItem.producto_id')), 'producto_id']],
+    where: { producto_id: { [Op.ne]: null } },
+    include: [{ model: Envio, attributes: [], where: { usuario_id }, required: true }],
+    raw: true,
+  });
+  const ids = filas.map(f => f.producto_id).filter(Boolean);
+  if (ids.length === 0) return [];
+
+  const productos = await Producto.findAll({ where: { id: ids }, attributes: ['id', 'nombre'], raw: true });
+  return productos
+    .map(p => ({ producto_id: p.id, nombre: p.nombre }))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre));
+}
+
+// Años con al menos un pedido, para el <select> de año del filtro "Por mes".
+// `fecha` es un STRING (no DATE) en el modelo Envio, así que el año se saca
+// en JS a partir de dispatchedAt/fecha en vez de un EXTRACT() en SQL.
+async function getAniosDisponibles(usuario_id) {
+  const filas = await Envio.findAll({
+    where: { usuario_id },
+    attributes: ['fecha', 'dispatchedAt'],
+    raw: true,
+  });
+
+  const anios = new Set([new Date().getFullYear()]);
+  for (const e of filas) {
+    const f = e.dispatchedAt || e.fecha;
+    if (!f) continue;
+    const anio = new Date(f).getFullYear();
+    if (Number.isFinite(anio)) anios.add(anio);
+  }
+  return [...anios].sort((a, b) => b - a);
 }
 
 // 7. Generador de Alertas y Smart Insights Accionables
@@ -686,7 +811,7 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
 }
 
 // Función principal exportada
-exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
+exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = null) => {
   const { desde, hasta } = resolverRangoFechas(filtros);
 
   const whereBase = {
@@ -710,6 +835,29 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
     whereBase.campaign_name = filtros.campana;
   }
 
+  // Filtro por producto: se resuelve a nivel de PEDIDO completo (no de línea
+  // de ítem) — un pedido que combina el producto filtrado con otro sigue
+  // entrando entero, porque costo de envío/comisión/IVA son del pedido y no
+  // se pueden partir de forma confiable por línea.
+  if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+    const enviosConProducto = await Envio.findAll({
+      where: whereBase,
+      attributes: ['id'],
+      include: [{ model: EnvioItem, as: 'items', attributes: [], where: { producto_id: filtros.producto_id }, required: true }],
+      raw: true,
+    });
+    whereBase.id = { [Op.in]: enviosConProducto.length > 0 ? enviosConProducto.map(e => e.id) : [-1] };
+  }
+
+  // Catálogo de canales del tenant — define los buckets del embudo por
+  // canal. Se lee una sola vez y se pasa a getResumenFunnel.
+  const canalesCatalogo = await CanalVenta.findAll({
+    where: { activo: true, [Op.or]: [{ inquilino_id: null }, { inquilino_id: inquilino_id ?? null }] },
+    attributes: ['id', 'nombre', 'slug'],
+    order: [['orden', 'ASC'], ['nombre', 'ASC']],
+    raw: true,
+  });
+
   // Lista de confirmadores únicos disponibles en el inquilino
   const confirmadoresDisponiblesPromise = Envio.findAll({
     where: { usuario_id, confirmador: { [Op.ne]: null } },
@@ -728,8 +876,11 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
     tendencias,
     rawConf,
     gastosOperativos,
+    pagosOnline,
+    productosDisponibles,
+    aniosDisponibles,
   ] = await Promise.all([
-    getResumenFunnel(whereBase),
+    getResumenFunnel(whereBase, canalesCatalogo),
     getKpisFinancieros(whereBase),
     getProductosAnalytics(whereBase),
     getOfertasAnalytics(whereBase),
@@ -738,7 +889,42 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
     getTimelineTendencias(whereBase, desde, hasta),
     confirmadoresDisponiblesPromise,
     getGastosOperativos(usuario_id, desde, hasta),
+    getPagosOnlineAnalytics(whereBase),
+    getProductosDisponibles(usuario_id),
+    getAniosDisponibles(usuario_id),
   ]);
+
+  // Prorrateo por producto — por UNIDADES ENTREGADAS, igual que la planilla
+  // del comercio (ej. Gs 2.500.000 repartidos entre 130/32/26 unidades
+  // sobre un total de 188). Se reparte TODO lo que no está ya atribuido a
+  // un producto: envíos, comisión, IVA y los gastos operativos (Meta/Ads +
+  // costos fijos).
+  const costosAProrratear = kpisFinancieros.costo_logistico_entregados
+    + kpisFinancieros.costo_comision_total
+    + kpisFinancieros.iva_facturado_total
+    + gastosOperativos.total;
+
+  const unidadesTotales = rankingProductos.reduce((acc, p) => acc + p.unidades_entregadas, 0);
+  let repartido = 0;
+  let idxMayor = -1;
+  rankingProductos.forEach((p, i) => {
+    const pctUnidades = unidadesTotales > 0 ? p.unidades_entregadas / unidadesTotales : 0;
+    p.costo_prorrateado = Math.round(costosAProrratear * pctUnidades);
+    repartido += p.costo_prorrateado;
+    if (idxMayor === -1 || p.unidades_entregadas > rankingProductos[idxMayor].unidades_entregadas) idxMayor = i;
+  });
+
+  // El redondeo por producto deja un resto de ±1 Gs: se lo lleva el
+  // producto que más unidades vendió, así la suma de los prorrateos da
+  // exacto y la tabla cierra en vez de descuadrar por unos guaraníes.
+  if (idxMayor >= 0 && rankingProductos[idxMayor].unidades_entregadas > 0) {
+    rankingProductos[idxMayor].costo_prorrateado += costosAProrratear - repartido;
+  }
+
+  for (const p of rankingProductos) {
+    p.utilidad_neta = Math.round(p.margen_estimado - p.costo_prorrateado);
+    p.pct_rentabilidad = p.facturacion_total > 0 ? Number(((p.utilidad_neta / p.facturacion_total) * 100).toFixed(1)) : 0;
+  }
 
   // Ganancia neta = margen bruto (ya neto de COGS/logística/comisión/IVA por
   // pedido) menos los costos y gastos operativos registrados en el módulo
@@ -750,6 +936,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
 
   kpisFinancieros.gastos_operativos = Math.round(gastosOperativos.gastos_operativos);
   kpisFinancieros.costos_operativos_adicionales = Math.round(gastosOperativos.costos_operativos_adicionales);
+  kpisFinancieros.gastos_por_categoria = gastosOperativos.por_categoria;
   kpisFinancieros.ganancia_neta_estimada = Math.round(gananciaNetaEstimada);
   kpisFinancieros.pct_margen_neto = pctMargenNeto;
 
@@ -767,5 +954,11 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id) => {
     tendencias,
     insights: smartInsights,
     confirmadores_disponibles: confirmadoresDisponibles,
+    productos_disponibles: productosDisponibles,
+    anios_disponibles: aniosDisponibles,
+    pagos_online: pagosOnline,
+    // El catálogo va en la respuesta para que el frontend arme la tabla de
+    // canales desde la base, sin hardcodear nombres ni orden.
+    canales_disponibles: canalesCatalogo,
   };
 };

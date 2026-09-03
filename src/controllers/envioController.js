@@ -300,6 +300,7 @@ exports.listEnviosPaginados = async (req, res) => {
       courier_id,
       confirmador,
       origen,
+      canal_venta_id,
     } = req.body;
 
     const where = { usuario_id };
@@ -358,6 +359,9 @@ exports.listEnviosPaginados = async (req, res) => {
 
     if (origen && origen !== 'TODOS') {
       where.origen = origen;
+    }
+    if (canal_venta_id && canal_venta_id !== 'TODOS') {
+      where.canal_venta_id = canal_venta_id;
     }
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
@@ -420,6 +424,7 @@ exports.createEnvio = async (req, res) => {
       observaciones,
       courier_id,
       origen,
+      canal_venta_id,
       campaign_name,
       campaign_id,
       adset,
@@ -496,6 +501,7 @@ exports.createEnvio = async (req, res) => {
         estado: 'Confirmado',
         dispatchedAt: hoy,
         origen: origen || 'WEB',
+        canal_venta_id: canal_venta_id || null,
         quiere_factura: !!quiere_factura,
         razon_social: razon_social || null,
         ruc: ruc || null,
@@ -592,7 +598,7 @@ exports.updateEstado = async (req, res) => {
       ruc, direccion, referencia, link_maps, costo_envio, metodo_pago,
       quiere_factura, razon_social, nro_comprobante, metodo_pago_id, comision_pct_aplicada,
       ciudad, departamento, nombre_cliente, apellido_cliente, telefono,
-      confirmador, origen, campaign_name, observaciones, monto,
+      confirmador, origen, canal_venta_id, campaign_name, observaciones, monto,
       // Obligatorio para pasar a Reprogramado — ver TRANSICIONES_VALIDAS.
       fecha_reprogramada, motivo_reprogramacion,
     } = req.body;
@@ -702,6 +708,7 @@ exports.updateEstado = async (req, res) => {
     if (telefono !== undefined) updateData.telefono = telefono;
     if (confirmador !== undefined) updateData.confirmador = confirmador;
     if (origen !== undefined) updateData.origen = origen;
+    if (canal_venta_id !== undefined) updateData.canal_venta_id = canal_venta_id || null;
     if (campaign_name !== undefined) updateData.campaign_name = campaign_name;
     if (observaciones !== undefined) updateData.observaciones = observaciones;
     if (monto !== undefined) updateData.monto = monto;
@@ -1156,7 +1163,7 @@ exports.getDashboardMetricas = async (req, res) => {
     const usuario_id = req.usuario.id;
     const filtros = req.body || {};
 
-    const data = await getAnalyticsCompleto(filtros, usuario_id);
+    const data = await getAnalyticsCompleto(filtros, usuario_id, req.usuario.tenantId);
     res.json(data);
   } catch (error) {
     console.error('Error in getDashboardMetricas:', error);

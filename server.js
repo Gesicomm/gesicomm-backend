@@ -39,6 +39,7 @@ const reportesRoutes = require('./src/routes/reportes');
 const metaReportesRoutes = require('./src/routes/metaReportes');
 const costosGastosRoutes = require('./src/routes/costosGastos');
 const categoriasCostosGastosRoutes = require('./src/routes/categoriasCostosGastos');
+const canalesVentaRoutes = require('./src/routes/canalesVenta');
 const proveedoresRoutes = require('./src/routes/proveedores');
 const pageBuilderRoutes = require('./src/routes/pageBuilder');
 const healthRoutes = require('./src/routes/health');
@@ -207,6 +208,7 @@ app.use('/api/reportes', reportesRoutes);
 app.use('/api/meta-reportes', metaReportesRoutes);
 app.use('/api/costos-gastos', costosGastosRoutes);
 app.use('/api/categorias-costos-gastos', categoriasCostosGastosRoutes);
+app.use('/api/canales-venta', canalesVentaRoutes);
 app.use('/api/proveedores', proveedoresRoutes);
 app.use('/api/page-builder', pageBuilderRoutes);
 app.use('/api/health', healthRoutes);
@@ -251,14 +253,21 @@ app.use((err, req, res, next) => {
 const { sequelize } = require('./src/models');
 const { migrarEnvios } = require('./scripts/migrar-envios');
 const { migrarLandingEventos } = require('./scripts/migrar-landing-eventos');
+const { migrarCanalesVenta, backfillCanalesVenta } = require('./scripts/migrar-canales-venta');
 const CategoriaCostoGastoService = require('./src/services/categoriaCostoGasto.service');
+const CanalVentaService = require('./src/services/canalVenta.service');
 const { iniciarJobCostosRecurrentes } = require('./src/services/cron/costosRecurrentes.job');
 
 sequelize.sync({ alter: false }).then(async () => {
   try {
     await migrarEnvios();
     await migrarLandingEventos();
+    await migrarCanalesVenta();
     await CategoriaCostoGastoService.seedDefaults();
+    await CanalVentaService.seedDefaults();
+    // Después del seed: necesita los canales ya creados para mapearles los
+    // pedidos viejos que solo tienen el `origen` de texto.
+    await backfillCanalesVenta();
   } catch (mErr) {
     logger.error('Error al aplicar migraciones de estructura:', mErr);
   }
