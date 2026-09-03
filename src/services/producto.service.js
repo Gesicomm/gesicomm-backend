@@ -500,13 +500,24 @@ class ProductoService {
       }),
       ProductoImagen.findAll({
         where: { producto_id: { [Op.in]: ids } },
-        attributes: ['producto_id', 'url', 'es_principal'],
+        attributes: ['producto_id', 'url', 'es_principal', 'variante_id'],
         order: [['es_principal', 'DESC'], ['created_at', 'ASC']],
       }),
     ]);
 
-    const mapaImagen = new Map();
-    imagenes.forEach(img => { if (!mapaImagen.has(img.producto_id)) mapaImagen.set(img.producto_id, img.url); });
+    // Galería completa además de la principal: las tarjetas de relacionados
+    // van pasando de una foto a la otra al pasar el mouse por encima (ver
+    // ImagenProductoHover). Se usan las imágenes generales del producto y,
+    // si TODAS están atadas a una variante, se usan igual — mismo criterio
+    // que landing.service.obtenerPublica.
+    const mapaGaleria = new Map();
+    ids.forEach(pid => {
+      const propias = imagenes.filter(img => img.producto_id === pid);
+      if (!propias.length) return;
+      const generales = propias.filter(img => !img.variante_id);
+      mapaGaleria.set(pid, (generales.length ? generales : propias).map(img => img.url));
+    });
+    const mapaImagen = new Map([...mapaGaleria].map(([pid, urls]) => [pid, urls[0]]));
     const mapaProducto = new Map(productos.map(p => [p.id, p]));
 
     // Se preserva el orden de `ids` (manual, o más reciente primero si es
@@ -518,6 +529,7 @@ class ProductoService {
       precio: parseFloat(p.precio_base),
       precio_tachado: p.precio_tachado ? parseFloat(p.precio_tachado) : null,
       imagen: mapaImagen.get(p.id) || null,
+      imagenes: mapaGaleria.get(p.id) || [],
       stock: p.cantidad_disponible,
     }));
 
