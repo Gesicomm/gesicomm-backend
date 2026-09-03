@@ -98,19 +98,31 @@ class PrecioUsuarioService {
       ...productos.map(p => p.id),
       ...combos.map(c => c.producto_padre?.id).filter(Boolean),
     ];
-    const imgMap = new Map();
+    // Galería completa por producto, no solo la principal: las tarjetas de
+    // la landing pasan de una imagen a la otra al pasar el mouse por encima
+    // (ver ImagenProductoHover en templates/sections.jsx), y con una sola
+    // url el preview del editor nunca podía hacerlo. Mismo criterio que
+    // landing.service.obtenerPublica: se usan las imágenes generales del
+    // producto y, si TODAS están atadas a una variante, se usan igual —
+    // mejor mostrar algo que una galería vacía.
+    const galeriaMap = new Map();
     if (idsParaImagen.length > 0) {
       const imagenes = await ProductoImagen.findAll({
         where: { producto_id: { [Op.in]: idsParaImagen } },
-        attributes: ['producto_id', 'url'],
+        attributes: ['producto_id', 'url', 'variante_id'],
         order: [['es_principal', 'DESC'], ['orden', 'ASC']],
       });
+      const porProducto = new Map();
       imagenes.forEach(img => {
-        if (!imgMap.has(img.producto_id)) {
-          imgMap.set(img.producto_id, img.url);
-        }
+        if (!porProducto.has(img.producto_id)) porProducto.set(img.producto_id, []);
+        porProducto.get(img.producto_id).push(img);
+      });
+      porProducto.forEach((imgs, productoId) => {
+        const generales = imgs.filter(i => !i.variante_id);
+        galeriaMap.set(productoId, (generales.length ? generales : imgs).map(i => i.url));
       });
     }
+    const imgMap = new Map([...galeriaMap].map(([id, urls]) => [id, urls[0]]));
 
     const productosDto = productos.map(p => {
       const precioUsuario = mapaPrecios.has(`producto:${p.id}`) ? mapaPrecios.get(`producto:${p.id}`) : null;
@@ -127,6 +139,7 @@ class PrecioUsuarioService {
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
         precio_tachado: p.precio_tachado ? parseFloat(p.precio_tachado) : null,
         imagen: imgMap.get(p.id) || null,
+        imagenes: galeriaMap.get(p.id) || [],
         categoria: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
         stock: p.cantidad_disponible,
@@ -151,6 +164,7 @@ class PrecioUsuarioService {
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
         productos_incluidos: (c.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean),
         imagen: padre ? (imgMap.get(padre.id) || null) : null,
+        imagenes: padre ? (galeriaMap.get(padre.id) || []) : [],
         categoria: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
         stock: padre?.cantidad_disponible ?? null,
@@ -315,19 +329,31 @@ class PrecioUsuarioService {
       ...productos.map(p => p.id),
       ...combos.map(c => c.producto_padre?.id).filter(Boolean),
     ];
-    const imgMap = new Map();
+    // Galería completa por producto, no solo la principal: las tarjetas de
+    // la landing pasan de una imagen a la otra al pasar el mouse por encima
+    // (ver ImagenProductoHover en templates/sections.jsx), y con una sola
+    // url el preview del editor nunca podía hacerlo. Mismo criterio que
+    // landing.service.obtenerPublica: se usan las imágenes generales del
+    // producto y, si TODAS están atadas a una variante, se usan igual —
+    // mejor mostrar algo que una galería vacía.
+    const galeriaMap = new Map();
     if (idsParaImagen.length > 0) {
       const imagenes = await ProductoImagen.findAll({
         where: { producto_id: { [require('sequelize').Op.in]: idsParaImagen } },
-        attributes: ['producto_id', 'url'],
+        attributes: ['producto_id', 'url', 'variante_id'],
         order: [['es_principal', 'DESC'], ['orden', 'ASC']],
       });
+      const porProducto = new Map();
       imagenes.forEach(img => {
-        if (!imgMap.has(img.producto_id)) {
-          imgMap.set(img.producto_id, img.url);
-        }
+        if (!porProducto.has(img.producto_id)) porProducto.set(img.producto_id, []);
+        porProducto.get(img.producto_id).push(img);
+      });
+      porProducto.forEach((imgs, productoId) => {
+        const generales = imgs.filter(i => !i.variante_id);
+        galeriaMap.set(productoId, (generales.length ? generales : imgs).map(i => i.url));
       });
     }
+    const imgMap = new Map([...galeriaMap].map(([id, urls]) => [id, urls[0]]));
 
     const mapaProductosDto = new Map(productos.map(p => {
       const precioUsuario = mapaPrecios.has(`producto:${p.id}`) ? mapaPrecios.get(`producto:${p.id}`) : null;
@@ -344,6 +370,7 @@ class PrecioUsuarioService {
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
         precio_tachado: p.precio_tachado ? parseFloat(p.precio_tachado) : null,
         imagen: imgMap.get(p.id) || null,
+        imagenes: galeriaMap.get(p.id) || [],
         categoria: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
         proveedor: p.proveedor?.nombre || null,
@@ -369,6 +396,7 @@ class PrecioUsuarioService {
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
         productos_incluidos: (c.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean),
         imagen: padre ? (imgMap.get(padre.id) || null) : null,
+        imagenes: padre ? (galeriaMap.get(padre.id) || []) : [],
         categoria: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
         proveedor: padre?.proveedor?.nombre || null,

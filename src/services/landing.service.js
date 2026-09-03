@@ -1601,6 +1601,8 @@ class LandingService {
         ficha_tech: !esCombo ? (override?.ficha_tech || null) : null,
         // Ídem para la ficha de Beauty & Skin Care
         ficha_beauty: !esCombo ? (override?.ficha_beauty || null) : null,
+        // Ídem para la ficha del template Básico
+        ficha_basico: !esCombo ? (override?.ficha_basico || null) : null,
         // Rubro y campos propios del rubro, cargados en Mis Productos
         // (especificaciones, "en la caja", comparativa para Tecnología;
         // ingredientes para Suplementos). Son DEL PRODUCTO, así que valen
@@ -1713,6 +1715,11 @@ class LandingService {
         // en bloque — cada item trae solo el suyo, en `ficha`.
         ficha_fitness: landing.content?.ficha_fitness || null,
         ficha_tech: landing.content?.ficha_tech || null,
+        // beauty faltaba: sin esta línea los defaults que el comercio
+        // configuraba en el armador no llegaban a la landing publicada y la
+        // ficha caía en los textos de fábrica.
+        ficha_beauty: landing.content?.ficha_beauty || null,
+        ficha_basico: landing.content?.ficha_basico || null,
       }),
       titulo: landing.titulo,
       descripcion: landing.descripcion,
