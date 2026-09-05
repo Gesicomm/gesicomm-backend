@@ -170,7 +170,29 @@ const Producto = sequelize.define('Producto', {
     type: DataTypes.INTEGER,
     defaultValue: 0,
     allowNull: false,
-    comment: 'Si hay variantes, este campo es calculado automáticamente. No editar directamente.',
+    comment: 'Stock vendible = stock_salon + stock_deposito. Lo mantiene el backend. Si hay variantes, es la suma de sus stocks.',
+  },
+  // Mismo desglose que ProductoVariante: dónde está físicamente la
+  // mercadería. Online se vende el TOTAL (los dos juntos) — tener unidades
+  // en depósito no puede frenar una venta. Lo que sí cambia es de dónde
+  // sale: primero el salón, y recién cuando se agota, el depósito (ver
+  // envioController.descontarStockYSnapshot).
+  stock_salon: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    allowNull: false,
+    comment: 'Unidades en el mostrador. Es de donde sale primero una venta.',
+  },
+  stock_deposito: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    allowNull: false,
+    comment: 'Unidades guardadas. Se venden igual: el stock online es la suma de ambos.',
+  },
+  stock_minimo_salon: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Aviso de REPOSICIÓN: cuándo mover mercadería del depósito al salón. Distinto de stock_minimo, que avisa antes de quedarse sin nada.',
   },
   stock_minimo: {
     type: DataTypes.INTEGER,

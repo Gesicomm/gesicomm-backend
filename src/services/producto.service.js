@@ -137,7 +137,7 @@ class ProductoService {
         // el detalle de cada producto por separado.
         'id', 'nombre', 'slug', 'sku', 'tags', 'precio_base', 'precio_costo', 'precio_dolar', 'es_dolar', 'precio_tachado',
         'descuento_porcentaje',
-        'cantidad_disponible', 'stock_minimo',
+        'cantidad_disponible', 'stock_minimo', 'stock_salon', 'stock_deposito', 'stock_minimo_salon',
         'estado_venta', 'activo', 'destacado', 'categoria_id', 'marca_id', 'proveedor_id', 'creado_por'
       ],
       order,
@@ -269,7 +269,7 @@ class ProductoService {
       descripcion_corta, descripcion_larga, faq_titulo,
       precio_costo, precio_minimo, precio_base, precio_dolar, es_dolar,
       descuento_porcentaje, descuento_inicio, descuento_fin, impuestos_incluidos,
-      cantidad_disponible, stock_minimo, unidad_medida,
+      cantidad_disponible, stock_minimo, stock_salon, stock_deposito, stock_minimo_salon, unidad_medida,
       activo, estado_venta, destacado, fecha_disponible_desde, fecha_disponible_hasta,
       slug: slugManual, meta_titulo, meta_descripcion,
       propuesta_valor, beneficios, confianza, preguntas_frecuentes, sobre_este_producto,
@@ -305,8 +305,12 @@ class ProductoService {
       descuento_inicio: descuento_inicio || null,
       descuento_fin: descuento_fin || null,
       impuestos_incluidos: impuestos_incluidos !== false,
-      cantidad_disponible: parseInt(cantidad_disponible) || 0,
+      // El total NO se carga a mano: es la suma del desglose, igual que en
+      // las variantes. Si el formulario todavía manda solo el total (o es un
+      // alta vieja), ese número se toma como stock de salón.
+      ...this.normalizarStock({ cantidad_disponible, stock_salon, stock_deposito }),
       stock_minimo: parseInt(stock_minimo) || 0,
+      stock_minimo_salon: stock_minimo_salon === '' || stock_minimo_salon == null ? null : parseInt(stock_minimo_salon),
       unidad_medida: unidad_medida || 'unidad',
       activo: activo !== false,
       estado_venta: estado_venta || 'en_venta',
@@ -321,7 +325,25 @@ class ProductoService {
     return this.serializar(producto, esAdmin, usuario_id);
   }
 
+  /**
+   * Resuelve el desglose de stock y el total a partir de lo que mande el
+   * formulario. Mismo criterio que productoVariante.service.normalizarStock:
+   * el total es SIEMPRE salón + depósito, y si no viene desglose (formulario
+   * viejo, importación, alta por API) ese total se toma como stock de salón.
+   */
+  static normalizarStock({ cantidad_disponible, stock_salon, stock_deposito }) {
+    const traeDesglose = stock_salon !== undefined || stock_deposito !== undefined;
+    const salon = Math.max(0, parseInt(traeDesglose ? stock_salon : cantidad_disponible, 10) || 0);
+    const deposito = Math.max(0, parseInt(stock_deposito, 10) || 0);
+    return {
+      stock_salon: salon,
+      stock_deposito: deposito,
+      cantidad_disponible: salon + deposito,
+    };
+  }
+
   static async actualizar(id, campos, inquilino_id, usuario_id, esAdmin, transaction) {
+
     if (campos.precio_ancla !== undefined && campos.precio_tachado === undefined) {
       campos.precio_tachado = campos.precio_ancla;
     }
@@ -331,6 +353,18 @@ class ProductoService {
 
     if (!esAdmin && producto.creado_por !== usuario_id) {
       throw new Error('No tienes permiso para modificar un producto que no creaste.');
+    }
+
+    // Cualquier toque al stock recalcula el total desde el desglose, para que
+    // cantidad_disponible nunca diga algo distinto a salón + depósito.
+    // Los valores actuales del producto son la base: si el formulario manda
+    // solo uno de los dos campos, el otro tiene que quedar como estaba y no
+    // borrarse por venir `undefined`.
+    if (campos.stock_salon !== undefined || campos.stock_deposito !== undefined) {
+      Object.assign(campos, this.normalizarStock({
+        stock_salon: campos.stock_salon !== undefined ? campos.stock_salon : producto.stock_salon,
+        stock_deposito: campos.stock_deposito !== undefined ? campos.stock_deposito : producto.stock_deposito,
+      }));
     }
 
     const precio_base_nuevo = campos.precio_base !== undefined ? parseFloat(campos.precio_base) : parseFloat(producto.precio_base);
@@ -393,7 +427,8 @@ class ProductoService {
       'nombre', 'sku', 'categoria_id', 'marca_id', 'proveedor_id', 'tags',
       'descripcion_corta', 'descripcion_larga', 'faq_titulo', 'relacionados_titulo',
       'precio_costo', 'precio_dolar', 'es_dolar', 'precio_base', 'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'impuestos_incluidos',
-      'cantidad_disponible', 'stock_minimo', 'unidad_medida', 'activo', 'estado_venta', 'destacado',
+      'cantidad_disponible', 'stock_minimo', 'stock_salon', 'stock_deposito', 'stock_minimo_salon',
+      'unidad_medida', 'activo', 'estado_venta', 'destacado',
       'fecha_disponible_desde', 'fecha_disponible_hasta',
       'meta_titulo', 'meta_descripcion', 'peso', 'dimensiones', 'tipo_producto',
       'propuesta_valor', 'beneficios', 'confianza', 'preguntas_frecuentes', 'sobre_este_producto',

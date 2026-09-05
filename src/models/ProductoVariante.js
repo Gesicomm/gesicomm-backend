@@ -8,6 +8,10 @@ const sequelize = require('../config/database');
  * Regla de negocio:
  * - Si un producto tiene variantes, cantidad_disponible del padre
  *   se calcula sumando los stocks de sus variantes activas.
+ * - El stock de una variante se carga separado en salón y depósito, pero
+ *   online se vende el total: `stock` es siempre la suma de los dos y es el
+ *   único campo que mira el motor de precios/stock. La separación es para
+ *   que el comercio sepa dónde está físicamente la mercadería.
  * - El precio efectivo de la variante (precio_base + precio_diferencial con descuento)
  *   también debe respetar precio_minimo del producto padre.
  */
@@ -39,6 +43,19 @@ const ProductoVariante = sequelize.define('ProductoVariante', {
     type: DataTypes.INTEGER,
     defaultValue: 0,
     allowNull: false,
+    comment: 'Stock total vendible = stock_salon + stock_deposito. Lo mantiene el backend; no se escribe a mano.',
+  },
+  stock_salon: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    allowNull: false,
+    comment: 'Unidades en el salón / mostrador, a la vista del cliente.',
+  },
+  stock_deposito: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    allowNull: false,
+    comment: 'Unidades guardadas en depósito. Se venden igual: el stock online es la suma de ambos.',
   },
   precio_diferencial: {
     type: DataTypes.DECIMAL(12, 2),

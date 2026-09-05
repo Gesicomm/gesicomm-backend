@@ -48,6 +48,8 @@ const Proveedor = require('./Proveedor');
 const CategoriaCostoGasto = require('./CategoriaCostoGasto');
 const CostoGasto = require('./CostoGasto');
 const CanalVenta = require('./CanalVenta');
+const Cupon = require('./Cupon');
+const CuponProducto = require('./CuponProducto');
 // Page Builder — módulo de páginas y funnels de código.
 // ⚠️ BuilderFunnel NO es Funnel: ver la cabecera de BuilderFunnel.js.
 const BuilderProject = require('./BuilderProject');
@@ -93,6 +95,14 @@ Envio.belongsTo(Courier, { foreignKey: 'courier_id' });
 // puestos los pedidos que entraron por él (su `origen` histórico sigue ahí).
 CanalVenta.hasMany(Envio, { foreignKey: 'canal_venta_id', onDelete: 'SET NULL' });
 Envio.belongsTo(CanalVenta, { as: 'canal_venta', foreignKey: 'canal_venta_id' });
+
+// Borrar un cupón se lleva su lista de productos alcanzados (no tiene
+// sentido sin el cupón). Borrar un PRODUCTO también saca esa fila: el
+// cupón sigue existiendo, simplemente ya no alcanza a ese producto.
+Cupon.hasMany(CuponProducto, { as: 'productos', foreignKey: 'cupon_id', onDelete: 'CASCADE' });
+CuponProducto.belongsTo(Cupon, { foreignKey: 'cupon_id' });
+Producto.hasMany(CuponProducto, { foreignKey: 'producto_id', onDelete: 'CASCADE' });
+CuponProducto.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });
 
 Envio.hasMany(EnvioItem, { as: 'items', foreignKey: 'envio_id', onDelete: 'CASCADE' });
 EnvioItem.belongsTo(Envio, { foreignKey: 'envio_id' });
@@ -487,6 +497,8 @@ module.exports = {
   Proveedor,
   CategoriaCostoGasto,
   CanalVenta,
+  Cupon,
+  CuponProducto,
   CostoGasto,
   BuilderProject,
   BuilderFunnel,

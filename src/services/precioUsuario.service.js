@@ -179,11 +179,18 @@ class PrecioUsuarioService {
     static async listarCatalogoPaginado(usuario_id, inquilino_id, filtros = {}) {
     const { sequelize, Categoria } = require('../models');
     const {
-      page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', orden = 'nombre', tipo = 'todos'
+      page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', orden = 'nombre', tipo = 'todos',
+      solamenteMios = false, mios_solamente = false
     } = filtros;
     const offset = (page - 1) * limit;
 
     const replacements = { usuario_id, inquilino_id };
+
+    const miosOnly = Boolean(solamenteMios || mios_solamente);
+    let creadorFilter = '';
+    if (miosOnly) {
+      creadorFilter = 'AND p.creado_por = :usuario_id';
+    }
     
     // Filtro de categoría
     let catFilter = '';
@@ -216,23 +223,25 @@ class PrecioUsuarioService {
     if (orden === 'precio-desc') orderSql = 'ORDER BY precio_efectivo DESC';
 
     const productosSql = `
-      SELECT p.id, 'producto' as tipo, p.nombre, p.descripcion_corta as descripcion, p.created_at, p.categoria_id,
+      SELECT p.id, 'producto' as tipo, p.nombre, p.descripcion_corta as descripcion, p.created_at, p.categoria_id, p.creado_por,
         COALESCE(pu.precio, p.precio_base) as precio_efectivo
       FROM productos p
       LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
       WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
+      ${creadorFilter}
       ${catFilter}
       ${provFilter}
       ${searchFilter.replace(/c\./g, 'p.').replace(/descripcion/g, 'descripcion_corta')}
     `;
 
     const combosSql = `
-      SELECT c.id, 'combo' as tipo, c.nombre, c.descripcion, c.created_at, p.categoria_id,
+      SELECT c.id, 'combo' as tipo, c.nombre, c.descripcion, c.created_at, p.categoria_id, p.creado_por,
         COALESCE(pu.precio, c.precio_total) as precio_efectivo
       FROM producto_combos c
       INNER JOIN productos p ON c.producto_id = p.id AND p.activo = true
       LEFT JOIN precios_usuario pu ON pu.tipo = 'combo' AND pu.referencia_id = c.id AND pu.usuario_id = :usuario_id
       WHERE c.inquilino_id = :inquilino_id AND c.estado = 'ACTIVO'
+      ${creadorFilter}
       ${catFilter}
       ${provFilter}
       ${searchFilter}
@@ -269,8 +278,8 @@ class PrecioUsuarioService {
       idsProductos.length ? Producto.findAll({
         where: { id: { [require('sequelize').Op.in]: idsProductos } },
         attributes: [
-          'id', 'slug', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_minimo',
-          'precio_tachado', 'cantidad_disponible', 'destacado', 'created_at', 'categoria_id'
+          'id', 'slug', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_costo', 'precio_minimo',
+          'precio_tachado', 'cantidad_disponible', 'destacado', 'created_at', 'categoria_id', 'creado_por'
         ],
         include: [
           { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -357,14 +366,19 @@ class PrecioUsuarioService {
 
     const mapaProductosDto = new Map(productos.map(p => {
       const precioUsuario = mapaPrecios.has(`producto:${p.id}`) ? mapaPrecios.get(`producto:${p.id}`) : null;
+      const esProductoPropio = (p.creado_por != null && Number(p.creado_por) === Number(usuario_id));
+      const precioCosto = p.precio_costo != null ? parseFloat(p.precio_costo) : null;
       const precioBase = parseFloat(p.precio_base);
+      const costoReferencia = (esProductoPropio && precioCosto != null) ? precioCosto : precioBase;
+
       return [p.id, {
         id: p.id,
         tipo: 'producto',
         nombre: p.nombre,
         descripcion: p.descripcion_corta,
         descripcion_larga: p.descripcion_larga,
-        precio_base: precioBase,
+        precio_base: costoReferencia,
+        precio_costo: precioCosto,
         precio_minimo: p.precio_minimo !== null ? parseFloat(p.precio_minimo) : null,
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
@@ -377,6 +391,7 @@ class PrecioUsuarioService {
         stock: p.cantidad_disponible,
         destacado: !!p.destacado,
         creado_en: p.created_at,
+        creado_por: p.creado_por,
         slug: p.slug,
       }];
     }));
@@ -476,8 +491,10 @@ class PrecioUsuarioService {
 
     const precioEfectivo = precioPersonalizado ? parseFloat(precioPersonalizado.precio) : parseFloat(producto.precio_base);
 
+    const costoBase = producto.precio_costo != null ? parseFloat(producto.precio_costo) : parseFloat(producto.precio_base);
+
     const principalResult = comboPricing.calcularPrincipal(
-      { cost: parseFloat(producto.precio_base), salePrice: precioEfectivo },
+      { cost: costoBase, salePrice: precioEfectivo },
       costs,
     );
 

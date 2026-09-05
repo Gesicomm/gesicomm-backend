@@ -35,12 +35,7 @@ class ProductoVarianteService {
       const nombre = (v.nombre || '').trim();
       if (!nombre) continue;
 
-      const datos = {
-        nombre,
-        sku_variante: v.sku_variante || null,
-        stock: parseInt(v.stock) || 0,
-        precio_diferencial: v.precio_diferencial ? parseFloat(v.precio_diferencial) : 0,
-      };
+      const datos = { nombre, ...this.normalizarStock(v) };
 
       const idExistente = v.id ? Number(v.id) : null;
       if (idExistente && idsActuales.has(idExistente)) {
@@ -60,7 +55,7 @@ class ProductoVarianteService {
         // el nombre de atributo lo ignora en silencio (verificado con el
         // SQL generado), porque el modelo mapea updatedAt a una columna
         // con otro nombre (`updatedAt: 'updated_at'` en ProductoVariante.js).
-        updateOnDuplicate: ['nombre', 'sku_variante', 'stock', 'precio_diferencial', 'updated_at'],
+        updateOnDuplicate: ['nombre', 'sku_variante', 'stock', 'stock_salon', 'stock_deposito', 'precio_diferencial', 'updated_at'],
         transaction,
       });
     }
@@ -80,11 +75,41 @@ class ProductoVarianteService {
 
   static async crearMultiples(producto_id, inquilino_id, variantesPayload, transaction) {
     if (!variantesPayload || variantesPayload.length === 0) return;
-    
+
     await ProductoVariante.bulkCreate(
-      variantesPayload.map(v => ({ ...v, inquilino_id, producto_id })),
+      variantesPayload
+        .filter(v => (v.nombre || '').trim())
+        .map(v => ({
+          inquilino_id,
+          producto_id,
+          nombre: v.nombre.trim(),
+          ...this.normalizarStock(v),
+        })),
       { transaction }
     );
+  }
+
+  /**
+   * El stock de una variante se carga separado (salón / depósito) pero se
+   * vende junto: `stock` es SIEMPRE la suma y es lo único que mira el motor
+   * de precios/stock y el checkout. Nunca se toma el `stock` que manda el
+   * cliente — si llegara desincronizado, la variante quedaría vendiendo una
+   * cantidad que no coincide con el desglose que ve el comercio.
+   *
+   * Payloads viejos (los que todavía mandan solo `stock`) siguen andando:
+   * ese total se toma como stock de salón.
+   */
+  static normalizarStock(v) {
+    const traeDesglose = v.stock_salon !== undefined || v.stock_deposito !== undefined;
+    const salon = Math.max(0, parseInt(traeDesglose ? v.stock_salon : v.stock, 10) || 0);
+    const deposito = Math.max(0, parseInt(v.stock_deposito, 10) || 0);
+    return {
+      sku_variante: v.sku_variante || null,
+      stock_salon: salon,
+      stock_deposito: deposito,
+      stock: salon + deposito,
+      precio_diferencial: v.precio_diferencial ? parseFloat(v.precio_diferencial) : 0,
+    };
   }
 }
 

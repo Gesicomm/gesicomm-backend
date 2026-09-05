@@ -50,6 +50,7 @@ const LandingEvento = sequelize.define('LandingEvento', {
   indexes: [
     { fields: ['landing_id'] },
     { fields: ['enviado_capi'] },
+    { fields: ['landing_id', 'created_at'], name: 'idx_landing_evento_analytics_fecha' },
     // Un doble clic, un reintento del navegador o un reenvío malicioso del
     // mismo body no puede inflar las estadísticas: el segundo INSERT choca
     // acá y se descarta (ver metaCapi.service.js). En bases ya existentes lo

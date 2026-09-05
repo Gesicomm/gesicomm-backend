@@ -73,11 +73,13 @@ router.post('/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheck
 // y no limiteCheckout — no crea ningún pedido, es solo lectura, y el
 // frontend lo llama seguido (cada cambio de cantidad/oferta).
 router.post('/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
+router.post('/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);
 router.get('/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 router.get('/:slug', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);
 router.get('/:slug/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 router.post('/:slug/eventos', limiteEventos, resolverTiendaOpcional, ctrl.registrarEvento);
 router.post('/:slug/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheckout);
 router.post('/:slug/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
+router.post('/:slug/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);
 
 module.exports = router;

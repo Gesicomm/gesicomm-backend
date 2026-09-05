@@ -10,19 +10,39 @@ const { resolverRangoFechas } = require('../utils/rangoFechas');
  */
 
 /**
- * Costo real de mercadería de UN EnvioItem entregado. Preferí siempre el
+ * Traducción del `origen` histórico (texto libre) al slug del catálogo de
+ * canales. Es la MISMA tabla de equivalencias que usa el backfill de
+ * scripts/migrar-canales-venta.js — si cambia una, tiene que cambiar la otra.
+ *
+ * Solo se usa como red de seguridad para un pedido sin `canal_venta_id`.
+ * Sin esto, un pedido de la landing (origen 'LANDING') no encontraba el
+ * canal 'web' y caía en "Sin canal", quedando fuera de su propio embudo.
+ */
+const SLUG_POR_ORIGEN = {
+  LANDING: 'web',
+  META_ADS: 'web',
+  WEB: 'organico',
+  WHATSAPP: 'whatsapp',
+};
+
+/**
+ * Costo real de mercadería de UN EnvioItem entregado. Se prefiere siempre el
  * snapshot de EnvioItemComponente (existe desde que el pedido pasó por
  * "Confirmado" — ver envioController.descontarStockYSnapshot): ya tiene en
  * cuenta el multiplicador de stock de una oferta (ej. x3 = 3 unidades
- * físicas) y el precio_costo vigente en el momento de la venta, no el
- * actual. Si no hay snapshot (pedidos confirmados antes de que existiera
- * esta tabla), cae al cálculo directo de siempre (precio_costo actual × cantidad).
+ * físicas) y el costo vigente al momento de la venta, no el actual.
  */
 function costoDeItem(item) {
   if (item.componentes_vendidos && item.componentes_vendidos.length > 0) {
     return item.componentes_vendidos.reduce((acc, comp) => acc + (Number(comp.costo_unitario) || 0) * (comp.cantidad || 0), 0);
   }
-  const costoUnit = item.Producto && item.Producto.precio_costo ? Number(item.Producto.precio_costo) : 0;
+  // Sin snapshot (pedido anterior a EnvioItemComponente): el costo del
+  // comerciante es `precio_base`, el precio de lista al que le compra al
+  // admin — NO `precio_costo`, que es lo que le costó al admin y que el
+  // comerciante nunca paga. Misma regla que costoParaComerciante() en
+  // envioController: si cambia una, tiene que cambiar la otra.
+  const prod = item.Producto;
+  const costoUnit = prod ? (Number(prod.precio_base) || Number(prod.precio_costo) || 0) : 0;
   return costoUnit * (item.cantidad || 1);
 }
 
@@ -94,7 +114,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     // intenta ubicar por el `origen` de texto. El guion bajo se normaliza a
     // guion porque los slugs del catálogo usan guion (META_ADS → meta-ads).
     const canal = canalPorId.get(e.canal_venta_id)
-      || canalPorSlug.get(origen.toLowerCase().replace(/_/g, '-'))
+      || canalPorSlug.get(SLUG_POR_ORIGEN[origen] || '')
       || canales.sin_canal;
     canal.total++;
     if (isCancelado) canal.cancelados++;
@@ -145,7 +165,7 @@ async function getKpisFinancieros(whereBase) {
         model: EnvioItem,
         as: 'items',
         include: [
-          { model: Producto, attributes: ['id', 'precio_costo'] },
+          { model: Producto, attributes: ['id', 'precio_costo', 'precio_base'] },
           { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
         ],
       }
@@ -266,6 +286,32 @@ async function getGastosOperativos(usuario_id, desde, hasta) {
   return { gastos_operativos: gastos, costos_operativos_adicionales: costosAdicionales, total: gastos + costosAdicionales, por_categoria: porCategoria };
 }
 
+/**
+ * Mercadería perdida de UN EnvioItem, valorizada a lo que costó cuando se
+ * vendió (el snapshot de EnvioItemComponente, nunca el precio_costo actual
+ * del producto: eso cambiaría el pasado cada vez que se ajusta un costo).
+ *
+ * Solo cuenta lo que quedó registrado como perdido o devuelto DAÑADO. Dos
+ * cosas que a propósito NO son pérdida:
+ *  - `cantidad_devuelta_vendible`: vuelve al stock, se puede vender de nuevo.
+ *  - que el pedido esté en estado "Perdido": el estado no implica que toda
+ *    su mercadería se haya perdido, solo cuenta lo efectivamente registrado.
+ *
+ * Función aparte para poder probarla sin base de datos (ver los casos de
+ * devolución vendible / dañada / pérdida en scripts/verificar-perdidas.js).
+ */
+function perdidaDeItem(item) {
+  let unidades = 0;
+  let importe = 0;
+  for (const comp of item.componentes_vendidos || []) {
+    const perdidas = (comp.cantidad_perdida || 0) + (comp.cantidad_devuelta_danada || 0);
+    if (perdidas <= 0) continue;
+    unidades += perdidas;
+    importe += perdidas * (Number(comp.costo_unitario) || 0);
+  }
+  return { unidades, importe };
+}
+
 // 3. Ranking de Productos (¿Qué se vende, confirma y devuelve más?)
 async function getProductosAnalytics(whereBase) {
   const envios = await Envio.findAll({
@@ -275,8 +321,15 @@ async function getProductosAnalytics(whereBase) {
         model: EnvioItem,
         as: 'items',
         include: [
-          { model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo'] },
-          { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
+          { model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base'] },
+          {
+            model: EnvioItemComponente,
+            as: 'componentes_vendidos',
+            // Los tres contadores de devolución/pérdida ya existen en la
+            // tabla; solo faltaba pedirlos para poder valorizar la pérdida
+            // por producto al costo del momento de la venta.
+            attributes: ['cantidad', 'costo_unitario', 'cantidad_perdida', 'cantidad_devuelta_danada', 'cantidad_devuelta_vendible'],
+          },
         ],
       }
     ]
@@ -311,6 +364,8 @@ async function getProductosAnalytics(whereBase) {
             devueltos: 0,
             facturacion_total: 0,
             costo_total: 0,
+            unidades_perdidas: 0,
+            perdida: 0,
             canales: { WEB: 0, WHATSAPP: 0, OTROS: 0 }
           };
         }
@@ -326,6 +381,14 @@ async function getProductosAnalytics(whereBase) {
           p.costo_total += costoDeItem(item);
         }
         if (isDevuelto) p.devueltos += 1;
+
+        // Pérdida de mercadería — FUERA del `if (isEntregado)` a propósito:
+        // un pedido que se perdió o se devolvió dañado nunca llega a
+        // "Entregado", y su mercadería igual salió del stock y se pagó. Si
+        // se contara solo en entregados, un producto perdido saldría gratis.
+        const { unidades: unidadesPerdidas, importe } = perdidaDeItem(item);
+        p.unidades_perdidas += unidadesPerdidas;
+        p.perdida += importe;
 
         if (canal === 'WEB') p.canales.WEB += 1;
         else if (canal === 'WHATSAPP') p.canales.WHATSAPP += 1;
@@ -633,7 +696,7 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
         model: EnvioItem,
         as: 'items',
         include: [
-          { model: Producto, attributes: ['id', 'precio_costo'] },
+          { model: Producto, attributes: ['id', 'precio_costo', 'precio_base'] },
           { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
         ],
       }
@@ -811,6 +874,9 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
 }
 
 // Función principal exportada
+// Se exporta para poder verificar la regla de pérdida sin base de datos.
+exports.perdidaDeItem = perdidaDeItem;
+
 exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = null) => {
   const { desde, hasta } = resolverRangoFechas(filtros);
 
@@ -830,6 +896,9 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
   }
   if (filtros.origen && filtros.origen !== 'TODOS') {
     whereBase.origen = filtros.origen;
+  }
+  if (filtros.canal_venta_id && filtros.canal_venta_id !== 'TODOS') {
+    whereBase.canal_venta_id = filtros.canal_venta_id;
   }
   if (filtros.campana) {
     whereBase.campaign_name = filtros.campana;
@@ -921,9 +990,27 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     rankingProductos[idxMayor].costo_prorrateado += costosAProrratear - repartido;
   }
 
+  // Contrato de la tabla de productos: venta / costo / ganancia / pérdida.
+  // El prorrateo se absorbe dentro de `costo` y no sale al frontend — es
+  // mecanismo de cálculo, no información de negocio (el comerciante quiere
+  // saber cuánto ganó, no qué fracción de la publicidad le tocó).
+  //
+  // `perdida` va SEPARADA y no se descuenta del costo ni de la ganancia:
+  // restarla otra vez sería contar dos veces la misma plata.
   for (const p of rankingProductos) {
-    p.utilidad_neta = Math.round(p.margen_estimado - p.costo_prorrateado);
-    p.pct_rentabilidad = p.facturacion_total > 0 ? Number(((p.utilidad_neta / p.facturacion_total) * 100).toFixed(1)) : 0;
+    p.unidades = p.unidades_entregadas;
+    p.venta = p.facturacion_total;
+    p.costo = Math.round(p.costo_total + p.costo_prorrateado);
+    p.ganancia = Math.round(p.venta - p.costo);
+    p.perdida = Math.round(p.perdida);
+    p.rentabilidad = p.venta > 0 ? Number(((p.ganancia / p.venta) * 100).toFixed(1)) : 0;
+
+    // Se mantienen por compatibilidad con quien ya los consumía.
+    p.utilidad_neta = p.ganancia;
+    p.pct_rentabilidad = p.rentabilidad;
+
+    // Interno: no forma parte del contrato visual.
+    delete p.costo_prorrateado;
   }
 
   // Ganancia neta = margen bruto (ya neto de COGS/logística/comisión/IVA por

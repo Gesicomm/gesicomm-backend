@@ -28,6 +28,39 @@ async function resolverReceta(item, t) {
 }
 
 /**
+ * Cuánto le cuesta ESTE producto al comerciante que lo vende.
+ *
+ * No es `precio_costo`: ese es lo que le costó al ADMIN comprarlo a su
+ * proveedor, y el modelo lo aclara ("Solo visible para administradores,
+ * nunca se expone a no-admin"). El comerciante no compra a ese precio —
+ * compra al `precio_base`, que es el precio de lista que le pone el admin.
+ *
+ *   Admin compra a 36.000 (precio_costo)  → margen del admin
+ *   Comerciante compra a 40.000 (precio_base)  → SU costo
+ *   Comerciante vende al precio que quiera (PrecioUsuario)
+ *
+ * Usar precio_costo hacía que la rentabilidad del comerciante mostrara el
+ * margen del admin como si fuera suyo: ganancia inflada en la diferencia.
+ *
+ * Cuando el producto es PROPIO del comerciante (lo cargó él, con su costo y
+ * su precio de venta), el costo sí es `precio_costo`. Hoy ese caso no puede
+ * darse — el rol 'usuario' no tiene el permiso `crear_productos`, así que
+ * todo el catálogo es del admin — pero la regla queda escrita para cuando
+ * se habilite, en vez de quedar como una suposición implícita.
+ */
+function costoParaComerciante(prod, usuario_id) {
+  if (!prod) return 0;
+
+  const esPropio = prod.creado_por != null && prod.creado_por === usuario_id;
+  if (esPropio) return parseFloat(prod.precio_costo) || 0;
+
+  // Si un producto del catálogo no tiene precio_base cargado, se cae a
+  // precio_costo: preferible un costo subestimado a contarlo como 0 y
+  // mostrar el producto como pura ganancia.
+  return parseFloat(prod.precio_base) || parseFloat(prod.precio_costo) || 0;
+}
+
+/**
  * Descuenta stock real y deja un snapshot inmutable (EnvioItemComponente) de
  * qué se descontó — para que un pedido confirmado nunca cambie de
  * significado si después se edita/da de baja la oferta que se usó.
@@ -36,8 +69,11 @@ async function resolverReceta(item, t) {
  * bloquea (SELECT ... FOR UPDATE) antes de leer/escribir su stock, así dos
  * confirmaciones concurrentes no pisan el stock una de la otra — la segunda
  * espera a que la primera confirme y lee el valor ya actualizado.
+ *
+ * `usuario_id` es el dueño del pedido: hace falta para saber si el producto
+ * es propio del comerciante o del catálogo del admin (ver costoParaComerciante).
  */
-async function descontarStockYSnapshot(items, t) {
+async function descontarStockYSnapshot(items, t, usuario_id) {
   const recetaPorItem = new Map();
   const totalPorProducto = new Map();
 
@@ -58,7 +94,23 @@ async function descontarStockYSnapshot(items, t) {
     const stockActual = parseInt(prod.cantidad_disponible) || 0;
     const nuevoStock = Math.max(0, stockActual - cantidadTotal);
     const nuevaReservada = (parseInt(prod.cantidad_reservada) || 0) + cantidadTotal;
-    const actualizacion = { cantidad_disponible: nuevoStock, cantidad_reservada: nuevaReservada };
+
+    // De dónde sale físicamente: primero el mostrador, y recién cuando se
+    // agota, el depósito. Se vende el TOTAL (tener la caja guardada no
+    // frena una venta), pero el desglose tiene que seguir reflejando dónde
+    // está la mercadería — si no, después de unas ventas deja de servir
+    // para decidir cuándo reponer.
+    const salonActual = parseInt(prod.stock_salon) || 0;
+    const depositoActual = parseInt(prod.stock_deposito) || 0;
+    const desdeSalon = Math.min(salonActual, cantidadTotal);
+    const desdeDeposito = Math.min(depositoActual, cantidadTotal - desdeSalon);
+
+    const actualizacion = {
+      cantidad_disponible: nuevoStock,
+      cantidad_reservada: nuevaReservada,
+      stock_salon: salonActual - desdeSalon,
+      stock_deposito: depositoActual - desdeDeposito,
+    };
     if (nuevoStock === 0 && prod.estado_venta === 'en_venta') {
       actualizacion.estado_venta = 'fuera_de_stock';
     }
@@ -73,7 +125,7 @@ async function descontarStockYSnapshot(items, t) {
         envio_item_id: item.id,
         producto_id,
         cantidad,
-        costo_unitario: prod ? (parseFloat(prod.precio_costo) || 0) : 0,
+        costo_unitario: costoParaComerciante(prod, usuario_id),
       }, { transaction: t });
     }
   }
@@ -107,6 +159,37 @@ async function moverAReservadoATransito(items, t) {
 }
 
 /**
+ * Entregado: la mercadería llegó al cliente, así que deja de estar "en
+ * camino" — sale de cantidad_transito y no vuelve a ningún bucket (de
+ * cantidad_disponible ya se había descontado al confirmar).
+ *
+ * Sin este paso, `cantidad_transito` solo crecía: cada pedido entregado
+ * dejaba sus unidades trabadas ahí para siempre, y el contador terminaba
+ * mostrando mercadería en camino que hacía rato estaba entregada.
+ *
+ * No lleva flag de idempotencia propio como los otros movimientos porque no
+ * le hace falta: "Entregado" es un estado terminal (TRANSICIONES_VALIDAS lo
+ * deja sin destinos), así que updateEstado no puede volver a entrar acá.
+ * Solo se descuenta si el pedido pasó por Despachado — si nunca se despachó,
+ * sus unidades jamás entraron a tránsito y restarlas rompería el contador.
+ */
+async function consumirTransito(envio, items, t) {
+  if (!envio.stock_despachado) return;
+
+  const componentes = await obtenerComponentesDeItems(items, t);
+  const totalPorProducto = new Map();
+  for (const c of componentes) {
+    totalPorProducto.set(c.producto_id, (totalPorProducto.get(c.producto_id) || 0) + c.cantidad);
+  }
+  for (const [producto_id, cantidad] of totalPorProducto) {
+    const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (!prod) continue;
+    const transito = Math.max(0, (parseInt(prod.cantidad_transito) || 0) - cantidad);
+    await prod.update({ cantidad_transito: transito }, { transaction: t });
+  }
+}
+
+/**
  * Cancelado: libera el stock comprometido por el pedido, sin importar en
  * qué bucket esté (reservado si nunca se despachó, tránsito si sí) — vuelve
  * a cantidad_disponible. Idempotente vía envio.stock_liberado (chequeado
@@ -124,7 +207,15 @@ async function liberarStock(envio, items, t) {
     if (!prod) continue;
     const origenActual = Math.max(0, (parseInt(prod[campoOrigen]) || 0) - cantidad);
     const disponible = (parseInt(prod.cantidad_disponible) || 0) + cantidad;
-    const actualizacion = { cantidad_disponible: disponible, [campoOrigen]: origenActual };
+    // Vuelve al SALÓN: la mercadería que se recupera de un pedido cancelado
+    // regresa al mostrador, no al depósito. Es también lo prudente para el
+    // aviso de reposición — deja el salón surtido en vez de pedir reponer
+    // algo que ya está a mano.
+    const actualizacion = {
+      cantidad_disponible: disponible,
+      [campoOrigen]: origenActual,
+      stock_salon: (parseInt(prod.stock_salon) || 0) + cantidad,
+    };
     if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') {
       actualizacion.estado_venta = 'en_venta';
     }
@@ -168,6 +259,9 @@ async function registrarDevolucionComponentes(envio, itemsPayload, t) {
       if (condicion === 'vendible') {
         const disponible = (parseInt(prod.cantidad_disponible) || 0) + cant;
         actualizacion.cantidad_disponible = disponible;
+        // Una devolución en buen estado vuelve al mostrador (mismo criterio
+        // que liberarStock). La dañada no suma a ningún lado: no es vendible.
+        actualizacion.stock_salon = (parseInt(prod.stock_salon) || 0) + cant;
         if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') actualizacion.estado_venta = 'en_venta';
       }
       await prod.update(actualizacion, { transaction: t });
@@ -539,7 +633,7 @@ exports.createEnvio = async (req, res) => {
     // stock real desde la creación — mismo mecanismo que usa updateEstado
     // al confirmar un pedido que sí pasó por "Pendiente" (checkout público,
     // ver landing.service.js/crearCheckout).
-    await descontarStockYSnapshot(nuevoEnvio.items || [], t);
+    await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id);
     await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
     await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
 
@@ -663,12 +757,15 @@ exports.updateEstado = async (req, res) => {
       // propio flag de idempotencia (ver Producto/Envio) y bloqueo de fila
       // dentro de la transacción (Transaction.LOCK.UPDATE, en los helpers).
       if (estado === 'Confirmado' && !envio.stock_descontado) {
-        await descontarStockYSnapshot(envio.items || [], t);
+        await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id);
         updateData.stock_descontado = true;
       }
       if (estado === 'Despachado' && !envio.stock_despachado) {
         await moverAReservadoATransito(envio.items || [], t);
         updateData.stock_despachado = true;
+      }
+      if (estado === 'Entregado') {
+        await consumirTransito(envio, envio.items || [], t);
       }
       if (estado === 'Cancelado' && envio.stock_descontado && !envio.stock_liberado) {
         await liberarStock(envio, envio.items || [], t);

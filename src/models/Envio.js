@@ -109,6 +109,24 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
+  // Cupón usado en el checkout. Se guarda el id (para poder cruzar contra
+  // el cupón) y además el código y el importe como SNAPSHOT: si después se
+  // borra o se edita el cupón, el pedido tiene que seguir explicando por
+  // qué se cobró lo que se cobró.
+  cupon_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  cupon_codigo: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+  },
+  cupon_descuento: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    comment: 'Guaraníes efectivamente descontados por el cupón.',
+  },
   campaign_name: {
     type: DataTypes.STRING(255),
     allowNull: true,
@@ -227,6 +245,16 @@ const Envio = sequelize.define('Envio', {
   timestamps: true,
   createdAt: 'created_at',
   updatedAt: 'updated_at',
+  indexes: [
+    {
+      name: 'idx_envios_analytics_fecha',
+      fields: ['usuario_id', 'fecha']
+    },
+    {
+      name: 'idx_envios_analytics_dispatchedAt',
+      fields: ['usuario_id', 'dispatchedAt']
+    }
+  ]
 });
 
 module.exports = Envio;

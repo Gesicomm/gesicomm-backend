@@ -28,6 +28,8 @@ const { resolverRangoFechas } = require('../utils/rangoFechas');
 const { registrarHistorial } = require('../utils/historial');
 const PricingService = require('./pricing.service');
 const PaymentService = require('./payments/paymentService');
+const CanalVentaService = require('./canalVenta.service');
+const CuponService = require('./cupon.service');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
@@ -1587,6 +1589,21 @@ class LandingService {
       // (ver overrideDeProducto). Pisa el catálogo global sin tocarlo.
       const override = esCombo ? null : this.overrideDeProducto(landing.content, entidad.id);
 
+      // Precio fantasía: si está seteado en la landing (item.precio_ancla) o en el producto (entidad.precio_tachado).
+      // Si el producto tiene un descuento comercial y no hay un ancla visual explícita, 
+      // el precio_base funge como el precio_antes tachado.
+      let precioAntesCalculado = item.precio_ancla 
+        ? parseFloat(item.precio_ancla) 
+        : (!esCombo && entidad.precio_tachado ? parseFloat(entidad.precio_tachado) : null);
+
+      if (!precioAntesCalculado && !esCombo && precioBase > precioEfectivo) {
+         precioAntesCalculado = precioBase;
+      }
+
+      if (precioAntesCalculado <= precioEfectivo) {
+         precioAntesCalculado = null;
+      }
+
       itemsDto.push({
         // ID público estable — nunca LandingItem.id (cambiaría entre landings para el mismo producto).
         content_id: entidad.slug || `${item.tipo}-${entidad.id}`,
@@ -1595,13 +1612,11 @@ class LandingService {
         descripcion: esCombo ? entidad.descripcion : (override?.descripcion || entidad.descripcion_corta),
         descripcion_larga: esCombo ? null : (override?.descripcion || entidad.descripcion_larga),
         precio: precioEfectivo,
-        // Precio fantasía: si está seteado en la landing por el usuario, o en el producto, aparece tachado
-        // en la landing indicando el precio original / "antes".
-        precio_antes: item.precio_ancla ? parseFloat(item.precio_ancla) : (!esCombo && entidad.precio_tachado ? parseFloat(entidad.precio_tachado) : null),
+        precio_antes: precioAntesCalculado,
         // % de descuento calculado desde precio_antes vs precio efectivo.
         // Si no hay precio_antes, descuento_pct = 0 (no se muestra badge).
-        descuento_pct: ((item.precio_ancla ? parseFloat(item.precio_ancla) : (!esCombo && entidad.precio_tachado ? parseFloat(entidad.precio_tachado) : null)) > precioEfectivo)
-          ? Math.round((1 - precioEfectivo / (item.precio_ancla ? parseFloat(item.precio_ancla) : (!esCombo && entidad.precio_tachado ? parseFloat(entidad.precio_tachado) : null))) * 100)
+        descuento_pct: precioAntesCalculado
+          ? Math.round((1 - precioEfectivo / precioAntesCalculado) * 100)
           : 0,
         imagen: imagenesDto[0] || null,
         imagenes: imagenesDto,
@@ -2194,6 +2209,36 @@ class LandingService {
   }
 
   /**
+   * Valida un cupón contra el carrito y devuelve cuánto descontaría, sin
+   * consumirlo. Los precios salen de resolverCarrito (o sea del servidor),
+   * nunca de lo que mande el cliente: si no, cualquiera podría inflar el
+   * precio para agrandar el descuento de un cupón porcentual.
+   */
+  static async validarCupon(tienda, slug, codigo, items) {
+    const { itemsResueltos } = await this.resolverCarrito(tienda, slug, items, false);
+    const subtotal = itemsResueltos.reduce((s, i) => s + i.subtotal, 0);
+
+    const { cupon, descuento } = await CuponService.validar(
+      codigo,
+      itemsResueltos.map(i => ({
+        producto_id: i.producto_id,
+        precio_unitario: i.precio_unitario,
+        cantidad: i.cantidad,
+      })),
+      tienda.usuario_id
+    );
+
+    return {
+      codigo: cupon.codigo,
+      descuento_porcentaje: Number(cupon.descuento_porcentaje),
+      alcance: cupon.alcance,
+      descuento,
+      subtotal,
+      total: Math.max(0, subtotal - descuento),
+    };
+  }
+
+  /**
    * Checkout público — crea un Envío (Pedido) real en estado "Pendiente" a
    * partir de lo que completó un visitante anónimo. Es un endpoint sin
    * autenticación, por eso resolverCarrito() nunca confía en precio/monto
@@ -2219,7 +2264,31 @@ class LandingService {
 
     const { landing, itemsResueltos } = await this.resolverCarrito(tienda, slug, items, true);
 
-    const monto = itemsResueltos.reduce((s, i) => s + i.subtotal, 0);
+    const subtotal = itemsResueltos.reduce((s, i) => s + i.subtotal, 0);
+
+    // El cupón se vuelve a validar y a calcular ACÁ, aunque el frontend ya
+    // lo haya validado para mostrarlo: el importe que se cobra no puede
+    // depender de lo que mande el cliente. Si el código dejó de ser válido
+    // entre que lo aplicó y confirmó (venció, se agotó, lo apagaron), el
+    // pedido se crea sin descuento en vez de fallar — el visitante ya
+    // completó el formulario y perderlo por eso sería peor.
+    let cuponAplicado = null;
+    let descuentoCupon = 0;
+    if (datosCliente?.cupon_codigo) {
+      try {
+        const r = await CuponService.validar(
+          datosCliente.cupon_codigo,
+          itemsResueltos.map(i => ({ producto_id: i.producto_id, precio_unitario: i.precio_unitario, cantidad: i.cantidad })),
+          tienda.usuario_id
+        );
+        cuponAplicado = r.cupon;
+        descuentoCupon = r.descuento;
+      } catch (err) {
+        console.warn('[checkout] cupón descartado:', err.message);
+      }
+    }
+
+    const monto = Math.max(0, subtotal - descuentoCupon);
     const ahora = new Date();
     // Fechas y horas en zona horaria de Paraguay (America/Asuncion)
     const fechaPy = ahora.toLocaleDateString('en-CA', { timeZone: 'America/Asuncion' }); // YYYY-MM-DD
@@ -2258,6 +2327,17 @@ class LandingService {
       // por personal de confianza) — acá nadie revisó todavía el pedido.
       estado_comercial: 'Pendiente',
       origen: 'LANDING',
+      // El pedido nace con su canal puesto. `origen` queda como snapshot
+      // de texto, pero la reportería agrupa por canal_venta_id: si esto no
+      // se setea acá, cada venta de la landing aparece en "Sin canal" hasta
+      // que alguien corra la migración de arranque (bug real: el pedido
+      // #375 quedó fuera del embudo de Formularios Web por esto).
+      canal_venta_id: await CanalVentaService.idPorSlug('web'),
+      // Código e importe como snapshot: el pedido tiene que poder explicar
+      // por qué se cobró eso aunque después se borre o se edite el cupón.
+      cupon_id: cuponAplicado ? cuponAplicado.id : null,
+      cupon_codigo: cuponAplicado ? cuponAplicado.codigo : null,
+      cupon_descuento: descuentoCupon,
       fecha: fechaPy,
       // El Kanban de Courier filtra "envíos del día" por ESTE campo, no por
       // "fecha" — sin setearlo, el pedido queda invisible en el tablero
@@ -2266,6 +2346,13 @@ class LandingService {
       hora: horaPy,
       items: itemsParaEnvio,
     }, { include: [{ model: EnvioItem, as: 'items' }] });
+
+    // El uso se cuenta recién acá, con el pedido ya creado: validar un
+    // código no lo gasta, así probarlo tres veces no agota un cupón de
+    // "primeras 10 compras".
+    if (cuponAplicado) {
+      await CuponService.registrarUso(cuponAplicado.id);
+    }
 
     // Procesar pasarela de pago si fue solicitada (ej. payment_method === 'pagopar')
     const paymentMethod = datosCliente?.payment_method?.toLowerCase();

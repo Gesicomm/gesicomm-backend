@@ -286,6 +286,8 @@ async function crearCheckout(req, res) {
       direccion: limpiarTexto(body.direccion, 255),
       referencia: limpiarTexto(body.referencia, MAX_TEXTO_LARGO),
       payment_method: limpiarTexto(body.payment_method, 50),
+      // El cupon se re-valida contra la BD en LandingService.crearCheckout; aca solo se sanea.
+      cupon_codigo: limpiarTexto(body.cupon_codigo, 40),
       items: Array.isArray(body.items) ? body.items.slice(0, 40).map(i => ({
         content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
         variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
@@ -332,6 +334,45 @@ async function recalcularCarrito(req, res) {
     const status = err.status || (err.message?.includes('no encontrada') ? 404 : 400);
     console.error('[landing-publica] recalcularCarrito:', err.message);
     return res.status(status).json({ message: err.message || 'Error al recalcular el carrito.' });
+  }
+}
+
+/**
+ * Valida un cupón contra el carrito y devuelve cuánto descontaría. NO lo
+ * consume: el uso se registra recién cuando el pedido se crea de verdad
+ * (ver LandingService.crearCheckout), así probar un código diez veces no
+ * gasta las diez.
+ *
+ * El descuento se recalcula del lado del servidor en el checkout: lo que
+ * devuelve acá es para mostrar, nunca es lo que termina cobrándose.
+ */
+async function validarCupon(req, res) {
+  try {
+    const { tienda } = await resolverTiendaYLanding(req);
+    if (!tienda) {
+      return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
+    }
+
+    const body = req.body || {};
+    const items = Array.isArray(body.items) ? body.items.slice(0, 40).map(i => ({
+      content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
+      variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
+      oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
+      cantidad: i?.cantidad,
+    })) : [];
+
+    const resultado = await LandingService.validarCupon(
+      tienda,
+      req.params.slug || null,
+      String(body.codigo || '').slice(0, 40),
+      items
+    );
+    return res.status(200).json(resultado);
+  } catch (err) {
+    // El motivo del rechazo ("vencido", "no aplica a tus productos") es
+    // justamente lo que el comprador necesita leer, así que va tal cual.
+    console.error('[landing-publica] validarCupon:', err.message);
+    return res.status(400).json({ message: err.message || 'No se pudo aplicar el cupón.' });
   }
 }
 
@@ -385,4 +426,4 @@ async function registrarEvento(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, crearCheckout, recalcularCarrito };
+module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, crearCheckout, recalcularCarrito, validarCupon };
