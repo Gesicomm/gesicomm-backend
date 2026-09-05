@@ -73,6 +73,9 @@ function costoParaComerciante(prod, usuario_id) {
  * `usuario_id` es el dueño del pedido: hace falta para saber si el producto
  * es propio del comerciante o del catálogo del admin (ver costoParaComerciante).
  */
+// Exportada al final del archivo: el webhook de PagoPar la necesita para
+// confirmar un pedido pagado con el MISMO descuento de stock que usa el
+// cambio de estado manual, en vez de duplicar la lógica.
 async function descontarStockYSnapshot(items, t, usuario_id) {
   const recetaPorItem = new Map();
   const totalPorProducto = new Map();
@@ -1411,3 +1414,4 @@ exports.deleteEnvio = async (req, res) => {
   }
 };
 
+exports.descontarStockYSnapshot = descontarStockYSnapshot;

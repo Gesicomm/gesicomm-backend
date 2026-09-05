@@ -14,11 +14,25 @@ class PagoParService {
 
   /**
    * Valida la firma de un webhook entrante de PagoPar.
-   * sha1(comercio_token_privado + "PAGOPAR")
+   *
+   *   sha1(comercio_token_privado + hash_pedido)
+   *
+   * Antes acá se hacía sha1(private_key + "PAGOPAR"), una fórmula que NO
+   * existe en la documentación de PagoPar — parece una confusión con
+   * sha1(private_key + "FORMA-PAGO"), que es la del endpoint de medios de
+   * pago (/api/forma-pago/1.1/traer/), no la del callback. Con la fórmula
+   * vieja el token nunca coincidía y TODO callback real se rechazaba con
+   * 400, así que ningún pago llegaba a confirmarse.
    */
-  static validateWebhookSignature(privateKey, tokenReceived) {
-    const expectedToken = crypto.createHash('sha1').update(`${privateKey}PAGOPAR`).digest('hex');
-    return expectedToken === tokenReceived;
+  static validateWebhookSignature(privateKey, hashPedido, tokenReceived) {
+    if (!privateKey || !hashPedido || !tokenReceived) return false;
+    const expectedToken = crypto.createHash('sha1').update(`${privateKey}${hashPedido}`).digest('hex');
+    // timingSafeEqual pide buffers del mismo largo: si el recibido no mide
+    // como un sha1 hex, ya sabemos que no coincide.
+    const recibido = Buffer.from(String(tokenReceived), 'utf8');
+    const esperado = Buffer.from(expectedToken, 'utf8');
+    if (recibido.length !== esperado.length) return false;
+    return crypto.timingSafeEqual(recibido, esperado);
   }
 
   /**
