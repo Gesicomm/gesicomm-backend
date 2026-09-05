@@ -1,5 +1,5 @@
 const { Op, fn, col, literal } = require('sequelize');
-const { Envio, EnvioItem, Producto, Oferta, Usuario } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Producto, Oferta, Usuario } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 class ReporteService {
@@ -354,6 +354,14 @@ class ReporteService {
       {
         model: Producto,
         attributes: ['precio_costo', 'precio_base']
+      },
+      {
+        // Costo REAL del comerciante, congelado al confirmarse el pedido.
+        // Sin esto el reporte caía al catálogo y mostraba el costo del ADMIN.
+        model: EnvioItemComponente,
+        as: 'componentes_vendidos',
+        attributes: ['cantidad', 'costo_unitario'],
+        required: false
       }
     ];
 
@@ -381,8 +389,13 @@ class ReporteService {
           devoluciones: 0,
           cancelados: 0,
           total_procesados: 0,
-          precio_costo_unitario: item.Producto ? (Number(item.Producto.precio_costo) || 0) : 0,
-          precio_venta_unitario: item.Producto ? (Number(item.Producto.precio_base) || 0) : 0
+          // Los unitarios se calculan al final sobre lo que REALMENTE pasó
+          // (ver el map de abajo). El precio del catálogo queda solo como
+          // respaldo para un producto del que todavía no se entregó nada.
+          precio_costo_unitario: 0,
+          precio_venta_unitario: 0,
+          _costo_catalogo: item.Producto ? (Number(item.Producto.precio_base) || 0) : 0,
+          _ultimo_precio_venta: 0
         };
       }
       
@@ -391,12 +404,33 @@ class ReporteService {
       
       mapa[p_id].total_procesados += cant;
       
+      // Último precio al que se vendió de verdad — respaldo cuando todavía no
+      // hay ninguna unidad entregada de ese producto.
+      const precioUnit = Number(item.precio_unitario) || 0;
+      if (precioUnit > 0) mapa[p_id]._ultimo_precio_venta = precioUnit;
+
       if (st === 'entregado') {
         mapa[p_id].vendidos += cant;
         mapa[p_id].ingresos += Number(item.subtotal) || 0;
-        
-        const costoUnitario = item.Producto ? (Number(item.Producto.precio_costo) || 0) : 0;
-        mapa[p_id].costo_total += costoUnitario * cant;
+
+        // Costo del COMERCIANTE, no del admin. Se prefiere el snapshot que
+        // dejó la confirmación del pedido (EnvioItemComponente.costo_unitario):
+        // ya contempla el multiplicador de una oferta y el costo vigente
+        // cuando se vendió. Sin snapshot (pedido viejo) se usa `precio_base`,
+        // el precio de lista al que el comerciante le compra al admin.
+        //
+        // `precio_costo` es lo que le costó AL ADMIN y el comerciante nunca lo
+        // paga: usarlo acá inflaba el margen. Misma regla que costoDeItem() en
+        // pedidosAnalyticsService y costoParaComerciante() en envioController
+        // — si cambia una, tienen que cambiar las tres.
+        const comps = item.componentes_vendidos || [];
+        if (comps.length > 0) {
+          mapa[p_id].costo_total += comps.reduce(
+            (acc, c) => acc + (Number(c.costo_unitario) || 0) * (c.cantidad || 0), 0);
+        } else {
+          const costoUnitario = item.Producto ? (Number(item.Producto.precio_base) || 0) : 0;
+          mapa[p_id].costo_total += costoUnitario * cant;
+        }
       } else if (st === 'rechazado' || st === 'devuelto') {
         mapa[p_id].devoluciones += cant;
       } else if (st === 'cancelado') {
@@ -404,8 +438,19 @@ class ReporteService {
       }
     });
 
-    let arrayData = Object.values(mapa);
-    
+    // Unitarios derivados de lo que pasó, para que la fila cierre sola:
+    // costo unitario x unidades entregadas = costo total, e igual con la venta.
+    let arrayData = Object.values(mapa).map(p => {
+      const fila = {
+        ...p,
+        precio_costo_unitario: p.vendidos > 0 ? Math.round(p.costo_total / p.vendidos) : p._costo_catalogo,
+        precio_venta_unitario: p.vendidos > 0 ? Math.round(p.ingresos / p.vendidos) : p._ultimo_precio_venta,
+      };
+      delete fila._costo_catalogo;
+      delete fila._ultimo_precio_venta;
+      return fila;
+    });
+
     // Filtrar adicionales si hubo un buscador por nombre de producto (que no entra en Envio)
     if (buscador) {
       const b = buscador.toLowerCase();

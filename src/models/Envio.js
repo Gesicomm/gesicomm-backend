@@ -167,6 +167,16 @@ const Envio = sequelize.define('Envio', {
     defaultValue: 'Pendiente',
   },
   // --- Checkout público (landing) ---
+  // De QUÉ landing vino el pedido. NULL en todo lo cargado a mano y en los
+  // pedidos anteriores a esta columna: hasta entonces solo se guardaba
+  // `origen: 'LANDING'`, que dice que vino de una landing pero no de cuál.
+  // El dashboard agrupa esos NULL como "Sin landing" en vez de repartirlos
+  // (ver migrar-landing-id-envios.js). Si la landing se borra, esto queda en
+  // NULL y el pedido sobrevive — es plata cobrada, no tráfico.
+  landing_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   ruc: {
     type: DataTypes.STRING(20),
     allowNull: true,

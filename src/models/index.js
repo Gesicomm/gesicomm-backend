@@ -23,12 +23,14 @@ const CourierTarifa = require('./CourierTarifa');
 const Envio = require('./Envio');
 const EnvioItem = require('./EnvioItem');
 const EnvioItemComponente = require('./EnvioItemComponente');
+const EnvioIntentoEntrega = require('./EnvioIntentoEntrega');
 const MetodoPago = require('./MetodoPago');
 const Liquidacion = require('./Liquidacion');
 const LiquidacionEnvio = require('./LiquidacionEnvio');
 const EnvioHistorial = require('./EnvioHistorial');
 const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
+const ProveedorDns = require('./ProveedorDns');
 const LandingTemplate = require('./LandingTemplate');
 const Landing = require('./Landing');
 const Funnel = require('./Funnel');
@@ -129,6 +131,14 @@ Liquidacion.hasMany(LiquidacionEnvio, { as: 'envios_incluidos', foreignKey: 'liq
 LiquidacionEnvio.belongsTo(Liquidacion, { foreignKey: 'liquidacion_id' });
 LiquidacionEnvio.belongsTo(Envio, { foreignKey: 'envio_id' });
 Envio.hasOne(LiquidacionEnvio, { foreignKey: 'envio_id' });
+
+// Desglose de viajes del courier (ver EnvioIntentoEntrega). CASCADE porque
+// es detalle del pedido; el courier se desengancha con SET NULL para que
+// borrarlo no borre el registro de un viaje que se pagó.
+Envio.hasMany(EnvioIntentoEntrega, { as: 'intentos_entrega', foreignKey: 'envio_id', onDelete: 'CASCADE' });
+EnvioIntentoEntrega.belongsTo(Envio, { foreignKey: 'envio_id' });
+Courier.hasMany(EnvioIntentoEntrega, { foreignKey: 'courier_id', onDelete: 'SET NULL' });
+EnvioIntentoEntrega.belongsTo(Courier, { foreignKey: 'courier_id' });
 
 // Historial/trazabilidad simple del pedido (ver plan sección 24)
 Envio.hasMany(EnvioHistorial, { as: 'historial', foreignKey: 'envio_id', onDelete: 'CASCADE' });
@@ -256,6 +266,12 @@ Landing.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });
 // Relación de productos con landings (page-builder)
 Landing.hasMany(LandingEvento, { as: 'eventos', foreignKey: 'landing_id', onDelete: 'CASCADE' });
 LandingEvento.belongsTo(Landing, { foreignKey: 'landing_id' });
+
+// SET NULL y no CASCADE, a diferencia de los eventos de arriba: borrar una
+// landing borra su tráfico (es de esa página) pero NUNCA sus ventas. El
+// pedido pierde la atribución y pasa a contarse como "Sin landing".
+Landing.hasMany(Envio, { as: 'pedidos', foreignKey: 'landing_id', onDelete: 'SET NULL' });
+Envio.belongsTo(Landing, { as: 'landing', foreignKey: 'landing_id' });
 
 Landing.hasMany(Testimonio, { as: 'testimonios', foreignKey: 'landing_id', onDelete: 'CASCADE' });
 Testimonio.belongsTo(Landing, { foreignKey: 'landing_id' });
@@ -467,6 +483,7 @@ module.exports = {
   Envio,
   EnvioItem,
   EnvioItemComponente,
+  EnvioIntentoEntrega,
   MetodoPago,
   Liquidacion,
   LiquidacionEnvio,
@@ -508,4 +525,5 @@ module.exports = {
   BuilderDomain,
   PaymentGateway,
   PaymentTransaction,
+  ProveedorDns,
 };

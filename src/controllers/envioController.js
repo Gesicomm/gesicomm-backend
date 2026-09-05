@@ -1,4 +1,4 @@
-const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
@@ -329,6 +329,52 @@ async function registrarPerdidaComponentes(envio, itemsPayload, t) {
   const cargo = Math.round(valorTotalPerdido - (parseInt(envio.costo_envio) || 0));
   await envio.update({ cargo_perdida_courier: cargo }, { transaction: t });
   return cargo;
+}
+
+
+/** Día de hoy en zona horaria de Paraguay (YYYY-MM-DD). */
+function hoyPy() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Asuncion' });
+}
+
+/**
+ * Registra UN viaje del courier y devuelve cuánto se había gastado en viajes
+ * anteriores de ese pedido.
+ *
+ * `Envio.costo_envio` guarda el TOTAL (es lo que leen el dashboard y la
+ * rendición, y por eso no hubo que tocar ninguno de los dos); esta tabla
+ * guarda el desglose. Ver src/models/EnvioIntentoEntrega.js.
+ */
+async function viajesPrevios(envio_id, t) {
+  const previos = await EnvioIntentoEntrega.findAll({
+    where: { envio_id },
+    attributes: ['costo'],
+    transaction: t,
+  });
+  return {
+    cantidad: previos.length,
+    acumulado: previos.reduce((acc, i) => acc + (Number(i.costo) || 0), 0),
+  };
+}
+
+/**
+ * Deja registrado UN viaje. El costo se calcula ANTES de llamar acá y se pasa
+ * ya resuelto, para que la fila guarde exactamente el mismo importe que se
+ * suma a `Envio.costo_envio`: si las dos cuentas se hicieran por separado, el
+ * desglose podría no dar el total y no habría forma de saber cuál miente.
+ */
+async function registrarViaje(envio, { numero, resultado, costo, motivo = null, fecha_reprogramada = null }, t) {
+  await EnvioIntentoEntrega.create({
+    envio_id: envio.id,
+    courier_id: envio.courier_id || null,
+    numero,
+    resultado,
+    // Cero es válido y significativo: hay viajes que el courier no cobra.
+    costo: Math.max(0, Number(costo) || 0),
+    motivo,
+    fecha_reprogramada,
+    fecha: hoyPy(),
+  }, { transaction: t });
 }
 
 exports.listEnvios = async (req, res) => {
@@ -695,6 +741,10 @@ exports.updateEstado = async (req, res) => {
       confirmador, origen, canal_venta_id, campaign_name, observaciones, monto,
       // Obligatorio para pasar a Reprogramado — ver TRANSICIONES_VALIDAS.
       fecha_reprogramada, motivo_reprogramacion,
+      // Lo que cuesta el viaje en falso que se acaba de hacer. Se acumula en
+      // costo_envio. Puede ser 0 (el courier no lo cobra) — por eso se
+      // compara contra undefined y no por falsy.
+      costo_intento,
     } = req.body;
 
     if (!estado && courier_id === undefined && !estado_comercial && !estado_logistico) {
@@ -738,6 +788,24 @@ exports.updateEstado = async (req, res) => {
         }
         updateData.fecha_reprogramada = fecha_reprogramada;
         updateData.motivo_reprogramacion = motivo_reprogramacion || null;
+
+        // El viaje en falso ya se hizo y ya se paga: se suma al costo del
+        // pedido en vez de perderse. Antes de esto el courier podía ir tres
+        // veces y el sistema registraba un solo envío, dejando el costo real
+        // fuera del margen y fuera de la rendición.
+        const costoViaje = costo_intento !== undefined ? Math.max(0, Number(costo_intento) || 0) : 0;
+        const { cantidad, acumulado } = await viajesPrevios(envio.id, t);
+        await registrarViaje(envio, {
+          numero: cantidad + 1,
+          resultado: 'reprogramado',
+          costo: costoViaje,
+          motivo: motivo_reprogramacion || null,
+          fecha_reprogramada,
+        }, t);
+        updateData.costo_envio = acumulado + costoViaje;
+        if (costoViaje > 0) {
+          await registrarHistorial(envio.id, usuario_id, `Viaje en falso: Gs ${costoViaje.toLocaleString('es-PY')}`, t);
+        }
       }
 
       if (estado === 'Entregado') {
@@ -750,7 +818,25 @@ exports.updateEstado = async (req, res) => {
         }
         updateData.metodo_pago_id = metodoFinal;
         updateData.monto = montoFinal;
-        updateData.costo_envio = costoFinal;
+
+        // `costo_envio` que llega es el costo de ESTE viaje, el que entregó.
+        // Se le suma lo que ya costaron los viajes en falso anteriores, que
+        // vive en la tabla de intentos. Sin pedidos reprogramados el
+        // acumulado es 0 y el total queda igual que siempre.
+        //
+        // Ojo con el fallback: si no viene costo_envio y YA hubo intentos,
+        // `envio.costo_envio` es el acumulado — volver a sumarlo lo
+        // duplicaría, así que en ese caso el viaje final cuenta como 0.
+        const { cantidad, acumulado } = await viajesPrevios(envio.id, t);
+        const costoViajeFinal = costo_envio !== undefined
+          ? Math.max(0, Number(costoFinal) || 0)
+          : (acumulado > 0 ? 0 : Math.max(0, Number(costoFinal) || 0));
+        await registrarViaje(envio, {
+          numero: cantidad + 1,
+          resultado: 'entregado',
+          costo: costoViajeFinal,
+        }, t);
+        updateData.costo_envio = acumulado + costoViajeFinal;
       }
 
       // Movimientos de stock por transición — cada uno protegido por su
@@ -794,7 +880,12 @@ exports.updateEstado = async (req, res) => {
     if (direccion !== undefined) updateData.direccion = direccion;
     if (referencia !== undefined) updateData.referencia = referencia;
     if (link_maps !== undefined) updateData.link_maps = link_maps;
-    if (costo_envio !== undefined) updateData.costo_envio = costo_envio;
+    // OJO: este pase genérico NO puede pisar lo que ya calculó el bloque de
+    // transición. Al entregar, ese bloque suma los viajes en falso previos al
+    // costo del viaje final; si acá se volviera a asignar el valor crudo del
+    // request, esos viajes desaparecerían del pedido (bug real: un pedido con
+    // dos viajes de 25.000 quedaba con costo_envio 25.000).
+    if (costo_envio !== undefined && updateData.costo_envio === undefined) updateData.costo_envio = costo_envio;
     if (metodo_pago !== undefined) updateData.metodo_pago = metodo_pago;
     if (metodo_pago_id !== undefined) updateData.metodo_pago_id = metodo_pago_id;
     if (comision_pct_aplicada !== undefined) updateData.comision_pct_aplicada = comision_pct_aplicada;

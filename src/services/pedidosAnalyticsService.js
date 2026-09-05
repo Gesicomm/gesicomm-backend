@@ -1,7 +1,8 @@
 'use strict';
 
-const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto, CategoriaCostoGasto, PaymentTransaction, CanalVenta } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto, CategoriaCostoGasto, PaymentTransaction, CanalVenta, Landing, LandingEvento, Tienda } = require('../models');
 const { Op, fn, col, literal } = require('sequelize');
+const sequelize = require('../config/database');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 /**
@@ -156,21 +157,38 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
   };
 }
 
-// 2. KPIs Financieros y Rentabilidad Estimada
-async function getKpisFinancieros(whereBase) {
-  const envios = await Envio.findAll({
+/**
+ * Lectura única de pedidos con sus ítems para los tres análisis que la
+ * necesitan (KPIs financieros, ranking de productos y ofertas). Antes cada
+ * uno hacía su propia consulta: tres joins idénticos sobre las mismas filas
+ * en cada carga del dashboard.
+ *
+ * Los `attributes` son la UNIÓN de lo que pedía cada uno — quitar uno de
+ * acá rompe en silencio al análisis que lo lea (`undefined` en vez de un
+ * número), así que si un cálculo necesita un campo nuevo, se agrega acá.
+ */
+function getEnviosConItems(whereBase) {
+  return Envio.findAll({
     where: whereBase,
     include: [
       {
         model: EnvioItem,
         as: 'items',
         include: [
-          { model: Producto, attributes: ['id', 'precio_costo', 'precio_base'] },
-          { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
+          { model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base'] },
+          {
+            model: EnvioItemComponente,
+            as: 'componentes_vendidos',
+            attributes: ['cantidad', 'costo_unitario', 'cantidad_perdida', 'cantidad_devuelta_danada', 'cantidad_devuelta_vendible'],
+          },
         ],
       }
     ]
   });
+}
+
+// 2. KPIs Financieros y Rentabilidad Estimada
+function getKpisFinancieros(envios) {
 
   let facturacionEntregada = 0;
   let valorConfirmado = 0;
@@ -313,27 +331,7 @@ function perdidaDeItem(item) {
 }
 
 // 3. Ranking de Productos (¿Qué se vende, confirma y devuelve más?)
-async function getProductosAnalytics(whereBase) {
-  const envios = await Envio.findAll({
-    where: whereBase,
-    include: [
-      {
-        model: EnvioItem,
-        as: 'items',
-        include: [
-          { model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base'] },
-          {
-            model: EnvioItemComponente,
-            as: 'componentes_vendidos',
-            // Los tres contadores de devolución/pérdida ya existen en la
-            // tabla; solo faltaba pedirlos para poder valorizar la pérdida
-            // por producto al costo del momento de la venta.
-            attributes: ['cantidad', 'costo_unitario', 'cantidad_perdida', 'cantidad_devuelta_danada', 'cantidad_devuelta_vendible'],
-          },
-        ],
-      }
-    ]
-  });
+function getProductosAnalytics(envios) {
 
   const mapProds = {};
 
@@ -344,8 +342,68 @@ async function getProductosAnalytics(whereBase) {
     const isDevuelto = ['devuelto', 'no entregado', 'fallido'].includes(st);
     const canal = (e.origen || 'WEB').toUpperCase();
 
+    // Reparto del monto REAL del pedido entre sus líneas.
+    //
+    // `monto` manda sobre la suma de los subtotales: es lo que el cliente
+    // efectivamente pagó, y es lo que suma `facturacion_entregada`. Los dos
+    // números se despegan por dos motivos reales:
+    //   - un cupón descuenta a nivel PEDIDO y no toca `EnvioItem.subtotal`;
+    //   - al cerrar la venta se puede ajustar el monto (ej. cobrarle el
+    //     envío al cliente), y eso tampoco baja a las líneas.
+    // Sumando subtotales, "Más Vendidos" facturaba Gs 1.183.000 mientras
+    // "Facturación Real" decía Gs 1.044.000 — el mismo período, dos cifras.
+    // Repartiendo el monto, la tabla de productos cierra siempre con el KPI.
+    let facturacionPorItem = null;
+    let costoDirectoPorItem = null;
+    if (isEntregado && e.items && e.items.length > 0) {
+      const subtotales = e.items.map(it => Number(it.subtotal || (it.precio_unitario * (it.cantidad || 1)) || 0));
+      const sumaSub = subtotales.reduce((a, b) => a + b, 0);
+      const montoPedido = Number(e.monto || 0);
+      facturacionPorItem = sumaSub > 0
+        ? subtotales.map(s => Math.round((s / sumaSub) * montoPedido))
+        // Sin precios en las líneas no hay proporción que aplicar: se reparte
+        // en partes iguales antes que descartar la facturación del pedido.
+        : e.items.map(() => Math.round(montoPedido / e.items.length));
+
+      // El redondeo no puede despegar la suma por producto del monto del
+      // pedido: el resto va a la línea más grande (mismo criterio que el
+      // prorrateo de costos comunes de más abajo).
+      const resto = montoPedido - facturacionPorItem.reduce((a, b) => a + b, 0);
+      if (resto !== 0) {
+        let mayor = 0;
+        for (let i = 1; i < subtotales.length; i++) if (subtotales[i] > subtotales[mayor]) mayor = i;
+        facturacionPorItem[mayor] += resto;
+      }
+
+      // Costos que son DE ESTE PEDIDO: el envío que se pagó por él, su
+      // comisión y su IVA. Se reparten entre SUS propios ítems, no en la
+      // bolsa común del final.
+      //
+      // Antes iban todos a un pool global que se repartía por unidades entre
+      // todos los productos del período. Eso hacía que un producto cargara
+      // el envío de otro: un pedido con Gs 50.000 de flete y otro con Gs
+      // 30.000 terminaban pagando Gs 40.000 cada uno. La información de a
+      // qué pedido pertenecía cada costo existe — promediarla era perderla.
+      const comisionPedido = montoPedido * (Number(e.comision_pct_aplicada || 0) / 100);
+      const ivaPedido = e.quiere_factura ? montoPedido * 0.10 : 0;
+      const costoDelPedido = Number(e.costo_envio || 0) + comisionPedido + ivaPedido;
+      if (costoDelPedido > 0) {
+        const base = facturacionPorItem.reduce((a, b) => a + b, 0);
+        costoDirectoPorItem = base > 0
+          ? facturacionPorItem.map(f => Math.round((f / base) * costoDelPedido))
+          : e.items.map(() => Math.round(costoDelPedido / e.items.length));
+        const restoCosto = Math.round(costoDelPedido) - costoDirectoPorItem.reduce((a, b) => a + b, 0);
+        if (restoCosto !== 0) {
+          let mayor = 0;
+          for (let i = 1; i < subtotales.length; i++) if (subtotales[i] > subtotales[mayor]) mayor = i;
+          costoDirectoPorItem[mayor] += restoCosto;
+        }
+      }
+    }
+
     if (e.items && e.items.length > 0) {
-      for (const item of e.items) {
+      for (let idxItem = 0; idxItem < e.items.length; idxItem++) {
+        const item = e.items[idxItem];
         const key = item.producto_id ? `p_${item.producto_id}` : `name_${item.nombre_producto}`;
         if (!mapProds[key]) {
           mapProds[key] = {
@@ -364,6 +422,9 @@ async function getProductosAnalytics(whereBase) {
             devueltos: 0,
             facturacion_total: 0,
             costo_total: 0,
+            // Envío, comisión e IVA de los pedidos donde se vendió este
+            // producto. Atribuido, no promediado (ver arriba).
+            costo_directo_pedido: 0,
             unidades_perdidas: 0,
             perdida: 0,
             canales: { WEB: 0, WHATSAPP: 0, OTROS: 0 }
@@ -377,7 +438,8 @@ async function getProductosAnalytics(whereBase) {
         if (isEntregado) {
           p.entregados += 1;
           p.unidades_entregadas += (item.cantidad || 1);
-          p.facturacion_total += Number(item.subtotal || item.precio_unitario * (item.cantidad || 1) || 0);
+          p.facturacion_total += facturacionPorItem ? facturacionPorItem[idxItem] : 0;
+          p.costo_directo_pedido += costoDirectoPorItem ? costoDirectoPorItem[idxItem] : 0;
           p.costo_total += costoDeItem(item);
         }
         if (isDevuelto) p.devueltos += 1;
@@ -423,18 +485,7 @@ async function getProductosAnalytics(whereBase) {
 
 // 3b. Desglose de Ventas por Oferta dentro de cada Producto
 // (ej. "de las 300 unidades vendidas de Earplugs, 38% fueron pack x3")
-async function getOfertasAnalytics(whereBase) {
-  const envios = await Envio.findAll({
-    where: whereBase,
-    include: [
-      {
-        model: EnvioItem,
-        as: 'items',
-        attributes: ['producto_id', 'oferta_id', 'oferta_codigo', 'oferta_nombre', 'nombre_producto', 'cantidad', 'subtotal'],
-        include: [{ model: Producto, attributes: ['id', 'nombre'] }],
-      }
-    ]
-  });
+function getOfertasAnalytics(envios) {
 
   const mapProductos = {};
 
@@ -786,22 +837,227 @@ async function getProductosDisponibles(usuario_id) {
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
 }
 
+/**
+ * Caché en memoria de los CATÁLOGOS del dashboard (años, productos, landings,
+ * canales, confirmadores, tienda).
+ *
+ * Estas listas no dependen del período ni de ningún filtro: son "qué existe
+ * en tu cuenta". Sin caché se volvían a consultar en CADA clic de filtro —
+ * media docena de viajes a la base por interacción, que contra una base
+ * remota (~230 ms por viaje) es la mayor parte del tiempo de espera.
+ *
+ * Se guarda la PROMESA, no el valor: dos pedidos simultáneos comparten la
+ * misma consulta en vez de disparar dos.
+ *
+ * TTL corto a propósito: si el usuario crea una landing o carga un producto,
+ * tiene que verlo aparecer enseguida. 30 s es el techo de esa espera.
+ * Un error no se cachea, para no dejar el dashboard roto medio minuto.
+ */
+const CATALOGO_TTL_MS = 30000;
+const CATALOGO_MAX_CLAVES = 500;
+const cacheCatalogos = new Map();
+
+function catalogoCacheado(clave, cargar) {
+  const ahora = Date.now();
+  const guardado = cacheCatalogos.get(clave);
+  if (guardado && guardado.expira > ahora) return guardado.valor;
+
+  // Poda perezosa: sin esto el Map crece con cada usuario que entra y nunca
+  // se vacía (una fuga lenta en un proceso que vive días).
+  if (cacheCatalogos.size > CATALOGO_MAX_CLAVES) {
+    for (const [k, v] of cacheCatalogos) if (v.expira <= ahora) cacheCatalogos.delete(k);
+  }
+
+  const valor = Promise.resolve().then(cargar);
+  cacheCatalogos.set(clave, { expira: ahora + CATALOGO_TTL_MS, valor });
+  valor.catch(() => cacheCatalogos.delete(clave));
+  return valor;
+}
+
+/** Para tests y para el día que haga falta invalidar a mano. */
+exports.limpiarCacheCatalogos = () => cacheCatalogos.clear();
+
+/**
+ * Ranking de landings por facturación entregada, con su tráfico al lado.
+ *
+ * Responde "¿cuál de mis páginas vende más?", que es la pregunta que la
+ * atribución por landing (Envio.landing_id) habilita por primera vez.
+ *
+ * DOS FUENTES, a propósito: los pedidos salen de `envios` y las visitas de
+ * `landing_eventos`. Por eso el universo se siembra con las dos — una landing
+ * con visitas y cero ventas TIENE que aparecer (con 0% de conversión): es
+ * exactamente el caso que hay que detectar, y si solo se listaran las que
+ * vendieron, esa página quedaría invisible.
+ *
+ * La ganancia usa la MISMA fórmula que margen_bruto_estimado de
+ * getKpisFinancieros (facturación − mercadería − envío − comisión − IVA) pero
+ * NO descuenta gastos operativos: son del negocio entero y repartirlos entre
+ * landings sería un prorrateo inventado. La columna se rotula como ganancia
+ * antes de gastos fijos para que no se confunda con la Utilidad Neta.
+ *
+ * Los pedidos sin landing (carga manual, WhatsApp, y todo lo anterior a
+ * Envio.landing_id) quedan fuera: no son una landing y encabezarían el
+ * ranking sin querer decir nada.
+ */
+async function getRankingLandings(whereRanking, desde, hasta, landingsTienda, limite = 5) {
+  // La consulta de pedidos y la lista de landings no dependen una de la otra:
+  // arrancan juntas. Contra una base remota cada `await` suelto cuesta un
+  // viaje completo (~230 ms medidos por el túnel), así que encadenarlas de
+  // más es lo que hace lento al dashboard, no el tamaño de los datos.
+  const landings = landingsTienda || [];
+  const idsTienda = landings.map(l => l.id);
+  const [envios, visitas] = await Promise.all([
+    Envio.findAll({
+    where: whereRanking,
+    attributes: ['id', 'landing_id', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura'],
+    include: [{
+      model: EnvioItem,
+      as: 'items',
+      attributes: ['id', 'cantidad'],
+      include: [
+        { model: Producto, attributes: ['id', 'precio_costo', 'precio_base'] },
+        { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
+      ],
+    }],
+    }),
+    // Visitas del período por landing. Se piden para TODAS las páginas de la
+    // tienda, no solo las que vendieron: una landing con tráfico y cero
+    // ventas tiene que aparecer en el ranking.
+    idsTienda.length
+      ? LandingEvento.findAll({
+          where: {
+            landing_id: { [Op.in]: idsTienda },
+            tipo_evento: 'visita',
+            created_at: { [Op.between]: [new Date(`${desde}T00:00:00`), new Date(`${hasta}T23:59:59.999`)] },
+          },
+          attributes: ['landing_id', [fn('COUNT', col('id')), 'visitas']],
+          group: ['landing_id'],
+          raw: true,
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const filaVacia = (landing_id) => ({
+    landing_id,
+    nombre: null,
+    slug: null,
+    visitas: 0,
+    pedidos: 0,
+    entregados: 0,
+    facturacion: 0,
+    costo: 0,
+    ganancia: 0,
+    conversion: 0,
+    ticket_promedio: 0,
+  });
+  const porLanding = new Map();
+  const fila = (id) => {
+    if (!porLanding.has(id)) porLanding.set(id, filaVacia(id));
+    return porLanding.get(id);
+  };
+
+  for (const e of envios) {
+    const f = fila(e.landing_id);
+    f.pedidos++;
+    if ((e.estado || '').toLowerCase() !== 'entregado') continue;
+
+    const monto = Number(e.monto || 0);
+    f.entregados++;
+    f.facturacion += monto;
+    f.costo += Number(e.costo_envio || 0);
+    f.costo += monto * (Number(e.comision_pct_aplicada || 0) / 100);
+    if (e.quiere_factura) f.costo += monto * 0.10;
+    for (const item of e.items || []) f.costo += costoDeItem(item);
+  }
+
+  for (const v of visitas) fila(v.landing_id).visitas = Number(v.visitas) || 0;
+
+  if (porLanding.size === 0) {
+    return { top: [], totales: { landings: 0, visitas: 0, pedidos: 0, entregados: 0, facturacion: 0, ganancia: 0, conversion: 0 }, total_landings: 0 };
+  }
+
+  // Los nombres salen de la lista que ya se trajo: pedirlos de nuevo era una
+  // ida y vuelta entera para datos que estaban en memoria.
+  const nombrePorId = new Map(landings.map(l => [l.id, l]));
+
+  const filas = [...porLanding.values()].map(f => {
+    const meta = nombrePorId.get(f.landing_id);
+    return {
+      ...f,
+      nombre: meta ? meta.nombre : `Landing #${f.landing_id}`,
+      slug: meta ? meta.slug : null,
+      costo: Math.round(f.costo),
+      ganancia: Math.round(f.facturacion - f.costo),
+      // Conversión = ventas entregadas sobre visitas. Sin visitas registradas
+      // se devuelve 0 y el frontend muestra un guion: no es 0% de conversión,
+      // es que no hay con qué calcularla.
+      conversion: f.visitas > 0 ? Number(((f.entregados / f.visitas) * 100).toFixed(1)) : 0,
+      ticket_promedio: f.entregados > 0 ? Math.round(f.facturacion / f.entregados) : 0,
+    };
+  });
+
+  const totales = filas.reduce((acc, f) => ({
+    landings: acc.landings + 1,
+    visitas: acc.visitas + f.visitas,
+    pedidos: acc.pedidos + f.pedidos,
+    entregados: acc.entregados + f.entregados,
+    facturacion: acc.facturacion + f.facturacion,
+    ganancia: acc.ganancia + f.ganancia,
+  }), { landings: 0, visitas: 0, pedidos: 0, entregados: 0, facturacion: 0, ganancia: 0 });
+  totales.conversion = totales.visitas > 0 ? Number(((totales.entregados / totales.visitas) * 100).toFixed(1)) : 0;
+
+  // Ordenado por facturación: "las que más venden". El desempate por visitas
+  // deja arriba a la que al menos trajo gente cuando ninguna vendió todavía.
+  filas.sort((a, b) => (b.facturacion - a.facturacion) || (b.visitas - a.visitas));
+
+  return { top: filas.slice(0, limite), totales, total_landings: filas.length };
+}
+
+/**
+ * Tiendas (landings de tipo 'inicio') del inquilino, para el selector de
+ * landing del dashboard. Mismo criterio que el resto de los filtros: la
+ * lista sale de la base, el frontend solo la renderiza.
+ *
+ * Solo 'inicio': una landing de tipo catálogo/contacto es una página más de
+ * la misma tienda, no una tienda aparte, y los funnels quedan fuera a
+ * pedido del usuario (se van a retirar). El tráfico y las ventas de todas
+ * ellas siguen sumando en la opción "Todas", que no filtra nada.
+ */
+function getLandingsDisponibles(landingsTienda) {
+  return (landingsTienda || []).filter(l => l.tipo_pagina === 'inicio').map(l => ({
+    landing_id: l.id,
+    nombre: l.nombre,
+    slug: l.slug,
+    publicada: Boolean(l.activo),
+    es_home: Boolean(l.es_home),
+  }));
+}
+
 // Años con al menos un pedido, para el <select> de año del filtro "Por mes".
 // `fecha` es un STRING (no DATE) en el modelo Envio, así que el año se saca
 // en JS a partir de dispatchedAt/fecha en vez de un EXTRACT() en SQL.
 async function getAniosDisponibles(usuario_id) {
-  const filas = await Envio.findAll({
-    where: { usuario_id },
-    attributes: ['fecha', 'dispatchedAt'],
-    raw: true,
-  });
+  // El DISTINCT lo hace Postgres. Antes esto traía TODAS las filas de pedidos
+  // del usuario a memoria solo para leerles el año: con pocos pedidos no se
+  // nota, con decenas de miles es una consulta que crece para siempre.
+  //
+  // `fecha` es varchar 'YYYY-MM-DD': se le toma el prefijo de 4 dígitos en
+  // vez de castearla a date, para que una fila con basura no reviente la
+  // consulta entera (la versión anterior toleraba eso y hay que mantenerlo).
+  const filas = await sequelize.query(
+    `SELECT DISTINCT COALESCE(
+              EXTRACT(YEAR FROM "dispatchedAt")::int,
+              substring("fecha" from '^[0-9]{4}')::int
+            ) AS anio
+       FROM "envios"
+      WHERE "usuario_id" = :usuario_id`,
+    { replacements: { usuario_id }, type: sequelize.QueryTypes.SELECT }
+  );
 
   const anios = new Set([new Date().getFullYear()]);
-  for (const e of filas) {
-    const f = e.dispatchedAt || e.fecha;
-    if (!f) continue;
-    const anio = new Date(f).getFullYear();
-    if (Number.isFinite(anio)) anios.add(anio);
+  for (const f of filas) {
+    const anio = Number(f.anio);
+    if (Number.isFinite(anio) && anio > 0) anios.add(anio);
   }
   return [...anios].sort((a, b) => b - a);
 }
@@ -918,21 +1174,57 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     whereBase.id = { [Op.in]: enviosConProducto.length > 0 ? enviosConProducto.map(e => e.id) : [-1] };
   }
 
-  // Catálogo de canales del tenant — define los buckets del embudo por
-  // canal. Se lee una sola vez y se pasa a getResumenFunnel.
-  const canalesCatalogo = await CanalVenta.findAll({
-    where: { activo: true, [Op.or]: [{ inquilino_id: null }, { inquilino_id: inquilino_id ?? null }] },
-    attributes: ['id', 'nombre', 'slug'],
-    order: [['orden', 'ASC'], ['nombre', 'ASC']],
+  // El ranking de landings se congela ACÁ, antes de aplicar el filtro de
+  // landing: una comparativa de "cuál vende más" con una sola landing
+  // seleccionada no compara nada. Respeta fecha y producto, ignora el tab.
+  const whereRanking = { ...whereBase, landing_id: { [Op.ne]: null } };
+
+  // Filtro por landing. 'SIN_LANDING' es su propio valor y no un "sin filtro":
+  // agrupa los pedidos cargados a mano y los anteriores a Envio.landing_id,
+  // que no se pueden atribuir a ninguna página (ver migrar-landing-id-envios).
+  if (filtros.landing_id && filtros.landing_id !== 'TODAS') {
+    whereBase.landing_id = filtros.landing_id === 'SIN_LANDING' ? null : filtros.landing_id;
+  }
+
+
+  // Las landings de la tienda se traen UNA vez y se reparten: las usan el
+  // ranking (nombres + universo de visitas) y el selector del dashboard.
+  // Antes cada uno hacía su propia consulta, encadenadas: tres viajes para
+  // los mismos datos. La promesa arranca acá y se resuelve dentro de la ola
+  // grande de abajo, sin agregar una ola propia.
+  const landingsTiendaPromise = catalogoCacheado(`landings:${usuario_id}`, () => Landing.findAll({
+    where: { tienda_id: { [Op.in]: literal(`(SELECT id FROM tiendas WHERE usuario_id = ${Number(usuario_id)})`) } },
+    attributes: ['id', 'nombre', 'slug', 'activo', 'es_home', 'tipo_pagina'],
+    order: [['created_at', 'ASC']],
     raw: true,
-  });
+  }));
+
+  // Catálogo de canales del tenant y tienda del usuario: ninguno depende del
+  // otro, así que van en la MISMA ida y vuelta. Encadenar dos `await` sueltos
+  // acá costaba ~460 ms contra la base remota, antes de que arrancara
+  // cualquier consulta útil (medido: dos olas de ~230 ms).
+  const [canalesCatalogo, tiendaDelUsuario] = await Promise.all([
+    catalogoCacheado(`canales:${inquilino_id ?? 'base'}`, () => CanalVenta.findAll({
+      where: { activo: true, [Op.or]: [{ inquilino_id: null }, { inquilino_id: inquilino_id ?? null }] },
+      attributes: ['id', 'nombre', 'slug'],
+      order: [['orden', 'ASC'], ['nombre', 'ASC']],
+      raw: true,
+    })),
+    catalogoCacheado(`tienda:${usuario_id}`, () => Tienda.findOne({ where: { usuario_id }, attributes: ['id'], raw: true })),
+  ]);
+  const tiendaId = tiendaDelUsuario ? tiendaDelUsuario.id : null;
+
 
   // Lista de confirmadores únicos disponibles en el inquilino
-  const confirmadoresDisponiblesPromise = Envio.findAll({
+  const confirmadoresDisponiblesPromise = catalogoCacheado(`confirmadores:${usuario_id}`, () => Envio.findAll({
     where: { usuario_id, confirmador: { [Op.ne]: null } },
     attributes: [[fn('DISTINCT', col('confirmador')), 'confirmador']],
     raw: true,
-  });
+  }));
+
+  // Una sola lectura de pedidos+ítems, compartida por los tres análisis que
+  // la usan. Arranca acá para entrar en la misma ola que el resto.
+  const enviosConItemsPromise = getEnviosConItems(whereBase);
 
   // Ejecución en paralelo con Promise.all()
   const [
@@ -948,19 +1240,23 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     pagosOnline,
     productosDisponibles,
     aniosDisponibles,
+    landingsDisponibles,
+    rankingLandings,
   ] = await Promise.all([
     getResumenFunnel(whereBase, canalesCatalogo),
-    getKpisFinancieros(whereBase),
-    getProductosAnalytics(whereBase),
-    getOfertasAnalytics(whereBase),
+    enviosConItemsPromise.then(getKpisFinancieros),
+    enviosConItemsPromise.then(getProductosAnalytics),
+    enviosConItemsPromise.then(getOfertasAnalytics),
     getConfirmadoresAnalytics(whereBase),
     getCouriersAnalytics(whereBase, usuario_id),
     getTimelineTendencias(whereBase, desde, hasta),
     confirmadoresDisponiblesPromise,
     getGastosOperativos(usuario_id, desde, hasta),
     getPagosOnlineAnalytics(whereBase),
-    getProductosDisponibles(usuario_id),
-    getAniosDisponibles(usuario_id),
+    catalogoCacheado(`productos:${usuario_id}`, () => getProductosDisponibles(usuario_id)),
+    catalogoCacheado(`anios:${usuario_id}`, () => getAniosDisponibles(usuario_id)),
+    landingsTiendaPromise.then(getLandingsDisponibles),
+    landingsTiendaPromise.then(ls => getRankingLandings(whereRanking, desde, hasta, ls)),
   ]);
 
   // Prorrateo por producto — por UNIDADES ENTREGADAS, igual que la planilla
@@ -968,10 +1264,13 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
   // sobre un total de 188). Se reparte TODO lo que no está ya atribuido a
   // un producto: envíos, comisión, IVA y los gastos operativos (Meta/Ads +
   // costos fijos).
-  const costosAProrratear = kpisFinancieros.costo_logistico_entregados
-    + kpisFinancieros.costo_comision_total
-    + kpisFinancieros.iva_facturado_total
-    + gastosOperativos.total;
+  // Solo los GASTOS FIJOS se prorratean: alquiler, sueldos, publicidad. Esos
+  // no pertenecen a ningún pedido y no hay forma de atribuirlos sin repartir.
+  //
+  // El envío, la comisión y el IVA YA fueron atribuidos al producto que los
+  // generó, dentro de getProductosAnalytics (costo_directo_pedido). Volver a
+  // meterlos acá los contaría dos veces.
+  const costosAProrratear = gastosOperativos.total;
 
   const unidadesTotales = rankingProductos.reduce((acc, p) => acc + p.unidades_entregadas, 0);
   let repartido = 0;
@@ -1000,7 +1299,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
   for (const p of rankingProductos) {
     p.unidades = p.unidades_entregadas;
     p.venta = p.facturacion_total;
-    p.costo = Math.round(p.costo_total + p.costo_prorrateado);
+    p.costo = Math.round(p.costo_total + p.costo_directo_pedido + p.costo_prorrateado);
     p.ganancia = Math.round(p.venta - p.costo);
     p.perdida = Math.round(p.perdida);
     p.rentabilidad = p.venta > 0 ? Number(((p.ganancia / p.venta) * 100).toFixed(1)) : 0;
@@ -1011,6 +1310,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
 
     // Interno: no forma parte del contrato visual.
     delete p.costo_prorrateado;
+    delete p.costo_directo_pedido;
   }
 
   // Ganancia neta = margen bruto (ya neto de COGS/logística/comisión/IVA por
@@ -1043,6 +1343,8 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     confirmadores_disponibles: confirmadoresDisponibles,
     productos_disponibles: productosDisponibles,
     anios_disponibles: aniosDisponibles,
+    landings_disponibles: landingsDisponibles,
+    ranking_landings: rankingLandings,
     pagos_online: pagosOnline,
     // El catálogo va en la respuesta para que el frontend arme la tabla de
     // canales desde la base, sin hardcodear nombres ni orden.

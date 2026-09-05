@@ -6,10 +6,11 @@
  * contacto, pixel) que heredan todas sus landings.
  */
 
-const { Tienda, Usuario } = require('../models');
+const { Tienda, Usuario, ProveedorDns } = require('../models');
 const EncryptionService = require('../utils/EncryptionService');
 const { validarFormato: validarFormatoSubdominio, disponible: subdominioDisponible } = require('../utils/validarSubdominio');
 const CloudflareService = require('./cloudflare.service');
+const whois = require('whois-json');
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const WHATSAPP_RE = /^\d{8,15}$/;
@@ -234,6 +235,33 @@ class TiendaService {
     await tienda.save();
 
     return this.serializar(tienda);
+  }
+
+  static async obtenerInfoWhois(dominio) {
+    if (!dominio) return null;
+    try {
+      const results = await whois(dominio);
+      // Extraemos el registrar de los resultados
+      const registrar = (results.registrar || results.Registrar || '').toLowerCase();
+      if (!registrar) return null;
+
+      // Buscar en BD
+      const proveedores = await ProveedorDns.findAll();
+      for (const p of proveedores) {
+        if (registrar.includes(p.whois_match.toLowerCase())) {
+          return {
+            nombre: p.nombre,
+            url_login: p.url_login ? p.url_login.replace('{dominio}', dominio) : null,
+            instrucciones: p.instrucciones,
+            logo_url: p.logo_url
+          };
+        }
+      }
+      return null;
+    } catch (err) {
+      console.error('[whois] Error:', err.message);
+      return null;
+    }
   }
 
   /** meta_access_token nunca sale del backend en texto plano ni cifrado. */

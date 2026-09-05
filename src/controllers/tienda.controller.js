@@ -85,7 +85,18 @@ async function eliminarDominioPropio(req, res) {
   }
 }
 
+async function whoisDominio(req, res) {
+  try {
+    if (!req.body.domain) return res.status(400).json({ message: 'El dominio es obligatorio.' });
+    const proveedor = await TiendaService.obtenerInfoWhois(req.body.domain);
+    return res.json({ proveedor });
+  } catch (err) {
+    console.error('[tienda] whoisDominio:', err.message);
+    return res.status(500).json({ message: 'Error al consultar WHOIS.' });
+  }
+}
+
 module.exports = {
   obtener, crear, actualizar, disponibilidadSubdominio,
-  guardarDominioPropio, estadoDominioPropio, eliminarDominioPropio,
+  guardarDominioPropio, estadoDominioPropio, eliminarDominioPropio, whoisDominio
 };

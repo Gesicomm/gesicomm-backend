@@ -23,6 +23,8 @@ router.get('/dominio-propio/estado', ctrl.estadoDominioPropio);
 router.post('/dominio-propio', ctrl.guardarDominioPropio);
 router.delete('/dominio-propio', ctrl.eliminarDominioPropio);
 
+router.post('/dominio/whois', ctrl.whoisDominio);
+
 router.get('/', ctrl.obtener);
 router.post('/', ctrl.crear);
 router.put('/', ctrl.actualizar);

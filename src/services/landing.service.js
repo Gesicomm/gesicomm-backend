@@ -1056,8 +1056,21 @@ class LandingService {
    * de lo que se consultó o mandó por WhatsApp, NO una venta confirmada.
    */
   static async estadisticasRango(id, tienda_id, filtros = {}) {
-    const landing = await Landing.findOne({ where: { id, tienda_id }, attributes: ['id'] });
-    if (!landing) throw new Error('Landing no encontrada.');
+    // `id` puede ser 'todas': el dashboard tiene un selector de landing y su
+    // opción por defecto suma el tráfico de TODAS las páginas de la tienda
+    // (home, catálogo, contacto y funnels). Sin esto, la vista "Todas"
+    // tendría visitas de una sola página contra pedidos de todo el negocio
+    // — la mezcla de alcances que hacía leer "0 visitas → 3 formularios".
+    const esTodas = String(id).toUpperCase() === 'TODAS';
+    let landingIds;
+    if (esTodas) {
+      const todas = await Landing.findAll({ where: { tienda_id }, attributes: ['id'], raw: true });
+      landingIds = todas.map(l => l.id);
+    } else {
+      const landing = await Landing.findOne({ where: { id, tienda_id }, attributes: ['id'] });
+      if (!landing) throw new Error('Landing no encontrada.');
+      landingIds = [landing.id];
+    }
 
     // Filtro por producto: solo aplica a los eventos con items[] (AddToCart,
     // InitiateCheckout, Contact/Lead) o custom_data.content_name — un
@@ -1079,7 +1092,7 @@ class LandingService {
     }
 
     const eventos = await LandingEvento.findAll({
-      where: { landing_id: id, created_at: { [Op.between]: [desdeDate, hastaDate] } },
+      where: { landing_id: { [Op.in]: landingIds }, created_at: { [Op.between]: [desdeDate, hastaDate] } },
       attributes: ['tipo_evento', 'payload', 'created_at'],
       order: [['created_at', 'ASC']],
     });
@@ -1664,12 +1677,22 @@ class LandingService {
       });
     }
 
-    const bannerDto = (landing.mostrar_banner && (landing.banner_titulo || landing.banner_imagen)) ? {
+    // El banner sale si el comercio lo prendió y cargó ALGO en él. Antes la
+    // condición miraba solo titulo/imagen, así que una portada con nada más
+    // que subtítulo o botón no llegaba a la landing publicada aunque sí se
+    // viera en el preview del editor.
+    const hayContenidoBanner = !!(landing.banner_titulo || landing.banner_imagen
+      || landing.banner_subtitulo || landing.banner_boton_texto);
+    const bannerDto = (landing.mostrar_banner && hayContenidoBanner) ? {
       imagen: landing.banner_imagen,
       titulo: landing.banner_titulo,
       subtitulo: landing.banner_subtitulo,
       boton_texto: landing.banner_boton_texto,
       boton_link: landing.banner_boton_link,
+      // Faltaba: la opacidad se edita en el armador y se veía en el preview,
+      // pero nunca salía en el DTO, así que la landing publicada siempre
+      // usaba el valor por defecto del template.
+      opacidad: landing.banner_opacidad,
     } : null;
     const testimoniosDto = testimonios.map(t => ({
       nombre: t.nombre,
@@ -2333,6 +2356,11 @@ class LandingService {
       // que alguien corra la migración de arranque (bug real: el pedido
       // #375 quedó fuera del embudo de Formularios Web por esto).
       canal_venta_id: await CanalVentaService.idPorSlug('web'),
+      // De qué landing salió, para que el embudo del dashboard mida una sola
+      // página de punta a punta (visitas Y pedidos) en vez de mezclar el
+      // tráfico de una con las ventas de toda la tienda. `landing` viene de
+      // resolverCarrito, que ya la resolvió por slug para armar el carrito.
+      landing_id: landing ? landing.id : null,
       // Código e importe como snapshot: el pedido tiene que poder explicar
       // por qué se cobró eso aunque después se borre o se edite el cupón.
       cupon_id: cuponAplicado ? cuponAplicado.id : null,
