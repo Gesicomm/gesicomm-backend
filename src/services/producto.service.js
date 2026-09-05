@@ -35,9 +35,11 @@ class ProductoService {
       return null;
     }
 
-    const total = variantes.reduce((acc, v) => acc + (parseInt(v.stock) || 0), 0);
+    const stock_salon = variantes.reduce((acc, v) => acc + (parseInt(v.stock_salon, 10) || 0), 0);
+    const stock_deposito = variantes.reduce((acc, v) => acc + (parseInt(v.stock_deposito, 10) || 0), 0);
+    const total = stock_salon + stock_deposito;
     await Producto.update(
-      { cantidad_disponible: total },
+      { cantidad_disponible: total, stock_salon, stock_deposito },
       { where: { id: producto_id }, transaction }
     );
     return total;
@@ -265,7 +267,7 @@ class ProductoService {
   static async crear(datos, inquilino_id, usuario_id, esAdmin, transaction) {
     const precioAncla = datos.precio_ancla !== undefined ? datos.precio_ancla : datos.precio_tachado;
     const {
-      nombre, categoria_id, marca_id, proveedor_id, tags,
+      nombre, sku, categoria_id, marca_id, proveedor_id, tags,
       descripcion_corta, descripcion_larga, faq_titulo,
       precio_costo, precio_minimo, precio_base, precio_dolar, es_dolar,
       descuento_porcentaje, descuento_inicio, descuento_fin, impuestos_incluidos,
@@ -285,6 +287,7 @@ class ProductoService {
 
     const producto = await Producto.create({
       inquilino_id, nombre,
+      sku: sku || null,
       categoria_id: categoria_id || null,
       marca_id: marca_id || null,
       proveedor_id: proveedor_id || null,
