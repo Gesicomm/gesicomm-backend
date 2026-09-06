@@ -72,11 +72,13 @@ class CloudflareService {
 
     return {
       id: result.id,
-      ownershipVerification: result.ownership_verification && {
-        type: result.ownership_verification.type,
-        name: result.ownership_verification.name,
-        value: result.ownership_verification.value,
-      },
+      ownershipVerification: (result.ssl?.txt_name && result.ssl?.txt_value) 
+        ? { type: 'TXT', name: result.ssl.txt_name, value: result.ssl.txt_value }
+        : (result.ownership_verification && {
+            type: result.ownership_verification.type,
+            name: result.ownership_verification.name,
+            value: result.ownership_verification.value,
+          }),
       estado: result.status,
     };
   }
@@ -100,11 +102,22 @@ class CloudflareService {
       estado: result.status,
       sslEstado: result.ssl?.status,
       activo: result.status === 'active' && result.ssl?.status === 'active',
-      ownershipVerification: result.ownership_verification && {
-        type: result.ownership_verification.type,
-        name: result.ownership_verification.name,
-        value: result.ownership_verification.value,
-      },
+      // Para dominios gestionados en Cloudflare, el DCV usa un CNAME especial
+      // en lugar del TXT _acme-challenge. Exponemos ambos para que el frontend
+      // pueda decidir qué mostrar.
+      dcvDelegation: result.ssl?.dcv_delegation_records?.[0] 
+        ? { 
+            cname: result.ssl.dcv_delegation_records[0].cname,
+            cname_target: result.ssl.dcv_delegation_records[0].cname_target,
+          }
+        : null,
+      ownershipVerification: (result.ssl?.txt_name && result.ssl?.txt_value) 
+        ? { type: 'TXT', name: result.ssl.txt_name, value: result.ssl.txt_value }
+        : (result.ownership_verification && {
+            type: result.ownership_verification.type,
+            name: result.ownership_verification.name,
+            value: result.ownership_verification.value,
+          }),
     };
   }
 

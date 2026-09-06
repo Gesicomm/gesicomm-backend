@@ -218,6 +218,9 @@ class TiendaService {
       // Se reenvía en cada consulta, no solo al crear, para que la UI
       // pueda re-mostrar el TXT si el usuario recarga antes de verificar.
       registro_txt: estado.ownershipVerification,
+      // Para dominios gestionados en Cloudflare, en lugar del TXT se usa
+      // este CNAME de delegación DCV. El frontend prioriza esto si está presente.
+      dcv_delegation: estado.dcvDelegation,
     };
   }
 

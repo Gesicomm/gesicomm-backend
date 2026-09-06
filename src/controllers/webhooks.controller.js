@@ -1,7 +1,6 @@
-const { Envio, EnvioItem, PaymentGateway, PaymentTransaction, sequelize } = require('../models');
+const { Envio, EnvioItem, PaymentGateway, PaymentTransaction } = require('../models');
 const PagoParService = require('../services/payments/pagoParService');
-const { descontarStockYSnapshot } = require('./envioController');
-const { registrarHistorial } = require('../utils/historial');
+const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago');
 
 /**
  * Normaliza el cuerpo del callback de PagoPar.
@@ -130,32 +129,7 @@ exports.pagoparWebhook = async (req, res) => {
       return res.json({ message: 'Webhook procesado correctamente.' });
     }
 
-    // Confirmación + descuento de stock en una sola transacción: si el stock
-    // falla, el pedido no queda marcado como pagado y PagoPar reintenta.
-    //
-    // Antes acá se ponía `stock_descontado = true` con un comentario que
-    // decía "acá idealmente se descontaría el stock" — sin descontarlo. Eso
-    // no solo salteaba el movimiento: dejaba el flag en true, con lo cual el
-    // descuento real de envioController (`if (estado === 'Confirmado' &&
-    // !envio.stock_descontado)`) ya no se ejecutaba nunca para ese pedido.
-    await sequelize.transaction(async (t) => {
-      transaction.status = 'PAID';
-      await transaction.save({ transaction: t });
-
-      if (envio.estado !== 'Pendiente') return;
-
-      if (!envio.stock_descontado) {
-        await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id);
-        envio.stock_descontado = true;
-      }
-
-      envio.estado = 'Confirmado';
-      envio.estado_comercial = 'Confirmado';
-      envio.estado_logistico = 'Confirmado';
-      await envio.save({ transaction: t });
-
-      await registrarHistorial(envio.id, null, 'Pago recibido por PagoPar. Estado actualizado a Confirmado.', t);
-    });
+    await confirmarPedidoPagado(envio, transaction, { origen: 'PagoPar' });
 
     res.json({ message: 'Webhook procesado correctamente.' });
   } catch (error) {

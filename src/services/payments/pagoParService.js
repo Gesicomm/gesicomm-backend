@@ -36,6 +36,56 @@ class PagoParService {
   }
 
   /**
+   * Paso #3 del flujo de PagoPar: consultar el estado de un pedido.
+   *
+   *   POST https://api.pagopar.com/api/pedidos/1.1/traer
+   *   token = sha1(comercio_token_privado + "CONSULTA")
+   *   body  = { hash_pedido, token, token_publico }
+   *
+   * Ojo con los nombres: los endpoints 1.1 esperan `token_publico`, mientras
+   * que el 2.0 (iniciar-transaccion) usa `public_key`. No son intercambiables.
+   *
+   * Sirve para dos cosas: cerrar el paso 3 que PagoPar exige para habilitar
+   * producción, y reconciliar a mano un pedido cuyo callback se haya perdido.
+   *
+   * @returns {{ pagado: boolean, datos: Object|null }}
+   */
+  static async consultarEstadoPedido(gateway, hashPedido) {
+    if (!gateway?.private_key || !gateway?.public_key) {
+      throw new Error('La pasarela del comercio no está configurada correctamente.');
+    }
+    if (!hashPedido) {
+      throw new Error('Falta el hash_pedido a consultar.');
+    }
+
+    const token = crypto.createHash('sha1').update(`${gateway.private_key}CONSULTA`).digest('hex');
+
+    const response = await axios.post('https://api.pagopar.com/api/pedidos/1.1/traer', {
+      hash_pedido: hashPedido,
+      token,
+      token_publico: gateway.public_key,
+    });
+
+    if (!response.data?.respuesta) {
+      // `resultado` puede venir como array de objetos o como string suelto
+      // (ej: "Comercio de desarrollo no habilitado o con acceso vencido.").
+      // Leerlo siempre como array hacía que `resultado[0]` fuera la primera
+      // LETRA del mensaje y el motivo real se perdiera.
+      const r = response.data?.resultado;
+      const detalle = (typeof r === 'string' && r.trim())
+        || (Array.isArray(r) && (typeof r[0] === 'string' ? r[0] : r[0]?.datos || r[0]?.mensaje))
+        || 'PagoPar rechazó la consulta.';
+      throw new Error(detalle);
+    }
+
+    const datos = Array.isArray(response.data.resultado) ? response.data.resultado[0] : null;
+    return {
+      pagado: datos?.pagado === true || datos?.pagado === 'true',
+      datos: datos || null,
+    };
+  }
+
+  /**
    * Inicia una transacción en PagoPar.
    * @param {Object} gateway - Instancia de PaymentGateway con credenciales.
    * @param {Object} envio - Instancia del modelo Envio (pedido de Gesicomm).
