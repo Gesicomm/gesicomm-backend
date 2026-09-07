@@ -22,7 +22,7 @@ const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
   ProductoImagen, ProductoVariante, ProductoFaq, LandingSeccion, LandingEvento, Testimonio, Faq, LandingBeneficio, Envio, EnvioItem,
-  Oferta, OfertaComponente, Tienda, LandingTemplate, sequelize
+  Oferta, OfertaComponente, Tienda, LandingTemplate, Courier, CourierTarifa, sequelize
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 const { registrarHistorial } = require('../utils/historial');
@@ -69,6 +69,108 @@ const TIPOS_SECCION = new Set([
 ]);
 
 class LandingService {
+
+  static normalizarTextoDelivery(valor) {
+    return String(valor || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+  }
+
+  static cantidadEvaluadaDelivery(items) {
+    const total = (items || []).reduce((acc, it) => acc + (Number(it.cantidad) || 0), 0);
+    return total > 0 ? total : 1;
+  }
+
+  static tipoPagoTarifaDesdeMetodo(paymentMethod) {
+    const metodo = String(paymentMethod || 'efectivo').trim().toLowerCase();
+    return metodo && metodo !== 'efectivo' ? 'Anticipado' : 'Al Recibir';
+  }
+
+  static elegirTarifaDelivery(tarifas, targetTipoPago, cantidad) {
+    const ordenadas = [...tarifas].sort((a, b) => (Number(a.costo) || 0) - (Number(b.costo) || 0));
+    const enRango = (t) => {
+      const min = Number(t.rango_min) || 0;
+      const max = (t.rango_max === null || t.rango_max === undefined || t.rango_max === '') ? Infinity : Number(t.rango_max);
+      return cantidad >= min && cantidad <= max;
+    };
+    const pagoCompatible = (t) => t.tipo_pago === 'Ambos' || t.tipo_pago === targetTipoPago;
+
+    return ordenadas.find(t => pagoCompatible(t) && enRango(t))
+      || ordenadas.find(pagoCompatible)
+      || ordenadas[0]
+      || null;
+  }
+
+  static async obtenerOpcionesDelivery(usuarioId, { paymentMethod = 'efectivo', items = [] } = {}) {
+    if (!usuarioId) return [];
+
+    const couriers = await Courier.findAll({
+      where: { usuario_id: usuarioId, activo: true },
+      include: [{ model: CourierTarifa, as: 'tarifas' }],
+      order: [
+        ['nombre', 'ASC'],
+        [{ model: CourierTarifa, as: 'tarifas' }, 'departamento', 'ASC'],
+        [{ model: CourierTarifa, as: 'tarifas' }, 'ciudad_zona', 'ASC'],
+      ],
+    });
+
+    const targetTipoPago = this.tipoPagoTarifaDesdeMetodo(paymentMethod);
+    const cantidad = this.cantidadEvaluadaDelivery(items);
+    const grupos = new Map();
+
+    couriers.forEach(courier => {
+      (courier.tarifas || []).forEach(tarifa => {
+        const ciudad = String(tarifa.ciudad_zona || '').trim();
+        if (!ciudad) return;
+        const departamento = tarifa.departamento ? String(tarifa.departamento).trim() : null;
+        const key = `${this.normalizarTextoDelivery(departamento)}::${this.normalizarTextoDelivery(ciudad)}`;
+        const lista = grupos.get(key) || [];
+        lista.push({ tarifa, courier, ciudad, departamento });
+        grupos.set(key, lista);
+      });
+    });
+
+    const opciones = [];
+    for (const lista of grupos.values()) {
+      const elegida = this.elegirTarifaDelivery(lista.map(i => i.tarifa), targetTipoPago, cantidad);
+      const origen = lista.find(i => i.tarifa.id === elegida?.id) || lista[0];
+      if (!origen || !elegida) continue;
+      opciones.push({
+        ciudad: origen.ciudad,
+        departamento: origen.departamento,
+        costo: Number(elegida.costo) || 0,
+        tiempo_entrega_hs: elegida.tiempo_entrega_hs || null,
+        courier_id: origen.courier.id,
+        courier_nombre: origen.courier.nombre,
+      });
+    }
+
+    return opciones.sort((a, b) => {
+      const dep = String(a.departamento || '').localeCompare(String(b.departamento || ''), 'es');
+      return dep || String(a.ciudad || '').localeCompare(String(b.ciudad || ''), 'es');
+    });
+  }
+
+  static buscarOpcionDelivery(opciones, ciudad, departamento) {
+    const ciudadNorm = this.normalizarTextoDelivery(ciudad);
+    const deptoNorm = this.normalizarTextoDelivery(departamento);
+    if (!ciudadNorm) return null;
+
+    const exacta = opciones.find(op =>
+      this.normalizarTextoDelivery(op.ciudad) === ciudadNorm
+      && this.normalizarTextoDelivery(op.departamento) === deptoNorm
+    );
+    if (exacta) return exacta;
+
+    if (!deptoNorm) {
+      const porCiudad = opciones.filter(op => this.normalizarTextoDelivery(op.ciudad) === ciudadNorm);
+      if (porCiudad.length === 1) return porCiudad[0];
+    }
+
+    return null;
+  }
 
   // ─── Slug ───────────────────────────────────────────────────────────────
 
@@ -256,6 +358,7 @@ class LandingService {
       referencia_id: Number(item.referencia_id),
       etiqueta: this.normalizarEtiqueta(item.etiqueta),
       precio_ancla: item.precio_ancla != null ? Number(item.precio_ancla) : null,
+      envio_incluido: item.envio_incluido === true,
       orden: item.orden !== undefined ? Number(item.orden) : idx,
       mostrar_en_inicio: item.mostrar_en_inicio !== false,
     })));
@@ -1664,6 +1767,7 @@ class LandingService {
         categoria: productoParaFiltros?.categoria?.nombre || null,
         marca: productoParaFiltros?.Marca?.nombre || null,
         etiqueta: item.etiqueta,
+        envio_incluido: item.envio_incluido === true,
         // Producto.destacado ya existe en el catálogo (lo marca la dueña
         // en el picker de la landing) — los combos nunca son destacados.
         destacado: esCombo ? false : !!entidad.destacado,
@@ -1728,6 +1832,7 @@ class LandingService {
         faq: faqDto,
         banner: bannerDto,
       });
+    const deliveryCiudadesDto = await this.obtenerOpcionesDelivery(tienda.usuario_id);
 
     return {
       disponible: true,
@@ -1868,6 +1973,9 @@ class LandingService {
         redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp,
         pasarelas: await PaymentService.getPublicGateways(tienda.usuario_id),
       },
+      // Opciones oficiales del checkout público. Nacen de la matriz de
+      // tarifas de couriers activa para evitar cargar zonas por duplicado.
+      delivery_ciudades: deliveryCiudadesDto,
       // null si está apagado o si no se cargó ni imagen ni título — así el
       // frontend público no tiene que repetir esa condición.
       banner: bannerDto,
@@ -2143,14 +2251,18 @@ class LandingService {
     for (const li of landingItems) {
       const entidad = li.tipo === 'producto' ? mapaProducto.get(li.referencia_id) : mapaCombo.get(li.referencia_id);
       if (!entidad) continue;
-      mapaPorContentId.set(entidad.slug || `${li.tipo}-${entidad.id}`, { entidad, esCombo: li.tipo === 'combo' });
+      mapaPorContentId.set(entidad.slug || `${li.tipo}-${entidad.id}`, {
+        entidad,
+        esCombo: li.tipo === 'combo',
+        landingItem: li,
+      });
     }
 
     const itemsResueltos = [];
     for (const pedido of items) {
       const itemLanding = mapaPorContentId.get(pedido?.content_id);
       if (!itemLanding) continue; // no está curado en esta landing — se descarta, nunca se inventa.
-      const { entidad, esCombo } = itemLanding;
+      const { entidad, esCombo, landingItem } = itemLanding;
 
       const precioUsuario = mapaPrecios.get(`${esCombo ? 'combo' : 'producto'}:${entidad.id}`);
       // "La cantidad decide el precio" (ver PricingService.mejorOfertaParaCantidad):
@@ -2208,6 +2320,7 @@ class LandingService {
         origen_venta: resuelto.origen_venta,
         precio_normal: resuelto.precio_normal,
         subtotal: resuelto.subtotal,
+        envio_incluido: landingItem?.envio_incluido === true,
         stock_suficiente: suficiente,
       });
     }
@@ -2312,6 +2425,26 @@ class LandingService {
     }
 
     const monto = Math.max(0, subtotal - descuentoCupon);
+    const paymentMethod = datosCliente?.payment_method?.toLowerCase();
+    const envioIncluido = itemsResueltos.length > 0 && itemsResueltos.every(i => i.envio_incluido === true);
+    const opcionesDelivery = await this.obtenerOpcionesDelivery(tienda.usuario_id, {
+      paymentMethod,
+      items: itemsResueltos,
+    });
+    const opcionDelivery = envioIncluido || !opcionesDelivery.length
+      ? null
+      : this.buscarOpcionDelivery(opcionesDelivery, ciudad, departamento);
+
+    if (!envioIncluido && opcionesDelivery.length && !opcionDelivery) {
+      const error = new Error('La ciudad seleccionada no está disponible para delivery.');
+      error.status = 400;
+      throw error;
+    }
+
+    const costoEnvio = envioIncluido ? 0 : (Number(opcionDelivery?.costo) || 0);
+    const courierIdDelivery = envioIncluido ? null : (opcionDelivery?.courier_id || null);
+    const ciudadEnvio = opcionDelivery?.ciudad || ciudad.trim();
+    const departamentoEnvio = opcionDelivery?.departamento || departamento?.trim() || null;
     const ahora = new Date();
     // Fechas y horas en zona horaria de Paraguay (America/Asuncion)
     const fechaPy = ahora.toLocaleDateString('en-CA', { timeZone: 'America/Asuncion' }); // YYYY-MM-DD
@@ -2337,12 +2470,13 @@ class LandingService {
       ruc: rucLimpio,
       razon_social: razonSocialLimpia,
       telefono: telefono.trim(),
-      ciudad: ciudad.trim(),
-      departamento: departamento?.trim() || null,
+      ciudad: ciudadEnvio,
+      departamento: departamentoEnvio,
       direccion: direccion.trim(),
       referencia: referencia?.trim() || null,
       monto,
-      costo_envio: 0,
+      costo_envio: costoEnvio,
+      courier_id: courierIdDelivery,
       metodo_pago: 'Efectivo',
       estado: 'Pendiente',
       estado_logistico: 'Pendiente',
@@ -2383,7 +2517,6 @@ class LandingService {
     }
 
     // Procesar pasarela de pago si fue solicitada (ej. payment_method === 'pagopar')
-    const paymentMethod = datosCliente?.payment_method?.toLowerCase();
     let paymentData = null;
     
     if (paymentMethod === 'pagopar') {
@@ -2409,6 +2542,9 @@ class LandingService {
     return {
       pedido_id: nuevoEnvio.id,
       monto,
+      costo_envio: costoEnvio,
+      envio_incluido: envioIncluido,
+      courier_id: courierIdDelivery,
       redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp,
       payment_data: paymentData,
     };

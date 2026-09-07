@@ -1,5 +1,19 @@
 const { Courier, CourierTarifa } = require('../models');
 
+function normalizarTarifa(t, courierId) {
+  t = t || {};
+  return {
+    courier_id: courierId,
+    ciudad_zona: String(t.ciudad_zona || '').trim(),
+    departamento: t.departamento ? String(t.departamento).trim() : null,
+    tipo_pago: t.tipo_pago || 'Ambos',
+    rango_min: (t.rango_min === "" || t.rango_min === undefined || t.rango_min === null) ? 0 : Number(t.rango_min),
+    rango_max: (t.rango_max === "" || t.rango_max === undefined || t.rango_max === null) ? null : Number(t.rango_max),
+    costo: (t.costo === "" || t.costo === undefined || t.costo === null) ? 0 : Number(t.costo),
+    tiempo_entrega_hs: t.tiempo_entrega_hs ? String(t.tiempo_entrega_hs).trim() : null,
+  };
+}
+
 exports.listCouriers = async (req, res) => {
   try {
     const usuario_id = req.usuario.id; // Asumiendo autenticación por token en req.user
@@ -28,13 +42,9 @@ exports.createCourier = async (req, res) => {
     });
 
     if (tarifas && tarifas.length > 0) {
-      const tarifasWithId = tarifas.map(t => ({
-        ...t,
-        courier_id: courier.id,
-        rango_min: (t.rango_min === "" || t.rango_min === undefined || t.rango_min === null) ? 0 : Number(t.rango_min),
-        rango_max: (t.rango_max === "" || t.rango_max === undefined || t.rango_max === null) ? null : Number(t.rango_max),
-        costo: (t.costo === "" || t.costo === undefined || t.costo === null) ? 0 : Number(t.costo)
-      }));
+      const tarifasWithId = tarifas
+        .map(t => normalizarTarifa(t, courier.id))
+        .filter(t => t.ciudad_zona);
       await CourierTarifa.bulkCreate(tarifasWithId);
     }
 
@@ -65,13 +75,9 @@ exports.updateCourier = async (req, res) => {
       await CourierTarifa.destroy({ where: { courier_id: courier.id } });
       // Crear las nuevas
       if (tarifas.length > 0) {
-        const tarifasWithId = tarifas.map(t => ({
-          ...t,
-          courier_id: courier.id,
-          rango_min: (t.rango_min === "" || t.rango_min === undefined || t.rango_min === null) ? 0 : Number(t.rango_min),
-          rango_max: (t.rango_max === "" || t.rango_max === undefined || t.rango_max === null) ? null : Number(t.rango_max),
-          costo: (t.costo === "" || t.costo === undefined || t.costo === null) ? 0 : Number(t.costo)
-        }));
+        const tarifasWithId = tarifas
+          .map(t => normalizarTarifa(t, courier.id))
+          .filter(t => t.ciudad_zona);
         await CourierTarifa.bulkCreate(tarifasWithId);
       }
     }

@@ -40,6 +40,7 @@ describe('Courier Controller Unit Tests', () => {
         tarifas: [
           {
             ciudad_zona: "Asunción",
+            departamento: "Capital",
             tipo_pago: "Anticipado",
             rango_min: 0,
             rango_max: 5,
@@ -48,6 +49,7 @@ describe('Courier Controller Unit Tests', () => {
           },
           {
             ciudad_zona: "San Lorenzo",
+            departamento: "Central",
             tipo_pago: "Al Recibir",
             rango_min: 1,
             rango_max: 20,
@@ -81,6 +83,7 @@ describe('Courier Controller Unit Tests', () => {
     expect(res.responseData.activo).toBe(true);
     expect(res.responseData.tarifas).toHaveLength(2);
     expect(res.responseData.tarifas[0].ciudad_zona).toBe("Asunción");
+    expect(res.responseData.tarifas[0].departamento).toBe("Capital");
     expect(res.responseData.tarifas[0].costo).toBe(12000);
   });
 
@@ -132,6 +135,7 @@ describe('Courier Controller Unit Tests', () => {
     await CourierTarifa.create({
       courier_id: courier.id,
       ciudad_zona: "Luque",
+      departamento: "Central",
       tipo_pago: "Ambos",
       rango_min: 0,
       rango_max: 10,
@@ -152,6 +156,7 @@ describe('Courier Controller Unit Tests', () => {
           // Edit the existing tariff and modify its fields
           {
             ciudad_zona: "Luque Centrico",
+            departamento: "Central",
             tipo_pago: "Al Recibir",
             rango_min: 5,
             rango_max: 15,
@@ -161,6 +166,7 @@ describe('Courier Controller Unit Tests', () => {
           // Add a new tariff
           {
             ciudad_zona: "Lambaré",
+            departamento: "Central",
             tipo_pago: "Anticipado",
             rango_min: 0,
             rango_max: 100,
@@ -196,6 +202,7 @@ describe('Courier Controller Unit Tests', () => {
     // Verify first tariff updated fields
     const luqueTariff = res.responseData.tarifas.find(t => t.ciudad_zona === "Luque Centrico");
     expect(luqueTariff).toBeDefined();
+    expect(luqueTariff.departamento).toBe("Central");
     expect(luqueTariff.tipo_pago).toBe("Al Recibir");
     expect(luqueTariff.rango_min).toBe(5);
     expect(luqueTariff.rango_max).toBe(15);

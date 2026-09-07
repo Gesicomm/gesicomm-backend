@@ -35,6 +35,12 @@ const LandingItem = sequelize.define('LandingItem', {
     allowNull: true,
     comment: 'Precio tachado / ancla configurado por el usuario para este item en esta landing.',
   },
+  envio_incluido: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    comment: 'Si true, este item se vende con delivery incluido en esta landing.',
+  },
   orden: {
     type: DataTypes.INTEGER,
     allowNull: false,

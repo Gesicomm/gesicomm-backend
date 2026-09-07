@@ -15,6 +15,10 @@ const CourierTarifa = sequelize.define('CourierTarifa', {
     type: DataTypes.STRING(150),
     allowNull: false,
   },
+  departamento: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
   tipo_pago: {
     type: DataTypes.STRING(50),
     allowNull: true,
