@@ -1,0 +1,101 @@
+const { Parametro } = require('../models');
+
+/**
+ * Acceso a los parámetros del sistema, con caché en memoria.
+ *
+ * La caché evita ir a la base en cada cobro. Es corta (60s) y se invalida
+ * sola al escribir, así que un cambio desde el panel se ve enseguida sin
+ * reiniciar nada — que es justamente el punto de haberlos sacado del .env.
+ */
+const TTL_MS = 60 * 1000;
+let cache = null;
+let cacheHasta = 0;
+
+/** Claves conocidas, para que el panel sepa qué ofrecer. */
+const DEFINICIONES = [
+  { clave: 'PAGOPAR_PUBLIC_KEY', grupo: 'pagopar', secreto: false, descripcion: 'Token público del comercio de Gesicomm en PagoPar.' },
+  { clave: 'PAGOPAR_PRIVATE_KEY', grupo: 'pagopar', secreto: true, descripcion: 'Token privado. Se cifra y nunca vuelve por la API.' },
+];
+
+async function cargar() {
+  const ahora = Date.now();
+  if (cache && ahora < cacheHasta) return cache;
+  const filas = await Parametro.findAll();
+  cache = {};
+  for (const f of filas) cache[f.clave] = f.valor;
+  cacheHasta = ahora + TTL_MS;
+  return cache;
+}
+
+function invalidar() {
+  cache = null;
+  cacheHasta = 0;
+}
+
+/**
+ * Lee un parámetro. Cae al process.env con el mismo nombre si no está en la
+ * base — así la migración desde el .env es gradual y nada se rompe mientras
+ * tanto.
+ */
+async function obtener(clave) {
+  const todos = await cargar();
+  const valor = todos[clave];
+  if (valor !== undefined && valor !== null && valor !== '') return valor;
+  return process.env[clave] || null;
+}
+
+async function obtenerVarios(claves) {
+  const salida = {};
+  for (const c of claves) salida[c] = await obtener(c);
+  return salida;
+}
+
+/** Crea o actualiza. Un valor vacío en un secreto significa "no lo toques". */
+async function guardar(clave, valor, opciones = {}) {
+  const def = DEFINICIONES.find(d => d.clave === clave) || {};
+  const secreto = opciones.secreto !== undefined ? opciones.secreto : !!def.secreto;
+
+  let fila = await Parametro.findOne({ where: { clave } });
+  if (!fila) {
+    fila = Parametro.build({
+      clave,
+      secreto,
+      grupo: opciones.grupo || def.grupo || 'general',
+      descripcion: opciones.descripcion || def.descripcion || null,
+    });
+    fila.valor = valor;
+    await fila.save();
+  } else {
+    if (valor !== undefined && valor !== null && String(valor).trim() !== '') {
+      fila.secreto = secreto;
+      fila.valor = valor;
+      await fila.save();
+    }
+  }
+  invalidar();
+  return fila;
+}
+
+/** Lo que se le puede mostrar al panel: los secretos solo como booleano. */
+async function listarParaPanel() {
+  const filas = await Parametro.findAll();
+  const porClave = new Map(filas.map(f => [f.clave, f]));
+
+  return DEFINICIONES.map(def => {
+    const fila = porClave.get(def.clave);
+    const valor = fila ? fila.valor : null;
+    const desdeEnv = !valor && !!process.env[def.clave];
+    return {
+      clave: def.clave,
+      grupo: def.grupo,
+      descripcion: def.descripcion,
+      secreto: def.secreto,
+      configurado: !!valor || desdeEnv,
+      origen: valor ? 'base' : (desdeEnv ? 'entorno' : 'sin_configurar'),
+      // Los no secretos sí se muestran; los secretos jamás.
+      valor: def.secreto ? null : (valor || null),
+    };
+  });
+}
+
+module.exports = { obtener, obtenerVarios, guardar, listarParaPanel, invalidar, DEFINICIONES };

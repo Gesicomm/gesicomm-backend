@@ -59,6 +59,11 @@ const esquemaRegistro = z.object({
     .min(8, { message: 'La contraseña debe tener al menos 8 caracteres.' })
     .regex(/[A-Z]/, { message: 'La contraseña debe tener al menos una mayúscula.' })
     .regex(/[0-9]/, { message: 'La contraseña debe tener al menos un número.' }),
+  // Alta con plan pago: token de un solo uso emitido cuando PagoPar acredita
+  // el cobro. Opcional — sin él, el alta funciona como siempre. Tiene que
+  // estar declarado acá o Zod lo descarta (validar() reemplaza req.body por
+  // resultado.data, que solo trae las claves del esquema).
+  token_suscripcion: z.string().length(64).optional(),
 });
 
 const esquemaRecuperarPassword = z.object({

@@ -42,7 +42,7 @@ class PaymentService {
       await PaymentTransaction.create({
         envio_id: envio.id,
         provider: provider,
-        payment_reference: `GES-${envio.id}`,
+        payment_reference: String(envio.id),
         payment_hash: transactionResult.hash_pedido,
         status: 'PENDING',
         amount: envio.monto + (envio.costo_envio || 0)

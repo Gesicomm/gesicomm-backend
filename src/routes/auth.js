@@ -165,11 +165,31 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
 // ============================================================
 // POST /api/auth/register
 // ============================================================
+const SuscripcionService = require('../services/suscripcion.service');
+
 router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) => {
   const t = await sequelize.transaction();
 
   try {
-    const { nombre, email, password } = req.body;
+    const { nombre, email, password, token_suscripcion } = req.body;
+
+    // Alta con suscripcion paga: el flujo es elegir plan -> pagar -> recien
+    // ahi registrarse, asi que el token acredita que ese correo ya pago.
+    // Sin token el alta sigue funcionando igual que siempre (los usuarios
+    // que ya existen no se ven afectados: el control esta en el alta, no en
+    // el login).
+    let suscripcion = null;
+    if (token_suscripcion) {
+      suscripcion = await SuscripcionService.suscripcionPorToken(token_suscripcion);
+      if (!suscripcion) {
+        await rollbackSeguro(t);
+        return res.status(400).json({ message: 'Ese enlace de registro no es válido, ya se usó o venció.' });
+      }
+      if (suscripcion.email !== String(email || '').trim().toLowerCase()) {
+        await rollbackSeguro(t);
+        return res.status(400).json({ message: 'El correo no coincide con el del pago.' });
+      }
+    }
 
     const existe = await Usuario.findOne({ where: { correo_electronico: email }, transaction: t });
     if (existe) {
@@ -196,7 +216,7 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
     const otpExpira = new Date(Date.now() + 15 * 60 * 1000); // 15 minutos
 
     // Crear usuario con email no verificado y código OTP
-    await Usuario.create({
+    const usuarioCreado = await Usuario.create({
       inquilino_id: inquilino.id,
       rol_id: rolUsuario.id,
       nombre,
@@ -205,7 +225,13 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
       email_verificado: false,
       codigo_verificacion: otp,
       codigo_verificacion_expira: otpExpira,
+      plan: suscripcion && suscripcion.Plan ? suscripcion.Plan.equivale_plan : null,
     }, { transaction: t });
+
+    // Ata la suscripcion al usuario y quema el token (un solo uso).
+    if (suscripcion) {
+      await SuscripcionService.vincularUsuario(suscripcion, usuarioCreado.id, t);
+    }
 
     await t.commit();
 

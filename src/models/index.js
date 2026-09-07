@@ -62,6 +62,10 @@ const BuilderFunnelPage = require('./BuilderFunnelPage');
 const BuilderDomain = require('./BuilderDomain');
 const PaymentGateway = require('./PaymentGateway');
 const PaymentTransaction = require('./PaymentTransaction');
+const Plan = require('./Plan');
+const Suscripcion = require('./Suscripcion');
+const PagoSuscripcion = require('./PagoSuscripcion');
+const Parametro = require('./Parametro');
 
 // ============================================================
 // Relaciones existentes
@@ -457,6 +461,18 @@ PaymentGateway.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' });
 Envio.hasOne(PaymentTransaction, { as: 'payment_transaction', foreignKey: 'envio_id', onDelete: 'CASCADE' });
 PaymentTransaction.belongsTo(Envio, { as: 'envio', foreignKey: 'envio_id' });
 
+// ── Planes y suscripciones de Gesicomm ──────────────────────────────────
+// Ojo con usuario_id: es nullable a propósito (se paga ANTES de registrarse),
+// así que la relación con Usuario es opcional. Ver Suscripcion.js.
+Plan.hasMany(Suscripcion, { foreignKey: 'plan_id' });
+Suscripcion.belongsTo(Plan, { foreignKey: 'plan_id' });
+
+Usuario.hasMany(Suscripcion, { foreignKey: 'usuario_id' });
+Suscripcion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Suscripcion.hasMany(PagoSuscripcion, { as: 'pagos', foreignKey: 'suscripcion_id', onDelete: 'CASCADE' });
+PagoSuscripcion.belongsTo(Suscripcion, { foreignKey: 'suscripcion_id' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -526,4 +542,8 @@ module.exports = {
   PaymentGateway,
   PaymentTransaction,
   ProveedorDns,
+  Plan,
+  Suscripcion,
+  PagoSuscripcion,
+  Parametro,
 };

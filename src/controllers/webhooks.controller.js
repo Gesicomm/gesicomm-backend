@@ -43,15 +43,19 @@ function normalizarPayload(body) {
 /**
  * Ubica el pedido del callback.
  *
- * PagoPar puede devolver `numero_pedido` como nuestro `id_pedido_comercio`
- * ("GES-123") o como su propio correlativo interno ("1746"). Por eso se
- * intenta primero por el prefijo y, si no aplica, se resuelve por
- * `hash_pedido` contra la PaymentTransaction que se guardó al iniciar la
- * transacción (ver PaymentService.createTransaction).
+ * `numero_pedido` es el `id_pedido_comercio` que mandamos nosotros: hoy es
+ * el id del Envio pelado. Se sigue tolerando el prefijo "GES-" al LEER,
+ * porque las transacciones iniciadas antes de sacarlo ya viajaron con él y
+ * su callback puede llegar en cualquier momento — pero al emitir ya no se
+ * usa (ver PagoParService.createTransaction).
+ *
+ * Si el número no resuelve (PagoPar podría mandar su propio correlativo
+ * interno), se cae a buscar por `hash_pedido` contra la PaymentTransaction
+ * guardada al iniciar la transacción.
  */
 async function ubicarEnvio({ numero_pedido, hash_pedido }) {
-  if (numero_pedido && numero_pedido.startsWith('GES-')) {
-    const envioId = parseInt(numero_pedido.slice(4), 10);
+  if (numero_pedido) {
+    const envioId = parseInt(String(numero_pedido).replace(/^GES-/, ''), 10);
     if (!Number.isNaN(envioId)) {
       const envio = await Envio.findByPk(envioId, { include: [{ model: EnvioItem, as: 'items' }] });
       if (envio) return envio;
@@ -113,7 +117,7 @@ exports.pagoparWebhook = async (req, res) => {
       transaction = await PaymentTransaction.create({
         envio_id: envio.id,
         provider: 'pagopar',
-        payment_reference: datos.numero_pedido || `GES-${envio.id}`,
+        payment_reference: datos.numero_pedido || String(envio.id),
         payment_hash: datos.hash_pedido,
         status: 'PENDING',
         amount: montoEsperado,

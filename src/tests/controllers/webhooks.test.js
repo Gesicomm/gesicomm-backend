@@ -26,7 +26,7 @@ const tokenValido = crypto.createHash('sha1').update(`${PRIVATE_KEY}${HASH}`).di
 function bodyPlano(extra = {}) {
   return {
     pagado: true,
-    numero_pedido: 'GES-123',
+    numero_pedido: '123',
     hash_pedido: HASH,
     monto: '50000.00',
     forma_pago: 'Tarjetas de crédito/débito',
@@ -70,8 +70,8 @@ describe('Webhook Controller - pagoparWebhook', () => {
     expect(res.status).toHaveBeenCalledWith(404);
   });
 
-  it('resuelve el pedido por hash_pedido cuando numero_pedido no trae el prefijo GES-', async () => {
-    req.body = bodyPlano({ numero_pedido: '1746' });
+  it('resuelve el pedido por hash_pedido cuando numero_pedido es el correlativo de PagoPar', async () => {
+    req.body = bodyPlano({ numero_pedido: 'X-9999' });
     const envio = nuevoEnvio();
     PaymentTransaction.findOne
       .mockResolvedValueOnce({ envio_id: 123 })              // búsqueda por hash
@@ -193,5 +193,24 @@ describe('PagoParService.validateWebhookSignature (implementación real)', () =>
     expect(real.validateWebhookSignature(PRIVATE_KEY, HASH, null)).toBe(false);
     expect(real.validateWebhookSignature(PRIVATE_KEY, HASH, 'corto')).toBe(false);
     expect(real.validateWebhookSignature(PRIVATE_KEY, null, tokenValido)).toBe(false);
+  });
+});
+
+// Retrocompatibilidad: las transacciones iniciadas antes de sacar el prefijo
+// ya viajaron con "GES-" y su callback puede llegar en cualquier momento.
+describe('Webhook - compatibilidad con el prefijo GES- viejo', () => {
+  it('sigue resolviendo un numero_pedido con prefijo GES-', async () => {
+    const envio = nuevoEnvio();
+    Envio.findByPk.mockResolvedValue(envio);
+    PaymentGateway.findOne.mockResolvedValue({ private_key: PRIVATE_KEY });
+    PaymentTransaction.findOne.mockResolvedValue({ status: 'PENDING', save: jest.fn() });
+    PagoParService.validateWebhookSignature.mockReturnValue(true);
+
+    const req = { body: bodyPlano({ numero_pedido: 'GES-123' }) };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    await pagoparWebhook(req, res);
+
+    expect(Envio.findByPk).toHaveBeenCalledWith(123, expect.anything());
+    expect(res.json).toHaveBeenCalledWith({ message: 'Webhook procesado correctamente.' });
   });
 });

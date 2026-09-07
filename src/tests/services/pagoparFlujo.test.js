@@ -65,10 +65,10 @@ describe('Paso 1 — iniciar transaccion', () => {
     const url = axios.post.mock.calls[0][0];
     const body = axios.post.mock.calls[0][1];
     expect(url).toBe('https://api.pagopar.com/api/comercios/2.0/iniciar-transaccion');
-    expect(body.token).toBe(sha1(PRIVATE + 'GES-1234' + MONTO));
+    expect(body.token).toBe(sha1(PRIVATE + '1234' + MONTO));
     expect(body.public_key).toBe(PUBLIC);        // el 2.0 usa public_key
     expect(body.token_publico).toBeUndefined();
-    expect(body.id_pedido_comercio).toBe('GES-1234');
+    expect(body.id_pedido_comercio).toBe('1234');
     expect(body.monto_total).toBe(MONTO);
     expect(r.payment_url).toBe('https://www.pagopar.com/pagos/' + HASH);
   });
@@ -85,7 +85,7 @@ describe('Paso 2 — callback confirma el pedido y descuenta stock', () => {
     const req = {
       body: {
         pagado: true,
-        numero_pedido: 'GES-1234',
+        numero_pedido: '1234',
         hash_pedido: HASH,
         monto: '175000.00',
         forma_pago: 'Tarjetas de credito/debito',
@@ -109,7 +109,7 @@ describe('Paso 2 — callback confirma el pedido y descuenta stock', () => {
     const req = {
       body: {
         pagado: true,
-        numero_pedido: 'GES-1234',
+        numero_pedido: '1234',
         hash_pedido: HASH,
         monto: '175000.00',
         token: sha1(PRIVATE + 'PAGOPAR'),

@@ -98,8 +98,10 @@ class PagoParService {
     // Según documentación (que buscamos), el endpoint es:
     const endpoint = 'https://api.pagopar.com/api/comercios/2.0/iniciar-transaccion';
     
-    // Id único de comercio
-    const orderId = `GES-${envio.id}`;
+    // Id de pedido del comercio. Va pelado (el id del Envio, que ya es un
+    // autoincremental único): antes se prefijaba "GES-" y solo agregaba
+    // ruido. Lo que autentica el callback es la firma, no el formato del id.
+    const orderId = String(envio.id);
     
     // Total
     const amount = envio.monto + (envio.costo_envio || 0);

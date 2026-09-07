@@ -46,6 +46,7 @@ const pageBuilderRoutes = require('./src/routes/pageBuilder');
 const healthRoutes = require('./src/routes/health');
 const paymentGatewaysRoutes = require('./src/routes/payment-gateways');
 const webhooksRoutes = require('./src/routes/webhooks');
+const suscripcionesRoutes = require('./src/routes/suscripciones');
 
 const app = express();
 // 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
@@ -216,6 +217,8 @@ app.use('/api/page-builder', pageBuilderRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/config/payment-gateways', paymentGatewaysRoutes);
 app.use('/api/webhooks', webhooksRoutes);
+// Planes y suscripciones de Gesicomm (publicas: son el paso previo al alta)
+app.use('/api', suscripcionesRoutes);
 
 // Estado del servidor (público)
 app.get('/api/status', (req, res) => {
