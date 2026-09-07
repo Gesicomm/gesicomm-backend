@@ -22,7 +22,7 @@ const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
   ProductoImagen, ProductoVariante, ProductoFaq, LandingSeccion, LandingEvento, Testimonio, Faq, LandingBeneficio, Envio, EnvioItem,
-  Oferta, OfertaComponente, Tienda, LandingTemplate, Courier, CourierTarifa, sequelize
+  Oferta, OfertaComponente, Tienda, LandingTemplate, Courier, CourierTarifa, DeliveryZonaTarifa, sequelize
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 const { registrarHistorial } = require('../utils/historial');
@@ -88,14 +88,14 @@ class LandingService {
     return metodo && metodo !== 'efectivo' ? 'Anticipado' : 'Al Recibir';
   }
 
-  static elegirTarifaDelivery(tarifas, targetTipoPago, cantidad) {
-    const ordenadas = [...tarifas].sort((a, b) => (Number(a.costo) || 0) - (Number(b.costo) || 0));
+  static elegirTarifaDelivery(candidatos, targetTipoPago, cantidad) {
+    const ordenadas = [...candidatos].sort((a, b) => (Number(a.tarifa?.costo) || 0) - (Number(b.tarifa?.costo) || 0));
     const enRango = (t) => {
-      const min = Number(t.rango_min) || 0;
-      const max = (t.rango_max === null || t.rango_max === undefined || t.rango_max === '') ? Infinity : Number(t.rango_max);
+      const min = Number(t.tarifa?.rango_min) || 0;
+      const max = (t.tarifa?.rango_max === null || t.tarifa?.rango_max === undefined || t.tarifa?.rango_max === '') ? Infinity : Number(t.tarifa?.rango_max);
       return cantidad >= min && cantidad <= max;
     };
-    const pagoCompatible = (t) => t.tipo_pago === 'Ambos' || t.tipo_pago === targetTipoPago;
+    const pagoCompatible = (t) => t.tarifa?.tipo_pago === 'Ambos' || t.tarifa?.tipo_pago === targetTipoPago;
 
     return ordenadas.find(t => pagoCompatible(t) && enRango(t))
       || ordenadas.find(pagoCompatible)
@@ -106,19 +106,37 @@ class LandingService {
   static async obtenerOpcionesDelivery(usuarioId, { paymentMethod = 'efectivo', items = [] } = {}) {
     if (!usuarioId) return [];
 
-    const couriers = await Courier.findAll({
-      where: { usuario_id: usuarioId, activo: true },
-      include: [{ model: CourierTarifa, as: 'tarifas' }],
-      order: [
-        ['nombre', 'ASC'],
-        [{ model: CourierTarifa, as: 'tarifas' }, 'departamento', 'ASC'],
-        [{ model: CourierTarifa, as: 'tarifas' }, 'ciudad_zona', 'ASC'],
-      ],
-    });
+    const [zonasDirectas, couriers] = await Promise.all([
+      DeliveryZonaTarifa.findAll({
+        where: { usuario_id: usuarioId, activo: true },
+        include: [{ model: Courier, as: 'courier', attributes: ['id', 'nombre', 'activo'], required: false }],
+        order: [['departamento', 'ASC'], ['ciudad', 'ASC'], ['rango_min', 'ASC']],
+      }),
+      Courier.findAll({
+        where: { usuario_id: usuarioId, activo: true },
+        include: [{ model: CourierTarifa, as: 'tarifas' }],
+        order: [
+          ['nombre', 'ASC'],
+          [{ model: CourierTarifa, as: 'tarifas' }, 'departamento', 'ASC'],
+          [{ model: CourierTarifa, as: 'tarifas' }, 'ciudad_zona', 'ASC'],
+        ],
+      }),
+    ]);
 
     const targetTipoPago = this.tipoPagoTarifaDesdeMetodo(paymentMethod);
     const cantidad = this.cantidadEvaluadaDelivery(items);
     const grupos = new Map();
+
+    zonasDirectas.forEach(zona => {
+      const ciudad = String(zona.ciudad || '').trim();
+      if (!ciudad) return;
+      const departamento = zona.departamento ? String(zona.departamento).trim() : null;
+      const key = `${this.normalizarTextoDelivery(departamento)}::${this.normalizarTextoDelivery(ciudad)}`;
+      const lista = grupos.get(key) || [];
+      const courier = zona.courier?.activo ? zona.courier : null;
+      lista.push({ tarifa: zona, courier, ciudad, departamento });
+      grupos.set(key, lista);
+    });
 
     couriers.forEach(courier => {
       (courier.tarifas || []).forEach(tarifa => {
@@ -134,16 +152,25 @@ class LandingService {
 
     const opciones = [];
     for (const lista of grupos.values()) {
-      const elegida = this.elegirTarifaDelivery(lista.map(i => i.tarifa), targetTipoPago, cantidad);
-      const origen = lista.find(i => i.tarifa.id === elegida?.id) || lista[0];
+      const origen = this.elegirTarifaDelivery(lista, targetTipoPago, cantidad);
+      const elegida = origen?.tarifa;
       if (!origen || !elegida) continue;
       opciones.push({
         ciudad: origen.ciudad,
         departamento: origen.departamento,
         costo: Number(elegida.costo) || 0,
         tiempo_entrega_hs: elegida.tiempo_entrega_hs || null,
-        courier_id: origen.courier.id,
-        courier_nombre: origen.courier.nombre,
+        courier_id: origen.courier?.id || null,
+        courier_nombre: origen.courier?.nombre || null,
+        reglas: lista.map(({ tarifa, courier }) => ({
+          costo: Number(tarifa.costo) || 0,
+          tipo_pago: tarifa.tipo_pago || 'Ambos',
+          rango_min: Number(tarifa.rango_min) || 0,
+          rango_max: tarifa.rango_max === null || tarifa.rango_max === undefined ? null : Number(tarifa.rango_max),
+          tiempo_entrega_hs: tarifa.tiempo_entrega_hs || null,
+          courier_id: courier?.id || null,
+          courier_nombre: courier?.nombre || null,
+        })),
       });
     }
 

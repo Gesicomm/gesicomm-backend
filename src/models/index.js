@@ -20,6 +20,7 @@ const Oferta = require('./Oferta');
 const OfertaComponente = require('./OfertaComponente');
 const Courier = require('./Courier');
 const CourierTarifa = require('./CourierTarifa');
+const DeliveryZonaTarifa = require('./DeliveryZonaTarifa');
 const Envio = require('./Envio');
 const EnvioItem = require('./EnvioItem');
 const EnvioItemComponente = require('./EnvioItemComponente');
@@ -90,6 +91,11 @@ Courier.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
 Courier.hasMany(CourierTarifa, { as: 'tarifas', foreignKey: 'courier_id', onDelete: 'CASCADE' });
 CourierTarifa.belongsTo(Courier, { foreignKey: 'courier_id' });
+
+Usuario.hasMany(DeliveryZonaTarifa, { as: 'delivery_zonas', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+DeliveryZonaTarifa.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+Courier.hasMany(DeliveryZonaTarifa, { as: 'zonas_delivery', foreignKey: 'courier_id', onDelete: 'SET NULL' });
+DeliveryZonaTarifa.belongsTo(Courier, { as: 'courier', foreignKey: 'courier_id' });
 
 Usuario.hasMany(Envio, { foreignKey: 'usuario_id' });
 Envio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
@@ -496,6 +502,7 @@ module.exports = {
   OfertaComponente,
   Courier,
   CourierTarifa,
+  DeliveryZonaTarifa,
   Envio,
   EnvioItem,
   EnvioItemComponente,
