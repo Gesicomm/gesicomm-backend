@@ -384,6 +384,7 @@ class ReporteService {
           id: p_id,
           nombre: item.nombre_producto,
           vendidos: 0,
+          venta_total: 0,
           ingresos: 0,
           costo_total: 0,
           devoluciones: 0,
@@ -411,7 +412,7 @@ class ReporteService {
 
       if (st === 'entregado') {
         mapa[p_id].vendidos += cant;
-        mapa[p_id].ingresos += Number(item.subtotal) || 0;
+        mapa[p_id].venta_total += Number(item.subtotal) || 0;
 
         // Costo del COMERCIANTE, no del admin. Se prefiere el snapshot que
         // dejó la confirmación del pedido (EnvioItemComponente.costo_unitario):
@@ -441,10 +442,12 @@ class ReporteService {
     // Unitarios derivados de lo que pasó, para que la fila cierre sola:
     // costo unitario x unidades entregadas = costo total, e igual con la venta.
     let arrayData = Object.values(mapa).map(p => {
+      const ingresos = p.venta_total - p.costo_total;
       const fila = {
         ...p,
+        ingresos,
         precio_costo_unitario: p.vendidos > 0 ? Math.round(p.costo_total / p.vendidos) : p._costo_catalogo,
-        precio_venta_unitario: p.vendidos > 0 ? Math.round(p.ingresos / p.vendidos) : p._ultimo_precio_venta,
+        precio_venta_unitario: p.vendidos > 0 ? Math.round(p.venta_total / p.vendidos) : p._ultimo_precio_venta,
       };
       delete fila._costo_catalogo;
       delete fila._ultimo_precio_venta;

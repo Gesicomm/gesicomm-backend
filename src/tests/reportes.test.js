@@ -1,4 +1,4 @@
-const { Inquilino, Usuario, Producto, Envio, EnvioItem } = require('../models');
+const { Inquilino, Usuario, Producto, Envio, EnvioItem, EnvioItemComponente } = require('../models');
 const ReporteService = require('../services/reporteService');
 
 jest.setTimeout(30000);
@@ -8,6 +8,7 @@ describe('ReporteService Integration Tests', () => {
   let testUsuarioId;
   let testProductoId;
   let testEnvioId;
+  let testEnvioItemId;
 
   beforeAll(async () => {
     // 1. Inquilino
@@ -60,7 +61,7 @@ describe('ReporteService Integration Tests', () => {
     testEnvioId = envio.id;
 
     // 5. EnvioItem
-    await EnvioItem.create({
+    const item = await EnvioItem.create({
       envio_id: testEnvioId,
       producto_id: testProductoId,
       nombre_producto: 'Test Report Product',
@@ -71,10 +72,19 @@ describe('ReporteService Integration Tests', () => {
       precio_normal: 150000,
       subtotal: 300000,
     });
+    testEnvioItemId = item.id;
+
+    await EnvioItemComponente.create({
+      envio_item_id: testEnvioItemId,
+      producto_id: testProductoId,
+      cantidad: 2,
+      costo_unitario: 50000,
+    });
   });
 
   afterAll(async () => {
     // Clean up in reverse dependency order
+    await EnvioItemComponente.destroy({ where: { envio_item_id: testEnvioItemId } }).catch(() => null);
     await EnvioItem.destroy({ where: { envio_id: testEnvioId } }).catch(() => null);
     await Envio.destroy({ where: { id: testEnvioId } }).catch(() => null);
     await Producto.destroy({ where: { id: testProductoId } }).catch(() => null);
@@ -151,6 +161,12 @@ describe('ReporteService Integration Tests', () => {
     expect(report.data.length).toBe(1);
     expect(report.data[0].nombre).toBe('Test Report Product');
     expect(report.data[0].vendidos).toBe(2);
+    expect(report.data[0].venta_total).toBe(300000);
+    expect(report.data[0].costo_total).toBe(100000);
+    expect(report.data[0].ingresos).toBe(200000);
+    expect(report.data[0].precio_venta_unitario).toBe(150000);
+    expect(report.data[0].precio_costo_unitario).toBe(50000);
+    expect(report.kpis.total_ingresos).toBe(200000);
   });
 
   test('should obtain Confirmadores report successfully', async () => {
