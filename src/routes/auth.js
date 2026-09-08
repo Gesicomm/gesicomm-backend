@@ -24,6 +24,17 @@ const { Usuario, Inquilino, Rol, Permiso, sequelize } = require('../models');
 
 const router = express.Router();
 
+// Ninguna respuesta de /api/auth/* puede quedar cacheada: /me devuelve la
+// identidad del usuario logueado, y un intermediario (o el propio navegador,
+// que sin Cache-Control usa heurísticas) podría devolverle a alguien la
+// respuesta de otra sesión. Vary: Cookie por si algún día hay CDN delante.
+router.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.set('Pragma', 'no-cache');
+  res.vary('Cookie');
+  next();
+});
+
 // ============================================================
 // Rate limiting específico para autenticación.
 // Protección contra fuerza bruta.
@@ -60,29 +71,66 @@ function generarOTP() {
 // (host exacto de la request) — mismo comportamiento que antes.
 const cookieDomain = process.env.COOKIE_DOMAIN || undefined;
 
+// Atributos de la cookie de sesión. TODAS las respuestas que escriben o
+// borran cookies de sesión (login, verify-email, refresh, logout) tienen que
+// usar exactamente estos mismos atributos.
+//
+// ⚠️ Por qué importa: el navegador identifica una cookie por
+// (nombre, dominio, path). Si /login la escribe con Domain=gesicomm.com y
+// /refresh la reescribe sin domain, NO se pisan: quedan DOS cookies
+// 'accessToken' distintas (una de gesicomm.com y otra host-only de
+// api.gesicomm.com) y el navegador manda las dos en la misma cabecera
+// Cookie. Express se queda con la primera — la más vieja — así que la sesión
+// que vale termina siendo la vieja. De ahí salían los dos bugs de
+// producción: pantallas que se quedaban cargando (401 en bucle contra un
+// token viejo) y, tras cerrar sesión, volver a entrar a la cuenta anterior
+// (el logout borraba solo una de las dos cookies).
+function opcionesCookie(req) {
+  const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || (req.headers.host && req.headers.host.includes('localhost'));
+
+  return {
+    httpOnly: true,             // JavaScript del navegador NO puede leerla
+    secure: !isLocalhost && process.env.NODE_ENV === 'production', // sin secure en localhost HTTP el navegador la descarta
+    sameSite: isLocalhost ? 'Lax' : 'Strict', // Lax en localhost para el cross-port de Vite (5173 -> 3000)
+    domain: isLocalhost ? undefined : cookieDomain,
+  };
+}
+
+// Borra las cookies de sesión en TODAS las variantes de dominio que pudo
+// haber escrito alguna versión anterior del backend (con domain y
+// host-only). Sin esto, un navegador que ya tiene la cookie huérfana la
+// sigue mandando hasta 15 minutos y pisa la sesión nueva.
+function limpiarCookiesSesion(req, res) {
+  const base = opcionesCookie(req);
+  const variantes = base.domain ? [base, { ...base, domain: undefined }] : [base];
+
+  for (const opciones of variantes) {
+    res.clearCookie('accessToken', { ...opciones, path: '/' });
+    res.clearCookie('refreshToken', { ...opciones, path: '/api/auth/refresh' });
+    // Variante legacy: hubo versiones que escribieron el refresh en la raíz.
+    res.clearCookie('refreshToken', { ...opciones, path: '/' });
+  }
+}
+
 // Helper para enviar la cookie HttpOnly con el access token
 function enviarCookieToken(req, res, accessToken, refreshToken) {
-  const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || (req.headers.host && req.headers.host.includes('localhost'));
-  
-  const isSecure = !isLocalhost && process.env.NODE_ENV === 'production';
-  const domain = isLocalhost ? undefined : cookieDomain;
-  const sameSite = isLocalhost ? 'Lax' : 'Strict';
+  const opciones = opcionesCookie(req);
+
+  // Primero limpiamos cualquier cookie de sesión previa (incluida la
+  // huérfana host-only que dejaban las versiones viejas de /refresh) para
+  // que el login nunca conviva con la sesión del usuario anterior.
+  limpiarCookiesSesion(req, res);
 
   res.cookie('accessToken', accessToken, {
-    httpOnly: true,            // JavaScript del navegador NO puede leerlo
-    secure: isSecure,          // No usar secure en localhost HTTP para que el navegador guarde la cookie
-    sameSite: sameSite,        // Lax en localhost para solicitudes cross-port (5173 -> 3000)
+    ...opciones,
+    path: '/',
     maxAge: 15 * 60 * 1000,   // 15 minutos (igual que JWT_EXPIRATION)
-    ...(domain && { domain }),
   });
 
   res.cookie('refreshToken', refreshToken, {
-    httpOnly: true,
-    secure: isSecure,
-    sameSite: sameSite,
+    ...opciones,
+    path: '/api/auth/refresh',       // Solo se envía a esta ruta
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
-    path: '/api/auth/refresh',        // Solo se envía a esta ruta
-    ...(domain && { domain }),
   });
 }
 
@@ -379,28 +427,17 @@ router.post('/resend-code', limiteReenvio, async (req, res) => {
 // ============================================================
 // POST /api/auth/logout
 // ============================================================
-router.post('/logout', verificarToken, (req, res) => {
-  auditoria('LOGOUT', { usuarioId: req.usuario.id, ip: req.ip });
+// NO lleva verificarToken a propósito: el access token dura 15 minutos, así
+// que el caso más común (alguien que estuvo un rato inactivo y recién ahí
+// toca "Cerrar sesión") llegaba con el token vencido, respondía 401 y se iba
+// sin borrar NADA — el refreshToken quedaba vivo 7 días. Cerrar sesión tiene
+// que borrar las cookies siempre, haya o no un token válido.
+router.post('/logout', (req, res) => {
+  const token = req.cookies?.accessToken;
+  const datos = token ? jwt.decode(token) : null; // decode, no verify: es solo para la auditoría
+  auditoria('LOGOUT', { usuarioId: datos?.id ?? null, ip: req.ip });
 
-  const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || (req.headers.host && req.headers.host.includes('localhost'));
-  const isSecure = !isLocalhost && process.env.NODE_ENV === 'production';
-  const domain = isLocalhost ? undefined : cookieDomain;
-  const sameSite = isLocalhost ? 'Lax' : 'Strict';
-
-  res.clearCookie('accessToken', { 
-    httpOnly: true,
-    secure: isSecure,
-          
-    ...(domain && { domain }) 
-  });
-  
-  res.clearCookie('refreshToken', { 
-    httpOnly: true,
-    secure: isSecure,
-    sameSite: sameSite,
-    path: '/api/auth/refresh', 
-    ...(domain && { domain }) 
-  });
+  limpiarCookiesSesion(req, res);
 
   return res.json({ message: 'Sesión cerrada correctamente.' });
 });
@@ -442,14 +479,12 @@ router.post('/refresh', async (req, res) => {
       expiresIn: process.env.JWT_EXPIRATION || '15m',
     });
 
-    const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || (req.headers.host && req.headers.host.includes('localhost'));
-    const isSecure = !isLocalhost && process.env.NODE_ENV === 'production';
-    const sameSite = isLocalhost ? 'Lax' : 'Strict';
-
+    // Mismos atributos que en el login (incluido domain): si acá se omite,
+    // el navegador guarda una SEGUNDA cookie 'accessToken' host-only en vez
+    // de pisar la del login. Ver el comentario de opcionesCookie().
     res.cookie('accessToken', nuevoAccessToken, {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: sameSite,
+      ...opcionesCookie(req),
+      path: '/',
       maxAge: 15 * 60 * 1000,
     });
 
