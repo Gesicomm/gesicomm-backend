@@ -11,6 +11,7 @@ const EncryptionService = require('../utils/EncryptionService');
 const { validarFormato: validarFormatoSubdominio, disponible: subdominioDisponible } = require('../utils/validarSubdominio');
 const CloudflareService = require('./cloudflare.service');
 const whois = require('whois-json');
+const dns = require('dns').promises;
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const WHATSAPP_RE = /^\d{8,15}$/;
@@ -21,6 +22,25 @@ const PLANES_VALIDOS = new Set(['free', 'pago']);
 // Formato laxo de dominio — la verificación real de que existe y resuelve
 // bien la hace Cloudflare al crear el Custom Hostname.
 const DOMINIO_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+
+/**
+ * Los nameservers de la zona a la que pertenece el dominio. Se sube
+ * etiqueta por etiqueta porque los NS viven en la raíz de la zona:
+ * "gesis.cogymtraining.com" no tiene NS propios, los tiene
+ * "cogymtraining.com".
+ */
+async function nameserversDe(dominio) {
+  const labels = dominio.split('.');
+  for (let i = 0; i <= labels.length - 2; i++) {
+    try {
+      const ns = await dns.resolveNs(labels.slice(i).join('.'));
+      if (ns && ns.length) return ns;
+    } catch (err) {
+      // Esta zona no existe (o no responde): probar con la de más arriba.
+    }
+  }
+  return [];
+}
 
 class TiendaService {
 
@@ -240,31 +260,55 @@ class TiendaService {
     return this.serializar(tienda);
   }
 
+  /**
+   * Quién administra el DNS del dominio — para poder mandar al usuario al
+   * panel exacto donde tiene que crear los registros.
+   *
+   * Se miran PRIMERO los nameservers y recién después el registrar del
+   * WHOIS. El registrar es dónde se compró el dominio; los NS son dónde
+   * vive realmente el DNS, que es lo único que importa acá. Se separan
+   * seguido (comprado en GoDaddy, DNS movido a Cloudflare): mirando solo
+   * el WHOIS le mandábamos al usuario al panel equivocado, y los
+   * registros que cargara ahí no iban a tener ningún efecto.
+   *
+   * Se reusa la misma columna `whois_match` de proveedores_dns para las
+   * dos búsquedas: los NS de un proveedor contienen su nombre igual que
+   * el registrar ("amalia.ns.cloudflare.com" contiene "cloudflare"), así
+   * que no hace falta ni columna nueva ni filas nuevas.
+   */
   static async obtenerInfoWhois(dominio) {
     if (!dominio) return null;
+
+    const proveedores = await ProveedorDns.findAll();
+    const buscar = (texto) => {
+      const t = (texto || '').toLowerCase();
+      if (!t) return null;
+      return proveedores.find(p => t.includes(p.whois_match.toLowerCase())) || null;
+    };
+
+    const serializar = (p, fuente) => ({
+      nombre: p.nombre,
+      url_login: p.url_login ? p.url_login.replace('{dominio}', dominio) : null,
+      instrucciones: p.instrucciones,
+      logo_url: p.logo_url,
+      // El frontend lo usa para no prometer más de lo que sabe: con 'ns'
+      // el panel es seguro, con 'registrar' es una corazonada.
+      fuente,
+    });
+
+    const ns = await nameserversDe(dominio);
+    const porNs = buscar(ns.join(' '));
+    if (porNs) return serializar(porNs, 'ns');
+
     try {
       const results = await whois(dominio);
-      // Extraemos el registrar de los resultados
-      const registrar = (results.registrar || results.Registrar || '').toLowerCase();
-      if (!registrar) return null;
-
-      // Buscar en BD
-      const proveedores = await ProveedorDns.findAll();
-      for (const p of proveedores) {
-        if (registrar.includes(p.whois_match.toLowerCase())) {
-          return {
-            nombre: p.nombre,
-            url_login: p.url_login ? p.url_login.replace('{dominio}', dominio) : null,
-            instrucciones: p.instrucciones,
-            logo_url: p.logo_url
-          };
-        }
-      }
-      return null;
+      const porRegistrar = buscar(results.registrar || results.Registrar);
+      if (porRegistrar) return serializar(porRegistrar, 'registrar');
     } catch (err) {
       console.error('[whois] Error:', err.message);
-      return null;
     }
+
+    return null;
   }
 
   /** meta_access_token nunca sale del backend en texto plano ni cifrado. */
