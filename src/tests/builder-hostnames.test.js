@@ -8,8 +8,8 @@
  *    (comparten *.gesicomm.com y Postgres no puede imponerlo solo);
  *  - que un subdominio de la plataforma quede publicable en el momento y
  *    un dominio propio no;
- *  - que el alta de un dominio propio no reviente si Cloudflare no está
- *    configurado en el entorno.
+ *  - que un dominio propio se verifique contra el DNS real y no contra
+ *    ningún proveedor externo.
  */
 
 jest.mock('../models', () => ({
@@ -25,13 +25,14 @@ jest.mock('../models', () => ({
   Tienda: { count: jest.fn() },
 }));
 
-jest.mock('../services/cloudflare.service', () => ({
-  crearCustomHostname: jest.fn(),
-  verificarEstado: jest.fn(),
+jest.mock('../utils/dominios', () => ({
+  ...jest.requireActual('../utils/dominios'),
+  apuntaANuestroServidor: jest.fn(),
+  sirvePorHttps: jest.fn(),
 }));
 
 const { BuilderDomain, BuilderPage, BuilderFunnel, Tienda } = require('../models');
-const CloudflareService = require('../services/cloudflare.service');
+const { apuntaANuestroServidor, sirvePorHttps } = require('../utils/dominios');
 const BuilderDomainService = require('../services/builderDomain.service');
 
 const CONTEXTO = { usuario_id: 1, inquilino_id: 2 };
@@ -43,6 +44,8 @@ beforeEach(() => {
   BuilderDomain.create.mockImplementation(async (datos) => ({ id: 50, ...datos }));
   BuilderPage.findOne.mockResolvedValue({ id: 10, usuario_id: 1, funnel_id: null });
   BuilderFunnel.findOne.mockResolvedValue({ id: 7, usuario_id: 1 });
+  apuntaANuestroServidor.mockResolvedValue({ apunta: true, detalle: null, ips: ['155.117.43.52'] });
+  sirvePorHttps.mockResolvedValue(true);
 });
 
 // ───────────────────────────────────────────────────────────────────────
@@ -158,14 +161,7 @@ describe('Target', () => {
 // ───────────────────────────────────────────────────────────────────────
 describe('Dominio propio', () => {
 
-  beforeEach(() => {
-    CloudflareService.crearCustomHostname.mockResolvedValue({
-      id: 'cf-abc', estado: 'pending',
-      ownershipVerification: { type: 'txt', name: '_cf.t2e.com.py', value: 'token123' },
-    });
-  });
-
-  test('lo registra y devuelve el TXT que hay que cargar en el DNS', async () => {
+  test('lo registra y devuelve el registro A que hay que cargar en el DNS', async () => {
     const creado = await BuilderDomainService.crearDominioPropio(CONTEXTO, {
       dominio: 't2e.com.py', pagina_id: 10,
     });
@@ -173,9 +169,12 @@ describe('Dominio propio', () => {
     expect(creado.hostname).toBe('t2e.com.py');
     expect(creado.tipo).toBe('dominio_propio');
     expect(creado.activo).toBe(false); // todavía no
-    expect(creado.verificacion_dns).toMatchObject({
-      tipo: 'TXT', nombre: '_cf.t2e.com.py', valor: 'token123',
-    });
+    // Un solo registro y sin TXT de validación: apuntar el A es la prueba
+    // de titularidad y el disparador del certificado a la vez.
+    expect(creado.registros).toEqual([
+      { tipo: 'A', nombre: '@', valor: process.env.ORIGIN_IP, obligatorio: true },
+      { tipo: 'A', nombre: 'www', valor: process.env.ORIGIN_IP, obligatorio: false },
+    ]);
   });
 
   test('acepta varios niveles y normaliza el punto final', async () => {
@@ -199,33 +198,18 @@ describe('Dominio propio', () => {
     })).rejects.toMatchObject({ status: 422 });
   });
 
-  test('si Cloudflare no está configurado, guarda igual y avisa', async () => {
-    // Sin CF_ZONE_ID/CF_API_TOKEN el alta no puede reventar entera: el
-    // usuario ya cargó su dominio y eso no se pierde.
-    CloudflareService.crearCustomHostname.mockRejectedValue(
-      new Error('Cloudflare no está configurado (faltan CF_ZONE_ID / CF_API_TOKEN en el entorno).'),
-    );
-
-    const creado = await BuilderDomainService.crearDominioPropio(CONTEXTO, {
-      dominio: 't2e.com.py', pagina_id: 10,
-    });
-
-    expect(creado.hostname).toBe('t2e.com.py');
-    expect(creado.estado_ssl).toBe('pendiente');
-    expect(creado.aviso).toMatch(/proveedor de certificados/i);
-  });
-
-  test('verificar() marca activo cuando Cloudflare emitió el certificado', async () => {
-    const fila = {
+  function filaPendiente() {
+    return {
       id: 50, usuario_id: 1, tipo: 'dominio_propio', hostname: 't2e.com.py',
-      cf_hostname_id: 'cf-abc', pagina_id: 10, funnel_id: null, es_principal: true,
-      estado_verificacion: 'pendiente', estado_ssl: 'emitiendo',
+      pagina_id: 10, funnel_id: null, es_principal: true,
+      estado_verificacion: 'pendiente', estado_ssl: 'pendiente',
       save: jest.fn(),
     };
+  }
+
+  test('verificar() lo marca activo cuando el DNS apunta aca y ya hay certificado', async () => {
+    const fila = filaPendiente();
     BuilderDomain.findOne.mockResolvedValue(fila);
-    CloudflareService.verificarEstado.mockResolvedValue({
-      estado: 'active', sslEstado: 'active', activo: true, ownershipVerification: null,
-    });
 
     const res = await BuilderDomainService.verificar(50, 1);
 
@@ -235,7 +219,65 @@ describe('Dominio propio', () => {
     expect(fila.save).toHaveBeenCalled();
   });
 
-  test('verificar() sobre un subdominio no llama a Cloudflare', async () => {
+  test('verificar() deja el SSL en emitiendo mientras Caddy no emitio todavia', async () => {
+    // El certificado sale en la primera visita al dominio, asi que un
+    // dominio recien verificado no lo tiene: es un estado esperado, no un error.
+    const fila = filaPendiente();
+    BuilderDomain.findOne.mockResolvedValue(fila);
+    sirvePorHttps.mockResolvedValue(false);
+
+    const res = await BuilderDomainService.verificar(50, 1);
+
+    expect(res.estado_verificacion).toBe('verificado');
+    expect(res.estado_ssl).toBe('emitiendo');
+    expect(res.activo).toBe(false);
+  });
+
+  test('verificar() lo deja pendiente si el DNS todavia no apunta aca', async () => {
+    const fila = filaPendiente();
+    BuilderDomain.findOne.mockResolvedValue(fila);
+    apuntaANuestroServidor.mockResolvedValue({
+      apunta: false, ips: ['1.2.3.4'], detalle: 'El dominio apunta a 1.2.3.4',
+    });
+
+    const res = await BuilderDomainService.verificar(50, 1);
+
+    expect(res.estado_verificacion).toBe('pendiente');
+    expect(res.activo).toBe(false);
+  });
+
+  test('un hostname deshabilitado no cuenta como activo', async () => {
+    // Sigue cargado y verificado: lo unico que cambia es que no se sirve.
+    const fila = filaPendiente();
+    fila.habilitado = false;
+    fila.estado_verificacion = 'verificado';
+    fila.estado_ssl = 'activo';
+    BuilderDomain.findOne.mockResolvedValue(fila);
+
+    const res = await BuilderDomainService.cambiarHabilitacion(50, 1, false);
+
+    expect(res.habilitado).toBe(false);
+    expect(res.activo).toBe(false);
+    expect(fila.save).toHaveBeenCalled();
+  });
+
+  test('no se le emite certificado a un hostname deshabilitado', async () => {
+    BuilderDomain.count.mockResolvedValue(0);
+
+    const permitido = await BuilderDomainService.hostnameHabilitadoParaCertificado('t2e.com.py');
+
+    expect(permitido).toBe(false);
+    expect(BuilderDomain.count).toHaveBeenCalledWith({
+      where: {
+        hostname: 't2e.com.py',
+        tipo: 'dominio_propio',
+        estado_verificacion: 'verificado',
+        habilitado: true,
+      },
+    });
+  });
+
+  test('verificar() sobre un subdominio no consulta el DNS', async () => {
     BuilderDomain.findOne.mockResolvedValue({
       id: 51, usuario_id: 1, tipo: 'subdominio', hostname: 'calcula.gesicomm.com',
       estado_verificacion: 'verificado', estado_ssl: 'activo', pagina_id: 10, funnel_id: null,
@@ -244,7 +286,7 @@ describe('Dominio propio', () => {
     const res = await BuilderDomainService.verificar(51, 1);
 
     expect(res.activo).toBe(true);
-    expect(CloudflareService.verificarEstado).not.toHaveBeenCalled();
+    expect(apuntaANuestroServidor).not.toHaveBeenCalled();
   });
 });
 

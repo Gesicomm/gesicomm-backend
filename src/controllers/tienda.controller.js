@@ -7,8 +7,9 @@
  * POST   /api/mi-tienda                           → crear
  * PUT    /api/mi-tienda                           → actualizar (nombre/colores/contacto/pixel)
  * GET    /api/mi-tienda/subdominio/disponibilidad  → check en vivo
- * POST   /api/mi-tienda/dominio-propio             → registrar dominio propio (Cloudflare)
+ * POST   /api/mi-tienda/dominio-propio             → registrar dominio propio
  * GET    /api/mi-tienda/dominio-propio/estado      → consultar verificación
+ * PATCH  /api/mi-tienda/dominio-propio/habilitado  → apagar/prender sin borrarlo
  * DELETE /api/mi-tienda/dominio-propio             → revocar dominio propio
  */
 
@@ -76,6 +77,20 @@ async function estadoDominioPropio(req, res) {
   }
 }
 
+async function habilitacionDominioPropio(req, res) {
+  try {
+    if (typeof req.body.habilitado !== 'boolean') {
+      return res.status(400).json({ message: 'Falta indicar si el dominio queda habilitado.' });
+    }
+    const resultado = await TiendaService.cambiarHabilitacionDominioPropio(
+      req.usuario.id, req.body.habilitado,
+    );
+    return res.json(resultado);
+  } catch (err) {
+    return manejarError(res, err, 'Error al cambiar el estado del dominio propio.');
+  }
+}
+
 async function eliminarDominioPropio(req, res) {
   try {
     const tienda = await TiendaService.eliminarDominioPropio(req.usuario.id);
@@ -98,5 +113,6 @@ async function whoisDominio(req, res) {
 
 module.exports = {
   obtener, crear, actualizar, disponibilidadSubdominio,
-  guardarDominioPropio, estadoDominioPropio, eliminarDominioPropio, whoisDominio
+  guardarDominioPropio, estadoDominioPropio, habilitacionDominioPropio,
+  eliminarDominioPropio, whoisDominio
 };

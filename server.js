@@ -44,17 +44,22 @@ const cuponesRoutes = require('./src/routes/cupones');
 const proveedoresRoutes = require('./src/routes/proveedores');
 const pageBuilderRoutes = require('./src/routes/pageBuilder');
 const healthRoutes = require('./src/routes/health');
+const internoRoutes = require('./src/routes/interno');
 const paymentGatewaysRoutes = require('./src/routes/payment-gateways');
 const webhooksRoutes = require('./src/routes/webhooks');
 const suscripcionesRoutes = require('./src/routes/suscripciones');
 
 const app = express();
-// 1 hop: Nginx (deploy/nginx/gesicomm.conf) resuelve la IP real del
-// visitante detrás de Cloudflare vía ngx_http_realip_module ANTES de
-// proxear acá, así que Node solo necesita confiar en Nginx mismo — no en
-// 2 (Cloudflare + Nginx). Si cambia esa topología (ej. se saca el
-// realip_module de Nginx), este valor tiene que subir a 2 o req.ip queda
-// mal para rate limiting y, más adelante, para el matching de IP de Meta CAPI.
+// 1 hop: Nginx resuelve la IP real del visitante ANTES de proxear acá y
+// PISA X-Forwarded-For con un solo valor (ver deploy/nginx/), así que Node
+// solo necesita confiar en Nginx mismo por más proxies que haya delante.
+// Hoy delante hay dos: Caddy, que termina TLS (deploy/caddy/Caddyfile), y
+// para gesicomm.com también Cloudflare. Este valor sigue siendo 1 porque
+// lo que importa es cuántos hops REESCRIBEN el header, no cuántos hay.
+//
+// Ojo: para los dominios propios de clientes, que no pasan por Cloudflare,
+// el map de real-ip.conf todavía no sabe caer a X-Forwarded-For y la IP
+// que llega es la de Caddy. Está anotado en deploy/PLAN-DOMINIOS-PROPIOS.md.
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
@@ -215,6 +220,8 @@ app.use('/api/cupones', cuponesRoutes);
 app.use('/api/proveedores', proveedoresRoutes);
 app.use('/api/page-builder', pageBuilderRoutes);
 app.use('/api/health', healthRoutes);
+// Fuera de /api a propósito: lo consulta Caddy en localhost, no un navegador.
+app.use('/interno', internoRoutes);
 app.use('/api/config/payment-gateways', paymentGatewaysRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 // Planes y suscripciones de Gesicomm (publicas: son el paso previo al alta)

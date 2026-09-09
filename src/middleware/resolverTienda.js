@@ -51,7 +51,12 @@ async function buscarTiendaPorHostname(hostname) {
   }
 
   return Tienda.findOne({
-    where: { dominio_propio: limpio, dominio_propio_verificado: true, activo: true },
+    where: {
+      dominio_propio: limpio,
+      dominio_propio_verificado: true,
+      dominio_propio_habilitado: true,
+      activo: true,
+    },
     include: includeUsuario,
   });
 }

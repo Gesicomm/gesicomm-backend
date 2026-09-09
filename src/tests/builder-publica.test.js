@@ -99,16 +99,21 @@ describe('Solo se sirve la versión publicada (T-8)', () => {
 // ───────────────────────────────────────────────────────────────────────
 describe('Resolución por hostname', () => {
 
-  test('solo resuelve hostnames verificados Y con certificado activo', async () => {
+  test('solo resuelve hostnames verificados', async () => {
     BuilderDomain.findOne.mockResolvedValue(null);
     await BuilderPublicPageService.resolverHostname('calcula.gesicomm.com');
 
     // Un dominio propio a medio verificar no puede secuestrar tráfico.
+    //
+    // No se filtra por estado_ssl a propósito: el certificado lo emite
+    // Caddy en la primera visita, así que exigirlo acá dejaba al dominio
+    // trabado contra sí mismo — sin visita no hay certificado, y sin
+    // certificado no se atendía la visita.
     expect(BuilderDomain.findOne).toHaveBeenCalledWith({
       where: {
         hostname: 'calcula.gesicomm.com',
         estado_verificacion: 'verificado',
-        estado_ssl: 'activo',
+        habilitado: true,
       },
     });
   });

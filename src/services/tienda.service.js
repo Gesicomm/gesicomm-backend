@@ -6,10 +6,11 @@
  * contacto, pixel) que heredan todas sus landings.
  */
 
+const { Op } = require('sequelize');
 const { Tienda, Usuario, ProveedorDns } = require('../models');
 const EncryptionService = require('../utils/EncryptionService');
 const { validarFormato: validarFormatoSubdominio, disponible: subdominioDisponible } = require('../utils/validarSubdominio');
-const CloudflareService = require('./cloudflare.service');
+const { ESTADOS, registrosPara, apuntaANuestroServidor, sirvePorHttps } = require('../utils/dominios');
 const whois = require('whois-json');
 const dns = require('dns').promises;
 
@@ -19,8 +20,9 @@ const META_PIXEL_RE = /^\d{15,16}$/;
 const GA_ID_RE = /^G-[A-Z0-9]{4,16}$/i;
 const TIKTOK_PIXEL_RE = /^[A-Z0-9]{10,25}$/i;
 const PLANES_VALIDOS = new Set(['free', 'pago']);
-// Formato laxo de dominio — la verificación real de que existe y resuelve
-// bien la hace Cloudflare al crear el Custom Hostname.
+// Formato laxo de dominio — solo descarta lo que ni siquiera parece un
+// hostname. La comprobación real de que existe y apunta acá la hace
+// verificarDominioPropio resolviendo su DNS.
 const DOMINIO_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 
 /**
@@ -187,7 +189,11 @@ class TiendaService {
     return { valido: true, disponible: libre, motivo: libre ? null : 'Ese subdominio ya está en uso.' };
   }
 
-  // ─── Dominio propio (Cloudflare for SaaS) ──────────────────────────────────
+  // ─── Dominio propio ────────────────────────────────────────────────────────
+  //
+  // El cliente apunta un registro A a nuestra IP y listo: sin CNAME, sin TXT
+  // de validación y sin intermediarios. El certificado lo emite Caddy solo.
+  // Ver src/utils/dominios.js.
 
   static async guardarDominioPropio(usuario_id, dominio) {
     const tienda = await Tienda.findOne({ where: { usuario_id } });
@@ -196,65 +202,136 @@ class TiendaService {
     const limpio = (dominio || '').trim().toLowerCase();
     if (!DOMINIO_RE.test(limpio)) throw new Error('Ese dominio no tiene un formato válido.');
 
-    // Si ya había un dominio propio (con o sin verificar), liberar el hostname viejo en Cloudflare.
-    if (tienda.dominio_propio_cf_hostname_id) {
-      try {
-        await CloudflareService.eliminarCustomHostname(tienda.dominio_propio_cf_hostname_id);
-      } catch (err) {
-        console.warn('[tienda] no se pudo liberar el custom hostname anterior:', err.message);
-      }
-    }
-
-    const resultado = await CloudflareService.crearCustomHostname(limpio);
+    // Un hostname no puede resolver a dos lugares distintos. La restricción
+    // también está en la base (índice único sobre dominio_propio), pero acá
+    // el mensaje se puede explicar.
+    const ocupado = await Tienda.findOne({
+      where: { dominio_propio: limpio, id: { [Op.ne]: tienda.id } },
+      attributes: ['id'],
+    });
+    if (ocupado) throw new Error('Ese dominio ya está conectado a otra tienda.');
 
     tienda.dominio_propio = limpio;
     tienda.dominio_propio_verificado = false;
-    tienda.dominio_propio_cf_hostname_id = resultado.id;
+    // Conectar un dominio nuevo lo deja habilitado aunque el anterior
+    // estuviera apagado: es otro dominio, no el mismo.
+    tienda.dominio_propio_habilitado = true;
     await tienda.save();
 
     return {
       dominio: limpio,
+      estado: ESTADOS.PENDIENTE,
       verificado: false,
-      registro_txt: resultado.ownershipVerification,
+      registros: registrosPara(limpio),
     };
   }
 
+  /**
+   * Comprueba que el dominio apunte a nuestro servidor y, si ya apunta,
+   * si además tiene el certificado emitido.
+   *
+   * Un dominio queda 'verificado' apenas el DNS resuelve a nuestra IP —
+   * poder cambiar el DNS de un dominio es lo que significa ser su dueño. A
+   * partir de ahí la tienda ya se sirve por ese hostname. Pasa a 'activo'
+   * cuando Caddy le emitió el certificado, que ocurre en la primera visita.
+   */
   static async verificarDominioPropio(usuario_id) {
     const tienda = await Tienda.findOne({ where: { usuario_id } });
     if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
-    if (!tienda.dominio_propio_cf_hostname_id) throw new Error('No configuraste ningún dominio propio todavía.');
+    if (!tienda.dominio_propio) throw new Error('No configuraste ningún dominio propio todavía.');
 
-    const estado = await CloudflareService.verificarEstado(tienda.dominio_propio_cf_hostname_id);
+    if (!tienda.dominio_propio_habilitado) {
+      // No se consulta el DNS: el dominio está apagado por decisión
+      // nuestra, y lo que diga su DNS no cambia eso.
+      return {
+        dominio: tienda.dominio_propio,
+        url: `https://${tienda.dominio_propio}`,
+        estado: ESTADOS.DESHABILITADO,
+        verificado: tienda.dominio_propio_verificado,
+        registros: registrosPara(tienda.dominio_propio),
+        detalle: 'El dominio está desactivado. Reactivalo para volver a servir la tienda por esa dirección.',
+      };
+    }
 
-    if (estado.activo && !tienda.dominio_propio_verificado) {
-      tienda.dominio_propio_verificado = true;
+    const { apunta, detalle } = await apuntaANuestroServidor(tienda.dominio_propio);
+
+    if (apunta !== tienda.dominio_propio_verificado) {
+      tienda.dominio_propio_verificado = apunta;
       await tienda.save();
+    }
+
+    let estado = ESTADOS.PENDIENTE;
+    if (apunta) {
+      // Solo se pregunta por el certificado si el DNS ya está: antes es
+      // seguro que no existe, y la consulta tarda hasta 5 segundos.
+      estado = (await sirvePorHttps(tienda.dominio_propio)) ? ESTADOS.ACTIVO : ESTADOS.VERIFICADO;
     }
 
     return {
       dominio: tienda.dominio_propio,
+      url: `https://${tienda.dominio_propio}`,
+      estado,
       verificado: tienda.dominio_propio_verificado,
-      estado_cloudflare: estado.estado,
-      // Se reenvía en cada consulta, no solo al crear, para que la UI
-      // pueda re-mostrar el TXT si el usuario recarga antes de verificar.
-      registro_txt: estado.ownershipVerification,
-      // Para dominios gestionados en Cloudflare, en lugar del TXT se usa
-      // este CNAME de delegación DCV. El frontend prioriza esto si está presente.
-      dcv_delegation: estado.dcvDelegation,
+      registros: registrosPara(tienda.dominio_propio),
+      detalle,
     };
+  }
+
+  /**
+   * ¿Le emitimos un certificado a este dominio?
+   *
+   * La consulta la hace Caddy contra el backend antes de pedirle el
+   * certificado a Let's Encrypt, en mitad del handshake TLS. Sin este
+   * filtro, cualquiera que apuntara un dominio a nuestra IP nos haría
+   * emitir certificados a su nombre: no alcanza con que el DNS apunte acá,
+   * el dominio tiene que estar cargado y verificado en Gesicomm.
+   */
+  static async dominioHabilitadoParaCertificado(dominio) {
+    const limpio = (dominio || '').trim().toLowerCase();
+    if (!limpio) return false;
+
+    // El cliente carga dos registros A, la raíz y el www. Caddy pide
+    // certificado para los dos (necesita uno para poder responder por HTTPS
+    // el redirect de www a la raíz), pero en la base guardamos solo la raíz.
+    const raiz = limpio.startsWith('www.') ? limpio.slice(4) : limpio;
+
+    const tienda = await Tienda.findOne({
+      where: {
+        dominio_propio: { [Op.in]: [limpio, raiz] },
+        dominio_propio_verificado: true,
+        dominio_propio_habilitado: true,
+        activo: true,
+      },
+      attributes: ['id'],
+    });
+
+    return !!tienda;
+  }
+
+  /**
+   * Apaga o vuelve a prender el dominio sin perderlo. Mientras está
+   * apagado no resuelve (middleware/resolverTienda.js) ni se le renueva el
+   * certificado, pero el dominio sigue cargado y no hay que volver a
+   * pasar por el DNS para recuperarlo.
+   */
+  static async cambiarHabilitacionDominioPropio(usuario_id, habilitado) {
+    const tienda = await Tienda.findOne({ where: { usuario_id } });
+    if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
+    if (!tienda.dominio_propio) throw new Error('No configuraste ningún dominio propio todavía.');
+
+    tienda.dominio_propio_habilitado = !!habilitado;
+    await tienda.save();
+
+    return this.verificarDominioPropio(usuario_id);
   }
 
   static async eliminarDominioPropio(usuario_id) {
     const tienda = await Tienda.findOne({ where: { usuario_id } });
     if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
 
-    if (tienda.dominio_propio_cf_hostname_id) {
-      await CloudflareService.eliminarCustomHostname(tienda.dominio_propio_cf_hostname_id);
-    }
-
     tienda.dominio_propio = null;
     tienda.dominio_propio_verificado = false;
-    tienda.dominio_propio_cf_hostname_id = null;
+    tienda.dominio_propio_habilitado = true;
     await tienda.save();
 
     return this.serializar(tienda);

@@ -89,6 +89,7 @@ router.get('/hostnames', hostnames.listar);
 router.post('/hostnames/subdominio', hostnames.crearSubdominio);
 router.post('/hostnames/dominio-propio', hostnames.crearDominioPropio);
 router.post('/hostnames/:id/verificar', hostnames.verificar);
+router.patch('/hostnames/:id/habilitado', hostnames.habilitacion);
 router.put('/hostnames/:id/principal', hostnames.definirPrincipal);
 router.delete('/hostnames/:id', hostnames.eliminar);
 

@@ -10,8 +10,13 @@ const sequelize = require('../config/database');
  * - subdominio: único global, inmutable una vez creada la tienda (lo
  *   impone el service, no la DB — permitir cambiarlo más adelante implica
  *   decidir qué pasa con el subdominio viejo, ver "Lo que no va en v1").
- * - dominio_propio_cf_hostname_id: el ID que devuelve Cloudflare for SaaS
- *   al crear el Custom Hostname — necesario para consultar estado o revocar.
+ * - dominio_propio: el hostname que el cliente apuntó a nuestra IP con un
+ *   registro A. Se verifica resolviendo su DNS (src/utils/dominios.js) y el
+ *   certificado lo emite Caddy solo.
+ * - dominio_propio_habilitado: lo único del ciclo de vida del dominio que
+ *   se guarda. Los estados pendiente/verificado/activo se calculan contra
+ *   el DNS real en cada consulta, porque el cliente puede cambiar su DNS
+ *   cuando quiera y un valor guardado quedaría mintiendo.
  */
 const Tienda = sequelize.define('Tienda', {
   id: {
@@ -46,9 +51,11 @@ const Tienda = sequelize.define('Tienda', {
     allowNull: false,
     defaultValue: false,
   },
-  dominio_propio_cf_hostname_id: {
-    type: DataTypes.STRING(100),
-    allowNull: true,
+  dominio_propio_habilitado: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: true,
+    comment: 'false = el dominio queda cargado pero no se sirve ni se le emite certificado.',
   },
   // --- Tema (default para todas las landings de la tienda) ---
   color_primario: {

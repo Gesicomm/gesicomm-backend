@@ -41,8 +41,13 @@ class BuilderPublicPageService {
 
   /**
    * ¿Este hostname es del Page Builder? Devuelve el registro o null.
-   * Solo resuelve hostnames listos para servir: un dominio propio a
-   * medio verificar no puede secuestrar tráfico.
+   * Solo resuelve hostnames verificados: un dominio propio a medio
+   * verificar no puede secuestrar tráfico.
+   *
+   * A propósito NO se exige estado_ssl='activo'. El certificado lo emite
+   * Caddy en la primera visita al dominio, así que exigirlo para resolver
+   * dejaba al dominio trabado contra sí mismo: sin visita no hay
+   * certificado, y sin certificado no se atendía la visita.
    */
   static async resolverHostname(host) {
     const limpio = String(host || '').toLowerCase().split(':')[0].trim();
@@ -52,7 +57,7 @@ class BuilderPublicPageService {
       where: {
         hostname: limpio,
         estado_verificacion: 'verificado',
-        estado_ssl: 'activo',
+        habilitado: true,
       },
     });
   }

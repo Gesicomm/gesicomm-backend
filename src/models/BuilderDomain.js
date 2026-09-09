@@ -15,8 +15,9 @@ const sequelize = require('../config/database');
  * son lo mismo. Lo único que cambia es cómo se consigue el certificado:
  * un subdominio de la plataforma no necesita nada (ya hay DNS y
  * certificado wildcard para *.gesicomm.com) y queda activo al crearse; un
- * dominio propio pasa por Cloudflare for SaaS, con TXT de verificación y
- * espera del certificado — el mismo mecanismo que Tienda.dominio_propio.
+ * dominio propio se verifica resolviendo su DNS contra nuestra IP y queda
+ * activo cuando Caddy le emite el certificado — el mismo mecanismo que
+ * Tienda.dominio_propio (ver src/utils/dominios.js).
  *
  * Un target puede tener varios hostnames a la vez (el subdominio de la
  * plataforma y el dominio propio apuntando a la misma página).
@@ -92,19 +93,11 @@ const BuilderDomain = sequelize.define('BuilderDomain', {
     validate: { isIn: [['pendiente', 'emitiendo', 'activo', 'error']] },
     comment: 'Un subdominio de la plataforma nace en "activo": lo cubre el certificado wildcard del origen.',
   },
-  cf_hostname_id: {
-    type: DataTypes.STRING(64),
-    allowNull: true,
-    comment: 'ID del Custom Hostname de Cloudflare for SaaS. Mismo campo que Tienda.dominio_propio_cf_hostname_id.',
-  },
-  verificacion_txt_nombre: {
-    type: DataTypes.STRING(255),
-    allowNull: true,
-    comment: 'El registro TXT que se le muestra al usuario para que lo cargue en su DNS.',
-  },
-  verificacion_txt_valor: {
-    type: DataTypes.STRING(255),
-    allowNull: true,
+  habilitado: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: true,
+    comment: 'false = el hostname queda cargado pero no resuelve ni se le emite certificado.',
   },
   ultimo_chequeo_at: {
     type: DataTypes.DATE,

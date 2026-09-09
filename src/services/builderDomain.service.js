@@ -17,23 +17,20 @@
  *     Nace verificado y activo — se publica en el momento.
  *
  *   DOMINIO PROPIO
- *     Cloudflare for SaaS (Custom Hostnames), el mismo mecanismo que ya
- *     usa Tienda.dominio_propio. Se registra, se le muestra al usuario el
- *     TXT de verificación, y recién cuando Cloudflare emite el
- *     certificado queda activo. Sin CF_ZONE_ID/CF_API_TOKEN en el
- *     entorno NO revienta: el hostname queda guardado como 'pendiente' y
- *     se avisa que falta configurar el proveedor.
+ *     Un registro A a la IP del VPS, el mismo mecanismo que usa
+ *     Tienda.dominio_propio (utils/dominios.js). Queda verificado cuando
+ *     su DNS resuelve a nuestra IP, y activo cuando Caddy le emitió el
+ *     certificado — que pasa solo, en la primera visita.
  *
  * Reutiliza utils/validarSubdominio.js (reglas DNS + lista de reservados
- * + disponibilidad) y services/cloudflare.service.js. No duplica ninguna
- * de las dos cosas.
+ * + disponibilidad) y utils/dominios.js. No duplica ninguna de las dos.
  */
 
 const { Op } = require('sequelize');
 
 const { BuilderDomain, BuilderPage, BuilderFunnel } = require('../models');
-const CloudflareService = require('./cloudflare.service');
 const { validarFormato, disponible } = require('../utils/validarSubdominio');
+const { registrosPara, apuntaANuestroServidor, sirvePorHttps } = require('../utils/dominios');
 const { errorHttp } = require('../utils/errorHttp');
 
 const BASE_DOMAIN = process.env.BASE_DOMAIN || 'gesicomm.com';
@@ -58,14 +55,16 @@ class BuilderDomainService {
       funnel_id: hostname.funnel_id,
       estado_verificacion: hostname.estado_verificacion,
       estado_ssl: hostname.estado_ssl,
-      activo: hostname.estado_verificacion === 'verificado' && hostname.estado_ssl === 'activo',
-      // El TXT solo tiene sentido mientras el dominio propio no esté
-      // verificado; después es ruido en la UI.
-      verificacion_dns: hostname.estado_verificacion === 'verificado' ? null : {
-        tipo: 'TXT',
-        nombre: hostname.verificacion_txt_nombre,
-        valor: hostname.verificacion_txt_valor,
-      },
+      habilitado: hostname.habilitado,
+      activo: hostname.habilitado !== false
+        && hostname.estado_verificacion === 'verificado'
+        && hostname.estado_ssl === 'activo',
+      // Los registros a cargar solo tienen sentido mientras el dominio
+      // propio no esté verificado; después son ruido en la UI. Un
+      // subdominio de la plataforma no lleva ninguno.
+      registros: (hostname.tipo === 'subdominio' || hostname.estado_verificacion === 'verificado')
+        ? null
+        : registrosPara(hostname.hostname),
       ultimo_chequeo_at: hostname.ultimo_chequeo_at,
       created_at: hostname.created_at,
     };
@@ -168,7 +167,7 @@ class BuilderDomainService {
 
   /**
    * Dominio propio del usuario (t2e.com.py). Arranca pendiente: hay que
-   * cargar el TXT en el DNS del dominio y esperar el certificado.
+   * apuntar el registro A a nuestra IP y verificarlo.
    */
   static async crearDominioPropio(contexto, datos) {
     const { usuario_id, inquilino_id } = contexto;
@@ -186,32 +185,18 @@ class BuilderDomainService {
       throw errorHttp('Ese dominio ya está cargado.', 409);
     }
 
-    // Cloudflare es opcional: sin credenciales el hostname igual se
-    // guarda y la UI muestra "falta configurar el proveedor" en vez de
-    // que el alta reviente entera.
-    let cf = null;
-    let aviso = null;
-    try {
-      cf = await CloudflareService.crearCustomHostname(dominio);
-    } catch (err) {
-      aviso = `El dominio quedó guardado, pero todavía no se registró en el proveedor de certificados: ${err.message}`;
-    }
-
-    const creado = await this.insertar({
+    // No hay nada que registrar en ningún proveedor: el alta es solo la
+    // fila. Lo único que falta es que el usuario apunte el DNS.
+    return this.insertar({
       usuario_id,
       inquilino_id,
       ...target,
       tipo: 'dominio_propio',
       subdominio: null,
       hostname: dominio,
-      cf_hostname_id: cf?.id || null,
-      verificacion_txt_nombre: cf?.ownershipVerification?.name || null,
-      verificacion_txt_valor: cf?.ownershipVerification?.value || null,
       estado_verificacion: 'pendiente',
-      estado_ssl: cf ? 'emitiendo' : 'pendiente',
+      estado_ssl: 'pendiente',
     });
-
-    return aviso ? { ...creado, aviso } : creado;
   }
 
   /**
@@ -231,38 +216,65 @@ class BuilderDomainService {
 
   // ─── Mantenimiento ──────────────────────────────────────────────────
 
-  /** Consulta a Cloudflare cómo viene la verificación del dominio propio. */
+  /**
+   * Comprueba contra el DNS si el dominio propio ya apunta a nuestro
+   * servidor, y si además ya tiene certificado.
+   */
   static async verificar(id, usuario_id) {
     const hostname = await this.buscarPropio(id, usuario_id);
 
     if (hostname.tipo === 'subdominio') {
       return this.serializar(hostname); // no hay nada que verificar
     }
-    if (!hostname.cf_hostname_id) {
-      throw errorHttp('Este dominio todavía no está registrado en el proveedor de certificados.', 409);
-    }
 
-    let estado;
-    try {
-      estado = await CloudflareService.verificarEstado(hostname.cf_hostname_id);
-    } catch (err) {
-      throw errorHttp(`No se pudo consultar el estado del dominio: ${err.message}`, 502);
-    }
+    const { apunta } = await apuntaANuestroServidor(hostname.hostname);
 
-    hostname.estado_verificacion = estado.activo ? 'verificado'
-      : (estado.estado === 'pending' ? 'verificando' : 'error');
-    hostname.estado_ssl = estado.sslEstado === 'active' ? 'activo'
-      : (estado.sslEstado ? 'emitiendo' : 'pendiente');
-    // Cloudflare devuelve el TXT en cada GET: se refresca para que la UI
-    // lo pueda volver a mostrar si el usuario recarga antes de que la
-    // propagación DNS termine.
-    if (estado.ownershipVerification) {
-      hostname.verificacion_txt_nombre = estado.ownershipVerification.name;
-      hostname.verificacion_txt_valor = estado.ownershipVerification.value;
+    hostname.estado_verificacion = apunta ? 'verificado' : 'pendiente';
+    // El certificado lo emite Caddy en la primera visita, así que un
+    // dominio recién verificado todavía no lo tiene: eso es 'emitiendo',
+    // no un error.
+    if (apunta) {
+      hostname.estado_ssl = (await sirvePorHttps(hostname.hostname)) ? 'activo' : 'emitiendo';
+    } else {
+      hostname.estado_ssl = 'pendiente';
     }
     hostname.ultimo_chequeo_at = new Date();
     await hostname.save();
 
+    return this.serializar(hostname);
+  }
+
+  /**
+   * ¿Le emitimos certificado a este hostname? Lo consulta Caddy (ver
+   * src/routes/interno.js). Solo dominios propios ya verificados: los
+   * subdominios de la plataforma los cubre el wildcard del origen y nunca
+   * llegan a pedir uno.
+   */
+  static async hostnameHabilitadoParaCertificado(hostname) {
+    const limpio = String(hostname || '').toLowerCase().trim();
+    if (!limpio) return false;
+
+    const encontrado = await BuilderDomain.count({
+      where: {
+        hostname: limpio,
+        tipo: 'dominio_propio',
+        estado_verificacion: 'verificado',
+        habilitado: true,
+      },
+    });
+
+    return encontrado > 0;
+  }
+
+  /**
+   * Apaga o vuelve a prender un hostname sin borrarlo. Mientras está
+   * apagado no resuelve (builderPublicPage.service.js) ni se le emite
+   * certificado.
+   */
+  static async cambiarHabilitacion(id, usuario_id, habilitado) {
+    const hostname = await this.buscarPropio(id, usuario_id);
+    hostname.habilitado = !!habilitado;
+    await hostname.save();
     return this.serializar(hostname);
   }
 

@@ -49,6 +49,19 @@ async function verificar(req, res) {
   }
 }
 
+async function habilitacion(req, res) {
+  try {
+    if (typeof req.body.habilitado !== 'boolean') {
+      return res.status(400).json({ message: 'Falta indicar si el hostname queda habilitado.' });
+    }
+    return res.json(await BuilderDomainService.cambiarHabilitacion(
+      idDeRuta(req), duenoDe(req), req.body.habilitado,
+    ));
+  } catch (err) {
+    return manejarError(res, err, 'Error al cambiar el estado del dominio.');
+  }
+}
+
 async function definirPrincipal(req, res) {
   try {
     return res.json(await BuilderDomainService.definirPrincipal(idDeRuta(req), duenoDe(req)));
@@ -67,5 +80,6 @@ async function eliminar(req, res) {
 }
 
 module.exports = {
-  listar, crearSubdominio, crearDominioPropio, verificar, definirPrincipal, eliminar,
+  listar, crearSubdominio, crearDominioPropio, verificar, habilitacion,
+  definirPrincipal, eliminar,
 };

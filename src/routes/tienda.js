@@ -21,6 +21,7 @@ router.get('/subdominio/disponibilidad', ctrl.disponibilidadSubdominio);
 
 router.get('/dominio-propio/estado', ctrl.estadoDominioPropio);
 router.post('/dominio-propio', ctrl.guardarDominioPropio);
+router.patch('/dominio-propio/habilitado', ctrl.habilitacionDominioPropio);
 router.delete('/dominio-propio', ctrl.eliminarDominioPropio);
 
 router.post('/dominio/whois', ctrl.whoisDominio);
