@@ -99,6 +99,22 @@ async function crear(req, res) {
   }
 }
 
+async function crearDesdeOnboarding(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    const landing = await LandingSimpleService.crearDesdeOnboarding(
+      tienda.id,
+      req.usuario.tenantId,
+      req.body.template_slug || 'basico',
+      req.body.items || [],
+    );
+    return res.status(201).json(landing);
+  } catch (err) {
+    return manejarError(res, err, 'Error al generar la landing del onboarding.');
+  }
+}
+
 /**
  * Lienzo en blanco — no recibe template_id: el template de código es uno
  * solo y global (slug 'lienzo-blanco'), lo resuelve el servicio. El
@@ -231,7 +247,7 @@ async function eliminarHeroImagen(req, res) {
 }
 
 module.exports = {
-  listar, crear, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
+  listar, crear, crearDesdeOnboarding, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
   subirImagenMiddleware,
   subirLogo, eliminarLogo,
   subirHeroImagen, eliminarHeroImagen,

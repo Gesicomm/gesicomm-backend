@@ -562,6 +562,7 @@ exports.createEnvio = async (req, res) => {
       monto,
       costo_envio,
       delivery_a_cargo,
+      pago_anticipado,
       metodo_pago,
       metodo_pago_id,
       comision_pct_aplicada,
@@ -637,6 +638,10 @@ exports.createEnvio = async (req, res) => {
         // Quién paga el flete. Sin dato explícito se asume 'cliente', que es
         // la regla normal del negocio y el default de la columna.
         delivery_a_cargo: delivery_a_cargo === 'negocio' ? 'negocio' : 'cliente',
+        // Si ya pagó o paga contra entrega. Sin dato explícito se asume
+        // 'false' (contra entrega, el caso normal) — mismo criterio que
+        // delivery_a_cargo arriba.
+        pago_anticipado: pago_anticipado === true,
         metodo_pago: metodo_pago || 'Efectivo',
         metodo_pago_id: metodo_pago_id || null,
         comision_pct_aplicada: comision_pct_aplicada || 0,
@@ -742,7 +747,7 @@ exports.updateEstado = async (req, res) => {
       // alta, en modo "completar") al confirmar — el checkout público no
       // los pide (ruc es opcional ahí; courier/costo de envío los define
       // el staff, nunca el visitante).
-      ruc, direccion, referencia, link_maps, costo_envio, delivery_a_cargo, metodo_pago,
+      ruc, direccion, referencia, link_maps, costo_envio, delivery_a_cargo, pago_anticipado, metodo_pago,
       quiere_factura, razon_social, nro_comprobante, metodo_pago_id, comision_pct_aplicada,
       ciudad, departamento, nombre_cliente, apellido_cliente, telefono,
       confirmador, origen, canal_venta_id, campaign_name, observaciones, monto,
@@ -914,6 +919,11 @@ exports.updateEstado = async (req, res) => {
     // lo terminó absorbiendo el comercio.
     if (delivery_a_cargo === 'cliente' || delivery_a_cargo === 'negocio') {
       updateData.delivery_a_cargo = delivery_a_cargo;
+    }
+    // Igual que delivery_a_cargo: se puede corregir en cualquier momento
+    // del ciclo del pedido, y no tiene relación con metodo_pago_id.
+    if (typeof pago_anticipado === 'boolean') {
+      updateData.pago_anticipado = pago_anticipado;
     }
     // Mismo criterio que en la transición a Entregado: si el pedido to el
     // método de pago cambia (edición fuera de esa transición — ej. NuevoPe-

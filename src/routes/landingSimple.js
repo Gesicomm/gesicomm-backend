@@ -19,6 +19,7 @@ router.get('/', ctrl.listar);
 router.post('/', ctrl.crear);
 // Antes de '/:id' no hace falta (aquel es GET), pero se declara junto al
 // otro POST de creación para que el par se lea de una.
+router.post('/onboarding', ctrl.crearDesdeOnboarding);
 router.post('/lienzo-blanco', ctrl.crearLienzoBlanco);
 router.get('/:id', ctrl.detalle);
 router.put('/:id', ctrl.actualizar);

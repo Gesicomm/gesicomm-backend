@@ -86,6 +86,16 @@ const Envio = sequelize.define('Envio', {
     validate: { isIn: [['cliente', 'negocio']] },
     comment: "Quién paga el flete. 'cliente': plata de paso, no baja la utilidad. 'negocio': es un costo de venta. NULL: pedido anterior a la columna, los reportes lo leen como 'cliente' (ver migración 20260908230000).",
   },
+  pago_anticipado: {
+    // Dato PROPIO, sin relación con metodo_pago_id — antes de esta columna
+    // vivía escondido dentro del catálogo de Métodos de Pago (flag
+    // es_anticipado de cada método) y solo se usaba al vuelo para elegir
+    // tarifa de courier, nunca se guardaba. Ver migración 20260909170000.
+    type: DataTypes.BOOLEAN,
+    allowNull: true,
+    defaultValue: false,
+    comment: 'true = el cliente ya pagó antes de recibir el pedido. false = paga contra entrega. NULL = pedido anterior a la columna, no se registró.',
+  },
   metodo_pago: {
     type: DataTypes.STRING(50),
     allowNull: true,

@@ -298,6 +298,30 @@ class LandingSimpleService {
     return this.obtener(landing.id, tienda_id);
   }
 
+  static async crearDesdeOnboarding(tienda_id, inquilino_id, template_slug, items = []) {
+    const template = await LandingTemplate.findOne({
+      where: { slug: template_slug, kind: 'rigido', status: 'published' },
+    });
+    if (!template) throw new Error('Template no encontrado.');
+    if (!Array.isArray(items) || !items.length) {
+      throw new Error('Seleccioná al menos un producto para generar la landing.');
+    }
+
+    await LandingService.resolverItemsCatalogo(items, inquilino_id);
+
+    const landing = await this.crear(tienda_id, inquilino_id, template.id);
+    await LandingService.sincronizarItems(landing.id, items.map((item, idx) => ({
+      tipo: item.tipo,
+      referencia_id: item.referencia_id,
+      etiqueta: item.etiqueta || '',
+      orden: item.orden !== undefined ? item.orden : idx,
+      precio_ancla: item.precio_ancla || null,
+      envio_incluido: item.envio_incluido === true,
+      mostrar_en_inicio: item.mostrar_en_inicio !== false,
+    })));
+    return this.obtener(landing.id, tienda_id);
+  }
+
   /**
    * Lienzo en blanco: misma fila Landing que el modo rígido (mismo slug,
    * mismo es_home, mismo publicar/despublicar), pero sin nada de la
