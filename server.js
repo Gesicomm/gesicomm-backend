@@ -48,6 +48,7 @@ const internoRoutes = require('./src/routes/interno');
 const paymentGatewaysRoutes = require('./src/routes/payment-gateways');
 const webhooksRoutes = require('./src/routes/webhooks');
 const suscripcionesRoutes = require('./src/routes/suscripciones');
+const adminAuthTrackingRoutes = require('./src/routes/adminAuthTracking');
 
 const app = express();
 // 1 hop: Nginx resuelve la IP real del visitante ANTES de proxear acá y
@@ -206,6 +207,7 @@ app.use('/api/landing-templates', landingTemplatesRoutes);
 app.use('/api/mi-tienda', tiendaRoutes);
 app.use('/api/educacion', educacionRoutes);
 app.use('/api/admin/educacion', adminEducacionRoutes);
+app.use('/api/admin/auth-tracking', adminAuthTrackingRoutes);
 app.use('/api/publico', publicoRoutes);
 app.use('/api/l', landingPublicaRoutes);
 app.use('/l', landingHtmlRoutes);
@@ -270,6 +272,7 @@ const { migrarCupones } = require('./scripts/migrar-cupones');
 const { migrarStockSalonDeposito } = require('./scripts/migrar-stock-salon-deposito');
 const { migrarLandingIdEnvios } = require('./scripts/migrar-landing-id-envios');
 const { migrarIntentosEntrega } = require('./scripts/migrar-intentos-entrega');
+const { migrarAuthTracking } = require('./scripts/migrar-auth-tracking');
 const CategoriaCostoGastoService = require('./src/services/categoriaCostoGasto.service');
 const CanalVentaService = require('./src/services/canalVenta.service');
 const { iniciarJobCostosRecurrentes } = require('./src/services/cron/costosRecurrentes.job');
@@ -283,6 +286,7 @@ sequelize.authenticate().then(async () => {
     await migrarStockSalonDeposito();
     await migrarLandingIdEnvios();
     await migrarIntentosEntrega();
+    await migrarAuthTracking();
     await CategoriaCostoGastoService.seedDefaults();
     await CanalVentaService.seedDefaults();
     // Después del seed: necesita los canales ya creados para mapearles los

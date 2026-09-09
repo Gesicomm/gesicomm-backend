@@ -74,6 +74,18 @@ const Envio = sequelize.define('Envio', {
     allowNull: false,
     defaultValue: 0,
   },
+  delivery_a_cargo: {
+    // STRING y no ENUM: en Postgres, DataTypes.ENUM crea un tipo nativo,
+    // pero la columna real es VARCHAR(10) con un CHECK (ver migración
+    // 20260908230000). Declararlo como ENUM haría que el modelo y la base
+    // describan cosas distintas, y cualquier sync/validación de esquema
+    // intentaría "arreglar" una diferencia que no existe.
+    type: DataTypes.STRING(10),
+    allowNull: true,
+    defaultValue: 'cliente',
+    validate: { isIn: [['cliente', 'negocio']] },
+    comment: "Quién paga el flete. 'cliente': plata de paso, no baja la utilidad. 'negocio': es un costo de venta. NULL: pedido anterior a la columna, los reportes lo leen como 'cliente' (ver migración 20260908230000).",
+  },
   metodo_pago: {
     type: DataTypes.STRING(50),
     allowNull: true,

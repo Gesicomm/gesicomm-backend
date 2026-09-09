@@ -1,4 +1,4 @@
-const { Plan, Suscripcion, PagoSuscripcion } = require('../models');
+const { PagoSuscripcion } = require('../models');
 const SuscripcionService = require('../services/suscripcion.service');
 const PagoParService = require('../services/payments/pagoParService');
 const parametros = require('../services/parametros.service');
@@ -6,15 +6,38 @@ const parametros = require('../services/parametros.service');
 /** GET /api/planes — catálogo público. */
 exports.listarPlanes = async (req, res) => {
   try {
-    const planes = await Plan.findAll({
-      where: { activo: true },
-      order: [['orden', 'ASC']],
-      attributes: ['codigo', 'nombre', 'resumen', 'precio', 'periodicidad', 'features', 'etiqueta', 'cta', 'destacado'],
-    });
-    res.json(planes);
+    res.json(await SuscripcionService.listarPlanesPagos());
   } catch (error) {
     console.error('[Suscripciones] Error al listar planes:', error);
     res.status(500).json({ error: 'No se pudieron cargar los planes.' });
+  }
+};
+
+/** GET /api/suscripciones/mi-estado — estado de pago de la cuenta logueada. */
+exports.miEstado = async (req, res) => {
+  try {
+    return res.json(await SuscripcionService.estadoCuenta(req.usuario.id));
+  } catch (error) {
+    console.error('[Suscripciones] Error al consultar mi estado:', error);
+    return res.status(500).json({ message: 'No se pudo consultar el estado de tu plan.' });
+  }
+};
+
+/** POST /api/suscripciones/pagopar-dummy — simula un pago acreditado en PagoPar. */
+exports.pagoDummyPagopar = async (req, res) => {
+  try {
+    const { plan_codigo } = req.body || {};
+    const resultado = await SuscripcionService.simularPagoPagopar(req.usuario.id, plan_codigo);
+    return res.status(resultado.ya_estaba_activa ? 200 : 201).json({
+      message: resultado.ya_estaba_activa
+        ? 'Tu plan ya estaba activo.'
+        : 'PagoPar dummy acreditó tu plan correctamente.',
+      ...resultado,
+    });
+  } catch (error) {
+    const status = error.status || 500;
+    if (status === 500) console.error('[Suscripciones] Error en PagoPar dummy:', error);
+    return res.status(status).json({ message: error.message || 'No se pudo simular el pago.' });
   }
 };
 

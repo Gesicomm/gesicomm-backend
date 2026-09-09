@@ -21,6 +21,7 @@ const { auditoria } = require('../utils/logger');
 const { rollbackSeguro } = require('../utils/transaction');
 const EmailService = require('../services/email.service');
 const { Usuario, Inquilino, Rol, Permiso, sequelize } = require('../models');
+const AuthTracking = require('../services/authTracking.service');
 
 const router = express.Router();
 
@@ -106,10 +107,20 @@ function limpiarCookiesSesion(req, res) {
 
   for (const opciones of variantes) {
     res.clearCookie('accessToken', { ...opciones, path: '/' });
+    res.clearCookie(AuthTracking.SESSION_COOKIE, { ...opciones, path: '/' });
     res.clearCookie('refreshToken', { ...opciones, path: '/api/auth/refresh' });
     // Variante legacy: hubo versiones que escribieron el refresh en la raíz.
     res.clearCookie('refreshToken', { ...opciones, path: '/' });
   }
+}
+
+function enviarCookieSesion(req, res, sesion) {
+  if (!sesion?.id) return;
+  res.cookie(AuthTracking.SESSION_COOKIE, sesion.id, {
+    ...opcionesCookie(req),
+    path: '/',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
 }
 
 // Helper para enviar la cookie HttpOnly con el access token
@@ -151,6 +162,13 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
     
     if (!usuario) {
       auditoria('LOGIN_FALLIDO', { email, ip: req.ip, razon: 'Usuario no encontrado' });
+      await AuthTracking.registrarEvento({
+        tipo: 'login_failed',
+        req,
+        email,
+        resultado: 'fallo',
+        metadata: { razon: 'usuario_no_encontrado' },
+      });
       return res.status(401).json({ message: 'Credenciales inválidas.' });
     }
 
@@ -158,12 +176,28 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
 
     if (!passwordValida) {
       auditoria('LOGIN_FALLIDO', { email, ip: req.ip, razon: 'Contraseña incorrecta' });
+      await AuthTracking.registrarEvento({
+        tipo: 'login_failed',
+        req,
+        usuario,
+        email,
+        resultado: 'fallo',
+        metadata: { razon: 'password_incorrecta' },
+      });
       return res.status(401).json({ message: 'Credenciales inválidas.' });
     }
 
     // Bloquear login si el email aún no fue verificado
     if (!usuario.email_verificado) {
       auditoria('LOGIN_FALLIDO', { email, ip: req.ip, razon: 'Email no verificado' });
+      await AuthTracking.registrarEvento({
+        tipo: 'login_failed',
+        req,
+        usuario,
+        email,
+        resultado: 'fallo',
+        metadata: { razon: 'email_no_verificado' },
+      });
       return res.status(403).json({
         message: 'Debés verificar tu correo antes de ingresar. Revisá tu bandeja de entrada (o Spam) y utilizá el código que te enviamos.',
         requiere_verificacion: true,
@@ -191,6 +225,8 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
     );
 
     enviarCookieToken(req, res, accessToken, refreshToken);
+    const sesion = await AuthTracking.iniciarSesion({ req, usuario });
+    enviarCookieSesion(req, res, sesion);
 
     auditoria('LOGIN', { usuarioId: usuario.id, email, ip: req.ip });
 
@@ -284,6 +320,16 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
     await t.commit();
 
     auditoria('USUARIO_CREADO', { email, ip: req.ip });
+    await AuthTracking.registrarEventoConNotificacion({
+      tipo: 'register',
+      req,
+      usuario: usuarioCreado,
+      email,
+      metadata: {
+        plan: usuarioCreado.plan,
+        con_suscripcion: Boolean(suscripcion),
+      },
+    });
 
     // Enviar OTP por correo (no bloqueante — la cuenta ya está creada)
     EmailService.enviarCodigoVerificacionEmail({ email, nombre, codigo: otp })
@@ -346,6 +392,12 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
     });
 
     auditoria('EMAIL_VERIFICADO', { usuarioId: usuario.id, email: usuario.correo_electronico, ip: req.ip });
+    await AuthTracking.registrarEventoConNotificacion({
+      tipo: 'email_verified',
+      req,
+      usuario,
+      email: usuario.correo_electronico,
+    });
 
     // Iniciar sesión automáticamente
     const payload = {
@@ -367,6 +419,8 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
     );
 
     enviarCookieToken(req, res, accessToken, refreshToken);
+    const sesion = await AuthTracking.iniciarSesion({ req, usuario });
+    enviarCookieSesion(req, res, sesion);
 
     return res.json({
       message: '¡Correo verificado! Tu cuenta está activa.',
@@ -416,6 +470,12 @@ router.post('/resend-code', limiteReenvio, async (req, res) => {
       .catch(err => console.error('[resend-code] Error enviando OTP:', err.message));
 
     auditoria('OTP_REENVIADO', { email: usuario.correo_electronico, ip: req.ip });
+    await AuthTracking.registrarEvento({
+      tipo: 'otp_resent',
+      req,
+      usuario,
+      email: usuario.correo_electronico,
+    });
 
     return res.json({ message: 'Si existe una cuenta pendiente de verificación con ese correo, te enviamos un nuevo código.' });
   } catch (err) {
@@ -432,9 +492,17 @@ router.post('/resend-code', limiteReenvio, async (req, res) => {
 // toca "Cerrar sesión") llegaba con el token vencido, respondía 401 y se iba
 // sin borrar NADA — el refreshToken quedaba vivo 7 días. Cerrar sesión tiene
 // que borrar las cookies siempre, haya o no un token válido.
-router.post('/logout', (req, res) => {
+router.post('/logout', async (req, res) => {
   const token = req.cookies?.accessToken;
   const datos = token ? jwt.decode(token) : null; // decode, no verify: es solo para la auditoría
+  await AuthTracking.cerrarSesion(req, datos?.id ?? null);
+  await AuthTracking.registrarEvento({
+    tipo: 'logout',
+    req,
+    email: datos?.email,
+    usuario: datos?.id ? { id: datos.id, correo_electronico: datos.email } : null,
+    sessionId: req.cookies?.[AuthTracking.SESSION_COOKIE] || null,
+  });
   auditoria('LOGOUT', { usuarioId: datos?.id ?? null, ip: req.ip });
 
   limpiarCookiesSesion(req, res);
@@ -465,6 +533,7 @@ router.post('/refresh', async (req, res) => {
     if (!usuario) {
       return res.status(401).json({ message: 'Usuario no encontrado.' });
     }
+    await AuthTracking.marcarActividad(req, usuario.id);
 
     const nuevoPayload = {
       id: usuario.id,
@@ -497,7 +566,8 @@ router.post('/refresh', async (req, res) => {
 // ============================================================
 // GET /api/auth/me
 // ============================================================
-router.get('/me', verificarToken, (req, res) => {
+router.get('/me', verificarToken, async (req, res) => {
+  await AuthTracking.marcarActividad(req, req.usuario.id);
   return res.json({
     id: req.usuario.id,
     nombre: req.usuario.nombre,
@@ -541,6 +611,11 @@ router.post('/forgot-password', limiteAuth, validar(esquemaRecuperarPassword), a
   const { email } = req.body;
 
   auditoria('RECUPERACION_PASSWORD_SOLICITADA', { email, ip: req.ip });
+  await AuthTracking.registrarEvento({
+    tipo: 'password_reset_requested',
+    req,
+    email,
+  });
 
   return res.json({ message: 'Si el correo existe, recibirás instrucciones en breve.' });
 });

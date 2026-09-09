@@ -37,8 +37,13 @@ const BuilderDomainService = require('../services/builderDomain.service');
 
 const CONTEXTO = { usuario_id: 1, inquilino_id: 2 };
 
+const IP = '155.117.43.52';
+
 beforeEach(() => {
   jest.clearAllMocks();
+  // Fijada acá y no heredada del shell: si falta, registrosPara devuelve
+  // valor null y el test pasa o falla segun como se lo invoque.
+  process.env.ORIGIN_IP = IP;
   Tienda.count.mockResolvedValue(0);
   BuilderDomain.count.mockResolvedValue(0);
   BuilderDomain.create.mockImplementation(async (datos) => ({ id: 50, ...datos }));
@@ -172,8 +177,8 @@ describe('Dominio propio', () => {
     // Un solo registro y sin TXT de validación: apuntar el A es la prueba
     // de titularidad y el disparador del certificado a la vez.
     expect(creado.registros).toEqual([
-      { tipo: 'A', nombre: '@', valor: process.env.ORIGIN_IP, obligatorio: true },
-      { tipo: 'A', nombre: 'www', valor: process.env.ORIGIN_IP, obligatorio: false },
+      { tipo: 'A', nombre: '@', valor: IP, obligatorio: true },
+      { tipo: 'A', nombre: 'www', valor: IP, obligatorio: false },
     ]);
   });
 

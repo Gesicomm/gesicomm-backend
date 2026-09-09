@@ -73,9 +73,25 @@ exports.updatePagoparConfig = async (req, res) => {
         is_active: is_active !== undefined ? is_active : true
       });
     } else {
+      // El token público y el privado de PagoPar son un PAR: la firma se
+      // calcula con el privado y PagoPar la valida contra el que tiene
+      // asociado al público. "Regenerar Token" en su panel cambia los dos.
+      //
+      // Si se deja cambiar el público conservando el privado viejo, queda un
+      // par imposible y todas las llamadas fallan con "Token no coincide"
+      // — sin ninguna pista de por qué. Pasó de verdad: quedó guardado un
+      // público de la tercera regeneración con el privado de la primera.
+      const cambiaPublica = public_key !== undefined && public_key !== gateway.public_key;
+      const traePrivada = private_key && String(private_key).trim() !== '';
+      if (cambiaPublica && !traePrivada && gateway.private_key) {
+        return res.status(400).json({
+          error: 'Si cambiás el token público tenés que pegar también el privado: son un par y PagoPar los valida juntos. Usá "Reemplazar o Eliminar" en la clave privada.',
+        });
+      }
+
       gateway.public_key = public_key !== undefined ? public_key : gateway.public_key;
       // Solo actualizamos private_key si se envió un valor real
-      if (private_key && private_key.trim() !== '') {
+      if (traePrivada) {
         gateway.private_key = private_key;
       }
       gateway.environment = environment !== undefined ? environment : gateway.environment;
@@ -97,6 +113,7 @@ exports.testPagoparConnection = async (req, res) => {
       where: { usuario_id, provider: 'pagopar' }
     });
 
+
     if (!gateway || !gateway.private_key || !gateway.public_key) {
       return res.status(400).json({ error: 'Faltan credenciales para probar la conexión.' });
     }
@@ -115,11 +132,17 @@ exports.testPagoparConnection = async (req, res) => {
     //      del endpoint 2.0 (iniciar-transaccion). Los endpoints 1.1 lo
     //      esperan como `token_publico`.
     const token = crypto.createHash('sha1').update(`${gateway.private_key}FORMA-PAGO`).digest('hex');
-
+    console.log({
+      publicKey: gateway.public_key,
+      privateKeyLength: gateway.private_key?.length,
+      privateKeyPrefix: gateway.private_key?.substring(0, 4),
+      token
+    });
     const response = await axios.post('https://api.pagopar.com/api/forma-pago/1.1/traer/', {
       token,
       token_publico: gateway.public_key,
     });
+    console.warn('Respuesta de PagoPar:', JSON.stringify(response));
 
     if (response.data && response.data.respuesta === true) {
       return res.json({ success: true, message: 'Conexión exitosa' });

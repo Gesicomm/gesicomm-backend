@@ -561,6 +561,7 @@ exports.createEnvio = async (req, res) => {
       link_maps,
       monto,
       costo_envio,
+      delivery_a_cargo,
       metodo_pago,
       metodo_pago_id,
       comision_pct_aplicada,
@@ -633,6 +634,9 @@ exports.createEnvio = async (req, res) => {
         link_maps,
         monto: monto || 0,
         costo_envio: costo_envio || 0,
+        // Quién paga el flete. Sin dato explícito se asume 'cliente', que es
+        // la regla normal del negocio y el default de la columna.
+        delivery_a_cargo: delivery_a_cargo === 'negocio' ? 'negocio' : 'cliente',
         metodo_pago: metodo_pago || 'Efectivo',
         metodo_pago_id: metodo_pago_id || null,
         comision_pct_aplicada: comision_pct_aplicada || 0,
@@ -738,7 +742,7 @@ exports.updateEstado = async (req, res) => {
       // alta, en modo "completar") al confirmar — el checkout público no
       // los pide (ruc es opcional ahí; courier/costo de envío los define
       // el staff, nunca el visitante).
-      ruc, direccion, referencia, link_maps, costo_envio, metodo_pago,
+      ruc, direccion, referencia, link_maps, costo_envio, delivery_a_cargo, metodo_pago,
       quiere_factura, razon_social, nro_comprobante, metodo_pago_id, comision_pct_aplicada,
       ciudad, departamento, nombre_cliente, apellido_cliente, telefono,
       confirmador, origen, canal_venta_id, campaign_name, observaciones, monto,
@@ -819,7 +823,23 @@ exports.updateEstado = async (req, res) => {
           await t.rollback();
           return res.status(400).json({ error: 'metodo_pago_id, monto y costo_envio son obligatorios para marcar el pedido como Entregado' });
         }
+        // El nombre y la comisión salen del catálogo, no de lo que mande el
+        // cliente: MarcarEntregadoModal solo pide `metodo_pago_id` (nunca el
+        // texto ni la comisión), así que si acá se confiara en un texto/
+        // comisión aparte, quedarían desincronizados con el método elegido
+        // — exactamente el bug real: el pedido #385 quedó con
+        // metodo_pago_id apuntando a "POS / Tarjeta" pero el texto todavía
+        // decía "Efectivo contra entrega", y la comisión recién se calculó
+        // (desde otro lado) días después, sobre un método que ya estaba mal
+        // etiquetado. Un solo lookup, y los tres campos se escriben juntos.
+        const metodoEntregado = await MetodoPago.findByPk(metodoFinal, { transaction: t });
+        if (!metodoEntregado) {
+          await t.rollback();
+          return res.status(400).json({ error: `Método de pago inválido: "${metodoFinal}".` });
+        }
         updateData.metodo_pago_id = metodoFinal;
+        updateData.metodo_pago = metodoEntregado.nombre;
+        updateData.comision_pct_aplicada = Number(metodoEntregado.comision_porcentaje) || 0;
         updateData.monto = montoFinal;
 
         // `costo_envio` que llega es el costo de ESTE viaje, el que entregó.
@@ -870,9 +890,9 @@ exports.updateEstado = async (req, res) => {
       if (estado === 'Reprogramado') {
         await registrarHistorial(envio.id, usuario_id, `Reprogramado para ${fecha_reprogramada}${motivo_reprogramacion ? ' — ' + motivo_reprogramacion : ''}`, t);
       }
-      if (estado === 'Entregado' && updateData.metodo_pago_id) {
-        const metodoUsado = await MetodoPago.findByPk(updateData.metodo_pago_id, { transaction: t });
-        if (metodoUsado) await registrarHistorial(envio.id, usuario_id, `Método de pago: ${metodoUsado.nombre}`, t);
+      if (estado === 'Entregado' && updateData.metodo_pago) {
+        // Reusa el lookup de arriba: no hace falta pedirlo dos veces.
+        await registrarHistorial(envio.id, usuario_id, `Método de pago: ${updateData.metodo_pago}`, t);
       }
     }
 
@@ -889,9 +909,32 @@ exports.updateEstado = async (req, res) => {
     // request, esos viajes desaparecerían del pedido (bug real: un pedido con
     // dos viajes de 25.000 quedaba con costo_envio 25.000).
     if (costo_envio !== undefined && updateData.costo_envio === undefined) updateData.costo_envio = costo_envio;
-    if (metodo_pago !== undefined) updateData.metodo_pago = metodo_pago;
-    if (metodo_pago_id !== undefined) updateData.metodo_pago_id = metodo_pago_id;
-    if (comision_pct_aplicada !== undefined) updateData.comision_pct_aplicada = comision_pct_aplicada;
+    // Se puede corregir en cualquier momento del ciclo del pedido: recién al
+    // cerrar la venta se sabe si al final el flete se le cobró al cliente o
+    // lo terminó absorbiendo el comercio.
+    if (delivery_a_cargo === 'cliente' || delivery_a_cargo === 'negocio') {
+      updateData.delivery_a_cargo = delivery_a_cargo;
+    }
+    // Mismo criterio que en la transición a Entregado: si el pedido to el
+    // método de pago cambia (edición fuera de esa transición — ej. NuevoPe-
+    // didoModal en modo editar), el nombre y la comisión se derivan del
+    // catálogo en vez de confiar en lo que el formulario haya calculado.
+    // El bloque de arriba ya cubrió el caso `estado === 'Entregado'`; este
+    // es para cuando se toca metodo_pago_id SIN cambiar de estado.
+    if (metodo_pago_id !== undefined && updateData.metodo_pago_id === undefined) {
+      const metodoEditado = await MetodoPago.findByPk(metodo_pago_id, { transaction: t });
+      if (!metodoEditado) {
+        await t.rollback();
+        return res.status(400).json({ error: `Método de pago inválido: "${metodo_pago_id}".` });
+      }
+      updateData.metodo_pago_id = metodo_pago_id;
+      updateData.metodo_pago = metodoEditado.nombre;
+      updateData.comision_pct_aplicada = Number(metodoEditado.comision_porcentaje) || 0;
+    } else if (metodo_pago !== undefined && updateData.metodo_pago === undefined) {
+      // Sin metodo_pago_id (carga legacy o texto libre): se respeta el texto
+      // tal cual, como siempre.
+      updateData.metodo_pago = metodo_pago;
+    }
     if (quiere_factura !== undefined) updateData.quiere_factura = quiere_factura;
     if (razon_social !== undefined) updateData.razon_social = razon_social;
     if (ciudad !== undefined) updateData.ciudad = ciudad;

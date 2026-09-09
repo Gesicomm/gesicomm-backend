@@ -1,0 +1,380 @@
+const { Op, QueryTypes } = require('sequelize');
+const { AuthEvent, UserSession, AuthNotification, Usuario, sequelize } = require('../models');
+
+const SESSION_COOKIE = 'authSessionId';
+const VENTANA_ACTIVA_MS = 15 * 60 * 1000;
+
+const EVENTOS_NOTIFICABLES = {
+  register: {
+    titulo: 'Nuevo registro',
+    mensaje: ({ nombre, email }) => `${nombre || email || 'Un usuario'} creó una cuenta.`,
+  },
+  email_verified: {
+    titulo: 'Correo verificado',
+    mensaje: ({ nombre, email }) => `${nombre || email || 'Un usuario'} activó su cuenta.`,
+  },
+  login_success: {
+    titulo: 'Nuevo login',
+    mensaje: ({ nombre, email }) => `${nombre || email || 'Un usuario'} inició sesión.`,
+  },
+};
+
+function emailNormalizado(email) {
+  return email ? String(email).trim().toLowerCase() : null;
+}
+
+function datosRequest(req) {
+  const forwardedFor = req.headers?.['x-forwarded-for'];
+  const ip = Array.isArray(forwardedFor)
+    ? forwardedFor[0]
+    : String(forwardedFor || req.ip || '').split(',')[0].trim();
+
+  return {
+    ip: ip || null,
+    user_agent: req.headers?.['user-agent'] || null,
+  };
+}
+
+async function crearNotificacion(evento, usuario) {
+  const config = EVENTOS_NOTIFICABLES[evento.tipo];
+  if (!config) return null;
+
+  const datos = {
+    nombre: usuario?.nombre || null,
+    email: evento.email,
+  };
+
+  return AuthNotification.create({
+    tipo: evento.tipo,
+    titulo: config.titulo,
+    mensaje: config.mensaje(datos),
+    usuario_id: usuario?.id || evento.usuario_id || null,
+    auth_event_id: evento.id,
+    metadata: {
+      email: evento.email,
+      ip: evento.ip,
+      session_id: evento.session_id,
+    },
+  });
+}
+
+async function registrarEvento({ tipo, req, usuario = null, email = null, resultado = 'ok', sessionId = null, metadata = {}, transaction = null }) {
+  try {
+    const request = datosRequest(req);
+    const evento = await AuthEvent.create({
+      usuario_id: usuario?.id || null,
+      email: emailNormalizado(email || usuario?.correo_electronico || usuario?.email),
+      tipo,
+      resultado,
+      ip: request.ip,
+      user_agent: request.user_agent,
+      session_id: sessionId,
+      metadata,
+    }, { transaction });
+
+    return evento;
+  } catch (err) {
+    console.error('[auth-tracking] No se pudo registrar evento:', err.message);
+    return null;
+  }
+}
+
+async function registrarEventoConNotificacion({ tipo, req, usuario = null, email = null, resultado = 'ok', sessionId = null, metadata = {} }) {
+  const evento = await registrarEvento({ tipo, req, usuario, email, resultado, sessionId, metadata });
+  if (evento) {
+    await crearNotificacion(evento, usuario).catch(() => null);
+  }
+  return evento;
+}
+
+async function iniciarSesion({ req, usuario }) {
+  try {
+    const request = datosRequest(req);
+    const sesion = await UserSession.create({
+      usuario_id: usuario.id,
+      ip: request.ip,
+      user_agent: request.user_agent,
+      estado: 'activa',
+    });
+
+    await registrarEventoConNotificacion({
+      tipo: 'login_success',
+      req,
+      usuario,
+      sessionId: sesion.id,
+    });
+
+    return sesion;
+  } catch (err) {
+    console.error('[auth-tracking] No se pudo iniciar sesión auditada:', err.message);
+    return null;
+  }
+}
+
+async function marcarActividad(req, usuarioId) {
+  const sessionId = req.cookies?.[SESSION_COOKIE];
+  if (!sessionId || !usuarioId) return null;
+
+  try {
+    const [actualizadas] = await UserSession.update({
+      last_seen_at: new Date(),
+    }, {
+      where: {
+        id: sessionId,
+        usuario_id: usuarioId,
+        estado: 'activa',
+        ended_at: null,
+      },
+    });
+
+    return actualizadas > 0 ? sessionId : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function cerrarSesion(req, usuarioId = null) {
+  const sessionId = req.cookies?.[SESSION_COOKIE];
+  if (!sessionId) return null;
+
+  try {
+    const where = { id: sessionId, ended_at: null };
+    if (usuarioId) where.usuario_id = usuarioId;
+
+    await UserSession.update({
+      estado: 'cerrada',
+      ended_at: new Date(),
+      last_seen_at: new Date(),
+    }, { where });
+
+    return sessionId;
+  } catch (err) {
+    return null;
+  }
+}
+
+function rangoDias(dias) {
+  const n = Math.max(1, Math.min(Number(dias) || 30, 90));
+  return new Date(Date.now() - n * 24 * 60 * 60 * 1000);
+}
+
+function numeroPagina(pagina) {
+  return Math.max(1, Number.parseInt(pagina, 10) || 1);
+}
+
+function filtroFecha(where, filtros = {}, campo = 'created_at') {
+  const rango = {};
+  if (filtros.desde) {
+    const desde = new Date(filtros.desde);
+    if (!Number.isNaN(desde.getTime())) rango[Op.gte] = desde;
+  }
+  if (filtros.hasta) {
+    const hasta = new Date(filtros.hasta);
+    if (!Number.isNaN(hasta.getTime())) rango[Op.lte] = hasta;
+  }
+  if (Object.keys(rango).length > 0) {
+    where[campo] = {
+      ...(where[campo] || {}),
+      ...rango,
+    };
+  }
+}
+
+function busquedaTexto(valor) {
+  const limpio = String(valor || '').trim();
+  return limpio.length >= 2 ? `%${limpio}%` : null;
+}
+
+function respuestaPaginada({ rows, count }, pagina) {
+  const limite = 10;
+  const total = Number(count) || 0;
+  return {
+    items: rows,
+    paginacion: {
+      pagina,
+      limite,
+      total,
+      paginas: Math.max(1, Math.ceil(total / limite)),
+      tiene_siguiente: pagina * limite < total,
+      tiene_anterior: pagina > 1,
+    },
+  };
+}
+
+async function buscarPaginado(Modelo, opciones, pagina) {
+  const limite = 10;
+  const page = numeroPagina(pagina);
+  const resultado = await Modelo.findAndCountAll({
+    ...opciones,
+    limit: limite,
+    offset: (page - 1) * limite,
+    distinct: true,
+    subQuery: false,
+  });
+  return respuestaPaginada(resultado, page);
+}
+
+async function resumen({ dias = 30 } = {}) {
+  const desde = rangoDias(dias);
+  const desde24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const activoDesde = new Date(Date.now() - VENTANA_ACTIVA_MS);
+
+  const [
+    usuariosTotal,
+    usuariosVerificados,
+    registrosPeriodo,
+    loginsPeriodo,
+    fallosPeriodo,
+    sesionesActivas,
+    notificacionesNoLeidas,
+    serie,
+  ] = await Promise.all([
+    Usuario.count(),
+    Usuario.count({ where: { email_verificado: true } }),
+    AuthEvent.count({ where: { tipo: 'register', created_at: { [Op.gte]: desde } } }),
+    AuthEvent.count({ where: { tipo: 'login_success', created_at: { [Op.gte]: desde } } }),
+    AuthEvent.count({ where: { resultado: 'fallo', created_at: { [Op.gte]: desde } } }),
+    UserSession.count({ where: { estado: 'activa', ended_at: null, last_seen_at: { [Op.gte]: activoDesde } } }),
+    AuthNotification.count({ where: { leida: false } }),
+    sequelize.query(`
+      SELECT
+        to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS fecha,
+        COUNT(*) FILTER (WHERE tipo = 'register')::int AS registros,
+        COUNT(*) FILTER (WHERE tipo = 'email_verified')::int AS verificaciones,
+        COUNT(*) FILTER (WHERE tipo = 'login_success')::int AS logins,
+        COUNT(*) FILTER (WHERE resultado = 'fallo')::int AS fallos
+      FROM auth_events
+      WHERE created_at >= :desde
+      GROUP BY 1
+      ORDER BY 1 ASC
+    `, { replacements: { desde }, type: QueryTypes.SELECT }),
+  ]);
+
+  return {
+    usuarios_total: usuariosTotal,
+    usuarios_verificados: usuariosVerificados,
+    usuarios_pendientes: Math.max(usuariosTotal - usuariosVerificados, 0),
+    registros_periodo: registrosPeriodo,
+    logins_periodo: loginsPeriodo,
+    fallos_periodo: fallosPeriodo,
+    sesiones_activas: sesionesActivas,
+    notificaciones_no_leidas: notificacionesNoLeidas,
+    nuevos_registros_24h: await AuthEvent.count({ where: { tipo: 'register', created_at: { [Op.gte]: desde24h } } }),
+    nuevos_logins_24h: await AuthEvent.count({ where: { tipo: 'login_success', created_at: { [Op.gte]: desde24h } } }),
+    serie,
+  };
+}
+
+async function listarEventos({ pagina = 1, filtros = {} } = {}) {
+  const where = {};
+  if (filtros.tipo && filtros.tipo !== 'todos') where.tipo = filtros.tipo;
+  if (filtros.resultado && filtros.resultado !== 'todos') where.resultado = filtros.resultado;
+  if (filtros.usuario_id) where.usuario_id = Number(filtros.usuario_id);
+  if (filtros.ip) where.ip = { [Op.iLike]: busquedaTexto(filtros.ip) || String(filtros.ip) };
+  if (filtros.busqueda) {
+    const q = busquedaTexto(filtros.busqueda);
+    if (q) {
+      where[Op.or] = [
+        { email: { [Op.iLike]: q } },
+        { ip: { [Op.iLike]: q } },
+        { tipo: { [Op.iLike]: q } },
+        { '$usuario.nombre$': { [Op.iLike]: q } },
+        { '$usuario.correo_electronico$': { [Op.iLike]: q } },
+      ];
+    }
+  }
+  filtroFecha(where, filtros, 'created_at');
+
+  return buscarPaginado(AuthEvent, {
+    where,
+    order: [['created_at', 'DESC']],
+    include: [{ model: Usuario, as: 'usuario', attributes: ['id', 'nombre', 'correo_electronico', 'email_verificado', 'plan'] }],
+  }, pagina);
+}
+
+async function listarSesionesActivas({ pagina = 1, filtros = {} } = {}) {
+  const activoDesde = new Date(Date.now() - VENTANA_ACTIVA_MS);
+  const where = {};
+  const soloActivas = filtros.solo_activas !== false;
+
+  if (soloActivas) {
+    where.estado = 'activa';
+    where.ended_at = null;
+    where.last_seen_at = { [Op.gte]: activoDesde };
+  } else if (filtros.estado && filtros.estado !== 'todos') {
+    where.estado = filtros.estado;
+  }
+  if (filtros.usuario_id) where.usuario_id = Number(filtros.usuario_id);
+  if (filtros.ip) where.ip = { [Op.iLike]: busquedaTexto(filtros.ip) || String(filtros.ip) };
+  filtroFecha(where, filtros, 'last_seen_at');
+
+  const usuarioWhere = {};
+  const q = busquedaTexto(filtros.busqueda);
+  if (q) {
+    usuarioWhere[Op.or] = [
+      { nombre: { [Op.iLike]: q } },
+      { correo_electronico: { [Op.iLike]: q } },
+    ];
+  }
+
+  return buscarPaginado(UserSession, {
+    where,
+    order: [['last_seen_at', 'DESC']],
+    include: [{
+      model: Usuario,
+      as: 'usuario',
+      attributes: ['id', 'nombre', 'correo_electronico', 'email_verificado', 'plan'],
+      ...(Object.keys(usuarioWhere).length > 0 ? { where: usuarioWhere } : {}),
+    }],
+  }, pagina);
+}
+
+async function listarNotificaciones({ pagina = 1, filtros = {} } = {}) {
+  const where = {};
+  if (filtros.solo_no_leidas === true) where.leida = false;
+  if (typeof filtros.leida === 'boolean') where.leida = filtros.leida;
+  if (filtros.tipo && filtros.tipo !== 'todos') where.tipo = filtros.tipo;
+  if (filtros.usuario_id) where.usuario_id = Number(filtros.usuario_id);
+  if (filtros.busqueda) {
+    const q = busquedaTexto(filtros.busqueda);
+    if (q) {
+      where[Op.or] = [
+        { titulo: { [Op.iLike]: q } },
+        { mensaje: { [Op.iLike]: q } },
+        { '$usuario.nombre$': { [Op.iLike]: q } },
+        { '$usuario.correo_electronico$': { [Op.iLike]: q } },
+      ];
+    }
+  }
+  filtroFecha(where, filtros, 'created_at');
+
+  return buscarPaginado(AuthNotification, {
+    where,
+    order: [['created_at', 'DESC']],
+    include: [{ model: Usuario, as: 'usuario', attributes: ['id', 'nombre', 'correo_electronico'] }],
+  }, pagina);
+}
+
+async function marcarNotificacionesLeidas(ids = null) {
+  const where = { leida: false };
+  if (Array.isArray(ids) && ids.length > 0) {
+    where.id = { [Op.in]: ids.map(Number).filter(Boolean) };
+  }
+
+  const [actualizadas] = await AuthNotification.update({ leida: true }, { where });
+  return { actualizadas };
+}
+
+module.exports = {
+  SESSION_COOKIE,
+  registrarEvento,
+  registrarEventoConNotificacion,
+  iniciarSesion,
+  marcarActividad,
+  cerrarSesion,
+  resumen,
+  listarEventos,
+  listarSesionesActivas,
+  listarNotificaciones,
+  marcarNotificacionesLeidas,
+};

@@ -4,6 +4,7 @@ const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, Costo
 const { Op, fn, col, literal } = require('sequelize');
 const sequelize = require('../config/database');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
+const { desgloseDelivery } = require('../utils/desgloseDelivery');
 
 /**
  * Servicio de Inteligencia Comercial y Analytics de Pedidos/Envíos
@@ -48,71 +49,11 @@ function costoDeItem(item) {
 }
 
 /**
- * Separa, para UN pedido, la plata que es del producto de la que es del
- * delivery, y —lo más importante— QUIÉN pagó ese delivery.
- *
- * El sistema guarda esa plata de dos formas distintas según por dónde entró
- * el pedido:
- *  - Carga manual (NuevoPedidoModal): `monto = subtotales + costo_envio`.
- *    El flete viaja DENTRO del monto, o sea que se lo cobró al cliente.
- *  - Checkout de la landing (landing.service.js/crearCheckout):
- *    `monto = subtotales − cupón`, y el cliente paga `monto + costo_envio`
- *    aparte (ver pagoParService: `amount = monto + costo_envio`). El flete
- *    viaja FUERA del monto, pero el cliente igual lo paga.
- *
- * De ahí sale la regla:
- *
- *   flete cobrado al cliente = lo que sobra del monto por encima de los
- *                              productos; y si el pedido vino del checkout,
- *                              el flete entero (se cobra aparte).
- *   flete absorbido          = lo que el courier cobró y el cliente NO pagó.
- *
- * El flete absorbido SÍ es un costo del negocio: es plata que salió del
- * bolsillo del comerciante. El cobrado no: entra y sale.
- *
- * Verificado contra los pedidos entregados reales: 12 de 14 tienen el flete
- * dentro del monto (cliente), y el pedido #385 lo tiene en cero con Gs 50.000
- * de courier — ese es el caso "el delivery lo pagamos nosotros".
- *
- * `envio_en_monto` se acota a [0, costo_envio] a propósito: la diferencia
- * entre el monto y los subtotales también puede venir de un ajuste manual al
- * cerrar la venta, y en ese caso es venta, no flete.
+ * La regla del delivery vive en un solo lugar: la comparte con el motor de
+ * rendicion (liquidacion.service.js), que tiene que llegar al mismo numero
+ * sobre el mismo pedido. Ver src/utils/desgloseDelivery.js.
  */
-function desgloseEnvio(e) {
-  const monto = Number(e.monto || 0);
-  const costoEnvio = Number(e.costo_envio || 0);
-
-  const sumaSubtotales = (e.items || []).reduce(
-    (acc, it) => acc + Number(it.subtotal || (it.precio_unitario * (it.cantidad || 1)) || 0),
-    0,
-  );
-  // Sin líneas con precio no hay con qué comparar: se asume que el monto es
-  // todo producto antes que inventar un flete que no se puede probar.
-  const baseProductos = sumaSubtotales > 0
-    ? sumaSubtotales - Number(e.cupon_descuento || 0)
-    : monto;
-
-  const envioEnMonto = Math.min(Math.max(monto - baseProductos, 0), costoEnvio);
-
-  // Pedido nacido en el checkout público: el flete se le cobra al cliente
-  // aparte del monto, así que aunque no aparezca adentro, lo pagó él.
-  const vieneDelCheckout = e.landing_id != null;
-  const envioCobrado = envioEnMonto > 0
-    ? envioEnMonto
-    : (vieneDelCheckout ? costoEnvio : 0);
-
-  return {
-    // Lo que el pedido facturó de PRODUCTO. Es la base de la rentabilidad.
-    venta_producto: monto - envioEnMonto,
-    // Lo que el cliente puso para el flete: plata de paso, ni venta ni costo.
-    envio_cobrado: envioCobrado,
-    // Lo que le pagaste al courier.
-    envio_pagado: costoEnvio,
-    // Lo que pusiste VOS: esto sí es un costo real del negocio.
-    envio_absorbido: Math.max(0, costoEnvio - envioCobrado),
-    envio_en_monto: envioEnMonto,
-  };
-}
+const desgloseEnvio = desgloseDelivery;
 
 // 1. Embudo Integral de Conversión (Funnel)
 async function getResumenFunnel(whereBase, canalesCatalogo = []) {
@@ -262,8 +203,6 @@ function getKpisFinancieros(envios) {
   let valorPerdido = 0;
   let costoLogisticoTotal = 0;
   let costoLogisticoEntregados = 0;
-  let envioCobradoTotal = 0;
-  let envioAbsorbidoTotal = 0;
   let costoMercaderiaEntregada = 0;
   let costoComisionTotal = 0;
   let ivaFacturadoTotal = 0;
@@ -280,15 +219,17 @@ function getKpisFinancieros(envios) {
     const isPerdido = ['cancelado', 'devuelto', 'perdido'].includes(st);
 
     if (isEntregado) {
-      // Facturación = SOLO producto. El flete que venía dentro del monto en
-      // los pedidos cargados a mano se saca acá: sumarlo inflaba la
-      // facturación con plata que se le paga entera al courier, y encima
-      // hacía que dos pedidos idénticos facturaran distinto según por dónde
-      // se hubieran cargado.
-      const desglose = desgloseEnvio(e);
-      facturacionEntregada += desglose.venta_producto;
-      envioCobradoTotal += desglose.envio_cobrado;
-      envioAbsorbidoTotal += desglose.envio_absorbido;
+      // Facturación Real = el `monto` del pedido, tal cual quedó cargado.
+      // El check "Incluye delivery" ya decidió, al cargar el pedido, si el
+      // flete se suma o no ahí adentro — no hace falta (ni corresponde)
+      // volver a discriminar quién lo pagó para armar este número.
+      //
+      // "Envíos" es SIEMPRE el costo real pagado al courier
+      // (`costoLogisticoEntregados`): una sola suma, sin abrir por quién
+      // lo cubrió. Cuando el flete está adentro del monto, se resta acá y
+      // ya estaba sumado en la facturación → neto cero. Cuando no está
+      // adentro (delivery incluido = lo absorbió el negocio), solo resta.
+      facturacionEntregada += monto;
       costoLogisticoEntregados += costoEnvio;
       pedidosEntregadosCount++;
 
@@ -320,10 +261,11 @@ function getKpisFinancieros(envios) {
   const costoLogisticoPorEntrega = pedidosEntregadosCount > 0 ? Math.round(costoLogisticoEntregados / pedidosEntregadosCount) : 0;
   const costoComisionPorEntrega = pedidosEntregadosCount > 0 ? Math.round(costoComisionTotal / pedidosEntregadosCount) : 0;
 
-  // Del flete solo se resta la parte que puso el negocio. La que pagó el
-  // cliente entra y sale, no toca la ganancia; la absorbida sí salió del
-  // bolsillo del comerciante y es un costo como cualquier otro.
-  const margenBrutoEstimado = facturacionEntregada - costoMercaderiaEntregada - costoComisionTotal - ivaFacturadoTotal - envioAbsorbidoTotal;
+  // Se resta el flete COMPLETO (costoLogisticoEntregados) siempre: el
+  // courier cobra el total, y cuando el flete está adentro del monto ya
+  // está sumado en `facturacionEntregada`, así que el pass-through cierra
+  // en cero solo.
+  const margenBrutoEstimado = facturacionEntregada - costoMercaderiaEntregada - costoComisionTotal - ivaFacturadoTotal - costoLogisticoEntregados;
   const pctMargenBruto = facturacionEntregada > 0 ? Number(((margenBrutoEstimado / facturacionEntregada) * 100).toFixed(1)) : 0;
 
   return {
@@ -338,14 +280,6 @@ function getKpisFinancieros(envios) {
     // pueda mostrar el importe que efectivamente se restó y cierre la cuenta.
     costo_logistico_entregados: costoLogisticoEntregados,
     costo_logistico_por_entrega: costoLogisticoPorEntrega,
-    // Delivery abierto en sus tres partes, que es lo que hace falta para la
-    // rendición con el courier y para saber cuánto salió de tu bolsillo:
-    //   cobrado  → lo puso el cliente (plata de paso, no toca la ganancia)
-    //   pagado   → lo que se le paga al courier
-    //   absorbido→ la parte que puso el negocio (costo real, ya restado)
-    envio_cobrado_al_cliente: Math.round(envioCobradoTotal),
-    envio_pagado_al_courier: costoLogisticoEntregados,
-    envio_absorbido_por_negocio: Math.round(envioAbsorbidoTotal),
     costo_mercaderia_entregada: costoMercaderiaEntregada,
     costo_comision_total: Math.round(costoComisionTotal),
     costo_comision_por_entrega: costoComisionPorEntrega,
@@ -547,7 +481,7 @@ function getProductosAnalytics(envios) {
       // Del flete entra SOLO lo absorbido. El que pagó el cliente no es
       // costo del producto: entra y sale.
       const montoFacturado = Number(e.monto || 0);
-      const desgloseDelivery = desgloseEnvio(e);
+      const dvPedido = desgloseEnvio(e);
       const comisionPedido = montoFacturado * (Number(e.comision_pct_aplicada || 0) / 100);
       const ivaPedido = e.quiere_factura ? montoFacturado * 0.10 : 0;
 
@@ -574,8 +508,8 @@ function getProductosAnalytics(envios) {
       // el cobrado es informativo (cuánto delivery movió este producto) y el
       // absorbido es costo real. Sin repartirlos, un pedido de dos productos
       // le cargaba el flete entero a cada uno y el dato salía al doble.
-      envioPorItem = repartir(desgloseDelivery.envio_cobrado);
-      envioAbsorbidoPorItem = repartir(desgloseDelivery.envio_absorbido);
+      envioPorItem = repartir(dvPedido.envio_cobrado);
+      envioAbsorbidoPorItem = repartir(dvPedido.envio_absorbido);
       costoDirectoPorItem = comisionPorItem.map((c, i) => c + ivaPorItem[i] + envioAbsorbidoPorItem[i]);
     }
 
@@ -963,16 +897,12 @@ async function getCouriersAnalytics(whereBase, usuario_id) {
 async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
   const envios = await Envio.findAll({
     where: whereBase,
-    // `subtotal`/`precio_unitario`/`cantidad` y `cupon_descuento` no son
-    // decoración: son lo que necesita desgloseEnvio() para saber cuánto del
-    // monto era flete. Sin ellos, el gráfico volvería a contar el delivery
-    // como venta y no cerraría con la tarjeta de Rentabilidad.
-    attributes: ['id', 'fecha', 'dispatchedAt', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura', 'cupon_descuento', 'landing_id'],
+    attributes: ['id', 'fecha', 'dispatchedAt', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura'],
     include: [
       {
         model: EnvioItem,
         as: 'items',
-        attributes: ['id', 'cantidad', 'precio_unitario', 'subtotal', 'producto_id'],
+        attributes: ['id', 'cantidad', 'producto_id'],
         include: [
           { model: Producto, attributes: ['id', 'precio_costo', 'precio_base'] },
           { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
@@ -988,7 +918,7 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
     if (!f) continue;
 
     if (!mapTimeline[f]) {
-      mapTimeline[f] = { fecha: f, pedidos: 0, confirmados: 0, entregados: 0, devueltos: 0, perdidos: 0, cancelados: 0, monto: 0, costo: 0, ganancia: 0, envio: 0, envio_absorbido: 0, gastos_fijos: 0 };
+      mapTimeline[f] = { fecha: f, pedidos: 0, confirmados: 0, entregados: 0, devueltos: 0, perdidos: 0, cancelados: 0, monto: 0, costo: 0, ganancia: 0, gastos_fijos: 0 };
     }
 
     const t = mapTimeline[f];
@@ -999,8 +929,7 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
     if (st === 'entregado') {
       t.entregados += 1;
       const monto = Number(e.monto || 0);
-      const dv = desgloseEnvio(e);
-      const ventaProducto = dv.venta_producto;
+      const costoEnvioOrden = Number(e.costo_envio || 0);
       const comisionPct = Number(e.comision_pct_aplicada || 0);
       const costoComision = monto * (comisionPct / 100);
       const iva = e.quiere_factura ? monto * 0.10 : 0;
@@ -1008,17 +937,15 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
       if (e.items && e.items.length > 0) {
         for (const item of e.items) costoMercaderia += costoDeItem(item);
       }
-      // MISMA fórmula que getKpisFinancieros: venta de producto menos
-      // mercadería, comisión, IVA y el flete que puso el negocio. Si las dos
-      // se separan, el gráfico dibuja una ganancia y la tarjeta muestra otra
-      // para el mismo período.
-      const costoOrden = costoMercaderia + costoComision + iva + dv.envio_absorbido;
+      // MISMA fórmula que getKpisFinancieros: la venta del día es el `monto`
+      // tal cual, y el costo resta el flete COMPLETO siempre — sin abrir
+      // por quién lo pagó. Si las dos fórmulas se separan, el gráfico
+      // dibuja una ganancia y la tarjeta muestra otra para el mismo período.
+      const costoOrden = costoMercaderia + costoComision + iva + costoEnvioOrden;
 
-      t.monto += ventaProducto;
+      t.monto += monto;
       t.costo += costoOrden;
-      t.ganancia += ventaProducto - costoOrden;
-      t.envio += dv.envio_cobrado;
-      t.envio_absorbido += dv.envio_absorbido;
+      t.ganancia += monto - costoOrden;
     }
     if (['devuelto', 'no entregado', 'fallido'].includes(st)) t.devueltos += 1;
     if (st === 'perdido') t.perdidos += 1;
@@ -1027,7 +954,7 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
 
   // Ordenar cronológicamente
   const timeline = Object.values(mapTimeline)
-    .map(t => ({ ...t, monto: Math.round(t.monto), costo: Math.round(t.costo), ganancia: Math.round(t.ganancia), envio: Math.round(t.envio), envio_absorbido: Math.round(t.envio_absorbido) }))
+    .map(t => ({ ...t, monto: Math.round(t.monto), costo: Math.round(t.costo), ganancia: Math.round(t.ganancia) }))
     .sort((a, b) => a.fecha.localeCompare(b.fecha));
   return timeline;
 }
@@ -1125,8 +1052,8 @@ exports.limpiarCacheCatalogos = () => cacheCatalogos.clear();
  * vendieron, esa página quedaría invisible.
  *
  * La ganancia usa la MISMA fórmula que margen_bruto_estimado de
- * getKpisFinancieros (facturación − mercadería − delivery absorbido −
- * comisión − IVA) pero
+ * getKpisFinancieros (facturación − mercadería − flete completo − comisión
+ * − IVA) pero
  * NO descuenta gastos operativos: son del negocio entero y repartirlos entre
  * landings sería un prorrateo inventado. La columna se rotula como ganancia
  * antes de gastos fijos para que no se confunda con la Utilidad Neta.
@@ -1145,13 +1072,11 @@ async function getRankingLandings(whereRanking, desde, hasta, landingsTienda, li
   const [envios, visitas] = await Promise.all([
     Envio.findAll({
     where: whereRanking,
-    attributes: ['id', 'landing_id', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura', 'cupon_descuento'],
+    attributes: ['id', 'landing_id', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura'],
     include: [{
       model: EnvioItem,
       as: 'items',
-      // subtotal/precio_unitario: los pide desgloseEnvio() para descontar el
-      // flete que viaja dentro del monto en los pedidos cargados a mano.
-      attributes: ['id', 'cantidad', 'precio_unitario', 'subtotal'],
+      attributes: ['id', 'cantidad'],
       include: [
         { model: Producto, attributes: ['id', 'precio_costo', 'precio_base'] },
         { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
@@ -1201,11 +1126,11 @@ async function getRankingLandings(whereRanking, desde, hasta, landingsTienda, li
 
     const monto = Number(e.monto || 0);
     f.entregados++;
-    // Misma regla que el resto del dashboard: la landing factura PRODUCTO, y
-    // el flete no es costo suyo porque lo paga el cliente.
-    const dvLanding = desgloseEnvio(e);
-    f.facturacion += dvLanding.venta_producto;
-    f.costo += dvLanding.envio_absorbido;
+    // Misma regla que el resto del dashboard: la facturación es el `monto`
+    // tal cual, y el costo resta el flete COMPLETO — sin abrir por quién
+    // lo pagó, porque al courier se le paga igual.
+    f.facturacion += monto;
+    f.costo += Number(e.costo_envio || 0);
     f.costo += monto * (Number(e.comision_pct_aplicada || 0) / 100);
     if (e.quiere_factura) f.costo += monto * 0.10;
     for (const item of e.items || []) f.costo += costoDeItem(item);
@@ -1597,43 +1522,6 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
   kpisFinancieros.gastos_por_categoria = gastosOperativos.por_categoria;
   kpisFinancieros.ganancia_neta_estimada = Math.round(gananciaNetaEstimada);
   kpisFinancieros.pct_margen_neto = pctMargenNeto;
-
-  // Estado de resultados en TRES niveles, que es como se lee un negocio:
-  //
-  //   INGRESOS            ventas de producto
-  //   − COSTOS DE VENTA   producto, delivery, comisión, IVA
-  //   = UTILIDAD DE LA VENTA
-  //   − GASTOS OPERATIVOS marketing, sueldos, alquiler, software…
-  //   = UTILIDAD NETA
-  //
-  // El delivery va en COSTOS DE VENTA y NO adentro del costo del producto:
-  // no encarece la mercadería (eso es el precio de compra), es un costo que
-  // se genera para llevar al cliente algo que ya se vendió — lo que la
-  // contabilidad llama freight-out. Meterlo dentro del costo del producto
-  // rompería el margen bruto, que es lo que dice si el producto está bien
-  // pescado; dejarlo entre los gastos generales lo mezclaría con el alquiler
-  // y perdería su relación directa con cada venta.
-  kpisFinancieros.estado_resultados = {
-    ingresos: kpisFinancieros.facturacion_entregada,
-    costos_venta: {
-      producto: kpisFinancieros.costo_mercaderia_entregada,
-      delivery: kpisFinancieros.envio_absorbido_por_negocio,
-      comision: kpisFinancieros.costo_comision_total,
-      iva: kpisFinancieros.iva_facturado_total,
-      total: Math.round(
-        kpisFinancieros.costo_mercaderia_entregada
-        + kpisFinancieros.envio_absorbido_por_negocio
-        + kpisFinancieros.costo_comision_total
-        + kpisFinancieros.iva_facturado_total,
-      ),
-    },
-    utilidad_venta: kpisFinancieros.margen_bruto_estimado,
-    gastos_operativos: {
-      total: Math.round(gastosOperativos.total),
-      por_categoria: gastosOperativos.por_categoria,
-    },
-    utilidad_neta: Math.round(gananciaNetaEstimada),
-  };
 
   // Punto de equilibrio: cuánto hay que facturar para que los gastos fijos
   // queden cubiertos y el período cierre en cero.

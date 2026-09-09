@@ -253,7 +253,25 @@ class TiendaService {
       };
     }
 
-    const { apunta, detalle } = await apuntaANuestroServidor(tienda.dominio_propio);
+    // Si falta ORIGIN_IP el chequeo de DNS no se puede hacer, pero la
+    // pantalla tiene que seguir siendo útil: antes la excepción se
+    // propagaba, el endpoint devolvía 500 y el frontend mostraba las
+    // casillas del registro vacías, sin decir por qué.
+    let apunta = false;
+    let detalle = null;
+    try {
+      ({ apunta, detalle } = await apuntaANuestroServidor(tienda.dominio_propio));
+    } catch (err) {
+      console.error('[dominio-propio] no se pudo verificar:', err.message);
+      return {
+        dominio: tienda.dominio_propio,
+        url: `https://${tienda.dominio_propio}`,
+        estado: ESTADOS.PENDIENTE,
+        verificado: tienda.dominio_propio_verificado,
+        registros: registrosPara(tienda.dominio_propio),
+        detalle: `No se pudo verificar el dominio: ${err.message}`,
+      };
+    }
 
     if (apunta !== tienda.dominio_propio_verificado) {
       tienda.dominio_propio_verificado = apunta;

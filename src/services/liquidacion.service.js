@@ -1,8 +1,9 @@
 'use strict';
 
-const { Envio, MetodoPago, Liquidacion, LiquidacionEnvio, Courier, sequelize } = require('../models');
+const { Envio, EnvioItem, MetodoPago, Liquidacion, LiquidacionEnvio, Courier, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const { registrarHistorial } = require('../utils/historial');
+const { desgloseDelivery } = require('../utils/desgloseDelivery');
 
 /**
  * Motor de rendición de couriers — ver plan Gestión de Pedidos, secciones
@@ -29,7 +30,13 @@ async function buscarEnviosElegibles(courier_id, fecha_desde, fecha_hasta, usuar
       estado_financiero: 'pendiente_liquidacion',
       dispatchedAt: { [Op.between]: [fecha_desde, fecha_hasta] },
     },
-    include: [{ model: MetodoPago, attributes: ['id', 'nombre', 'custodia_cobro'] }],
+    include: [
+      { model: MetodoPago, attributes: ['id', 'nombre', 'custodia_cobro'] },
+      // Las líneas hacen falta para saber si el flete viaja adentro o
+      // afuera del `monto` (ver desgloseDelivery). Sin ellas, un pedido del
+      // checkout se liquida de menos por el valor del envío.
+      { model: EnvioItem, as: 'items', attributes: ['id', 'cantidad', 'precio_unitario', 'subtotal'] },
+    ],
     order: [['dispatchedAt', 'ASC'], ['id', 'ASC']],
     transaction: t,
   });
@@ -50,7 +57,18 @@ function calcularDesglose(envios, ajuste_manual = 0) {
     // Dinero en poder del courier: solo si hubo entrega real (Perdido no
     // cobra nada, se perdió antes de llegar al cliente) y el método de
     // pago usado deja el dinero en manos del courier.
-    const dinero_courier = (e.estado === 'Entregado' && custodia === 'courier') ? monto : 0;
+    //
+    // Lo que el cliente le entrega NO siempre es `monto`. Cuando el pedido
+    // nace en el checkout público, `monto` son solo los productos y el
+    // flete se cobra aparte (pagoParService: `amount = monto + costo_envio`),
+    // así que el courier recibe `monto + flete`. Liquidar contra `monto`
+    // pelado le quitaba al comercio exactamente el valor del envío en cada
+    // pedido de ese tipo: con Gs 166.138 de producto y Gs 50.000 de flete,
+    // el courier entregaba Gs 216.138 y la rendición calculaba como si
+    // hubiera recibido Gs 166.138.
+    const dv = desgloseDelivery(e);
+    const cobrado_al_cliente = monto + dv.envio_fuera_del_monto;
+    const dinero_courier = (e.estado === 'Entregado' && custodia === 'courier') ? cobrado_al_cliente : 0;
 
     total_dinero_courier += dinero_courier;
     total_costo_servicios += costo_envio;
@@ -65,6 +83,10 @@ function calcularDesglose(envios, ajuste_manual = 0) {
       custodia_cobro: custodia,
       monto,
       costo_envio,
+      // Lo que el cliente efectivamente puso en la mano del courier, que es
+      // el número que hay que poder contrastar contra el efectivo al rendir.
+      cobrado_al_cliente,
+      delivery_a_cargo: dv.delivery_a_cargo,
       cargo_perdida_courier: cargo_perdida,
       dinero_courier,
     };

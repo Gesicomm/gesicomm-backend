@@ -67,6 +67,9 @@ const Plan = require('./Plan');
 const Suscripcion = require('./Suscripcion');
 const PagoSuscripcion = require('./PagoSuscripcion');
 const Parametro = require('./Parametro');
+const AuthEvent = require('./AuthEvent');
+const UserSession = require('./UserSession');
+const AuthNotification = require('./AuthNotification');
 
 // ============================================================
 // Relaciones existentes
@@ -479,6 +482,21 @@ Suscripcion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 Suscripcion.hasMany(PagoSuscripcion, { as: 'pagos', foreignKey: 'suscripcion_id', onDelete: 'CASCADE' });
 PagoSuscripcion.belongsTo(Suscripcion, { foreignKey: 'suscripcion_id' });
 
+// ── Seguridad y auditoría de autenticación ──────────────────────────────
+Usuario.hasMany(AuthEvent, { as: 'eventos_auth', foreignKey: 'usuario_id', onDelete: 'SET NULL' });
+AuthEvent.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' });
+
+Usuario.hasMany(UserSession, { as: 'sesiones', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+UserSession.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' });
+
+UserSession.hasMany(AuthEvent, { as: 'eventos', foreignKey: 'session_id', onDelete: 'SET NULL' });
+AuthEvent.belongsTo(UserSession, { as: 'sesion', foreignKey: 'session_id' });
+
+Usuario.hasMany(AuthNotification, { as: 'notificaciones_auth', foreignKey: 'usuario_id', onDelete: 'SET NULL' });
+AuthNotification.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' });
+AuthEvent.hasMany(AuthNotification, { as: 'notificaciones', foreignKey: 'auth_event_id', onDelete: 'SET NULL' });
+AuthNotification.belongsTo(AuthEvent, { as: 'evento', foreignKey: 'auth_event_id' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -553,4 +571,7 @@ module.exports = {
   Suscripcion,
   PagoSuscripcion,
   Parametro,
+  AuthEvent,
+  UserSession,
+  AuthNotification,
 };
