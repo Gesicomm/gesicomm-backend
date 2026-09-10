@@ -25,7 +25,6 @@ const liquidacionRoutes = require('./src/routes/liquidacionRoutes');
 const vitrinaRoutes = require('./src/routes/vitrina');
 const landingRoutes = require('./src/routes/landing');
 const landingSimpleRoutes = require('./src/routes/landingSimple');
-const funnelRoutes = require('./src/routes/funnel');
 const landingTemplatesRoutes = require('./src/routes/landing-templates');
 const landingPublicaRoutes = require('./src/routes/landingPublica');
 const landingHtmlRoutes = require('./src/routes/landingHtml');
@@ -48,6 +47,7 @@ const internoRoutes = require('./src/routes/interno');
 const paymentGatewaysRoutes = require('./src/routes/payment-gateways');
 const webhooksRoutes = require('./src/routes/webhooks');
 const suscripcionesRoutes = require('./src/routes/suscripciones');
+const afiliadosRoutes = require('./src/routes/afiliados');
 const adminAuthTrackingRoutes = require('./src/routes/adminAuthTracking');
 
 const app = express();
@@ -202,7 +202,6 @@ app.use('/api/liquidaciones', liquidacionRoutes);
 app.use('/api/vitrina', vitrinaRoutes);
 app.use('/api/mis-landings', landingRoutes);
 app.use('/api/mis-landings-simples', landingSimpleRoutes);
-app.use('/api/mis-funnels', funnelRoutes);
 app.use('/api/landing-templates', landingTemplatesRoutes);
 app.use('/api/mi-tienda', tiendaRoutes);
 app.use('/api/educacion', educacionRoutes);
@@ -225,6 +224,7 @@ app.use('/api/health', healthRoutes);
 // Fuera de /api a propósito: lo consulta Caddy en localhost, no un navegador.
 app.use('/interno', internoRoutes);
 app.use('/api/config/payment-gateways', paymentGatewaysRoutes);
+app.use('/api/afiliados', afiliadosRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 // Planes y suscripciones de Gesicomm (publicas: son el paso previo al alta)
 app.use('/api', suscripcionesRoutes);

@@ -15,7 +15,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
-const { validar, esquemaLogin, esquemaRegistro, esquemaRecuperarPassword } = require('../middleware/validacion');
+const { validar, esquemaLogin, esquemaRegistro, esquemaRecuperarPassword, esquemaResetPassword } = require('../middleware/validacion');
 const { verificarToken } = require('../middleware/autenticacion');
 const { auditoria } = require('../utils/logger');
 const { rollbackSeguro } = require('../utils/transaction');
@@ -60,6 +60,18 @@ const limiteReenvio = rateLimit({
 /** Genera un código OTP de 6 dígitos criptoseguro. */
 function generarOTP() {
   return String(crypto.randomInt(100000, 999999));
+}
+
+function generarTokenRecuperacion() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function hashTokenRecuperacion(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function frontendUrl(req) {
+  return process.env.FRONTEND_URL || `${req.protocol}://${req.get('host')}`;
 }
 
 // Con subdominios de tienda (*.gesicomm.com), la cookie de sesión NO debe
@@ -634,15 +646,126 @@ router.get('/service-token', verificarToken, (req, res) => {
 // ============================================================
 router.post('/forgot-password', limiteAuth, validar(esquemaRecuperarPassword), async (req, res) => {
   const { email } = req.body;
+  const emailNormalizado = String(email).trim().toLowerCase();
 
-  auditoria('RECUPERACION_PASSWORD_SOLICITADA', { email, ip: req.ip });
+  auditoria('RECUPERACION_PASSWORD_SOLICITADA', { email: emailNormalizado, ip: req.ip });
   await AuthTracking.registrarEvento({
     tipo: 'password_reset_requested',
     req,
-    email,
+    email: emailNormalizado,
   });
 
+  try {
+    const usuario = await Usuario.findOne({
+      where: { correo_electronico: emailNormalizado },
+    });
+
+    if (!usuario) {
+      await AuthTracking.registrarEvento({
+        tipo: 'password_reset_email_skipped',
+        req,
+        email: emailNormalizado,
+        resultado: 'fallo',
+        metadata: { razon: 'usuario_no_encontrado' },
+      });
+      return res.json({ message: 'Si el correo existe, recibirás instrucciones en breve.' });
+    }
+
+    const token = generarTokenRecuperacion();
+    const tokenHash = hashTokenRecuperacion(token);
+    const expira = new Date(Date.now() + 60 * 60 * 1000);
+
+    await usuario.update({
+      password_reset_token_hash: tokenHash,
+      password_reset_expira: expira,
+    });
+
+    const urlReset = `${frontendUrl(req).replace(/\/$/, '')}/reset-password?token=${token}`;
+    const resultadoEmail = await EmailService.enviarRecuperacionPassword({
+      email: usuario.correo_electronico,
+      nombre: usuario.nombre,
+      urlReset,
+    });
+
+    await AuthTracking.registrarEvento({
+      tipo: resultadoEmail.enviado ? 'password_reset_email_sent' : 'password_reset_email_failed',
+      req,
+      usuario,
+      resultado: resultadoEmail.enviado ? 'ok' : 'fallo',
+      metadata: resultadoEmail.enviado
+        ? { expira_en_minutos: 60 }
+        : { razon: resultadoEmail.razon || resultadoEmail.error || 'email_no_enviado' },
+    });
+  } catch (err) {
+    console.error('[forgot-password] Error preparando recuperación:', err);
+    await AuthTracking.registrarEvento({
+      tipo: 'password_reset_email_failed',
+      req,
+      email: emailNormalizado,
+      resultado: 'fallo',
+      metadata: { razon: 'error_interno' },
+    });
+  }
+
   return res.json({ message: 'Si el correo existe, recibirás instrucciones en breve.' });
+});
+
+// ============================================================
+// POST /api/auth/reset-password
+// ============================================================
+router.post('/reset-password', limiteAuth, validar(esquemaResetPassword), async (req, res) => {
+  const { token, password } = req.body;
+  const tokenHash = hashTokenRecuperacion(token);
+
+  try {
+    const usuario = await Usuario.findOne({
+      where: { password_reset_token_hash: tokenHash },
+    });
+
+    if (!usuario) {
+      await AuthTracking.registrarEvento({
+        tipo: 'password_reset_failed',
+        req,
+        resultado: 'fallo',
+        metadata: { razon: 'token_invalido' },
+      });
+      return res.status(400).json({ message: 'El enlace de recuperación no es válido o ya fue utilizado.' });
+    }
+
+    if (!usuario.password_reset_expira || new Date() > new Date(usuario.password_reset_expira)) {
+      await usuario.update({
+        password_reset_token_hash: null,
+        password_reset_expira: null,
+      });
+      await AuthTracking.registrarEvento({
+        tipo: 'password_reset_failed',
+        req,
+        usuario,
+        resultado: 'fallo',
+        metadata: { razon: 'token_expirado' },
+      });
+      return res.status(410).json({ message: 'El enlace de recuperación venció. Solicitá uno nuevo.' });
+    }
+
+    const contrasena_hash = await bcrypt.hash(password, 12);
+    await usuario.update({
+      contrasena_hash,
+      password_reset_token_hash: null,
+      password_reset_expira: null,
+    });
+
+    auditoria('PASSWORD_CAMBIADO', { usuarioId: usuario.id, email: usuario.correo_electronico, ip: req.ip });
+    await AuthTracking.registrarEvento({
+      tipo: 'password_reset_completed',
+      req,
+      usuario,
+    });
+
+    return res.json({ message: 'Contraseña actualizada. Ya podés iniciar sesión.' });
+  } catch (err) {
+    console.error('[reset-password] Error cambiando contraseña:', err);
+    return res.status(500).json({ message: 'Error interno del servidor.' });
+  }
 });
 
 module.exports = router;

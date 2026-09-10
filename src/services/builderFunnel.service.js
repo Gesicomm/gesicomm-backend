@@ -68,11 +68,10 @@ class BuilderFunnelService {
   /** Único GLOBAL: /f/<slug> es un path del host público del builder. */
   static async generarSlugUnico(nombre) {
     const base = slugify(String(nombre || ''), { lower: true, strict: true }) || 'funnel';
-    
-    if (!esSlugReservado(base) && !(await BuilderFunnel.findOne({ where: { slug: base } }))) {
-      return base;
-    }
 
+    // El sufijo va siempre, igual que en builderPage.service.js: el slug
+    // de un funnel es único global y sin sufijo dos comercios que llamen
+    // "Creatina" a su funnel chocarían.
     let slug;
     do {
       slug = `${base}-${crypto.randomBytes(3).toString('hex')}`.slice(0, MAX_SLUG);

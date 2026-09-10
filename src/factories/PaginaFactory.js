@@ -1,7 +1,6 @@
 'use strict';
 
 const TiendaPagina = require('../models/TiendaPagina');
-const Funnel = require('../models/Funnel');
 
 /**
  * Factory para crear páginas asegurando invariantes por tipo.
@@ -31,16 +30,6 @@ class PaginaFactory {
     });
   }
 
-  static async crearFunnel(datos) {
-    if (!datos.producto_id) {
-      throw new Error('Un funnel requiere un producto_id.');
-    }
-    return Funnel.create({
-      ...datos,
-      tipo_pagina: 'funnel',
-      es_home: false
-    });
-  }
 }
 
 module.exports = PaginaFactory;

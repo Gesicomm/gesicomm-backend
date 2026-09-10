@@ -34,7 +34,6 @@ const Tienda = require('./Tienda');
 const ProveedorDns = require('./ProveedorDns');
 const LandingTemplate = require('./LandingTemplate');
 const Landing = require('./Landing');
-const Funnel = require('./Funnel');
 const TiendaPagina = require('./TiendaPagina');
 const LandingItem = require('./LandingItem');
 const LandingSeccion = require('./LandingSeccion');
@@ -67,6 +66,9 @@ const Plan = require('./Plan');
 const Suscripcion = require('./Suscripcion');
 const PagoSuscripcion = require('./PagoSuscripcion');
 const Parametro = require('./Parametro');
+const Afiliado = require('./Afiliado');
+const AfiliadoClick = require('./AfiliadoClick');
+const AfiliadoComision = require('./AfiliadoComision');
 const AuthEvent = require('./AuthEvent');
 const UserSession = require('./UserSession');
 const AuthNotification = require('./AuthNotification');
@@ -272,8 +274,8 @@ LandingSeccion.belongsTo(Landing, { foreignKey: 'landing_id' });
 LandingTemplate.hasMany(Landing, { as: 'landings', foreignKey: 'template_id' });
 Landing.belongsTo(LandingTemplate, { as: 'template', foreignKey: 'template_id' });
 
-// Un embudo (template.kind='funnel') vende UN producto — ver
-// funnel.service.js. En el resto de las landings producto_id es null.
+// Las landings legacy de producto usan producto_id. En el resto de las
+// landings producto_id es null.
 Landing.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });
 
 // Relación de productos con landings (page-builder)
@@ -343,8 +345,8 @@ SolicitudEliminacion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 // ============================================================
 // Meta Ads — campañas internas y reportes importados
 // ============================================================
-// SET NULL en las tres direcciones: borrar una integración de Meta, un
-// funnel (Landing) o un import no debe llevarse puesta la campaña interna
+// SET NULL en las tres direcciones: borrar una integración de Meta, una
+// landing vinculada o un import no debe llevarse puesta la campaña interna
 // ni las filas de reporte ya guardadas — son el historial de métricas.
 MetaIntegration.hasMany(MetaCampanaInterna, { foreignKey: 'meta_integration_id', onDelete: 'SET NULL' });
 MetaCampanaInterna.belongsTo(MetaIntegration, { foreignKey: 'meta_integration_id' });
@@ -409,8 +411,7 @@ CostoGasto.belongsTo(CostoGasto, { as: 'plantilla', foreignKey: 'parent_recurrin
 //
 //   BuilderPage ──< BuilderPageVersion   (versiones inmutables)
 //
-// ⚠️ BuilderFunnel no tiene nada que ver con Funnel (embudo de un producto
-//    sobre la tabla `landings`). Ver la cabecera de BuilderFunnel.js.
+// ⚠️ BuilderFunnel es el módulo de secuencias de páginas del Page Builder.
 //
 // ⚠️ NADA de esto se asocia con Tienda, y es a propósito: una página del
 //    Page Builder es independiente, no pertenece a ninguna tienda. El
@@ -482,6 +483,19 @@ Suscripcion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 Suscripcion.hasMany(PagoSuscripcion, { as: 'pagos', foreignKey: 'suscripcion_id', onDelete: 'CASCADE' });
 PagoSuscripcion.belongsTo(Suscripcion, { foreignKey: 'suscripcion_id' });
 
+Afiliado.hasMany(Suscripcion, { as: 'suscripciones_referidas', foreignKey: 'afiliado_id', onDelete: 'SET NULL' });
+Suscripcion.belongsTo(Afiliado, { as: 'afiliado', foreignKey: 'afiliado_id' });
+
+Afiliado.hasMany(AfiliadoClick, { as: 'clicks', foreignKey: 'afiliado_id', onDelete: 'CASCADE' });
+AfiliadoClick.belongsTo(Afiliado, { as: 'afiliado', foreignKey: 'afiliado_id' });
+
+Afiliado.hasMany(AfiliadoComision, { as: 'comisiones', foreignKey: 'afiliado_id', onDelete: 'CASCADE' });
+AfiliadoComision.belongsTo(Afiliado, { as: 'afiliado', foreignKey: 'afiliado_id' });
+Suscripcion.hasMany(AfiliadoComision, { as: 'comisiones_afiliado', foreignKey: 'suscripcion_id', onDelete: 'CASCADE' });
+AfiliadoComision.belongsTo(Suscripcion, { as: 'suscripcion', foreignKey: 'suscripcion_id' });
+PagoSuscripcion.hasOne(AfiliadoComision, { as: 'comision_afiliado', foreignKey: 'pago_suscripcion_id', onDelete: 'SET NULL' });
+AfiliadoComision.belongsTo(PagoSuscripcion, { as: 'pago', foreignKey: 'pago_suscripcion_id' });
+
 // ── Seguridad y auditoría de autenticación ──────────────────────────────
 Usuario.hasMany(AuthEvent, { as: 'eventos_auth', foreignKey: 'usuario_id', onDelete: 'SET NULL' });
 AuthEvent.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' });
@@ -533,7 +547,6 @@ module.exports = {
   Tienda,
   LandingTemplate,
   Landing,
-  Funnel,
   TiendaPagina,
   LandingItem,
   LandingSeccion,
@@ -571,6 +584,9 @@ module.exports = {
   Suscripcion,
   PagoSuscripcion,
   Parametro,
+  Afiliado,
+  AfiliadoClick,
+  AfiliadoComision,
   AuthEvent,
   UserSession,
   AuthNotification,

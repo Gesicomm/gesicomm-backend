@@ -70,9 +70,19 @@ const esquemaRecuperarPassword = z.object({
   email: z.string().email({ message: 'Email inválido.' }),
 });
 
+const esquemaResetPassword = z.object({
+  token: z.string().min(32, { message: 'El enlace de recuperación no es válido.' }),
+  password: z
+    .string()
+    .min(8, { message: 'La contraseña debe tener al menos 8 caracteres.' })
+    .regex(/[A-Z]/, { message: 'La contraseña debe tener al menos una mayúscula.' })
+    .regex(/[0-9]/, { message: 'La contraseña debe tener al menos un número.' }),
+});
+
 module.exports = {
   validar,
   esquemaLogin,
   esquemaRegistro,
   esquemaRecuperarPassword,
+  esquemaResetPassword,
 };

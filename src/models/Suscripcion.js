@@ -74,6 +74,16 @@ const Suscripcion = sequelize.define('Suscripcion', {
     type: DataTypes.DATE,
     allowNull: true,
   },
+  afiliado_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Afiliado que refirió esta suscripción, si llegó con un link ?ref=.',
+  },
+  afiliado_codigo: {
+    type: DataTypes.STRING(80),
+    allowNull: true,
+    comment: 'Snapshot del código usado al contratar, para auditoría aunque el afiliado cambie el código.',
+  },
 }, {
   tableName: 'suscripciones',
   timestamps: true,
@@ -83,6 +93,7 @@ const Suscripcion = sequelize.define('Suscripcion', {
     { fields: ['email'] },
     { fields: ['usuario_id'] },
     { fields: ['estado'] },
+    { fields: ['afiliado_id'] },
   ],
 });
 

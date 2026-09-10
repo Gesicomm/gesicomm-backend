@@ -13,6 +13,7 @@
  * GET    /filas                       → filas de reporte (paginado, filtrable)
  * PUT    /filas/:id/vincular          → vincular manualmente una fila sin match
  * GET    /metricas-por-producto       → agregado de métricas por producto
+ * GET    /resumen                     → KPIs del período + variación vs. período anterior
  */
 
 const express = require('express');
@@ -30,13 +31,15 @@ router.get('/campanas', ctrl.listarCampanas);
 router.put('/campanas/:id', ctrl.actualizarCampana);
 router.delete('/campanas/:id', ctrl.eliminarCampana);
 
+router.post('/importar/analizar', ctrl.subirCSVMiddleware, ctrl.analizarCSV);
 router.post('/importar', ctrl.subirCSVMiddleware, ctrl.importarCSV);
-router.get('/importaciones', ctrl.listarImportaciones);
+router.post('/importaciones/listar', ctrl.listarImportaciones);
 router.delete('/importaciones/:id', ctrl.eliminarImportacion);
 
-router.get('/filas', ctrl.listarFilas);
+router.post('/filas/listar', ctrl.listarFilas);
 router.put('/filas/:id/vincular', ctrl.vincularFila);
 
-router.get('/metricas-por-producto', ctrl.metricasPorProducto);
+router.post('/metricas-por-producto', ctrl.metricasPorProducto);
+router.post('/resumen', ctrl.resumen);
 
 module.exports = router;

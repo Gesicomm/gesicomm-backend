@@ -4,9 +4,8 @@
  * Controller de FUNNELS del Page Builder.
  * Montado en: /api/page-builder/funnels
  *
- * ⚠️ No confundir con funnel.controller.js (/api/mis-funnels), que es el
- * embudo de un solo producto sobre la tabla `landings`. Ver la cabecera
- * de builderFunnel.service.js.
+ * ⚠️ No confundir con el embudo legacy de producto sobre la tabla
+ * `landings`; ese flujo de creación ya fue retirado.
  */
 
 const BuilderFunnelService = require('../services/builderFunnel.service');

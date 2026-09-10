@@ -41,16 +41,56 @@ class PrecioUsuarioService {
 
   // ─── Catálogo combinado (productos + combos) ──────────────────────────────
 
-  static async listarCatalogo(usuario_id, inquilino_id) {
+  static async obtenerIdsAdministradores(inquilino_id) {
+    const { Usuario, Rol } = require('../models');
+    const administradores = await Usuario.findAll({
+      where: { inquilino_id },
+      attributes: ['id'],
+      include: [{ model: Rol, attributes: [], where: { nombre: 'administrador' }, required: true }],
+      raw: true,
+    });
+    return administradores.map(admin => admin.id);
+  }
+
+  static visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly = false, administradoresIds = []) {
+    if (miosOnly) return { creado_por: usuario_id };
+    if (esAdmin) return {};
+    const creadoresVisibles = [...new Set([usuario_id, ...administradoresIds].filter(id => id != null))];
+    return {
+      [Op.or]: [
+        { creado_por: null },
+        { creado_por: { [Op.in]: creadoresVisibles } },
+      ],
+    };
+  }
+
+  static visibilidadCatalogoSql(esAdmin, miosOnly = false) {
+    if (miosOnly) return 'AND p.creado_por = :usuario_id';
+    if (esAdmin) return '';
+    return `AND (
+      p.creado_por IS NULL
+      OR p.creado_por = :usuario_id
+      OR p.creado_por IN (
+        SELECT u.id
+        FROM usuarios u
+        INNER JOIN roles r ON r.id = u.rol_id
+        WHERE u.inquilino_id = :inquilino_id AND r.nombre = 'administrador'
+      )
+    )`;
+  }
+
+  static async listarCatalogo(usuario_id, inquilino_id, esAdmin = false) {
+    const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
+    const visibilidadProducto = this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds);
     // productos/combos/precios son independientes entre sí — se resuelven en
     // paralelo en vez de uno atrás de otro para no acumular latencia de red
     // por cada ida-vuelta a la base.
     const [productos, combos, precios] = await Promise.all([
       Producto.findAll({
-        where: { inquilino_id, activo: true, estado_venta: 'en_venta' },
+        where: { inquilino_id, activo: true, estado_venta: 'en_venta', ...visibilidadProducto },
         attributes: [
           'id', 'slug', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_minimo',
-          'precio_tachado', 'cantidad_disponible', 'destacado', 'created_at',
+          'precio_tachado', 'cantidad_disponible', 'destacado', 'created_at', 'creado_por',
         ],
         include: [
           { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -76,8 +116,8 @@ class PrecioUsuarioService {
           {
             model: Producto,
             as: 'producto_padre',
-            attributes: ['id', 'cantidad_disponible'],
-            where: { activo: true },
+            attributes: ['id', 'cantidad_disponible', 'creado_por'],
+            where: { activo: true, ...visibilidadProducto },
             required: true,
             include: [
               { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -145,6 +185,7 @@ class PrecioUsuarioService {
         stock: p.cantidad_disponible,
         destacado: !!p.destacado,
         creado_en: p.created_at,
+        creado_por: p.creado_por,
         slug: p.slug,
       };
     });
@@ -170,13 +211,14 @@ class PrecioUsuarioService {
         stock: padre?.cantidad_disponible ?? null,
         destacado: false,
         creado_en: c.created_at,
+        creado_por: padre?.creado_por ?? null,
       };
     });
 
     return { productos: productosDto, combos: combosDto };
   }
 
-    static async listarCatalogoPaginado(usuario_id, inquilino_id, filtros = {}) {
+    static async listarCatalogoPaginado(usuario_id, inquilino_id, filtros = {}, esAdmin = false) {
     const { sequelize, Categoria } = require('../models');
     const {
       page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', orden = 'nombre', tipo = 'todos',
@@ -187,10 +229,8 @@ class PrecioUsuarioService {
     const replacements = { usuario_id, inquilino_id };
 
     const miosOnly = Boolean(solamenteMios || mios_solamente);
-    let creadorFilter = '';
-    if (miosOnly) {
-      creadorFilter = 'AND p.creado_por = :usuario_id';
-    }
+    const creadorFilter = this.visibilidadCatalogoSql(esAdmin, miosOnly);
+    const administradoresIds = (!esAdmin && !miosOnly) ? await this.obtenerIdsAdministradores(inquilino_id) : [];
     
     // Filtro de categoría
     let catFilter = '';
@@ -238,7 +278,7 @@ class PrecioUsuarioService {
       SELECT c.id, 'combo' as tipo, c.nombre, c.descripcion, c.created_at, p.categoria_id, p.creado_por,
         COALESCE(pu.precio, c.precio_total) as precio_efectivo
       FROM producto_combos c
-      INNER JOIN productos p ON c.producto_id = p.id AND p.activo = true
+      INNER JOIN productos p ON c.producto_id = p.id AND p.inquilino_id = :inquilino_id AND p.activo = true
       LEFT JOIN precios_usuario pu ON pu.tipo = 'combo' AND pu.referencia_id = c.id AND pu.usuario_id = :usuario_id
       WHERE c.inquilino_id = :inquilino_id AND c.estado = 'ACTIVO'
       ${creadorFilter}
@@ -276,7 +316,11 @@ class PrecioUsuarioService {
 
     const [productos, combos, precios, categoriasUnicasData, proveedoresUnicasData] = await Promise.all([
       idsProductos.length ? Producto.findAll({
-        where: { id: { [require('sequelize').Op.in]: idsProductos } },
+        where: {
+          id: { [require('sequelize').Op.in]: idsProductos },
+          inquilino_id,
+          ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly, administradoresIds),
+        },
         attributes: [
           'id', 'slug', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_costo', 'precio_minimo',
           'precio_tachado', 'cantidad_disponible', 'destacado', 'created_at', 'categoria_id', 'creado_por'
@@ -300,7 +344,12 @@ class PrecioUsuarioService {
           {
             model: Producto,
             as: 'producto_padre',
-            attributes: ['id', 'cantidad_disponible', 'categoria_id'],
+            attributes: ['id', 'cantidad_disponible', 'categoria_id', 'creado_por'],
+            where: {
+              inquilino_id,
+              activo: true,
+              ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly, administradoresIds),
+            },
             required: true,
             include: [
               { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -318,15 +367,17 @@ class PrecioUsuarioService {
         FROM categorias c 
         INNER JOIN productos p ON p.categoria_id = c.id 
         WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
+        ${creadorFilter}
         ORDER BY c.nombre ASC
-      `, { replacements: { inquilino_id }, type: sequelize.QueryTypes.SELECT }),
+      `, { replacements, type: sequelize.QueryTypes.SELECT }),
       sequelize.query(`
         SELECT DISTINCT pr.nombre 
         FROM proveedores pr 
         INNER JOIN productos p ON p.proveedor_id = pr.id 
         WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
+        ${creadorFilter}
         ORDER BY pr.nombre ASC
-      `, { replacements: { inquilino_id }, type: sequelize.QueryTypes.SELECT })
+      `, { replacements, type: sequelize.QueryTypes.SELECT })
     ]);
 
     const categoriasUnicas = categoriasUnicasData ? categoriasUnicasData.map(c => c.nombre) : [];
@@ -418,6 +469,7 @@ class PrecioUsuarioService {
         stock: padre?.cantidad_disponible ?? null,
         destacado: false,
         creado_en: c.created_at,
+        creado_por: padre?.creado_por ?? null,
       }];
     }));
 
@@ -438,14 +490,36 @@ class PrecioUsuarioService {
 
   // ─── Guardar precio propio ─────────────────────────────────────────────────
 
-  static async guardarPrecioProducto(usuario_id, inquilino_id, producto_id, precio) {
-    const producto = await Producto.findOne({ where: { id: producto_id, inquilino_id, activo: true } });
+  static async guardarPrecioProducto(usuario_id, inquilino_id, producto_id, precio, esAdmin = false) {
+    const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
+    const producto = await Producto.findOne({
+      where: {
+        id: producto_id,
+        inquilino_id,
+        activo: true,
+        ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+      },
+    });
     if (!producto) throw new Error('Producto no encontrado.');
     return this._guardar(usuario_id, inquilino_id, 'producto', producto.id, precio, producto.precio_minimo);
   }
 
-  static async guardarPrecioCombo(usuario_id, inquilino_id, combo_id, precio) {
-    const combo = await ProductoCombo.findOne({ where: { id: combo_id, inquilino_id, estado: 'ACTIVO' } });
+  static async guardarPrecioCombo(usuario_id, inquilino_id, combo_id, precio, esAdmin = false) {
+    const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
+    const combo = await ProductoCombo.findOne({
+      where: { id: combo_id, inquilino_id, estado: 'ACTIVO' },
+      include: [{
+        model: Producto,
+        as: 'producto_padre',
+        attributes: ['id'],
+        where: {
+          inquilino_id,
+          activo: true,
+          ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+        },
+        required: true,
+      }],
+    });
     if (!combo) throw new Error('Combo no encontrado.');
     return this._guardar(usuario_id, inquilino_id, 'combo', combo.id, precio, combo.precio_minimo);
   }
@@ -476,8 +550,16 @@ class PrecioUsuarioService {
 
   // ─── Análisis de sensibilidad ───────────────────────────────────────────────
 
-  static async analizarSensibilidadProducto(usuario_id, inquilino_id, producto_id) {
-    const producto = await Producto.findOne({ where: { id: producto_id, inquilino_id, activo: true } });
+  static async analizarSensibilidadProducto(usuario_id, inquilino_id, producto_id, esAdmin = false) {
+    const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
+    const producto = await Producto.findOne({
+      where: {
+        id: producto_id,
+        inquilino_id,
+        activo: true,
+        ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+      },
+    });
     if (!producto) throw new Error('Producto no encontrado.');
     if (!producto.precio_costo) throw new Error('Este producto no tiene análisis de rentabilidad configurado.');
 
@@ -520,9 +602,21 @@ class PrecioUsuarioService {
     };
   }
 
-  static async analizarSensibilidadCombo(usuario_id, inquilino_id, combo_id) {
+  static async analizarSensibilidadCombo(usuario_id, inquilino_id, combo_id, esAdmin = false) {
+    const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
     const combo = await ProductoCombo.findOne({
-      where: { id: combo_id, inquilino_id, estado: 'ACTIVO' }
+      where: { id: combo_id, inquilino_id, estado: 'ACTIVO' },
+      include: [{
+        model: Producto,
+        as: 'producto_padre',
+        attributes: ['id'],
+        where: {
+          inquilino_id,
+          activo: true,
+          ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+        },
+        required: true,
+      }],
     });
     if (!combo) throw new Error('Combo no encontrado.');
 

@@ -1,231 +1,375 @@
+/**
+ * Educación / LMS — desbloqueo secuencial, corrección de exámenes y menús.
+ *
+ * Antes esto era un único test end-to-end contra Postgres: buscaba o creaba
+ * un usuario e inquilino reales, creaba módulos "TEST_EDU_*" y los borraba
+ * en cada beforeEach/afterEach. Esa base es la de PRODUCCIÓN detrás de un
+ * túnel (ver src/config/database): con el túnel abajo fallaba entera, y con
+ * el túnel arriba escribía y borraba filas reales — incluso creaba un
+ * usuario si no encontraba ninguno.
+ *
+ * Ahora los modelos se simulan y cada caso stubbea solo lo que ese
+ * controller lee. Eso permitió además partir el test en casos separados y
+ * cubrir reglas que el original no llegaba a tocar: la penalización por 3
+ * intentos fallidos, el bloqueo de 4 horas, que se conserve el mejor
+ * puntaje y que la respuesta nunca filtre las respuestas correctas.
+ */
+
+const mockTransaccion = { commit: jest.fn(), rollback: jest.fn() };
+
+jest.mock('../models', () => ({
+  sequelize: { transaction: jest.fn(async () => mockTransaccion) },
+  ModuloEducacion: { findAll: jest.fn(), findByPk: jest.fn(), create: jest.fn(), max: jest.fn(), update: jest.fn() },
+  LeccionEducacion: { bulkCreate: jest.fn() },
+  Examen: { create: jest.fn(), findOne: jest.fn() },
+  PreguntaExamen: { bulkCreate: jest.fn(), destroy: jest.fn() },
+  ProgresoUsuarioModulo: { findOrCreate: jest.fn(), destroy: jest.fn() },
+  ProgresoUsuarioLeccion: { findAll: jest.fn(async () => []), findOrCreate: jest.fn() },
+}));
+
 const educacionController = require('../controllers/educacionController');
 const adminEducacionController = require('../controllers/adminEducacionController');
-const { ModuloEducacion, Examen, PreguntaExamen, ProgresoUsuarioModulo, Usuario, Inquilino } = require('../models');
-const { Op } = require('sequelize');
+const {
+  ModuloEducacion, Examen, PreguntaExamen, ProgresoUsuarioModulo, ProgresoUsuarioLeccion,
+} = require('../models');
 
-describe('Education & LMS Module Unit Tests', () => {
-  jest.setTimeout(60000);
-  let testUsuarioId = null;
+const USUARIO = 42;
 
-  const cleanTestData = async () => {
-    try {
-      await ModuloEducacion.destroy({
-        where: {
-          titulo: {
-            [Op.like]: 'TEST_EDU_%',
-          },
-        },
-      });
-      if (testUsuarioId) {
-        await ProgresoUsuarioModulo.destroy({
-          where: {
-            usuario_id: testUsuarioId,
-          },
-        });
-      }
-    } catch (err) {
-      console.error('Error cleaning test education data:', err);
-    }
-  };
+/** Doble de `res` que registra estado y cuerpo. */
+const respuesta = () => ({
+  statusCode: 200,
+  body: null,
+  status(code) { this.statusCode = code; return this; },
+  json(data) { this.body = data; return this; },
+});
 
-  beforeAll(async () => {
-    let user = await Usuario.findOne();
-    if (!user) {
-      let inq = await Inquilino.findOne();
-      if (!inq) {
-        inq = await Inquilino.create({ nombre_empresa: 'Test Tenant' });
-      }
-      user = await Usuario.create({
-        inquilino_id: inq.id,
-        nombre: 'Test User Edu',
-        correo_electronico: 'test_edu@example.com',
-        contrasena_hash: 'hash123',
-      });
-    }
-    testUsuarioId = user.id;
-  });
+/** Progreso con .save(), como la instancia de Sequelize. */
+const progresoFalso = (datos = {}) => ({
+  usuario_id: USUARIO,
+  modulo_id: 1,
+  video_completado: false,
+  completado: false,
+  examen_aprobado: false,
+  intentos: 0,
+  intentos_fallidos: 0,
+  puntaje_obtenido: null,
+  bloqueado_hasta: null,
+  fecha_completado: null,
+  save: jest.fn(async function guardar() { return this; }),
+  ...datos,
+});
 
-  beforeEach(async () => {
-    await cleanTestData();
-  });
+const examenDeDosPreguntas = (extra = {}) => ({
+  id: 100,
+  puntaje_minimo: 70,
+  activo: true,
+  preguntas: [
+    { id: 1, pregunta: '¿Capital de Paraguay?', respuesta_correcta: '1', explicacion: 'Asunción.' },
+    { id: 2, pregunta: '¿Gesicomm gestiona couriers?', respuesta_correcta: 'V', explicacion: 'Sí.' },
+  ],
+  ...extra,
+});
 
-  afterEach(async () => {
-    await cleanTestData();
-  });
+const modulo = (datos = {}) => ({
+  id: 1,
+  titulo: 'Introducción',
+  orden: 1,
+  duracion_minutos: 10,
+  menu_desbloqueado: 'mis-anuncios',
+  activo: true,
+  lecciones: [],
+  examen: null,
+  progresos: [],
+  ...datos,
+});
 
-  test('should create modules with integer IDs and test sequential unlocking and quiz grading', async () => {
-    const reqCreateMod1 = {
-      usuario: { id: testUsuarioId, tenantId: null },
+beforeEach(() => {
+  jest.clearAllMocks();
+  ProgresoUsuarioLeccion.findAll.mockResolvedValue([]);
+});
+
+describe('createModulo', () => {
+  it('crea el módulo con su examen y preguntas, y confirma la transacción', async () => {
+    ModuloEducacion.max.mockResolvedValue(0);
+    ModuloEducacion.create.mockResolvedValue({ id: 7, titulo: 'TEST_EDU_MODULO_1' });
+    Examen.create.mockResolvedValue({ id: 100 });
+
+    const req = {
+      usuario: { id: USUARIO, tenantId: null },
       body: {
         titulo: 'TEST_EDU_MODULO_1: Introducción',
         descripcion: 'Primer módulo introductorio',
         orden: 1,
-        video_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
         duracion_minutos: 10,
         menu_desbloqueado: 'mis-anuncios',
         activo: true,
         examen: {
           titulo: 'Examen de Introducción',
-          descripcion: 'Evalúa tus conocimientos básicos',
           puntaje_minimo: 70,
           preguntas: [
-            {
-              pregunta: '¿Cuál es la capital de Paraguay?',
-              tipo: 'opcion_multiple',
-              opciones: [
-                { id: '1', texto: 'Asunción' },
-                { id: '2', texto: 'Encarnación' },
-                { id: '3', texto: 'Ciudad del Este' }
-              ],
-              respuesta_correcta: '1',
-              explicacion: 'Asunción es la capital de la República del Paraguay.',
-              orden: 1,
-            },
-            {
-              pregunta: '¿Gesicomm permite gestionar couriers?',
-              tipo: 'verdadero_falso',
-              opciones: [
-                { id: 'V', texto: 'Verdadero' },
-                { id: 'F', texto: 'Falso' }
-              ],
-              respuesta_correcta: 'V',
-              explicacion: 'Gesicomm cuenta con un módulo logístico integral.',
-              orden: 2,
-            }
-          ]
-        }
-      }
+            { pregunta: '¿Capital de Paraguay?', opciones: [{ id: '1', texto: 'Asunción' }], respuesta_correcta: '1' },
+            { pregunta: '¿Gesicomm gestiona couriers?', opciones: [{ id: 'V', texto: 'Verdadero' }], respuesta_correcta: 'V' },
+          ],
+        },
+      },
     };
+    const res = respuesta();
 
-    let resCreateMod1Data = null;
-    const resCreateMod1 = {
-      status(code) { this.statusCode = code; return this; },
-      json(data) { resCreateMod1Data = data; return this; }
-    };
+    await adminEducacionController.createModulo(req, res);
 
-    await adminEducacionController.createModulo(reqCreateMod1, resCreateMod1);
-    expect(resCreateMod1.statusCode).toBe(201);
-    expect(resCreateMod1Data.modulo).toBeDefined();
-    expect(typeof resCreateMod1Data.modulo.id).toBe('number'); // No UUID
-    const mod1Id = resCreateMod1Data.modulo.id;
+    expect(res.statusCode).toBe(201);
+    // Los ids son enteros, no UUID.
+    expect(typeof res.body.modulo.id).toBe('number');
 
-    // 2. Admin creates Module 2
-    const reqCreateMod2 = {
-      usuario: { id: 1, tenantId: null },
-      body: {
-        titulo: 'TEST_EDU_MODULO_2: Campañas Avanzadas',
-        descripcion: 'Segundo módulo de nivel intermedio',
-        orden: 2,
-        video_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-        duracion_minutos: 15,
-        activo: true,
-      }
-    };
+    expect(Examen.create.mock.calls[0][0]).toMatchObject({ modulo_id: 7, puntaje_minimo: 70 });
+    const [preguntas] = PreguntaExamen.bulkCreate.mock.calls[0];
+    expect(preguntas).toHaveLength(2);
+    expect(preguntas[0]).toMatchObject({ examen_id: 100, respuesta_correcta: '1', orden: 1 });
+    expect(mockTransaccion.commit).toHaveBeenCalled();
+    expect(mockTransaccion.rollback).not.toHaveBeenCalled();
+  });
 
-    let resCreateMod2Data = null;
-    const resCreateMod2 = {
-      status(code) { this.statusCode = code; return this; },
-      json(data) { resCreateMod2Data = data; return this; }
-    };
+  it('sin título rechaza y revierte', async () => {
+    const res = respuesta();
+    await adminEducacionController.createModulo({ usuario: { id: USUARIO }, body: {} }, res);
 
-    await adminEducacionController.createModulo(reqCreateMod2, resCreateMod2);
-    expect(resCreateMod2.statusCode).toBe(201);
-    const mod2Id = resCreateMod2Data.modulo.id;
+    expect(res.statusCode).toBe(400);
+    expect(mockTransaccion.rollback).toHaveBeenCalled();
+    expect(ModuloEducacion.create).not.toHaveBeenCalled();
+  });
 
-    // 3. User lists modules -> Modulo 1 should be unlocked, Modulo 2 locked
-    const reqUserList = { usuario: { id: testUsuarioId } };
-    let resUserListData = null;
-    const resUserList = {
-      json(data) { resUserListData = data; return this; },
-      status(code) { this.statusCode = code; return this; }
-    };
+  it('pone el módulo al final de la ruta si no se pide un orden', async () => {
+    ModuloEducacion.max.mockResolvedValue(4);
+    ModuloEducacion.create.mockResolvedValue({ id: 8 });
 
-    await educacionController.getModulos(reqUserList, resUserList);
-    const m1 = resUserListData.modulos.find(m => m.id === mod1Id);
-    const m2 = resUserListData.modulos.find(m => m.id === mod2Id);
+    await adminEducacionController.createModulo(
+      { usuario: { id: USUARIO }, body: { titulo: 'TEST_EDU_SIN_ORDEN' } },
+      respuesta(),
+    );
 
-    expect(m1.desbloqueado).toBe(true);
-    expect(m1.completado).toBe(false);
+    expect(ModuloEducacion.create.mock.calls[0][0].orden).toBe(5);
+  });
+});
+
+describe('getModulos — desbloqueo secuencial', () => {
+  it('deja el primero abierto y el segundo cerrado', async () => {
+    ModuloEducacion.findAll.mockResolvedValue([
+      modulo({ id: 1, orden: 1, examen: examenDeDosPreguntas() }),
+      modulo({ id: 2, orden: 2, titulo: 'Campañas Avanzadas', menu_desbloqueado: null, examen: examenDeDosPreguntas({ id: 200 }) }),
+    ]);
+
+    const res = respuesta();
+    await educacionController.getModulos({ usuario: { id: USUARIO } }, res);
+
+    const m1 = res.body.modulos.find((m) => m.id === 1);
+    const m2 = res.body.modulos.find((m) => m.id === 2);
+
+    expect(m1).toMatchObject({ desbloqueado: true, completado: false, tiene_examen: true, total_preguntas: 2 });
     expect(m2.desbloqueado).toBe(false);
+  });
 
-    // 4. User views video of Module 1
-    const reqVideo = { params: { id: mod1Id }, usuario: { id: testUsuarioId } };
-    let resVideoData = null;
-    const resVideo = {
-      json(data) { resVideoData = data; return this; },
-      status(code) { this.statusCode = code; return this; }
-    };
+  it('aprobar el primero abre el segundo', async () => {
+    ModuloEducacion.findAll.mockResolvedValue([
+      modulo({ id: 1, orden: 1, examen: examenDeDosPreguntas(), progresos: [{ completado: true, examen_aprobado: true, puntaje_obtenido: 100 }] }),
+      modulo({ id: 2, orden: 2, menu_desbloqueado: null, examen: examenDeDosPreguntas({ id: 200 }) }),
+    ]);
 
-    await educacionController.marcarVideoVisto(reqVideo, resVideo);
-    expect(resVideoData.progreso.video_completado).toBe(true);
-    expect(resVideoData.progreso.completado).toBe(false); // Has exam pending
+    const res = respuesta();
+    await educacionController.getModulos({ usuario: { id: USUARIO } }, res);
 
-    // 5. User submits failing exam (0%)
-    const mod1Full = await ModuloEducacion.findByPk(mod1Id, {
-      include: [{ model: Examen, as: 'examen', include: [{ model: PreguntaExamen, as: 'preguntas' }] }]
+    expect(res.body.modulos.find((m) => m.id === 1)).toMatchObject({ completado: true, examen_aprobado: true, puntaje_obtenido: 100 });
+    expect(res.body.modulos.find((m) => m.id === 2).desbloqueado).toBe(true);
+    expect(res.body.estadisticas.modulos_completados).toBe(1);
+  });
+
+  it('un módulo sin examen se aprueba con solo mirar sus clases', async () => {
+    ModuloEducacion.findAll.mockResolvedValue([
+      modulo({ id: 1, orden: 1, examen: null, lecciones: [{ id: 11, titulo: 'Clase 1', orden: 1, duracion_min: 5 }] }),
+      modulo({ id: 2, orden: 2, menu_desbloqueado: null, examen: examenDeDosPreguntas({ id: 200 }) }),
+    ]);
+    ProgresoUsuarioLeccion.findAll.mockResolvedValue([{ leccion_id: 11 }]);
+
+    const res = respuesta();
+    await educacionController.getModulos({ usuario: { id: USUARIO } }, res);
+
+    const m1 = res.body.modulos.find((m) => m.id === 1);
+    expect(m1).toMatchObject({ videos_completados: true, total_lecciones: 1, lecciones_completadas: 1 });
+    expect(res.body.modulos.find((m) => m.id === 2).desbloqueado).toBe(true);
+  });
+});
+
+describe('marcarVideoVisto', () => {
+  it('marca el video pero no completa el módulo si tiene examen pendiente', async () => {
+    ModuloEducacion.findByPk.mockResolvedValue(modulo({ examen: examenDeDosPreguntas() }));
+    const progreso = progresoFalso();
+    ProgresoUsuarioModulo.findOrCreate.mockResolvedValue([progreso, true]);
+
+    const res = respuesta();
+    await educacionController.marcarVideoVisto({ params: { id: 1 }, usuario: { id: USUARIO } }, res);
+
+    expect(res.body.progreso.video_completado).toBe(true);
+    expect(res.body.progreso.completado).toBe(false);
+  });
+
+  it('sin examen, ver el video completa el módulo', async () => {
+    ModuloEducacion.findByPk.mockResolvedValue(modulo({ examen: null }));
+    ProgresoUsuarioModulo.findOrCreate.mockResolvedValue([progresoFalso(), true]);
+
+    const res = respuesta();
+    await educacionController.marcarVideoVisto({ params: { id: 1 }, usuario: { id: USUARIO } }, res);
+
+    expect(res.body.progreso.completado).toBe(true);
+    expect(res.body.progreso.fecha_completado).toBeTruthy();
+  });
+
+  it('devuelve 404 si el módulo no existe', async () => {
+    ModuloEducacion.findByPk.mockResolvedValue(null);
+
+    const res = respuesta();
+    await educacionController.marcarVideoVisto({ params: { id: 999 }, usuario: { id: USUARIO } }, res);
+
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('enviarExamen — corrección', () => {
+  const enviar = async (respuestas, progreso = progresoFalso()) => {
+    ModuloEducacion.findByPk.mockResolvedValue(modulo({ examen: examenDeDosPreguntas() }));
+    ProgresoUsuarioModulo.findOrCreate.mockResolvedValue([progreso, false]);
+    const res = respuesta();
+    await educacionController.enviarExamen(
+      { params: { id: 1 }, usuario: { id: USUARIO }, body: { respuestas } },
+      res,
+    );
+    return { res, progreso };
+  };
+
+  it('reprueba con todo mal', async () => {
+    const { res } = await enviar({ 1: '999', 2: 'F' });
+
+    expect(res.body).toMatchObject({ aprobado: false, puntaje: 0, correctas: 0, completado: false });
+    expect(res.body.menu_desbloqueado).toBeNull();
+  });
+
+  it('aprueba con todo bien y desbloquea el menú', async () => {
+    const { res } = await enviar({ 1: '1', 2: 'V' });
+
+    expect(res.body).toMatchObject({
+      aprobado: true, puntaje: 100, correctas: 2, completado: true, menu_desbloqueado: 'mis-anuncios',
     });
-    const preg1Id = mod1Full.examen.preguntas[0].id;
-    const preg2Id = mod1Full.examen.preguntas[1].id;
+  });
 
-    const reqFailExam = {
-      params: { id: mod1Id },
-      usuario: { id: testUsuarioId },
-      body: {
-        respuestas: {
-          [preg1Id]: '999', // Incorrect
-          [preg2Id]: 'F',   // Incorrect
-        }
-      }
-    };
-    let resFailExamData = null;
-    const resFailExam = {
-      json(data) { resFailExamData = data; return this; },
-      status(code) { this.statusCode = code; return this; }
-    };
+  it('reprueba por debajo del puntaje mínimo', async () => {
+    // 1 de 2 = 50%, y el mínimo del examen es 70.
+    const { res } = await enviar({ 1: '1', 2: 'F' });
 
-    await educacionController.enviarExamen(reqFailExam, resFailExam);
-    expect(resFailExamData.aprobado).toBe(false);
-    expect(resFailExamData.puntaje).toBe(0);
-    expect(resFailExamData.completado).toBe(false);
+    expect(res.body).toMatchObject({ puntaje: 50, aprobado: false, puntaje_minimo: 70 });
+  });
 
-    // 6. User submits passing exam (100%)
-    const reqPassExam = {
-      params: { id: mod1Id },
-      usuario: { id: testUsuarioId },
-      body: {
-        respuestas: {
-          [preg1Id]: '1', // Correct
-          [preg2Id]: 'V', // Correct
-        }
-      }
-    };
-    let resPassExamData = null;
-    const resPassExam = {
-      json(data) { resPassExamData = data; return this; },
-      status(code) { this.statusCode = code; return this; }
-    };
+  it('normaliza la respuesta: mayúsculas, espacios y varias opciones', async () => {
+    ModuloEducacion.findByPk.mockResolvedValue(modulo({
+      examen: examenDeDosPreguntas({
+        preguntas: [{ id: 1, pregunta: 'Elegí dos', respuesta_correcta: 'a,b' }],
+      }),
+    }));
+    ProgresoUsuarioModulo.findOrCreate.mockResolvedValue([progresoFalso(), false]);
 
-    await educacionController.enviarExamen(reqPassExam, resPassExam);
-    expect(resPassExamData.aprobado).toBe(true);
-    expect(resPassExamData.puntaje).toBe(100);
-    expect(resPassExamData.completado).toBe(true);
-    expect(resPassExamData.menu_desbloqueado).toBe('mis-anuncios');
+    const res = respuesta();
+    await educacionController.enviarExamen(
+      { params: { id: 1 }, usuario: { id: USUARIO }, body: { respuestas: { 1: [' B ', 'a'] } } },
+      res,
+    );
 
-    // 7. User lists modules again -> Modulo 2 should now be unlocked!
-    await educacionController.getModulos(reqUserList, resUserList);
-    const m1After = resUserListData.modulos.find(m => m.id === mod1Id);
-    const m2After = resUserListData.modulos.find(m => m.id === mod2Id);
+    // El orden y la caja no importan; el contenido sí.
+    expect(res.body).toMatchObject({ puntaje: 100, aprobado: true });
+  });
 
-    expect(m1After.completado).toBe(true);
-    expect(m2After.desbloqueado).toBe(true);
+  it('nunca devuelve las respuestas correctas ni las explicaciones', async () => {
+    const { res } = await enviar({ 1: '999', 2: 'F' });
 
-    // 8. Check sidebar progression status
-    let resSidebarData = null;
-    const resSidebar = {
-      json(data) { resSidebarData = data; return this; },
-      status(code) { this.statusCode = code; return this; }
-    };
-    await educacionController.getProgresoSidebar(reqUserList, resSidebar);
-    expect(resSidebarData.menusDesbloqueados).toContain('mis-anuncios');
+    const serializado = JSON.stringify(res.body);
+    expect(serializado).not.toContain('respuesta_correcta');
+    expect(serializado).not.toContain('explicacion');
+    expect(serializado).not.toContain('Asunción');
+  });
+
+  it('conserva el mejor puntaje entre intentos', async () => {
+    const progreso = progresoFalso({ puntaje_obtenido: 100, intentos: 1 });
+    await enviar({ 1: '999', 2: 'F' }, progreso);
+
+    // Reprobar después de haber aprobado no puede borrar el mejor puntaje.
+    expect(progreso.puntaje_obtenido).toBe(100);
+    expect(progreso.intentos).toBe(2);
+  });
+
+  it('al tercer intento fallido bloquea el examen por 4 horas', async () => {
+    const progreso = progresoFalso({ intentos_fallidos: 2 });
+    const { res } = await enviar({ 1: '999', 2: 'F' }, progreso);
+
+    expect(res.body.bloqueado).toBe(true);
+    expect(res.body.intentos_restantes).toBe(0);
+    expect(res.body.segundos_restantes).toBe(4 * 60 * 60);
+    expect(progreso.bloqueado_hasta).toBeInstanceOf(Date);
+  });
+
+  it('mientras está bloqueado no corrige y responde 403', async () => {
+    const enUnaHora = new Date(Date.now() + 60 * 60 * 1000);
+    const progreso = progresoFalso({ intentos_fallidos: 3, bloqueado_hasta: enUnaHora });
+    const { res } = await enviar({ 1: '1', 2: 'V' }, progreso);
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.bloqueado).toBe(true);
+    expect(progreso.save).not.toHaveBeenCalled();
+  });
+
+  it('cuando el bloqueo vence, se reinician los intentos fallidos', async () => {
+    const haceUnaHora = new Date(Date.now() - 60 * 60 * 1000);
+    const progreso = progresoFalso({ intentos_fallidos: 3, bloqueado_hasta: haceUnaHora });
+    const { res } = await enviar({ 1: '999', 2: 'F' }, progreso);
+
+    expect(res.statusCode).toBe(200);
+    // El contador arranca de cero: este fallo es el primero de la nueva tanda.
+    expect(res.body.intentos_fallidos).toBe(1);
+    expect(res.body.bloqueado).toBe(false);
+  });
+
+  it('devuelve 404 si el módulo no tiene examen activo', async () => {
+    ModuloEducacion.findByPk.mockResolvedValue(modulo({ examen: null }));
+
+    const res = respuesta();
+    await educacionController.enviarExamen(
+      { params: { id: 1 }, usuario: { id: USUARIO }, body: { respuestas: {} } },
+      res,
+    );
+
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('getProgresoSidebar', () => {
+  it('desbloquea el menú del módulo aprobado y deja bloqueado el resto', async () => {
+    ModuloEducacion.findAll.mockResolvedValue([
+      modulo({ id: 1, orden: 1, menu_desbloqueado: 'mis-anuncios', progresos: [{ examen_aprobado: true }] }),
+      modulo({ id: 2, orden: 2, titulo: 'Couriers', menu_desbloqueado: 'mis-pedidos', progresos: [] }),
+    ]);
+
+    const res = respuesta();
+    await educacionController.getProgresoSidebar({ usuario: { id: USUARIO } }, res);
+
+    expect(res.body.menusDesbloqueados).toContain('mis-anuncios');
+    expect(res.body.menusDesbloqueados).not.toContain('mis-pedidos');
+    expect(res.body.menusBloqueados['mis-pedidos']).toMatchObject({ modulo_id: 2, modulo_titulo: 'Couriers' });
+  });
+
+  it('ignora los módulos que no desbloquean ningún menú', async () => {
+    ModuloEducacion.findAll.mockResolvedValue([
+      modulo({ id: 1, menu_desbloqueado: null, progresos: [{ examen_aprobado: true }] }),
+    ]);
+
+    const res = respuesta();
+    await educacionController.getProgresoSidebar({ usuario: { id: USUARIO } }, res);
+
+    expect(res.body.menusDesbloqueados).toEqual([]);
+    expect(res.body.menusBloqueados).toEqual({});
   });
 });

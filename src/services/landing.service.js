@@ -990,10 +990,9 @@ class LandingService {
     if (!landing) throw new Error('Landing no encontrada.');
 
     // Contacto es la única de las 3 páginas fijas sin catálogo propio.
-    // Un funnel de producto individual (FunnelSelector/MerchantEditor)
-    // nunca tiene LandingItem — su producto vive en Landing.producto_id
-    // directo — así que se valida aparte, o "publicar" siempre fallaría
-    // con "sin productos" aunque sí tenga uno.
+    // Una landing legacy de producto nunca tiene LandingItem — su producto
+    // vive en Landing.producto_id directo — así que se valida aparte para
+    // no romper datos publicados antes de retirar el flujo de creación.
     if (activo && landing.tipo_pagina === 'funnel') {
       if (!landing.producto_id) throw new Error('No se puede publicar un funnel sin producto.');
     } else if (activo && landing.tipo_pagina !== 'contacto') {
@@ -2587,94 +2586,6 @@ class LandingService {
     };
   }
 
-  /**
-   * Fase 2: Instanciar Landing desde Template
-   */
-  static async instanciarDesdeTemplate(inquilinoId, tiendaId, productoId, templateId) {
-    const { LandingTemplate } = require('../models');
-    const template = await LandingTemplate.findByPk(templateId);
-    if (!template) {
-      throw new Error('El template seleccionado no existe.');
-    }
-
-    // tiendaId ya viene resuelto por usuario_id (resolverTiendaPropia en el
-    // controller) — buscar de nuevo solo por inquilino_id acá sería volver
-    // a introducir el bug: un tenant puede tener más de una Tienda.
-    const tienda = await Tienda.findOne({ where: { id: tiendaId, inquilino_id: inquilinoId } });
-    if (!tienda) {
-      throw new Error('Tienda no encontrada.');
-    }
-
-    const producto = await Producto.findOne({ where: { id: productoId, inquilino_id: inquilinoId } });
-    if (!producto) {
-      throw new Error('Producto no encontrado.');
-    }
-
-    // Idempotencia: Verificar si ya existe una landing para este producto
-    let landing = await Landing.findOne({
-      where: { tienda_id: tienda.id, producto_id: productoId }
-    });
-
-    if (landing) {
-      // Actualizar la existente (si el comercio cambia de idea y elige otro funnel)
-      await landing.update({
-        template_id: template.id,
-        template_version: template.version,
-        tipo_pagina: 'funnel',
-        content: landing.template_id !== template.id ? {} : landing.content,
-      });
-    } else {
-      // Crear nueva instancia de landing
-      const slugBase = `p-${producto.id}-${crypto.randomBytes(3).toString('hex')}`;
-      
-      landing = await Landing.create({
-        inquilino_id: inquilinoId,
-        tienda_id: tienda.id,
-        producto_id: producto.id,
-        nombre: `Funnel: ${producto.nombre} (${template.name})`,
-        slug: slugify(slugBase, { lower: true, strict: true }),
-        es_home: false,
-        tipo_pagina: 'funnel',
-        template_id: template.id,
-        template_version: template.version,
-        activo: false, // Inicia como borrador
-        content: {}, // Contenido vacío que llenará el wizard
-      });
-    }
-
-    return {
-      message: 'Funnel configurado con éxito',
-      landing_id: landing.id,
-      slug: landing.slug,
-      template_id: template.id,
-      schema: template.schema,
-      content: landing.content
-    };
-  }
-
-  // Phase 4: Schema-driven endpoints for Merchant Editor
-  static async obtenerLandingProducto(producto_id, tienda_id) {
-    const { LandingTemplate } = require('../models');
-    const landing = await Landing.findOne({
-      where: { producto_id, tienda_id },
-      include: [{
-        model: LandingTemplate,
-        as: 'template',
-        attributes: ['id', 'name', 'funnel_type', 'schema', 'design_tokens']
-      }]
-    });
-    return landing;
-  }
-
-  static async guardarLandingProducto(producto_id, tienda_id, content) {
-    const landing = await Landing.findOne({ where: { producto_id, tienda_id } });
-    if (!landing) throw new Error('Landing no encontrada para este producto.');
-    
-    // Solo permitimos actualizar el content
-    landing.content = content || {};
-    await landing.save();
-    return landing;
-  }
 }
 
 module.exports = LandingService;

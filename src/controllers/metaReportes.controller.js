@@ -83,6 +83,40 @@ async function eliminarCampana(req, res) {
 
 // ---- Importación de reportes ----
 
+/**
+ * Análisis previo (paso de revisión del asistente): no escribe nada, solo
+ * dice qué trae el archivo y a qué campaña iría cada dato.
+ */
+async function analizarCSV(req, res) {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Subí un archivo .csv.' });
+
+    const analisis = await MetaReportesService.analizarCSV(req.file.buffer, {
+      inquilino_id: req.usuario.tenantId,
+      nombre_archivo: req.file.originalname,
+    });
+
+    return res.json(analisis);
+  } catch (err) {
+    return manejarError(res, err, 'Error al analizar el reporte.');
+  }
+}
+
+/**
+ * `relaciones` llega como JSON en un campo de texto del multipart (el
+ * archivo va en el mismo request, así que no puede ser un body JSON).
+ */
+function parsearRelaciones(crudo) {
+  if (!crudo) return {};
+  if (typeof crudo === 'object') return crudo;
+  try {
+    const parseado = JSON.parse(crudo);
+    return parseado && typeof parseado === 'object' && !Array.isArray(parseado) ? parseado : {};
+  } catch {
+    throw new Error('El campo "relaciones" no es un JSON válido.');
+  }
+}
+
 async function importarCSV(req, res) {
   try {
     if (!req.file) return res.status(400).json({ message: 'Subí un archivo .csv.' });
@@ -92,6 +126,7 @@ async function importarCSV(req, res) {
       usuario_id: req.usuario.id,
       meta_integration_id: req.body.meta_integration_id || null,
       nombre_archivo: req.file.originalname,
+      relaciones: parsearRelaciones(req.body.relaciones),
     });
 
     return res.status(201).json(resultado);
@@ -102,7 +137,7 @@ async function importarCSV(req, res) {
 
 async function listarImportaciones(req, res) {
   try {
-    const importaciones = await MetaReportesService.listarImportaciones(req.usuario.tenantId);
+    const importaciones = await MetaReportesService.listarImportaciones(req.usuario.tenantId, req.body);
     return res.json(importaciones);
   } catch (err) {
     console.error('[meta-reportes] listarImportaciones:', err.message);
@@ -120,10 +155,13 @@ async function eliminarImportacion(req, res) {
 }
 
 // ---- Filas / métricas ----
+//
+// Estas consultas reciben los filtros en el body (POST): ver la cabecera
+// de routes/metaReportes.js para el motivo.
 
 async function listarFilas(req, res) {
   try {
-    const resultado = await MetaReportesService.listarFilas(req.usuario.tenantId, req.query);
+    const resultado = await MetaReportesService.listarFilas(req.usuario.tenantId, req.body);
     return res.json(resultado);
   } catch (err) {
     console.error('[meta-reportes] listarFilas:', err.message);
@@ -142,10 +180,19 @@ async function vincularFila(req, res) {
 
 async function metricasPorProducto(req, res) {
   try {
-    const metricas = await MetaReportesService.metricasPorProducto(req.usuario.tenantId, req.usuario.id, req.query);
+    const metricas = await MetaReportesService.metricasPorProducto(req.usuario.tenantId, req.usuario.id, req.body);
     return res.json(metricas);
   } catch (err) {
     return manejarError(res, err, 'Error al calcular métricas por producto.');
+  }
+}
+
+async function resumen(req, res) {
+  try {
+    const datos = await MetaReportesService.resumen(req.usuario.tenantId, req.usuario.id, req.body);
+    return res.json(datos);
+  } catch (err) {
+    return manejarError(res, err, 'Error al calcular el resumen.');
   }
 }
 
@@ -155,10 +202,12 @@ module.exports = {
   listarCampanas,
   actualizarCampana,
   eliminarCampana,
+  analizarCSV,
   importarCSV,
   listarImportaciones,
   eliminarImportacion,
   listarFilas,
   vincularFila,
   metricasPorProducto,
+  resumen,
 };

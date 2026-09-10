@@ -3,24 +3,26 @@ const { Op } = require('sequelize');
 const { sequelize, Plan, Suscripcion, PagoSuscripcion, Usuario, Tienda } = require('../models');
 const PagoParService = require('./payments/pagoParService');
 const parametros = require('./parametros.service');
+const AfiliadosService = require('./afiliados.service');
 
 const PLANES_PAGOS_BASE = [
   {
-    codigo: 'starter',
-    nombre: 'Starter',
-    resumen: 'Para activar tu primera tienda online con catálogo, landing y pedidos desde el primer día.',
+    codigo: 'founders',
+    nombre: 'Miembros Fundadores',
+    resumen: 'Oferta limitada para los primeros 300 clientes pagos en Paraguay, con precio fundador protegido mientras la suscripción permanezca activa.',
     precio: 47,
     moneda: 'USD',
     periodicidad: 'mensual',
     equivale_plan: 'pago',
     features: [
-      'Tienda y catálogo online',
-      'Landing con ficha seleccionable',
-      'Selección de productos desde Gesicomm',
-      'Pedidos y contactos desde el panel',
+      'Precio Fundador protegido de USD 47/mes',
+      'Acceso al ecosistema Gesicom y mejoras del nivel Fundador',
+      'Onboarding, Academia, Biblioteca Operativa y comunidad privada',
+      'Programa de Afiliados con 40% recurrente sobre suscripciones elegibles',
+      '50% OFF para Gesicom Certified Partner',
     ],
-    etiqueta: 'Para empezar',
-    cta: 'Activar Starter',
+    etiqueta: '300 cupos',
+    cta: 'Ser Fundador',
     destacado: true,
     orden: 1,
   },
@@ -33,7 +35,7 @@ const PLANES_PAGOS_BASE = [
     periodicidad: 'mensual',
     equivale_plan: 'pago',
     features: [
-      'Todo lo del plan Starter',
+      'Todo lo del plan Fundador',
       'Landings y embudos adicionales',
       'Configuración avanzada de productos',
       'Analítica comercial y píxeles',
@@ -153,7 +155,7 @@ class SuscripcionService {
    * Arranca el checkout de un plan.
    * @returns {{ payment_url, hash_pedido, suscripcion_id, referencia }}
    */
-  static async iniciarCheckout({ plan_codigo, email, nombre }) {
+  static async iniciarCheckout({ plan_codigo, email, nombre, afiliado_codigo }) {
     const correo = String(email || '').trim().toLowerCase();
     if (!correo || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(correo)) {
       throw Object.assign(new Error('Ingresá un correo válido.'), { status: 400 });
@@ -177,6 +179,7 @@ class SuscripcionService {
     }
 
     const gateway = await this.gatewayDeSistema();
+    const afiliado = await AfiliadosService.resolverActivo(afiliado_codigo);
 
     const { suscripcion, pago } = await sequelize.transaction(async (t) => {
       const suscripcion = await Suscripcion.create({
@@ -186,6 +189,8 @@ class SuscripcionService {
         nombre: nombre || null,
         estado: 'pendiente_pago',
         precio_pagado: plan.precio,
+        afiliado_id: afiliado?.id || null,
+        afiliado_codigo: afiliado?.codigo || (afiliado_codigo || null),
       }, { transaction: t });
 
       const pago = await PagoSuscripcion.create({
@@ -262,6 +267,7 @@ class SuscripcionService {
       }
 
       await suscripcion.update(cambios, { transaction: t });
+      await AfiliadosService.crearComisionPorPago(pago, t);
       return { yaEstaba: false, suscripcion };
     });
   }
@@ -360,7 +366,7 @@ class SuscripcionService {
    * PagoPar y deja la suscripción activa. Cuando se conecte PagoPar real, el
    * guard del frontend seguirá consultando estadoCuenta().
    */
-  static async simularPagoPagopar(usuarioId, planCodigo) {
+  static async simularPagoPagopar(usuarioId, planCodigo, afiliadoCodigo = null) {
     const usuario = await Usuario.findByPk(usuarioId);
     if (!usuario) {
       throw Object.assign(new Error('Usuario no encontrado.'), { status: 404 });
@@ -374,6 +380,8 @@ class SuscripcionService {
         estado_cuenta: await this.estadoCuenta(usuarioId),
       };
     }
+
+    const afiliado = await AfiliadosService.resolverActivo(afiliadoCodigo);
 
     const { suscripcion } = await sequelize.transaction(async (t) => {
       const plan = await this.asegurarPlanBase(planCodigo, t);
@@ -389,9 +397,11 @@ class SuscripcionService {
         precio_pagado: plan.precio,
         periodo_inicio: inicio,
         periodo_fin: fin,
+        afiliado_id: afiliado?.id || null,
+        afiliado_codigo: afiliado?.codigo || (afiliadoCodigo || null),
       }, { transaction: t });
 
-      await PagoSuscripcion.create({
+      const pago = await PagoSuscripcion.create({
         suscripcion_id: suscripcion.id,
         provider: 'pagopar_dummy',
         referencia: `DUMMY-PAGOPAR-${suscripcion.id}`,
@@ -406,6 +416,8 @@ class SuscripcionService {
           nota: 'Pago simulado para habilitar el flujo de onboarding.',
         },
       }, { transaction: t });
+
+      await AfiliadosService.crearComisionPorPago(pago, t);
 
       await usuario.update({ plan: 'pago' }, { transaction: t });
 

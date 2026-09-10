@@ -33,7 +33,7 @@ const LandingTemplate = sequelize.define('LandingTemplate', {
     allowNull: false,
     defaultValue: 'flexible',
     validate: { isIn: [['flexible', 'rigido', 'funnel', 'codigo']] },
-    comment: '"rigido" = uno de los templates fijos de LANDING de tienda (Fitness/Beauty/Tech/Básico): estructura hardcodeada en el frontend, el comercio solo edita contenido. "funnel" = embudo de un solo producto (ver funnel.service.js), también rígido pero módulo aparte — nunca aparece en el selector de landing y viceversa. "codigo" = lienzo en blanco: no hay estructura, el comercio escribe el HTML/CSS/JS de la landing a mano (ver landingCodigo.service.js). "flexible" = sistema de constructor (LandingSeccion), DEPRECADO.',
+    comment: '"rigido" = uno de los templates fijos de LANDING de tienda (Fitness/Beauty/Tech/Básico): estructura hardcodeada en el frontend, el comercio solo edita contenido. "funnel" = template legacy de embudos de un producto, conservado solo para datos existentes. "codigo" = lienzo en blanco: no hay estructura, el comercio escribe el HTML/CSS/JS de la landing a mano (ver landingCodigo.service.js). "flexible" = sistema de constructor (LandingSeccion), DEPRECADO.',
   },
   version: {
     type: DataTypes.INTEGER,

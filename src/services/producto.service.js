@@ -7,6 +7,17 @@ const { calcularPrecioEfectivo, validarPrecioMinimo } = require('../utils/precio
 const PricingService = require('./pricing.service');
 
 class ProductoService {
+  static async obtenerIdsAdministradores(inquilino_id) {
+    const { Usuario, Rol } = require('../models');
+    const administradores = await Usuario.findAll({
+      where: { inquilino_id },
+      attributes: ['id'],
+      include: [{ model: Rol, attributes: [], where: { nombre: 'administrador' }, required: true }],
+      raw: true,
+    });
+    return administradores.map(admin => admin.id);
+  }
+
   
   static async generarSlugUnico(nombre, inquilino_id, excluirId = null) {
     const base = slugify(nombre, { lower: true, strict: true });
@@ -73,7 +84,7 @@ class ProductoService {
 
     const where = { inquilino_id };
     if (activo !== undefined) where.activo = activo;
-    if (creado_por !== undefined) where.creado_por = creado_por;
+    if (esAdmin && creado_por !== undefined) where.creado_por = creado_por;
     if (destacado !== undefined) where.destacado = destacado;
     if (categoria_id) where.categoria_id = categoria_id;
     if (marca_id) where.marca_id = marca_id;
@@ -91,6 +102,23 @@ class ProductoService {
         { sku: { [Op.iLike]: `%${texto}%` } },
         { descripcion_corta: { [Op.iLike]: `%${texto}%` } },
       ];
+    }
+    if (!esAdmin && usuarioId != null) {
+      if (creado_por !== undefined || filtros.mios_solamente || filtros.solamenteMios) {
+        where.creado_por = usuarioId;
+      } else {
+        const administradoresIds = await this.obtenerIdsAdministradores(inquilino_id);
+        const creadoresVisibles = [...new Set([usuarioId, ...administradoresIds].filter(id => id != null))];
+        where[Op.and] = [
+          ...(where[Op.and] || []),
+          {
+            [Op.or]: [
+              { creado_por: null },
+              { creado_por: { [Op.in]: creadoresVisibles } },
+            ],
+          },
+        ];
+      }
     }
 
     const filtrosPorIds = [];
@@ -203,8 +231,17 @@ class ProductoService {
   }
 
   static async detalle(id, inquilino_id, esAdmin, usuarioId = null) {
+    const where = { id, inquilino_id };
+    if (!esAdmin && usuarioId != null) {
+      const administradoresIds = await this.obtenerIdsAdministradores(inquilino_id);
+      const creadoresVisibles = [...new Set([usuarioId, ...administradoresIds].filter(id => id != null))];
+      where[Op.or] = [
+        { creado_por: null },
+        { creado_por: { [Op.in]: creadoresVisibles } },
+      ];
+    }
     const producto = await Producto.findOne({
-      where: { id, inquilino_id },
+      where,
       // Sin includes, totalmente aislado
     });
 

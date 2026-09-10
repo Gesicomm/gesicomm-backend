@@ -67,6 +67,16 @@ const Usuario = sequelize.define('Usuario', {
     allowNull: true,
     comment: 'Timestamp de expiración del código OTP. El código es válido por 15 minutos.',
   },
+  password_reset_token_hash: {
+    type: DataTypes.STRING(64),
+    allowNull: true,
+    comment: 'Hash SHA-256 del token de recuperación de contraseña. El token crudo solo viaja por email.',
+  },
+  password_reset_expira: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Timestamp de expiración del enlace de recuperación de contraseña.',
+  },
 }, {
   tableName: 'usuarios',
   timestamps: true,

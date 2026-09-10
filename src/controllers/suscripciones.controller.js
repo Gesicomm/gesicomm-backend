@@ -3,6 +3,42 @@ const SuscripcionService = require('../services/suscripcion.service');
 const PagoParService = require('../services/payments/pagoParService');
 const parametros = require('../services/parametros.service');
 
+const AFILIADOS_DEFAULT = {
+  activo: true,
+  comision_pct: 40,
+  recurrencia: 'Recurrente mientras el cliente referido permanezca activo y al dia.',
+  base_comisionable: 'Suscripcion SaaS elegible efectivamente cobrada por Gesicom.',
+  exclusiones: [
+    'Autorreferidos.',
+    'Cancelaciones, devoluciones y contracargos.',
+    'Servicios adicionales, implementaciones, consumos, impuestos u otros conceptos no SaaS.',
+  ],
+  condiciones: [
+    'La comision se calcula solo sobre pagos cobrados.',
+    'El cliente referido debe permanecer activo y con pagos al dia.',
+    'Gesicom puede ajustar reglas operativas del programa y comunicar cambios relevantes.',
+  ],
+};
+
+function listaLimpia(valor, fallback) {
+  const entrada = Array.isArray(valor) ? valor : fallback;
+  return entrada.map(v => String(v || '').trim()).filter(Boolean);
+}
+
+function normalizarAfiliadosConfig(payload = {}) {
+  const comision = Number(payload.comision_pct ?? AFILIADOS_DEFAULT.comision_pct);
+  return {
+    ...AFILIADOS_DEFAULT,
+    ...payload,
+    activo: payload.activo !== undefined ? !!payload.activo : AFILIADOS_DEFAULT.activo,
+    comision_pct: Math.max(0, Math.min(100, Number.isFinite(comision) ? comision : AFILIADOS_DEFAULT.comision_pct)),
+    recurrencia: String(payload.recurrencia || AFILIADOS_DEFAULT.recurrencia).trim(),
+    base_comisionable: String(payload.base_comisionable || AFILIADOS_DEFAULT.base_comisionable).trim(),
+    exclusiones: listaLimpia(payload.exclusiones, AFILIADOS_DEFAULT.exclusiones),
+    condiciones: listaLimpia(payload.condiciones, AFILIADOS_DEFAULT.condiciones),
+  };
+}
+
 /** GET /api/planes — catálogo público. */
 exports.listarPlanes = async (req, res) => {
   try {
@@ -26,8 +62,8 @@ exports.miEstado = async (req, res) => {
 /** POST /api/suscripciones/pagopar-dummy — simula un pago acreditado en PagoPar. */
 exports.pagoDummyPagopar = async (req, res) => {
   try {
-    const { plan_codigo } = req.body || {};
-    const resultado = await SuscripcionService.simularPagoPagopar(req.usuario.id, plan_codigo);
+    const { plan_codigo, afiliado_codigo } = req.body || {};
+    const resultado = await SuscripcionService.simularPagoPagopar(req.usuario.id, plan_codigo, afiliado_codigo);
     return res.status(resultado.ya_estaba_activa ? 200 : 201).json({
       message: resultado.ya_estaba_activa
         ? 'Tu plan ya estaba activo.'
@@ -44,8 +80,8 @@ exports.pagoDummyPagopar = async (req, res) => {
 /** POST /api/suscripciones/checkout — arranca el pago de un plan. */
 exports.iniciarCheckout = async (req, res) => {
   try {
-    const { plan_codigo, email, nombre } = req.body || {};
-    const resultado = await SuscripcionService.iniciarCheckout({ plan_codigo, email, nombre });
+    const { plan_codigo, email, nombre, afiliado_codigo } = req.body || {};
+    const resultado = await SuscripcionService.iniciarCheckout({ plan_codigo, email, nombre, afiliado_codigo });
     res.json(resultado);
   } catch (error) {
     const status = error.status || 500;
@@ -178,6 +214,71 @@ exports.guardarParametros = async (req, res) => {
   } catch (error) {
     console.error('[Parametros] Error al guardar:', error);
     res.status(500).json({ error: 'No se pudieron guardar los parámetros.' });
+  }
+};
+
+/** GET /api/config/payment-gateways/afiliados — reglas del programa. */
+exports.obtenerAfiliadosConfig = async (req, res) => {
+  try {
+    const valores = await parametros.obtenerVarios([
+      'AFILIADOS_PROGRAMA_ACTIVO',
+      'AFILIADOS_COMISION_PCT',
+      'AFILIADOS_REGLAS_JSON',
+    ]);
+
+    let reglas = {};
+    if (valores.AFILIADOS_REGLAS_JSON) {
+      try {
+        reglas = JSON.parse(valores.AFILIADOS_REGLAS_JSON);
+      } catch {
+        reglas = {};
+      }
+    }
+
+    res.json(normalizarAfiliadosConfig({
+      ...reglas,
+      activo: valores.AFILIADOS_PROGRAMA_ACTIVO == null
+        ? AFILIADOS_DEFAULT.activo
+        : valores.AFILIADOS_PROGRAMA_ACTIVO === 'true',
+      comision_pct: valores.AFILIADOS_COMISION_PCT ?? AFILIADOS_DEFAULT.comision_pct,
+    }));
+  } catch (error) {
+    console.error('[Afiliados] Error al obtener configuración:', error);
+    res.status(500).json({ message: 'No se pudo cargar el programa de afiliados.' });
+  }
+};
+
+/** PUT /api/config/payment-gateways/afiliados — guarda reglas del programa. */
+exports.guardarAfiliadosConfig = async (req, res) => {
+  try {
+    const config = normalizarAfiliadosConfig(req.body || {});
+    const reglas = {
+      recurrencia: config.recurrencia,
+      base_comisionable: config.base_comisionable,
+      exclusiones: config.exclusiones,
+      condiciones: config.condiciones,
+    };
+
+    await parametros.guardar('AFILIADOS_PROGRAMA_ACTIVO', config.activo ? 'true' : 'false', {
+      grupo: 'afiliados',
+      descripcion: 'Activa o pausa el Programa de Afiliados Gesicom.',
+      secreto: false,
+    });
+    await parametros.guardar('AFILIADOS_COMISION_PCT', String(config.comision_pct), {
+      grupo: 'afiliados',
+      descripcion: 'Porcentaje recurrente sobre suscripciones SaaS elegibles cobradas.',
+      secreto: false,
+    });
+    await parametros.guardar('AFILIADOS_REGLAS_JSON', JSON.stringify(reglas), {
+      grupo: 'afiliados',
+      descripcion: 'Reglas comerciales visibles del Programa de Afiliados.',
+      secreto: false,
+    });
+
+    res.json(config);
+  } catch (error) {
+    console.error('[Afiliados] Error al guardar configuración:', error);
+    res.status(500).json({ message: 'No se pudo guardar el programa de afiliados.' });
   }
 };
 

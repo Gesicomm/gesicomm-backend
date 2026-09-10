@@ -244,6 +244,97 @@ class EmailService {
       return { enviado: false, error: err.message };
     }
   }
+
+  /**
+   * Envía el enlace de recuperación de contraseña.
+   */
+  static async enviarRecuperacionPassword({ email, nombre, urlReset }) {
+    try {
+      const transporter = this.getTransporter();
+      if (!transporter) {
+        logger.warn({
+          mensaje: '[EmailService] SMTP no configurado. Omitiendo envío de recuperación de contraseña.',
+          email,
+        });
+        return { enviado: false, razon: 'SMTP no configurado' };
+      }
+
+      const remitente = process.env.SMTP_FROM || `"Gesicomm" <${process.env.SMTP_USER}>`;
+      const replyTo = process.env.SMTP_REPLY_TO || 'contacto@gesicomm.com';
+
+      const html = `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Restablecer contraseña</title>
+  <style>
+    body { margin: 0; padding: 0; background-color: #0b0f17; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #e2e8f0; }
+    .wrapper { max-width: 600px; margin: 40px auto; padding: 0 20px; }
+    .card { background-color: #131b2e; border: 1px solid #1e293b; border-radius: 16px; padding: 36px 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+    .logo { font-size: 20px; font-weight: 700; color: #38bdf8; letter-spacing: -0.02em; margin-bottom: 24px; }
+    h1 { font-size: 22px; font-weight: 700; color: #f8fafc; margin: 0 0 12px 0; letter-spacing: -0.02em; }
+    p { font-size: 15px; line-height: 1.6; color: #94a3b8; margin: 0 0 18px 0; }
+    .btn-container { text-align: center; margin: 30px 0 20px 0; }
+    .btn { display: inline-block; background-color: #0284c7; color: #ffffff !important; text-decoration: none; font-weight: 700; font-size: 15px; padding: 13px 26px; border-radius: 10px; box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3); }
+    .warning { background-color: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 10px; padding: 14px 16px; margin: 20px 0; font-size: 13px; color: #94a3b8; line-height: 1.5; }
+    .footer { border-top: 1px solid #1e293b; margin-top: 32px; padding-top: 20px; font-size: 12px; color: #64748b; text-align: center; line-height: 1.5; word-break: break-word; }
+    .footer a { color: #38bdf8; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="card">
+      <div class="logo">Gesicomm</div>
+      <h1>Restablecé tu contraseña</h1>
+      <p>Hola, <strong style="color:#e2e8f0">${nombre || 'usuario'}</strong>. Recibimos una solicitud para cambiar la contraseña de tu cuenta.</p>
+
+      <div class="btn-container">
+        <a href="${urlReset}" class="btn" target="_blank" rel="noopener noreferrer">Crear nueva contraseña</a>
+      </div>
+
+      <div class="warning">
+        Este enlace vence en 1 hora y se puede usar una sola vez. Si no pediste este cambio, ignorá este correo.
+      </div>
+
+      <div class="footer">
+        Si el botón no funciona, copiá y pegá este enlace en tu navegador:<br>
+        <a href="${urlReset}">${urlReset}</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+      `;
+
+      const text = `Hola ${nombre || ''},\n\nRecibimos una solicitud para restablecer tu contraseña de Gesicomm.\n\nAbrí este enlace para crear una nueva contraseña:\n${urlReset}\n\nEl enlace vence en 1 hora y se puede usar una sola vez. Si no pediste este cambio, ignorá este correo.\n\nGesicomm\ncontacto@gesicomm.com`;
+
+      const info = await transporter.sendMail({
+        from: remitente,
+        replyTo,
+        to: email,
+        subject: 'Restablecé tu contraseña de Gesicomm',
+        text,
+        html,
+      });
+
+      logger.info({
+        mensaje: '[EmailService] Recuperación de contraseña enviada.',
+        messageId: info.messageId,
+        destinatario: email,
+      });
+
+      return { enviado: true, messageId: info.messageId };
+    } catch (err) {
+      logger.error({
+        mensaje: '[EmailService] Error al enviar recuperación de contraseña:',
+        error: err.message,
+        destinatario: email,
+      });
+      return { enviado: false, error: err.message };
+    }
+  }
 }
 
 module.exports = EmailService;

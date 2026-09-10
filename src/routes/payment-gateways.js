@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { verificarToken } = require('../middleware/autenticacion');
+const { soloAdministrador } = require('../middleware/soloAdministrador');
 const ctrl = require('../controllers/paymentGateways.controller');
 const suscripcionesCtrl = require('../controllers/suscripciones.controller');
 
@@ -13,7 +14,9 @@ router.post('/pagopar/consultar', verificarToken, ctrl.consultarPedidoPagopar);
 // Parametros del sistema (credenciales de PagoPar de Gesicomm). Se montan
 // bajo /api/config, junto a las pasarelas, pero son de OTRA naturaleza: estas
 // son del sistema, las de arriba son de cada comercio.
-router.get('/parametros', verificarToken, suscripcionesCtrl.listarParametros);
-router.put('/parametros', verificarToken, suscripcionesCtrl.guardarParametros);
+router.get('/parametros', verificarToken, soloAdministrador, suscripcionesCtrl.listarParametros);
+router.put('/parametros', verificarToken, soloAdministrador, suscripcionesCtrl.guardarParametros);
+router.get('/afiliados', verificarToken, soloAdministrador, suscripcionesCtrl.obtenerAfiliadosConfig);
+router.put('/afiliados', verificarToken, soloAdministrador, suscripcionesCtrl.guardarAfiliadosConfig);
 
 module.exports = router;

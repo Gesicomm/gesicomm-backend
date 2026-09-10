@@ -1,5 +1,6 @@
 const PrecioUsuarioService = require('../services/precioUsuario.service');
-const { sequelize, Categoria, Producto, ProductoCombo, ProductoImagen, PrecioUsuario, Marca, Proveedor, ComboConfiguracion } = require('../models');
+const { sequelize, Categoria, Producto, ProductoCombo, ProductoImagen, PrecioUsuario, Marca, Proveedor, ComboConfiguracion, Usuario } = require('../models');
+const { Op } = require('sequelize');
 
 jest.mock('../models', () => ({
   sequelize: {
@@ -23,6 +24,7 @@ jest.mock('../models', () => ({
   PrecioUsuario: {
     findAll: jest.fn(),
     findOne: jest.fn(),
+    findOrCreate: jest.fn(),
   },
   Marca: {
     findAll: jest.fn(),
@@ -41,12 +43,18 @@ jest.mock('../models', () => ({
       escenarios_descuento: [0, 5, 10],
     }]),
   },
+  Usuario: {
+    findAll: jest.fn(),
+  },
+  Rol: {},
 }));
 
 describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     PrecioUsuario.findAll.mockResolvedValue([]);
+    PrecioUsuario.findOrCreate.mockResolvedValue([{ precio: '120000', save: jest.fn() }]);
+    Usuario.findAll.mockResolvedValue([{ id: 1 }]);
   });
 
   test('incluye filtro p.creado_por = :usuario_id en la consulta SQL cuando solamenteMios es true', async () => {
@@ -85,7 +93,7 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     expect(resultado.items[0].creado_por).toBe(42);
   });
 
-  test('no incluye filtro p.creado_por cuando solamenteMios es false o no se especifica', async () => {
+  test('en modo usuario, todos incluye solo productos globales/admin y propios', async () => {
     sequelize.query
       .mockResolvedValueOnce([{ total: 0 }])
       .mockResolvedValueOnce([])
@@ -95,10 +103,52 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, {});
 
     expect(sequelize.query).toHaveBeenCalled();
+    const countSql = sequelize.query.mock.calls[0][0];
+    const dataSql = sequelize.query.mock.calls[1][0];
+
+    expect(countSql).toContain('p.creado_por IS NULL');
+    expect(countSql).toContain('p.creado_por = :usuario_id');
+    expect(countSql).toContain("r.nombre = 'administrador'");
+    expect(dataSql).toContain('p.creado_por IS NULL');
+    expect(dataSql).toContain('p.creado_por = :usuario_id');
+    expect(dataSql).toContain("r.nombre = 'administrador'");
+    expect(resultado.total).toBe(0);
+  });
+
+  test('en modo administrador, todos no restringe por creador', async () => {
+    sequelize.query
+      .mockResolvedValueOnce([{ total: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, {}, true);
+
+    expect(sequelize.query).toHaveBeenCalled();
     const dataSql = sequelize.query.mock.calls[1][0];
 
     expect(dataSql).not.toContain('p.creado_por = :usuario_id');
+    expect(dataSql).not.toContain('p.creado_por IS NULL');
     expect(resultado.total).toBe(0);
+  });
+
+  test('guardar precio de producto exige producto global/admin o propio para usuarios normales', async () => {
+    Producto.findOne.mockResolvedValueOnce({
+      id: 10,
+      precio_minimo: null,
+    });
+
+    await PrecioUsuarioService.guardarPrecioProducto(42, 1, 10, 120000);
+
+    const [{ where }] = Producto.findOne.mock.calls[0];
+    expect(where).toMatchObject({ id: 10, inquilino_id: 1, activo: true });
+    expect(where[Op.or]).toEqual([
+      { creado_por: null },
+      { creado_por: { [Op.in]: [42, 1] } },
+    ]);
+    expect(PrecioUsuario.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+      where: { usuario_id: 42, tipo: 'producto', referencia_id: 10 },
+    }));
   });
 });
 

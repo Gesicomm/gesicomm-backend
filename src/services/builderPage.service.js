@@ -134,11 +134,11 @@ class BuilderPageService {
    */
   static async generarSlugUnico(nombre, ambito = {}) {
     const base = slugify(String(nombre || ''), { lower: true, strict: true }) || 'pagina';
-    
-    if (!esSlugReservado(base) && !(await this.slugOcupado(base, ambito))) {
-      return base;
-    }
 
+    // Sin atajo cuando la base está libre: el sufijo tiene que ir SIEMPRE.
+    // Devolver "landing" pelado la primera vez rompe las dos razones de
+    // ser de este método — vuelve la URL enumerable y le regala el slug
+    // global al primero que llegue.
     let slug;
     do {
       slug = `${base}-${crypto.randomBytes(3).toString('hex')}`.slice(0, MAX_SLUG);
