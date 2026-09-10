@@ -28,7 +28,12 @@ const { descontarStockYSnapshot } = require('../../controllers/envioController')
 const PRIVATE = 'private_de_prueba';
 const PUBLIC = 'public_de_prueba';
 const HASH = 'ad57c9c94f745fdd9bc9093bb4092976';
-const MONTO = 175000;
+// Lo que se le cobra al comprador es el `monto` del pedido y nada más: el
+// delivery (costo_envio: 25.000 en el mock) NO se le suma — es costo del
+// comercio, no del cliente, y el checkout público le muestra este mismo
+// número. Antes acá se esperaba 175.000 (monto + flete), que era justo el
+// importe de más que se le terminaba cobrando.
+const MONTO = 150000;
 
 const gateway = { private_key: PRIVATE, public_key: PUBLIC };
 const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex');

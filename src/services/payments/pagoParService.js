@@ -103,8 +103,12 @@ class PagoParService {
     // ruido. Lo que autentica el callback es la firma, no el formato del id.
     const orderId = String(envio.id);
     
-    // Total
-    const amount = envio.monto + (envio.costo_envio || 0);
+    // Se cobra el `monto` y nada más: el delivery no se le carga al
+    // comprador. El checkout público le muestra ese mismo número (subtotal −
+    // cupón), así que sumarle acá el flete le cobraba Gs de más respecto de
+    // lo que aceptó en pantalla — y de lo que queda registrado en el pedido.
+    // El costo del courier vive aparte, en `costo_envio`, para el arqueo.
+    const amount = envio.monto;
 
     const token = this.generateToken(gateway.private_key, orderId, amount);
 

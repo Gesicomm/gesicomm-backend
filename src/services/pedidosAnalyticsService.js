@@ -441,18 +441,21 @@ function getProductosAnalytics(envios) {
     // "Facturación Real" decía Gs 1.044.000 — el mismo período, dos cifras.
     // Repartiendo el monto, la tabla de productos cierra siempre con el KPI.
     let facturacionPorItem = null;
+    let ventaProductoPorItem = null;
     let costoDirectoPorItem = null;
     let comisionPorItem = null;
     let ivaPorItem = null;
     let envioPorItem = null;
-    let envioAbsorbidoPorItem = null;
     if (isEntregado && e.items && e.items.length > 0) {
       const subtotales = e.items.map(it => Number(it.subtotal || (it.precio_unitario * (it.cantidad || 1)) || 0));
       const sumaSub = subtotales.reduce((a, b) => a + b, 0);
-      // Se reparte la venta de PRODUCTO, no el monto crudo: si el flete venía
-      // adentro del monto, repartirlo le inventaba venta al producto (AdelFit
-      // aparecía vendiendo Gs 199.000 cuando su precio era Gs 169.000).
-      const montoPedido = desgloseEnvio(e).venta_producto;
+      // Se reparte el MONTO del pedido, igual que la tarjeta de Rentabilidad
+      // y el gráfico: los tres tienen que contar la misma plata. Y el envío
+      // completo entra como costo, también igual que los otros dos. Antes
+      // esta tabla repartía solo la venta de producto y restaba solo el
+      // flete "absorbido": daba la misma ganancia, pero con una venta y un
+      // costo que no coincidían con los de las otras dos vistas.
+      const montoPedido = Number(e.monto || 0);
       facturacionPorItem = sumaSub > 0
         ? subtotales.map(s => Math.round((s / sumaSub) * montoPedido))
         // Sin precios en las líneas no hay proporción que aplicar: se reparte
@@ -478,10 +481,10 @@ function getProductosAnalytics(envios) {
       // el costo de otro. La información de a qué pedido pertenecía cada
       // costo existe — promediarla era perderla.
       //
-      // Del flete entra SOLO lo absorbido. El que pagó el cliente no es
-      // costo del producto: entra y sale.
+      // El flete entra COMPLETO: siempre se le paga al courier. Cuando el
+      // cliente lo cubrió, esa plata ya está sumada arriba dentro del monto
+      // repartido, así que se cancela sola y la ganancia no cambia.
       const montoFacturado = Number(e.monto || 0);
-      const dvPedido = desgloseEnvio(e);
       const comisionPedido = montoFacturado * (Number(e.comision_pct_aplicada || 0) / 100);
       const ivaPedido = e.quiere_factura ? montoFacturado * 0.10 : 0;
 
@@ -504,13 +507,12 @@ function getProductosAnalytics(envios) {
       };
       comisionPorItem = repartir(comisionPedido);
       ivaPorItem = repartir(ivaPedido);
-      // Dos repartos distintos del flete, porque son dos cosas distintas:
-      // el cobrado es informativo (cuánto delivery movió este producto) y el
-      // absorbido es costo real. Sin repartirlos, un pedido de dos productos
-      // le cargaba el flete entero a cada uno y el dato salía al doble.
-      envioPorItem = repartir(dvPedido.envio_cobrado);
-      envioAbsorbidoPorItem = repartir(dvPedido.envio_absorbido);
-      costoDirectoPorItem = comisionPorItem.map((c, i) => c + ivaPorItem[i] + envioAbsorbidoPorItem[i]);
+      envioPorItem = repartir(Number(e.costo_envio || 0));
+      costoDirectoPorItem = comisionPorItem.map((c, i) => c + ivaPorItem[i] + envioPorItem[i]);
+      // La venta SIN el flete que venía adentro del monto. No entra en la
+      // cuenta de la ganancia — se guarda solo para que el Margen Bruto
+      // siga midiendo el producto puro y no se infle con el envío.
+      ventaProductoPorItem = repartir(desgloseEnvio(e).venta_producto);
     }
 
     if (e.items && e.items.length > 0) {
@@ -542,12 +544,13 @@ function getProductosAnalytics(envios) {
             // pueda mostrar de qué está hecho el Costo sin recalcular nada.
             costo_comision: 0,
             costo_iva: 0,
-            // Flete que puso el negocio en los pedidos de este producto:
-            // esto SÍ es costo suyo y está dentro de costo_directo_pedido.
-            costo_envio_absorbido: 0,
-            // Flete que puso el cliente. NO es costo del producto; se
-            // acumula solo para poder mostrarlo como dato en el detalle.
-            envio_de_sus_pedidos: 0,
+            // Envío de los pedidos de este producto, completo. Es costo, sin
+            // vueltas: al courier se le paga siempre.
+            costo_envio: 0,
+            // La venta sin el flete que venía adentro del monto. Fuera de la
+            // cuenta de la ganancia: solo alimenta el Margen Bruto, para que
+            // ese número siga midiendo el producto y no el envío.
+            venta_producto_total: 0,
             unidades_perdidas: 0,
             perdida: 0,
             canales: { WEB: 0, WHATSAPP: 0, OTROS: 0 }
@@ -565,8 +568,8 @@ function getProductosAnalytics(envios) {
           p.costo_directo_pedido += costoDirectoPorItem ? costoDirectoPorItem[idxItem] : 0;
           p.costo_comision += comisionPorItem ? comisionPorItem[idxItem] : 0;
           p.costo_iva += ivaPorItem ? ivaPorItem[idxItem] : 0;
-          p.costo_envio_absorbido += envioAbsorbidoPorItem ? envioAbsorbidoPorItem[idxItem] : 0;
-          p.envio_de_sus_pedidos += envioPorItem ? envioPorItem[idxItem] : 0;
+          p.costo_envio += envioPorItem ? envioPorItem[idxItem] : 0;
+          p.venta_producto_total += ventaProductoPorItem ? ventaProductoPorItem[idxItem] : 0;
           p.costo_total += costoDeItem(item);
         }
         if (isDevuelto) p.devueltos += 1;
@@ -1474,26 +1477,27 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     p.perdida = Math.round(p.perdida);
     p.rentabilidad = p.venta > 0 ? Number(((p.ganancia / p.venta) * 100).toFixed(1)) : 0;
 
-    // Margen bruto = solo venta − mercadería. Separa las dos preguntas que
-    // antes venían mezcladas en un número: "¿este producto está bien
-    // pescado?" (margen bruto) y "¿me lo comen los gastos?" (ganancia).
-    p.margen_bruto = Math.round(p.venta - p.costo_total);
-    p.pct_margen_bruto = p.venta > 0 ? Number(((p.margen_bruto / p.venta) * 100).toFixed(1)) : 0;
+    // Margen bruto = precio del producto − mercadería, SIN el envío de por
+    // medio. Se calcula sobre `venta_producto_total` y no sobre `venta`,
+    // porque `venta` puede traer adentro el flete que se le cobró al
+    // cliente: mezclarlo inflaría el margen y dejaría de responder la
+    // pregunta que importa — "¿este producto está bien pescado?".
+    const ventaProducto = Math.round(p.venta_producto_total);
+    p.margen_bruto = Math.round(ventaProducto - p.costo_total);
+    p.pct_margen_bruto = ventaProducto > 0 ? Number(((p.margen_bruto / ventaProducto) * 100).toFixed(1)) : 0;
 
     p.costo_detalle = {
       mercaderia: Math.round(p.costo_total),
+      envio: Math.round(p.costo_envio),
       comision: Math.round(p.costo_comision),
       iva: Math.round(p.costo_iva),
-      envio_absorbido: Math.round(p.costo_envio_absorbido),
       fijos: Math.round(p.costo_prorrateado),
     };
-    // Informativo, fuera del costo: este flete lo puso el cliente.
-    p.envio_de_sus_pedidos = Math.round(p.envio_de_sus_pedidos);
 
     // Bandera para que el frontend no tenga que decidir con qué umbral
     // pintar la alerta: un producto que se vende sin margen bruto es un
     // problema de precio, y hay que verlo antes de seguir vendiéndolo.
-    p.alerta = p.venta > 0 && p.margen_bruto <= 0
+    p.alerta = ventaProducto > 0 && p.margen_bruto <= 0
       ? 'sin_margen'
       : (p.ganancia < 0 ? 'ganancia_negativa' : null);
 
@@ -1506,7 +1510,8 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     delete p.costo_directo_pedido;
     delete p.costo_comision;
     delete p.costo_iva;
-    delete p.costo_envio_absorbido;
+    delete p.costo_envio;
+    delete p.venta_producto_total;
   }
 
   // Ganancia neta = margen bruto (ya neto de COGS/logística/comisión/IVA por

@@ -1120,7 +1120,7 @@ class LandingService {
     // veces la misma conversación e inflaba el CTR. Mismo criterio que
     // estadisticasRango(), que ya filtraba solo por Contact/Lead.
     const contactos = eventos.filter(e => ['Contact', 'Lead'].includes(e.tipo_evento));
-    const todosEventosConversion = eventos.filter(e => ['Contact', 'InitiateCheckout', 'AddToCart', 'Lead'].includes(e.tipo_evento));
+    const todosEventosConversion = eventos.filter(e => ['Contact', 'Lead'].includes(e.tipo_evento));
 
     const serieMap = new Map();
     for (let i = 0; i < diasNum; i++) {
@@ -1313,7 +1313,9 @@ class LandingService {
         let valorEvento = 0;
         items.forEach(it => {
           if (!it?.nombre) return;
-          productosMap.set(it.nombre, (productosMap.get(it.nombre) || 0) + (it.cantidad || 1));
+          if (['Contact', 'Lead'].includes(c.tipo_evento)) {
+            productosMap.set(it.nombre, (productosMap.get(it.nombre) || 0) + (it.cantidad || 1));
+          }
           if (Number.isFinite(it.precio)) valorEvento += it.precio * (it.cantidad || 1);
         });
         
@@ -1326,7 +1328,9 @@ class LandingService {
       }
       
       const nombre = c.payload?.custom_data?.content_name;
-      if (nombre) productosMap.set(nombre, (productosMap.get(nombre) || 0) + 1);
+      if (nombre && ['Contact', 'Lead'].includes(c.tipo_evento)) {
+        productosMap.set(nombre, (productosMap.get(nombre) || 0) + 1);
+      }
       const val = c.payload?.custom_data?.value;
       if (['Contact', 'InitiateCheckout', 'Lead'].includes(c.tipo_evento) && Number.isFinite(val)) {
         valorCarritosTotal += val;
@@ -2503,6 +2507,12 @@ class LandingService {
       referencia: referencia?.trim() || null,
       monto,
       costo_envio: costoEnvio,
+      // El checkout público NO le suma el flete al comprador: `monto` es
+      // subtotal − cupón, y el costo del courier queda como costo del
+      // comercio. Sin dejarlo explícito, estos pedidos tomaban el default
+      // 'cliente' y la reportería iba a leer que el flete lo pagó alguien
+      // que en realidad nunca lo pagó.
+      delivery_a_cargo: 'negocio',
       courier_id: courierIdDelivery,
       metodo_pago: 'Efectivo',
       estado: 'Pendiente',

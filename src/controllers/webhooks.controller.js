@@ -101,7 +101,10 @@ exports.pagoparWebhook = async (req, res) => {
     }
 
     // El monto llega como string decimal ("100000.00").
-    const montoEsperado = Number(envio.monto) + Number(envio.costo_envio || 0);
+    // Mismo criterio que pagoParService al generar el cobro: se espera el
+    // `monto` pelado, sin el flete. Si acá se sumara costo_envio, todo pago
+    // online quedaría marcado como "monto no coincide" en la conciliación.
+    const montoEsperado = Number(envio.monto);
     const montoRecibido = Math.round(parseFloat(datos.monto));
     if (Number.isNaN(montoRecibido) || montoRecibido !== Math.round(montoEsperado)) {
       console.warn(`[Webhook PagoPar] Monto no coincide para ${datos.numero_pedido}. Esperado: ${montoEsperado}, Recibido: ${datos.monto}`);
