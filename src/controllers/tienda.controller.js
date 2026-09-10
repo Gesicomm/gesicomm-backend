@@ -14,6 +14,7 @@
  */
 
 const TiendaService = require('../services/tienda.service');
+const AuthTracking = require('../services/authTracking.service');
 
 function manejarError(res, err, defaultMsg) {
   console.error('[tienda]', err.message);
@@ -34,6 +35,30 @@ async function obtener(req, res) {
 async function crear(req, res) {
   try {
     const tienda = await TiendaService.crear(req.usuario.id, req.usuario.tenantId, req.body);
+    if (req.body?.onboarding === true) {
+      await AuthTracking.registrarEventoConNotificacion({
+        tipo: 'onboarding_store_created',
+        req,
+        usuario: req.usuario,
+        metadata: {
+          tienda_id: tienda.id,
+          subdominio: tienda.subdominio,
+          ficha: req.body?.onboarding_ficha || null,
+        },
+      });
+
+      if (req.body?.onboarding_accion === 'configurar_mas_tarde') {
+        await AuthTracking.registrarEventoConNotificacion({
+          tipo: 'onboarding_skipped',
+          req,
+          usuario: req.usuario,
+          metadata: {
+            tienda_id: tienda.id,
+            subdominio: tienda.subdominio,
+          },
+        });
+      }
+    }
     return res.status(201).json(tienda);
   } catch (err) {
     return manejarError(res, err, 'Error al crear la tienda.');

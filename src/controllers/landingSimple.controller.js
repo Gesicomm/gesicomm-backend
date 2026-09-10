@@ -23,6 +23,7 @@ const multer = require('multer');
 const { Tienda } = require('../models');
 const LandingSimpleService = require('../services/landingSimple.service');
 const ImagenService = require('../services/imagen.service');
+const AuthTracking = require('../services/authTracking.service');
 
 const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
 const MAX_IMAGEN_BYTES = 1 * 1024 * 1024; // 1MB, mismo límite que landing.controller.js
@@ -109,6 +110,17 @@ async function crearDesdeOnboarding(req, res) {
       req.body.template_slug || 'basico',
       req.body.items || [],
     );
+    await AuthTracking.registrarEventoConNotificacion({
+      tipo: 'onboarding_landing_generated',
+      req,
+      usuario: req.usuario,
+      metadata: {
+        tienda_id: tienda.id,
+        landing_id: landing.id,
+        template_slug: req.body.template_slug || 'basico',
+        productos_seleccionados: Array.isArray(req.body.items) ? req.body.items.length : 0,
+      },
+    });
     return res.status(201).json(landing);
   } catch (err) {
     return manejarError(res, err, 'Error al generar la landing del onboarding.');

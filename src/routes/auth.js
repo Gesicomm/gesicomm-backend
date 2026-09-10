@@ -145,6 +145,10 @@ function enviarCookieToken(req, res, accessToken, refreshToken) {
   });
 }
 
+const EVENTOS_ONBOARDING = new Set([
+  'onboarding_started',
+]);
+
 // ============================================================
 // POST /api/auth/login
 // ============================================================
@@ -576,6 +580,27 @@ router.get('/me', verificarToken, async (req, res) => {
     permisos: req.usuario.permisos,
     tenantId: req.usuario.tenantId,
   });
+});
+
+// ============================================================
+// POST /api/auth/onboarding-event
+// Hitos livianos del onboarding que ocurren en frontend antes
+// de crear recursos persistentes.
+// ============================================================
+router.post('/onboarding-event', verificarToken, async (req, res) => {
+  const tipo = String(req.body?.tipo || '');
+  if (!EVENTOS_ONBOARDING.has(tipo)) {
+    return res.status(400).json({ message: 'Evento de onboarding no permitido.' });
+  }
+
+  await AuthTracking.registrarEventoConNotificacion({
+    tipo,
+    req,
+    usuario: req.usuario,
+    metadata: req.body?.metadata && typeof req.body.metadata === 'object' ? req.body.metadata : {},
+  });
+
+  return res.status(202).json({ ok: true });
 });
 
 // ============================================================

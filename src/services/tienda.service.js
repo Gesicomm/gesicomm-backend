@@ -106,7 +106,8 @@ class TiendaService {
     if (!valido) throw new Error(motivo);
     if (!(await subdominioDisponible(subdominio))) throw new Error('Ese subdominio ya está en uso.');
 
-    const plan = payload.plan || 'free';
+    const usuario = await Usuario.findByPk(usuario_id, { attributes: ['plan'] });
+    const plan = payload.plan !== undefined ? payload.plan : (usuario?.plan || 'pago');
     if (!PLANES_VALIDOS.has(plan)) throw new Error('plan debe ser "free" o "pago".');
 
     const errores = this.validarCamposComunes(payload);
@@ -124,10 +125,11 @@ class TiendaService {
       nombre: payload.nombre.trim(),
     });
 
-    // El plan es de la cuenta (Usuario), no de la tienda — ver comentario
-    // en Usuario.js. Se completa acá porque hoy el onboarding elige el
-    // plan en el mismo paso que crea la tienda.
-    await Usuario.update({ plan }, { where: { id: usuario_id } });
+    // El plan es de la cuenta (Usuario), no de la tienda. Si el onboarding
+    // llega después del cobro, se preserva el plan pago ya acreditado.
+    if (payload.plan !== undefined) {
+      await Usuario.update({ plan }, { where: { id: usuario_id } });
+    }
 
     return { ...this.serializar(tienda), plan };
   }

@@ -17,6 +17,22 @@ const EVENTOS_NOTIFICABLES = {
     titulo: 'Nuevo login',
     mensaje: ({ nombre, email }) => `${nombre || email || 'Un usuario'} inició sesión.`,
   },
+  onboarding_started: {
+    titulo: 'Onboarding iniciado',
+    mensaje: ({ nombre, email }) => `${nombre || email || 'Un usuario'} empezó a configurar su tienda.`,
+  },
+  onboarding_store_created: {
+    titulo: 'Tienda creada',
+    mensaje: ({ nombre, email }) => `${nombre || email || 'Un usuario'} creó la base de su tienda.`,
+  },
+  onboarding_skipped: {
+    titulo: 'Onboarding saltado',
+    mensaje: ({ nombre, email }) => `${nombre || email || 'Un usuario'} eligió configurar su tienda más tarde.`,
+  },
+  onboarding_landing_generated: {
+    titulo: 'Landing generada',
+    mensaje: ({ nombre, email }) => `${nombre || email || 'Un usuario'} generó su landing inicial desde onboarding.`,
+  },
 };
 
 function emailNormalizado(email) {
@@ -224,6 +240,9 @@ async function resumen({ dias = 30 } = {}) {
     usuariosVerificados,
     registrosPeriodo,
     loginsPeriodo,
+    onboardingIniciadosPeriodo,
+    onboardingLandingPeriodo,
+    onboardingSaltadosPeriodo,
     fallosPeriodo,
     sesionesActivas,
     notificacionesNoLeidas,
@@ -233,6 +252,9 @@ async function resumen({ dias = 30 } = {}) {
     Usuario.count({ where: { email_verificado: true } }),
     AuthEvent.count({ where: { tipo: 'register', created_at: { [Op.gte]: desde } } }),
     AuthEvent.count({ where: { tipo: 'login_success', created_at: { [Op.gte]: desde } } }),
+    AuthEvent.count({ where: { tipo: 'onboarding_started', created_at: { [Op.gte]: desde } } }),
+    AuthEvent.count({ where: { tipo: 'onboarding_landing_generated', created_at: { [Op.gte]: desde } } }),
+    AuthEvent.count({ where: { tipo: 'onboarding_skipped', created_at: { [Op.gte]: desde } } }),
     AuthEvent.count({ where: { resultado: 'fallo', created_at: { [Op.gte]: desde } } }),
     UserSession.count({ where: { estado: 'activa', ended_at: null, last_seen_at: { [Op.gte]: activoDesde } } }),
     AuthNotification.count({ where: { leida: false } }),
@@ -242,6 +264,8 @@ async function resumen({ dias = 30 } = {}) {
         COUNT(*) FILTER (WHERE tipo = 'register')::int AS registros,
         COUNT(*) FILTER (WHERE tipo = 'email_verified')::int AS verificaciones,
         COUNT(*) FILTER (WHERE tipo = 'login_success')::int AS logins,
+        COUNT(*) FILTER (WHERE tipo = 'onboarding_started')::int AS onboarding_started,
+        COUNT(*) FILTER (WHERE tipo = 'onboarding_landing_generated')::int AS onboarding_landing_generated,
         COUNT(*) FILTER (WHERE resultado = 'fallo')::int AS fallos
       FROM auth_events
       WHERE created_at >= :desde
@@ -256,11 +280,15 @@ async function resumen({ dias = 30 } = {}) {
     usuarios_pendientes: Math.max(usuariosTotal - usuariosVerificados, 0),
     registros_periodo: registrosPeriodo,
     logins_periodo: loginsPeriodo,
+    onboarding_iniciados_periodo: onboardingIniciadosPeriodo,
+    onboarding_landings_periodo: onboardingLandingPeriodo,
+    onboarding_saltados_periodo: onboardingSaltadosPeriodo,
     fallos_periodo: fallosPeriodo,
     sesiones_activas: sesionesActivas,
     notificaciones_no_leidas: notificacionesNoLeidas,
     nuevos_registros_24h: await AuthEvent.count({ where: { tipo: 'register', created_at: { [Op.gte]: desde24h } } }),
     nuevos_logins_24h: await AuthEvent.count({ where: { tipo: 'login_success', created_at: { [Op.gte]: desde24h } } }),
+    nuevos_onboarding_24h: await AuthEvent.count({ where: { tipo: 'onboarding_started', created_at: { [Op.gte]: desde24h } } }),
     serie,
   };
 }
