@@ -1,9 +1,10 @@
 'use strict';
 
-const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto, CategoriaCostoGasto, PaymentTransaction, CanalVenta, Landing, LandingEvento, Tienda, MetodoPago } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto, CategoriaCostoGasto, PaymentTransaction, CanalVenta, Landing, LandingEvento, Tienda, MetodoPago, MetaReporteFila, MetaCampanaInterna } = require('../models');
 const { Op, fn, col, literal } = require('sequelize');
 const sequelize = require('../config/database');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
+const MetaReportesService = require('./metaReportes.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 
 /**
@@ -219,17 +220,12 @@ function getKpisFinancieros(envios) {
     const isPerdido = ['cancelado', 'devuelto', 'perdido'].includes(st);
 
     if (isEntregado) {
-      // Facturación Real = el `monto` del pedido, tal cual quedó cargado.
-      // El check "Incluye delivery" ya decidió, al cargar el pedido, si el
-      // flete se suma o no ahí adentro — no hace falta (ni corresponde)
-      // volver a discriminar quién lo pagó para armar este número.
-      //
-      // "Envíos" es SIEMPRE el costo real pagado al courier
-      // (`costoLogisticoEntregados`): una sola suma, sin abrir por quién
-      // lo cubrió. Cuando el flete está adentro del monto, se resta acá y
-      // ya estaba sumado en la facturación → neto cero. Cuando no está
-      // adentro (delivery incluido = lo absorbió el negocio), solo resta.
-      facturacionEntregada += monto;
+      // Facturación Real = precio de venta del producto × unidades (nunca
+      // el flete, esté o no adentro del monto cobrado). "Envíos" abajo es
+      // SIEMPRE el costo completo pagado al courier
+      // (`costoLogisticoEntregados`), sin excepciones — las dos líneas son
+      // independientes, cada una su propia plata, sin repartos cruzados.
+      facturacionEntregada += desgloseEnvio(e).venta_producto;
       costoLogisticoEntregados += costoEnvio;
       pedidosEntregadosCount++;
 
@@ -262,9 +258,11 @@ function getKpisFinancieros(envios) {
   const costoComisionPorEntrega = pedidosEntregadosCount > 0 ? Math.round(costoComisionTotal / pedidosEntregadosCount) : 0;
 
   // Se resta el flete COMPLETO (costoLogisticoEntregados) siempre: el
-  // courier cobra el total, y cuando el flete está adentro del monto ya
-  // está sumado en `facturacionEntregada`, así que el pass-through cierra
-  // en cero solo.
+  // courier cobra el total, lo haya cubierto el cliente o el negocio.
+  // `facturacionEntregada` ya no lo lleva adentro (es puro precio de
+  // producto), así que acá no hay pass-through que cancelar: si el
+  // cliente pagó de más para cubrir el flete, esa plata no entra a esta
+  // cuenta — el flete es siempre y únicamente un costo, en su propia línea.
   const margenBrutoEstimado = facturacionEntregada - costoMercaderiaEntregada - costoComisionTotal - ivaFacturadoTotal - costoLogisticoEntregados;
   const pctMargenBruto = facturacionEntregada > 0 ? Number(((margenBrutoEstimado / facturacionEntregada) * 100).toFixed(1)) : 0;
 
@@ -296,14 +294,103 @@ function getKpisFinancieros(envios) {
 // de pedido (costo_envio, comisión, precio_costo de los ítems) — ver spec
 // del módulo, regla "no duplicar importes cuando un costo ya esté asociado
 // a una venta".
-async function getGastosOperativos(usuario_id, desde, hasta) {
-  const filas = await CostoGasto.findAll({
+/**
+ * Gasto de publicidad que YA está cargado en Ads & Campañas (los CSV
+ * importados de Meta Ads Manager), para el período del dashboard.
+ *
+ * Existe porque el gasto de Meta no se carga a mano en Costos y Gastos: se
+ * importa en su propio módulo. Antes el dashboard solo miraba CostoGasto y
+ * la línea "Meta (ads)" quedaba en cero (o en lo poco que se hubiera
+ * cargado a mano) aunque hubiera millones importados.
+ *
+ * PRORRATEO POR DÍAS: cada fila del CSV cubre un rango (el del export, que
+ * puede ser de meses) y no trae apertura diaria. Se asume gasto uniforme y
+ * se toma solo la parte de días que cae dentro del período consultado. Sin
+ * esto, mirar "agosto" contaría entero un export de enero-agosto, y la suma
+ * de los meses no daría el año.
+ *
+ * Se aplica el mismo multiplicador de IVA que la sección de Ads, para que
+ * las dos pantallas muestren el mismo número.
+ */
+async function getGastoMetaAds(inquilino_id, desde, hasta) {
+  if (!inquilino_id) return { total: 0, sin_atribuir: 0, directo_por_producto: {} };
+
+  const filas = await MetaReporteFila.findAll({
+    // Solapamiento de rangos. Las filas sin fechas quedan afuera a
+    // propósito: no se pueden atribuir a un período, y contarlas en todos
+    // inflaría cada consulta.
     where: {
-      usuario_id,
-      activo: true,
-      envio_id: null,
-      fecha: { [Op.between]: [desde, hasta] },
+      inquilino_id,
+      fecha_inicio: { [Op.ne]: null, [Op.lte]: hasta },
+      fecha_fin: { [Op.ne]: null, [Op.gte]: desde },
     },
+    attributes: ['fecha_inicio', 'fecha_fin', 'importe_gastado'],
+    // La campaña dice a qué producto(s) pertenece este gasto (ver
+    // MetaCampanaInterna.producto_ids). Sin esto, cada guaraní de Meta caía
+    // en la bolsa general y se repartía por unidades entre TODOS los
+    // productos — incluidos los que jamás tuvieron un peso invertido.
+    include: [{ model: MetaCampanaInterna, as: 'campana', attributes: ['producto_ids'] }],
+    raw: true,
+  });
+
+  const DIA_MS = 24 * 60 * 60 * 1000;
+  const aMs = (ymd) => Date.parse(`${String(ymd).slice(0, 10)}T00:00:00Z`);
+  const diasInclusive = (iniMs, finMs) => Math.floor((finMs - iniMs) / DIA_MS) + 1;
+
+  const desdeMs = aMs(desde);
+  const hastaMs = aMs(hasta);
+  let total = 0;
+  let sinAtribuir = 0;
+  const directoPorProducto = {};
+
+  for (const f of filas) {
+    const gasto = Number(f.importe_gastado) || 0;
+    if (!gasto) continue;
+
+    const iniMs = aMs(f.fecha_inicio);
+    const finMs = aMs(f.fecha_fin);
+    if (Number.isNaN(iniMs) || Number.isNaN(finMs) || finMs < iniMs) continue;
+
+    const diasFila = diasInclusive(iniMs, finMs);
+    const diasSolapados = diasInclusive(Math.max(iniMs, desdeMs), Math.min(finMs, hastaMs));
+    if (diasSolapados <= 0) continue;
+
+    const gastoDelPeriodo = gasto * (Math.min(diasSolapados, diasFila) / diasFila) * MetaReportesService.MULTIPLICADOR_IVA;
+    total += gastoDelPeriodo;
+
+    // Atribución directa: la campaña puede cubrir más de un producto (el
+    // formulario de Ads & Campañas lo permite), y cada uno de esos
+    // productos ve el 100% del gasto — no se parte entre ellos. Es la
+    // misma regla que ya documentaba el modelo (MetaCampanaInterna): sirve
+    // para responder "¿cuánto se invirtió en ads en ESTE producto?", no
+    // para que la suma de todos los productos dé el gasto total de Meta.
+    //
+    // Sin campaña vinculada (hoy, la gran mayoría de las filas del CSV) el
+    // gasto queda sin atribuir: no se le carga a ningún producto — solo
+    // resta de la Ganancia Neta global, igual que antes.
+    const productoIds = f['campana.producto_ids'];
+    if (Array.isArray(productoIds) && productoIds.length > 0) {
+      for (const pid of productoIds) {
+        directoPorProducto[pid] = (directoPorProducto[pid] || 0) + gastoDelPeriodo;
+      }
+    } else {
+      sinAtribuir += gastoDelPeriodo;
+    }
+  }
+
+  return { total, sin_atribuir: sinAtribuir, directo_por_producto: directoPorProducto };
+}
+
+async function getGastosOperativos(usuario_id, desde, hasta, inquilino_id = null) {
+  const whereGastos = {
+    usuario_id,
+    activo: true,
+    envio_id: null,
+    fecha: { [Op.between]: [desde, hasta] },
+  };
+
+  const filas = await CostoGasto.findAll({
+    where: whereGastos,
     attributes: ['tipo', [fn('SUM', col('importe')), 'total']],
     group: ['tipo'],
     raw: true,
@@ -312,12 +399,58 @@ async function getGastosOperativos(usuario_id, desde, hasta) {
   const gastos = Number(filas.find(f => f.tipo === 'gasto')?.total || 0);
   const costosAdicionales = Number(filas.find(f => f.tipo === 'costo')?.total || 0);
 
+  // Apertura por DESTINO DE ATRIBUCIÓN, que no es lo mismo que por tipo.
+  // De acá sale quién se hace cargo de cada guaraní en la tabla de productos:
+  //
+  //   producto_id con valor  -> directo, va entero a ESE producto. El usuario
+  //                             ya dijo a quién pertenece; repartirlo entre
+  //                             todos sería desarmar su decisión.
+  //   clasificacion variable -> general variable (comisiones bancarias,
+  //                             marketing sin producto puntual). SE
+  //                             prorratea por unidades, igual que los fijos,
+  //                             pero en su propia línea — no entra al punto
+  //                             de equilibrio, que solo usa costos fijos.
+  //   fijo o sin clasificar  -> gasto fijo general (alquiler, sueldos).
+  //                             Se prorratea por unidades y es lo único que
+  //                             alimenta el punto de equilibrio.
+  //
+  // Los NULL cuentan como fijos a propósito: hoy la clasificación es opcional
+  // y está escondida en "Opciones avanzadas", así que la enorme mayoría de los
+  // registros reales viene sin clasificar. Tratarlos como no-prorrateables
+  // dejaría la línea de gastos de todos los productos en cero y la tabla
+  // dejaría de cerrar con la Ganancia Neta. `sin_clasificar` se devuelve
+  // aparte para que el frontend pueda empujar al usuario a completarlo.
+  const filasAtribucion = await CostoGasto.findAll({
+    where: whereGastos,
+    attributes: ['producto_id', 'clasificacion', [fn('SUM', col('importe')), 'total']],
+    group: ['producto_id', 'clasificacion'],
+    raw: true,
+  });
+
+  let fijosGenerales = 0;
+  let variablesGenerales = 0;
+  let sinClasificar = 0;
+  const directosPorProducto = {};
+  for (const f of filasAtribucion) {
+    const importe = Number(f.total || 0);
+    if (f.producto_id) {
+      directosPorProducto[f.producto_id] = (directosPorProducto[f.producto_id] || 0) + importe;
+      continue;
+    }
+    if (f.clasificacion === 'variable') {
+      variablesGenerales += importe;
+    } else {
+      fijosGenerales += importe;
+      if (!f.clasificacion) sinClasificar += importe;
+    }
+  }
+
   // Desglose por categoría (Alquiler, Salarios, Publicidad/Meta Ads, etc.) —
   // no existe un concepto fijo de "gasto de Meta Ads" en el sistema: si el
   // usuario carga su gasto publicitario como CostoGasto con esa categoría,
   // este desglose es lo que lo saca a la luz en el dashboard.
   const filasCategoria = await CostoGasto.findAll({
-    where: { usuario_id, activo: true, envio_id: null, fecha: { [Op.between]: [desde, hasta] } },
+    where: whereGastos,
     attributes: [[fn('SUM', col('importe')), 'total']],
     include: [{ model: CategoriaCostoGasto, as: 'categoria', attributes: ['nombre'] }],
     group: ['categoria.id', 'categoria.nombre'],
@@ -327,7 +460,100 @@ async function getGastosOperativos(usuario_id, desde, hasta) {
     .map(f => ({ categoria: f['categoria.nombre'] || 'Sin categoría', total: Number(f.total || 0) }))
     .sort((a, b) => b.total - a.total);
 
-  return { gastos_operativos: gastos, costos_operativos_adicionales: costosAdicionales, total: gastos + costosAdicionales, por_categoria: porCategoria };
+  // El gasto de Meta NUNCA se prorratea a ciegas: si la fila vino de una
+  // campaña con producto(s) asignado(s) (Ads & Campañas), va 100% directo a
+  // esos productos (ver getGastoMetaAds); si no, queda sin atribuir — no hay
+  // forma honesta de decidir a qué producto imputar un CSV que no vino de
+  // una campaña propia. En ningún caso entra al punto de equilibrio.
+  const metaAds = await getGastoMetaAds(inquilino_id, desde, hasta);
+
+  return {
+    gastos_operativos: gastos,
+    costos_operativos_adicionales: costosAdicionales,
+    meta_ads: metaAds.total,
+    // total resta de la Ganancia Neta GLOBAL siempre completo, atribuido o
+    // no: la plata se gastó igual. Lo que cambia con este reparto es solo
+    // qué parte aparece en el costo de CADA producto.
+    total: gastos + costosAdicionales + metaAds.total,
+    por_categoria: porCategoria,
+    fijos_generales: fijosGenerales,
+    // Variable general SÍ se prorratea por unidades (misma mecánica que los
+    // fijos, en su propia línea) — es plata real del período y no hay razón
+    // para esconderla del costo del producto solo porque no está atada a
+    // uno puntual. Lo único que NO se prorratea es el gasto de Meta sin
+    // campaña vinculada (`meta_sin_atribuir`): ese sí queda fuera de la
+    // tabla porque además de no tener producto, suele ser un importe muy
+    // grande frente a la venta de un solo producto — prorratearlo lo
+    // desfiguraría.
+    variables_generales: variablesGenerales,
+    // Plata real del período que NO se le carga a ningún producto: solo el
+    // gasto de Meta de campañas sin vincular. Sigue restando de la Ganancia
+    // Neta (ya está en `total`), pero no aparece en costo_detalle de
+    // ninguna fila — por eso la suma de "Ganancia" de la tabla de productos
+    // puede dar más alta que la Ganancia Neta de arriba: la diferencia es
+    // exactamente este número.
+    gastos_generales_sin_atribuir: metaAds.sin_atribuir,
+    // {producto_id: monto} — 100% del gasto de Meta de cada campaña que
+    // tiene a ese producto en su `producto_ids`, sin partir entre productos
+    // aunque la campaña cubra varios (ver getGastoMetaAds).
+    meta_directo_por_producto: metaAds.directo_por_producto,
+    sin_clasificar: sinClasificar,
+    directos_por_producto: directosPorProducto,
+  };
+}
+
+/**
+ * Unidades entregadas por producto en el período, SIN los filtros de la
+ * pantalla (producto, confirmador, courier, canal, landing).
+ *
+ * Es el DENOMINADOR del prorrateo de gastos generales, y existe para que el
+ * numerador y el denominador vivan en el mismo universo. Los gastos del
+ * módulo Finanzas se consultan por usuario + período y no saben nada de los
+ * filtros del dashboard; si el denominador sí los conoce, el reparto se
+ * deforma. Filtrando por un producto, ese producto quedaba solo en el
+ * ranking y absorbía el alquiler y los sueldos de TODO el mes: las mismas 8
+ * unidades pasaban de Gs 1.000.000 a Gs 3.000.000 de "fijos" según si el
+ * filtro estaba puesto o no, y la ganancia del producto se multiplicaba por
+ * ocho sin que hubiera cambiado un solo dato.
+ *
+ * La clave de cada fila replica la de getProductosAnalytics (`p_<id>` para
+ * los ítems con producto, `name_<nombre>` para los cargados a mano) para que
+ * las dos vistas hablen del mismo producto.
+ */
+async function getUnidadesUniversoPeriodo(whereUniverso) {
+  const filas = await EnvioItem.findAll({
+    attributes: [
+      'producto_id',
+      'nombre_producto',
+      // COALESCE(NULLIF(...)) replica el `item.cantidad || 1` de
+      // getProductosAnalytics: una línea sin cantidad cuenta como una unidad
+      // en las dos, si no el denominador quedaría más chico que el numerador.
+      [fn('SUM', literal('COALESCE(NULLIF("EnvioItem"."cantidad", 0), 1)')), 'unidades'],
+    ],
+    include: [{
+      model: Envio,
+      attributes: [],
+      required: true,
+      where: { ...whereUniverso, estado: { [Op.iLike]: 'entregado' } },
+    }],
+    group: ['EnvioItem.producto_id', 'EnvioItem.nombre_producto'],
+    raw: true,
+  });
+
+  const porClave = new Map();
+  let total = 0;
+  for (const f of filas) {
+    const clave = f.producto_id ? `p_${f.producto_id}` : `name_${f.nombre_producto}`;
+    const unidades = Number(f.unidades || 0);
+    porClave.set(clave, (porClave.get(clave) || 0) + unidades);
+    total += unidades;
+  }
+  return { porClave, total };
+}
+
+/** Misma clave que arma getProductosAnalytics, reconstruida desde el ranking. */
+function claveProducto(p) {
+  return p.producto_id ? `p_${p.producto_id}` : `name_${p.nombre}`;
 }
 
 /**
@@ -341,7 +567,7 @@ async function getGastosOperativos(usuario_id, desde, hasta) {
  * (whereBase.id) NO sirve para el anterior: son otros pedidos. Se vuelve a
  * resolver contra el rango viejo, si no la comparativa daría siempre cero.
  */
-async function getComparativoPeriodo(whereBase, usuario_id, desde, hasta, productoId) {
+async function getComparativoPeriodo(whereBase, usuario_id, desde, hasta, productoId, inquilino_id = null) {
   const MS_DIA = 86400000;
   const pad = (n) => String(n).padStart(2, '0');
   const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -375,7 +601,7 @@ async function getComparativoPeriodo(whereBase, usuario_id, desde, hasta, produc
 
   const [envios, gastos] = await Promise.all([
     getEnviosConItems(wherePrev),
-    getGastosOperativos(usuario_id, pDesde, pHasta),
+    getGastosOperativos(usuario_id, pDesde, pHasta, inquilino_id),
   ]);
 
   const k = getKpisFinancieros(envios);
@@ -564,7 +790,10 @@ function getProductosAnalytics(envios) {
         if (isEntregado) {
           p.entregados += 1;
           p.unidades_entregadas += (item.cantidad || 1);
-          p.facturacion_total += facturacionPorItem ? facturacionPorItem[idxItem] : 0;
+          // "Venta" es precio de producto × cantidad, nunca el flete —
+          // reutiliza el mismo reparto que ya se usaba para margen_bruto
+          // (ventaProductoPorItem), no el del monto crudo (facturacionPorItem).
+          p.facturacion_total += ventaProductoPorItem ? ventaProductoPorItem[idxItem] : 0;
           p.costo_directo_pedido += costoDirectoPorItem ? costoDirectoPorItem[idxItem] : 0;
           p.costo_comision += comisionPorItem ? comisionPorItem[idxItem] : 0;
           p.costo_iva += ivaPorItem ? ivaPorItem[idxItem] : 0;
@@ -1313,6 +1542,12 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     ]
   };
 
+  // Foto de whereBase ANTES de cualquier filtro de pantalla: es el universo
+  // del período, el mismo que ven los gastos del módulo Finanzas (que se
+  // consultan por usuario + fechas y nada más). Se usa como denominador del
+  // prorrateo — ver getUnidadesUniversoPeriodo.
+  const whereUniverso = { ...whereBase };
+
   if (filtros.confirmador && filtros.confirmador !== 'TODOS') {
     whereBase.confirmador = filtros.confirmador;
   }
@@ -1412,6 +1647,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     landingsDisponibles,
     rankingLandings,
     comparativo,
+    universoUnidades,
   ] = await Promise.all([
     getResumenFunnel(whereBase, canalesCatalogo),
     enviosConItemsPromise.then(getKpisFinancieros),
@@ -1421,43 +1657,81 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     getCouriersAnalytics(whereBase, usuario_id),
     getTimelineTendencias(whereBase, desde, hasta),
     confirmadoresDisponiblesPromise,
-    getGastosOperativos(usuario_id, desde, hasta),
+    getGastosOperativos(usuario_id, desde, hasta, inquilino_id),
     getPagosOnlineAnalytics(whereBase),
     catalogoCacheado(`productos:${usuario_id}`, () => getProductosDisponibles(usuario_id)),
     catalogoCacheado(`anios:${usuario_id}`, () => getAniosDisponibles(usuario_id)),
     landingsTiendaPromise.then(getLandingsDisponibles),
     landingsTiendaPromise.then(ls => getRankingLandings(whereRanking, desde, hasta, ls)),
-    getComparativoPeriodo(whereBase, usuario_id, desde, hasta, filtros.producto_id),
+    getComparativoPeriodo(whereBase, usuario_id, desde, hasta, filtros.producto_id, inquilino_id),
+    getUnidadesUniversoPeriodo(whereUniverso),
   ]);
 
   // Prorrateo por producto — por UNIDADES ENTREGADAS, igual que la planilla
   // del comercio (ej. Gs 2.500.000 repartidos entre 130/32/26 unidades
-  // sobre un total de 188). Se reparte TODO lo que no está ya atribuido a
-  // un producto: envíos, comisión, IVA y los gastos operativos (Meta/Ads +
-  // costos fijos).
-  // Solo los GASTOS FIJOS se prorratean: alquiler, sueldos, publicidad. Esos
-  // no pertenecen a ningún pedido y no hay forma de atribuirlos sin repartir.
+  // sobre un total de 188).
   //
-  // El envío, la comisión y el IVA YA fueron atribuidos al producto que los
-  // generó, dentro de getProductosAnalytics (costo_directo_pedido). Volver a
-  // meterlos acá los contaría dos veces.
-  const costosAProrratear = gastosOperativos.total;
+  // Los gastos FIJOS y los VARIABLES generales (alquiler, sueldos,
+  // comisiones bancarias, marketing sin producto puntual) se prorratean por
+  // unidades, cada uno en su propia línea — el fijo alimenta el punto de
+  // equilibrio, el variable no. Todo lo demás va DIRECTO al producto que le
+  // corresponde, sin repartir:
+  //   - envío, comisión e IVA: ya vienen atribuidos desde getProductosAnalytics
+  //     (costo_directo_pedido) — volver a meterlos acá los contaría dos veces.
+  //   - un CostoGasto con `producto_id`: el usuario ya dijo de quién es.
+  //   - gasto de Meta de una campaña con producto(s) asignado(s) (Ads &
+  //     Campañas): va 100% a cada uno de esos productos, no se parte.
+  // Lo ÚNICO que no entra al costo de ningún producto es el gasto de Meta de
+  // campañas SIN vincular (`gastos_generales_sin_atribuir`): no tiene
+  // producto, y suele ser un importe grande frente a la venta de un solo
+  // producto — prorratearlo lo desfiguraría. Resta de la Ganancia Neta
+  // global nada más.
+  for (const p of rankingProductos) {
+    p.costo_gasto_directo = Math.round(gastosOperativos.directos_por_producto[p.producto_id] || 0);
+    p.costo_meta_directo = Math.round(gastosOperativos.meta_directo_por_producto[p.producto_id] || 0);
+  }
 
-  const unidadesTotales = rankingProductos.reduce((acc, p) => acc + p.unidades_entregadas, 0);
-  let repartido = 0;
+  // El reparto de fijos y variables se hace SIEMPRE contra las unidades del
+  // período completo, nunca contra las del ranking filtrado. Es lo que hace
+  // que la parte que le toca a un producto sea la misma lo mires como lo
+  // mires: con 8 de 24 unidades, EarPlugs se lleva 8/24 del alquiler tanto
+  // en la tabla completa como al filtrar por EarPlugs.
+  const unidadesUniverso = universoUnidades.total;
+  const unidadesRanking = rankingProductos.reduce((acc, p) => acc + p.unidades_entregadas, 0);
+
+  let repartidoFijo = 0;
+  let repartidoVariable = 0;
   let idxMayor = -1;
   rankingProductos.forEach((p, i) => {
-    const pctUnidades = unidadesTotales > 0 ? p.unidades_entregadas / unidadesTotales : 0;
-    p.costo_prorrateado = Math.round(costosAProrratear * pctUnidades);
-    repartido += p.costo_prorrateado;
+    // Las unidades del universo mandan sobre las del ranking: con filtro de
+    // producto los pedidos entran enteros, así que un pedido que mezcla dos
+    // productos aporta unidades que el universo ya contabilizó igual.
+    const unidadesProducto = universoUnidades.porClave.get(claveProducto(p)) ?? p.unidades_entregadas;
+    const pctUnidades = unidadesUniverso > 0 ? unidadesProducto / unidadesUniverso : 0;
+    p.costo_fijo_prorrateado = Math.round(gastosOperativos.fijos_generales * pctUnidades);
+    p.costo_variable_prorrateado = Math.round(gastosOperativos.variables_generales * pctUnidades);
+    repartidoFijo += p.costo_fijo_prorrateado;
+    repartidoVariable += p.costo_variable_prorrateado;
     if (idxMayor === -1 || p.unidades_entregadas > rankingProductos[idxMayor].unidades_entregadas) idxMayor = i;
   });
 
   // El redondeo por producto deja un resto de ±1 Gs: se lo lleva el
   // producto que más unidades vendió, así la suma de los prorrateos da
   // exacto y la tabla cierra en vez de descuadrar por unos guaraníes.
-  if (idxMayor >= 0 && rankingProductos[idxMayor].unidades_entregadas > 0) {
-    rankingProductos[idxMayor].costo_prorrateado += costosAProrratear - repartido;
+  //
+  // Solo corresponde cuando el ranking ES el universo. Con un filtro puesto
+  // la suma de los prorrateos tiene que quedar POR DEBAJO del total del
+  // período — esa diferencia es justamente la parte que les toca a los
+  // productos que el filtro dejó afuera. Volcarle el resto al más grande
+  // ahí adentro sería reintroducir el mismo bug por la puerta de atrás.
+  const rankingEsElUniverso = unidadesUniverso > 0 && unidadesRanking === unidadesUniverso;
+  if (rankingEsElUniverso && idxMayor >= 0 && rankingProductos[idxMayor].unidades_entregadas > 0) {
+    rankingProductos[idxMayor].costo_fijo_prorrateado += gastosOperativos.fijos_generales - repartidoFijo;
+    rankingProductos[idxMayor].costo_variable_prorrateado += gastosOperativos.variables_generales - repartidoVariable;
+  }
+
+  for (const p of rankingProductos) {
+    p.costo_prorrateado = p.costo_fijo_prorrateado + p.costo_variable_prorrateado;
   }
 
   // Contrato de la tabla de productos: venta / costo / ganancia / pérdida,
@@ -1472,7 +1746,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
   for (const p of rankingProductos) {
     p.unidades = p.unidades_entregadas;
     p.venta = p.facturacion_total;
-    p.costo = Math.round(p.costo_total + p.costo_directo_pedido + p.costo_prorrateado);
+    p.costo = Math.round(p.costo_total + p.costo_directo_pedido + p.costo_gasto_directo + p.costo_meta_directo + p.costo_prorrateado);
     p.ganancia = Math.round(p.venta - p.costo);
     p.perdida = Math.round(p.perdida);
     p.rentabilidad = p.venta > 0 ? Number(((p.ganancia / p.venta) * 100).toFixed(1)) : 0;
@@ -1486,12 +1760,19 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     p.margen_bruto = Math.round(ventaProducto - p.costo_total);
     p.pct_margen_bruto = ventaProducto > 0 ? Number(((p.margen_bruto / ventaProducto) * 100).toFixed(1)) : 0;
 
+    // Cinco orígenes distintos, cinco renglones distintos. Meterlos en uno
+    // solo escondía que adentro convivían el alquiler, una comisión
+    // bancaria del mes entero, la publicidad de una campaña propia y un
+    // gasto que el usuario había atado a mano a ese producto.
     p.costo_detalle = {
       mercaderia: Math.round(p.costo_total),
       envio: Math.round(p.costo_envio),
       comision: Math.round(p.costo_comision),
       iva: Math.round(p.costo_iva),
-      fijos: Math.round(p.costo_prorrateado),
+      fijos: Math.round(p.costo_fijo_prorrateado),
+      variables: Math.round(p.costo_variable_prorrateado),
+      publicidad_directa: Math.round(p.costo_meta_directo),
+      gastos_directos: Math.round(p.costo_gasto_directo),
     };
 
     // Bandera para que el frontend no tenga que decidir con qué umbral
@@ -1507,6 +1788,10 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
 
     // Interno: no forma parte del contrato visual.
     delete p.costo_prorrateado;
+    delete p.costo_fijo_prorrateado;
+    delete p.costo_variable_prorrateado;
+    delete p.costo_meta_directo;
+    delete p.costo_gasto_directo;
     delete p.costo_directo_pedido;
     delete p.costo_comision;
     delete p.costo_iva;
@@ -1514,10 +1799,34 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     delete p.venta_producto_total;
   }
 
+  // Con un producto filtrado, la tarjeta de Rentabilidad deja de hablar del
+  // negocio entero y pasa a hablar de ESE producto: Fijos, Variables y Meta
+  // muestran la parte que YA se le prorrateó en costo_detalle (la misma
+  // cuenta de la tabla "Más Vendidos"), no el total del período. Sin
+  // filtro, siguen siendo el total del período — el negocio entero.
+  //
+  // El filtro se resuelve a nivel de PEDIDO (ver whereBase.id más arriba):
+  // un pedido que mezcla este producto con otro sigue entrando entero, así
+  // que rankingProductos puede traer más de un producto igual. Por eso se
+  // busca el que coincide con filtros.producto_id, no "el primero" ni "se
+  // suman todos" — eso mezclaría el costo de un producto ajeno.
+  const productoFiltrado = (filtros.producto_id && filtros.producto_id !== 'TODOS')
+    ? rankingProductos.find(p => String(p.producto_id) === String(filtros.producto_id))
+    : null;
+
+  const fijosMostrados = productoFiltrado ? productoFiltrado.costo_detalle.fijos : gastosOperativos.fijos_generales;
+  const variablesMostrados = productoFiltrado ? productoFiltrado.costo_detalle.variables : gastosOperativos.variables_generales;
+  const metaMostrado = productoFiltrado ? productoFiltrado.costo_detalle.publicidad_directa : gastosOperativos.meta_ads;
+
   // Ganancia neta = margen bruto (ya neto de COGS/logística/comisión/IVA por
-  // pedido) menos los costos y gastos operativos registrados en el módulo
-  // Finanzas → Costos y Gastos (alquiler, salarios, publicidad, etc.).
-  const gananciaNetaEstimada = kpisFinancieros.margen_bruto_estimado - gastosOperativos.total;
+  // pedido) menos los costos y gastos operativos que le corresponden: el
+  // total del negocio sin filtro, o solo lo prorrateado + lo atado a mano a
+  // ESTE producto cuando hay uno filtrado — mismo criterio que
+  // fijosMostrados/variablesMostrados/metaMostrado.
+  const gastosADescontar = productoFiltrado
+    ? fijosMostrados + variablesMostrados + metaMostrado + productoFiltrado.costo_detalle.gastos_directos
+    : gastosOperativos.total;
+  const gananciaNetaEstimada = kpisFinancieros.margen_bruto_estimado - gastosADescontar;
   const pctMargenNeto = kpisFinancieros.facturacion_entregada > 0
     ? Number(((gananciaNetaEstimada / kpisFinancieros.facturacion_entregada) * 100).toFixed(1))
     : 0;
@@ -1525,6 +1834,24 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
   kpisFinancieros.gastos_operativos = Math.round(gastosOperativos.gastos_operativos);
   kpisFinancieros.costos_operativos_adicionales = Math.round(gastosOperativos.costos_operativos_adicionales);
   kpisFinancieros.gastos_por_categoria = gastosOperativos.por_categoria;
+  // Gasto de Meta: el total del período sin filtro, o el 100% de lo que le
+  // toca a ESTE producto (ver getGastoMetaAds) cuando hay uno filtrado.
+  kpisFinancieros.gasto_meta_ads = Math.round(metaMostrado);
+
+  // Sin filtro, Fijos y Variables son SIEMPRE el total del período y no se
+  // acotan al producto: el alquiler se paga igual, mires lo que mires. Con
+  // un producto filtrado, muestran la parte prorrateada de ESE producto.
+  kpisFinancieros.gastos_fijos_generales = Math.round(fijosMostrados);
+  kpisFinancieros.gastos_variables_generales = Math.round(variablesMostrados);
+  // Plata real del período que resta de la Ganancia Neta pero no aparece en
+  // el costo de ningún producto: solo el gasto de Meta de campañas sin
+  // vincular (ver comentario en getGastosOperativos). Los variables
+  // generales SÍ se prorratean y aparecen en costo_detalle.variables.
+  kpisFinancieros.gastos_sin_atribuir_a_producto = Math.round(gastosOperativos.gastos_generales_sin_atribuir);
+  kpisFinancieros.gastos_directos_a_producto = Math.round(
+    Object.values(gastosOperativos.directos_por_producto).reduce((acc, v) => acc + v, 0)
+  );
+  kpisFinancieros.gastos_sin_clasificar = Math.round(gastosOperativos.sin_clasificar);
   kpisFinancieros.ganancia_neta_estimada = Math.round(gananciaNetaEstimada);
   kpisFinancieros.pct_margen_neto = pctMargenNeto;
 
@@ -1542,9 +1869,16 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     ? kpisFinancieros.margen_bruto_estimado / kpisFinancieros.facturacion_entregada
     : 0;
   kpisFinancieros.pct_contribucion = Number((pctContribucion * 100).toFixed(1));
-  kpisFinancieros.punto_equilibrio = gastosOperativos.total <= 0
+  //
+  // Divide por los gastos FIJOS, no por el total: los variables se mueven
+  // con las ventas, así que ya están adentro del margen de contribución y
+  // volver a cargarlos acá arriba inflaba el número. Sin filtro es el fijo
+  // del negocio entero; con un producto filtrado, la parte que YA se le
+  // prorrateó a ese producto — mismo criterio que el resto de la tarjeta.
+  const gastosFijosDelPeriodo = fijosMostrados;
+  kpisFinancieros.punto_equilibrio = gastosFijosDelPeriodo <= 0
     ? 0
-    : (pctContribucion > 0 ? Math.round(gastosOperativos.total / pctContribucion) : null);
+    : (pctContribucion > 0 ? Math.round(gastosFijosDelPeriodo / pctContribucion) : null);
   kpisFinancieros.falta_para_equilibrio = kpisFinancieros.punto_equilibrio === null
     ? null
     : Math.max(0, kpisFinancieros.punto_equilibrio - kpisFinancieros.facturacion_entregada);

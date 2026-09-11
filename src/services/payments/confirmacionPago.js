@@ -1,6 +1,13 @@
 const { sequelize } = require('../../models');
-const { descontarStockYSnapshot } = require('../../controllers/envioController');
+const envioController = require('../../controllers/envioController');
 const { registrarHistorial } = require('../../utils/historial');
+
+const { descontarStockYSnapshot } = envioController;
+const calcularAbastecimientoDesdeItems = envioController.calcularAbastecimientoDesdeItems || (async () => ({
+  requiere: false,
+  costo: 0,
+  estado: 'no_requiere',
+}));
 
 /**
  * Marca una transacción como pagada y confirma el pedido, descontando stock.
@@ -34,6 +41,11 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar' } 
     if (envio.estado !== 'Pendiente') return;
 
     if (!envio.stock_descontado) {
+      const abastecimiento = await calcularAbastecimientoDesdeItems(envio.items || [], t, envio.usuario_id);
+      envio.abastecimiento_estado = abastecimiento.estado;
+      envio.abastecimiento_costo = abastecimiento.costo;
+      envio.abastecimiento_pagado_at = null;
+      envio.abastecimiento_recibido_at = null;
       await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id);
       envio.stock_descontado = true;
     }

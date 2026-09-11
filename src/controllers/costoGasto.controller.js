@@ -15,6 +15,7 @@ const path = require('path');
 const multer = require('multer');
 const CostoGastoService = require('../services/costoGasto.service');
 const ComprobanteService = require('../services/comprobante.service');
+const { generarExcelReporteFinanciero, generarPdfReporteFinanciero } = require('../services/reporteFinanciero.export');
 
 const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
 const MAX_COMPROBANTE_BYTES = 5 * 1024 * 1024; // 5MB (facturas escaneadas/PDF)
@@ -76,6 +77,32 @@ async function reporteDesglose(req, res) {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: 'Error al calcular el reporte de rentabilidad.' });
+  }
+}
+
+async function exportarExcel(req, res) {
+  try {
+    const datos = await CostoGastoService.datosReporteFinanciero(req.query, req.usuario.id);
+    const buffer = await generarExcelReporteFinanciero(datos, req.query);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="reporte-financiero_${req.query.fecha_desde || 'inicio'}_${req.query.fecha_hasta || 'hoy'}.xlsx"`);
+    return res.send(buffer);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Error al generar el Excel del reporte financiero.' });
+  }
+}
+
+async function exportarPdf(req, res) {
+  try {
+    const datos = await CostoGastoService.datosReporteFinanciero(req.query, req.usuario.id);
+    const buffer = await generarPdfReporteFinanciero(datos, req.query);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="reporte-financiero_${req.query.fecha_desde || 'inicio'}_${req.query.fecha_hasta || 'hoy'}.pdf"`);
+    return res.send(buffer);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Error al generar el PDF del reporte financiero.' });
   }
 }
 
@@ -168,6 +195,6 @@ async function subirComprobante(req, res) {
 }
 
 module.exports = {
-  buscar, resumen, reporteDesglose, crear, detalle, actualizar, eliminar, duplicar, marcarPagado,
+  buscar, resumen, reporteDesglose, exportarExcel, exportarPdf, crear, detalle, actualizar, eliminar, duplicar, marcarPagado,
   subirComprobanteMiddleware, subirComprobante,
 };

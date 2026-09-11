@@ -3,6 +3,7 @@ const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
+const { desgloseDelivery } = require('../utils/desgloseDelivery');
 
 /**
  * Resuelve qué producto(s) y cuántas unidades físicas hay que descontar del
@@ -380,6 +381,187 @@ async function registrarViaje(envio, { numero, resultado, costo, motivo = null, 
   }, { transaction: t });
 }
 
+const ABASTECIMIENTO_ESTADOS = ['no_requiere', 'pendiente_pago', 'en_proceso', 'recibido'];
+
+function formatGsPlano(valor) {
+  const n = Math.max(0, Math.round(Number(valor) || 0));
+  return `Gs. ${n.toLocaleString('es-PY')}`;
+}
+
+function esProductoGesicom(prod, usuario_id) {
+  return !prod || prod.creado_por == null || Number(prod.creado_por) !== Number(usuario_id);
+}
+
+/**
+ * Detecta si un pedido contiene productos del catalogo Gesicom y calcula el
+ * costo que debe pagar la tienda para iniciar el abastecimiento.
+ */
+async function calcularAbastecimientoDesdeItems(items, usuario_id, t) {
+  let costo = 0;
+  let requiere = false;
+
+  for (const item of items || []) {
+    const receta = await resolverReceta(item, t);
+    for (const { producto_id, cantidad } of receta) {
+      const prod = await Producto.findByPk(producto_id, { transaction: t });
+      if (!esProductoGesicom(prod, usuario_id)) continue;
+      requiere = true;
+      costo += costoParaComerciante(prod, usuario_id) * (Number(cantidad) || 0);
+    }
+  }
+
+  return {
+    requiere,
+    costo: Math.max(0, Math.round(costo)),
+    estado: requiere ? 'pendiente_pago' : 'no_requiere',
+  };
+}
+
+async function aplicarAbastecimientoCalculado(envio, items, usuario_id, t) {
+  const abastecimiento = await calcularAbastecimientoDesdeItems(items, usuario_id, t);
+  await envio.update({
+    abastecimiento_estado: abastecimiento.estado,
+    abastecimiento_costo: abastecimiento.costo,
+    abastecimiento_pagado_at: null,
+    abastecimiento_recibido_at: null,
+  }, { transaction: t });
+  return abastecimiento;
+}
+
+function accionSiguientePedido(envioLike) {
+  const envio = typeof envioLike.toJSON === 'function' ? envioLike.toJSON() : envioLike;
+  const costo = Number(envio.abastecimiento_costo) || 0;
+  const abastecimiento = envio.abastecimiento_estado || 'no_requiere';
+
+  if (envio.estado === 'Pendiente') {
+    return {
+      tipo: 'confirmar',
+      titulo: 'Confirmar pedido',
+      descripcion: 'Validar datos, dirección y disponibilidad antes de mover stock.',
+      cta: 'Completar datos',
+      tono: 'warning',
+      siguiente_estado: 'Confirmado',
+      prioridad: 10,
+    };
+  }
+
+  if (envio.estado === 'Confirmado') {
+    if (abastecimiento === 'pendiente_pago') {
+      return {
+        tipo: 'pagar_abastecimiento',
+        titulo: `Pagar ${formatGsPlano(costo)} para iniciar abastecimiento`,
+        descripcion: 'Este pedido usa productos del catalogo Gesicom.',
+        cta: 'Marcar pagado',
+        tono: 'danger',
+        siguiente_abastecimiento_estado: 'en_proceso',
+        prioridad: 20,
+      };
+    }
+    if (abastecimiento === 'en_proceso') {
+      return {
+        tipo: 'abastecimiento_en_proceso',
+        titulo: 'Abastecimiento en proceso',
+        descripcion: 'Gesicom esta preparando la mercaderia para la tienda.',
+        cta: 'Marcar recibido',
+        tono: 'info',
+        siguiente_abastecimiento_estado: 'recibido',
+        prioridad: 30,
+      };
+    }
+    if (abastecimiento === 'recibido') {
+      return {
+        tipo: 'listo_para_despacho',
+        titulo: 'Listo para despacho',
+        descripcion: 'La mercaderia ya llego al deposito.',
+        cta: 'Preparar pedido',
+        tono: 'success',
+        siguiente_estado: 'Preparado',
+        prioridad: 40,
+      };
+    }
+    return {
+      tipo: 'preparar',
+      titulo: 'Preparar pedido',
+      descripcion: 'Separar, embalar y dejar listo para enviar.',
+      cta: 'Preparar',
+      tono: 'info',
+      siguiente_estado: 'Preparado',
+      prioridad: 40,
+    };
+  }
+
+  if (envio.estado === 'Preparado') {
+    return {
+      tipo: 'despachar',
+      titulo: 'Despachar pedido',
+      descripcion: 'Asignar salida con courier o entrega propia.',
+      cta: 'Despachar',
+      tono: 'info',
+      siguiente_estado: 'Despachado',
+      prioridad: 50,
+    };
+  }
+
+  if (envio.estado === 'Despachado' || envio.estado === 'Reprogramado') {
+    return {
+      tipo: 'resultado_entrega',
+      titulo: 'Gestionar resultado de entrega',
+      descripcion: 'Marcar entregado, reprogramado, devuelto o perdido segun corresponda.',
+      cta: 'Actualizar resultado',
+      tono: 'warning',
+      prioridad: 60,
+    };
+  }
+
+  if (envio.estado === 'Entregado' && envio.estado_financiero === 'pendiente_liquidacion') {
+    return {
+      tipo: 'rendir',
+      titulo: 'Rendir dinero del pedido',
+      descripcion: 'Cerrar la liquidacion pendiente.',
+      cta: 'Rendir',
+      tono: 'success',
+      prioridad: 70,
+    };
+  }
+
+  return {
+    tipo: 'cerrado',
+    titulo: 'Sin acciones pendientes',
+    descripcion: 'El pedido no requiere una accion operativa ahora.',
+    cta: null,
+    tono: 'neutral',
+    prioridad: 999,
+  };
+}
+
+function decorarEnvio(envio) {
+  const plano = typeof envio.toJSON === 'function' ? envio.toJSON() : envio;
+  return {
+    ...plano,
+    accion_siguiente: accionSiguientePedido(plano),
+  };
+}
+
+function resumenAccionesSiguientes(envios) {
+  const porTipo = new Map();
+  for (const envio of envios) {
+    const accion = accionSiguientePedido(envio);
+    if (accion.tipo === 'cerrado') continue;
+    const actual = porTipo.get(accion.tipo) || {
+      ...accion,
+      cantidad: 0,
+      costo_total: 0,
+    };
+    actual.cantidad += 1;
+    if (accion.tipo === 'pagar_abastecimiento') {
+      actual.costo_total += Number(envio.abastecimiento_costo) || 0;
+      actual.titulo = `Pagar ${formatGsPlano(actual.costo_total)} para iniciar abastecimiento`;
+    }
+    porTipo.set(accion.tipo, actual);
+  }
+  return Array.from(porTipo.values()).sort((a, b) => a.prioridad - b.prioridad);
+}
+
 exports.listEnvios = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
@@ -417,7 +599,7 @@ exports.listEnvios = async (req, res) => {
       order: [['id', 'DESC']]
     });
 
-    res.json(envios);
+    res.json(envios.map(decorarEnvio));
   } catch (error) {
     console.error('Error listing envios:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -530,7 +712,7 @@ exports.listEnviosPaginados = async (req, res) => {
     });
 
     res.json({
-      data: rows,
+      data: rows.map(decorarEnvio),
       total: count,
       page: pageNum,
       limit: limitNum,
@@ -691,9 +873,18 @@ exports.createEnvio = async (req, res) => {
     // stock real desde la creación — mismo mecanismo que usa updateEstado
     // al confirmar un pedido que sí pasó por "Pendiente" (checkout público,
     // ver landing.service.js/crearCheckout).
+    const abastecimiento = await aplicarAbastecimientoCalculado(nuevoEnvio, nuevoEnvio.items || [], usuario_id, t);
     await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id);
     await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
     await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
+    if (abastecimiento.requiere) {
+      await registrarHistorial(
+        nuevoEnvio.id,
+        usuario_id,
+        `Abastecimiento Gesicom pendiente de pago: ${formatGsPlano(abastecimiento.costo)}`,
+        t
+      );
+    }
 
     await t.commit();
 
@@ -705,7 +896,7 @@ exports.createEnvio = async (req, res) => {
       ]
     });
 
-    res.status(201).json(result);
+    res.status(201).json(decorarEnvio(result));
   } catch (error) {
     if (t) await t.rollback();
     console.error('Error creating envio:', error);
@@ -743,6 +934,7 @@ exports.updateEstado = async (req, res) => {
     const { id } = req.params;
     const {
       estado, courier_id, estado_comercial, estado_logistico,
+      abastecimiento_estado,
       // Campos que completa el modal único de Pedido (mismo componente de
       // alta, en modo "completar") al confirmar — el checkout público no
       // los pide (ruc es opcional ahí; courier/costo de envío los define
@@ -759,7 +951,7 @@ exports.updateEstado = async (req, res) => {
       costo_intento,
     } = req.body;
 
-    if (!estado && courier_id === undefined && !estado_comercial && !estado_logistico) {
+    if (!estado && courier_id === undefined && !estado_comercial && !estado_logistico && abastecimiento_estado === undefined) {
       await t.rollback();
       return res.status(400).json({ error: 'Se requiere al menos estado o courier_id' });
     }
@@ -791,6 +983,14 @@ exports.updateEstado = async (req, res) => {
       if (!destinosValidos.includes(estado)) {
         await t.rollback();
         return res.status(400).json({ error: `No se puede pasar de "${envio.estado}" a "${estado}".` });
+      }
+      if (estado === 'Preparado' && ['pendiente_pago', 'en_proceso'].includes(envio.abastecimiento_estado)) {
+        await t.rollback();
+        return res.status(400).json({
+          error: envio.abastecimiento_estado === 'pendiente_pago'
+            ? `Primero se debe pagar ${formatGsPlano(envio.abastecimiento_costo)} para iniciar el abastecimiento Gesicom.`
+            : 'El pedido todavia esta en abastecimiento Gesicom. Marcalo como recibido antes de prepararlo.',
+        });
       }
 
       if (estado === 'Reprogramado') {
@@ -871,6 +1071,21 @@ exports.updateEstado = async (req, res) => {
       // propio flag de idempotencia (ver Producto/Envio) y bloqueo de fila
       // dentro de la transacción (Transaction.LOCK.UPDATE, en los helpers).
       if (estado === 'Confirmado' && !envio.stock_descontado) {
+        const abastecimiento = await aplicarAbastecimientoCalculado(envio, envio.items || [], envio.usuario_id, t);
+        Object.assign(updateData, {
+          abastecimiento_estado: abastecimiento.estado,
+          abastecimiento_costo: abastecimiento.costo,
+          abastecimiento_pagado_at: null,
+          abastecimiento_recibido_at: null,
+        });
+        if (abastecimiento.requiere) {
+          await registrarHistorial(
+            envio.id,
+            usuario_id,
+            `Abastecimiento Gesicom pendiente de pago: ${formatGsPlano(abastecimiento.costo)}`,
+            t
+          );
+        }
         await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id);
         updateData.stock_descontado = true;
       }
@@ -903,6 +1118,25 @@ exports.updateEstado = async (req, res) => {
 
     if (estado_comercial !== undefined) updateData.estado_comercial = estado_comercial;
     if (estado_logistico !== undefined && updateData.estado_logistico === undefined) updateData.estado_logistico = estado_logistico;
+    if (abastecimiento_estado !== undefined) {
+      if (!ABASTECIMIENTO_ESTADOS.includes(abastecimiento_estado)) {
+        await t.rollback();
+        return res.status(400).json({ error: `Estado de abastecimiento invalido: "${abastecimiento_estado}".` });
+      }
+      if (envio.abastecimiento_estado === 'no_requiere' && abastecimiento_estado !== 'no_requiere') {
+        await t.rollback();
+        return res.status(400).json({ error: 'Este pedido no requiere abastecimiento Gesicom.' });
+      }
+      updateData.abastecimiento_estado = abastecimiento_estado;
+      if (abastecimiento_estado === 'en_proceso' && envio.abastecimiento_estado !== 'en_proceso') {
+        updateData.abastecimiento_pagado_at = new Date();
+        await registrarHistorial(envio.id, usuario_id, 'Abastecimiento Gesicom pagado. En proceso.', t);
+      }
+      if (abastecimiento_estado === 'recibido' && envio.abastecimiento_estado !== 'recibido') {
+        updateData.abastecimiento_recibido_at = new Date();
+        await registrarHistorial(envio.id, usuario_id, 'Abastecimiento Gesicom recibido en deposito.', t);
+      }
+    }
     if (courier_id !== undefined) updateData.courier_id = courier_id;
     if (ruc !== undefined) updateData.ruc = ruc;
     if (direccion !== undefined) updateData.direccion = direccion;
@@ -992,7 +1226,7 @@ exports.updateEstado = async (req, res) => {
       ]
     });
 
-    res.json(result);
+    res.json(decorarEnvio(result));
   } catch (error) {
     if (!t.finished) await t.rollback();
     console.error('Error updating estado:', error);
@@ -1214,18 +1448,32 @@ exports.resumenEntregados = async (req, res) => {
     if (confirmador && confirmador !== 'TODOS' && confirmador.trim()) where.confirmador = { [Op.iLike]: `%${confirmador.trim()}%` };
     if (origen && origen !== 'TODOS') where.origen = origen;
     if (metodo_pago_id && metodo_pago_id !== 'TODOS') where.metodo_pago_id = Number(metodo_pago_id);
-
-    const include = [{ model: MetodoPago, attributes: ['id', 'nombre', 'custodia_cobro'] }];
-    if (producto && producto !== 'TODOS') {
-      include.push({
-        model: EnvioItem, as: 'items', attributes: [],
-        where: { producto_id: Number(producto) }, required: true,
-      });
+    const productoId = producto && producto !== 'TODOS' ? Number(producto) : null;
+    if (Number.isFinite(productoId)) {
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        Sequelize.literal(`EXISTS (
+          SELECT 1
+          FROM envio_items resumen_producto_item
+          WHERE resumen_producto_item.envio_id = "Envio"."id"
+            AND resumen_producto_item.producto_id = ${productoId}
+        )`),
+      ];
     }
+
+    const include = [
+      { model: MetodoPago, attributes: ['id', 'nombre', 'custodia_cobro'] },
+      {
+        model: EnvioItem,
+        as: 'items',
+        attributes: ['id', 'producto_id', 'cantidad', 'precio_unitario', 'subtotal'],
+        required: false,
+      },
+    ];
 
     const envios = await Envio.findAll({
       where, include,
-      attributes: ['id', 'monto', 'costo_envio', 'estado_financiero'],
+      attributes: ['id', 'monto', 'costo_envio', 'estado_financiero', 'delivery_a_cargo', 'cupon_descuento'],
     });
 
     let cantidad = 0, montoTotal = 0, dineroCourier = 0, cobradoDirecto = 0, costoTotalCourier = 0, pendientesRendicion = 0;
@@ -1235,12 +1483,22 @@ exports.resumenEntregados = async (req, res) => {
       cantidad += 1;
       const monto = Number(e.monto) || 0;
       const costoEnvio = Number(e.costo_envio) || 0;
+      const pendienteLiquidacion = e.estado_financiero === 'pendiente_liquidacion';
       montoTotal += monto;
-      costoTotalCourier += costoEnvio;
 
       const custodia = e.MetodoPago ? e.MetodoPago.custodia_cobro : 'negocio';
-      if (custodia === 'courier') dineroCourier += monto; else cobradoDirecto += monto;
-      if (e.estado_financiero === 'pendiente_liquidacion') pendientesRendicion += 1;
+      if (custodia === 'courier') {
+        if (pendienteLiquidacion) {
+          const dv = desgloseDelivery(e);
+          dineroCourier += monto + dv.envio_fuera_del_monto;
+        }
+      } else {
+        cobradoDirecto += monto;
+      }
+      if (pendienteLiquidacion) {
+        pendientesRendicion += 1;
+        costoTotalCourier += costoEnvio;
+      }
 
       const nombreMetodo = e.MetodoPago ? e.MetodoPago.nombre : 'Sin método';
       desglosePorMetodo.set(nombreMetodo, (desglosePorMetodo.get(nombreMetodo) || 0) + monto);
@@ -1292,7 +1550,10 @@ exports.dashboardGeneralPedidos = async (req, res) => {
 
     const envios = await Envio.findAll({
       where, include,
-      attributes: ['id', 'estado', 'estado_financiero', 'fecha_reprogramada', 'courier_id'],
+      attributes: [
+        'id', 'estado', 'estado_financiero', 'fecha_reprogramada', 'courier_id',
+        'abastecimiento_estado', 'abastecimiento_costo',
+      ],
     });
 
     const hoy = new Date().toISOString().slice(0, 10);
@@ -1360,7 +1621,12 @@ exports.dashboardGeneralPedidos = async (req, res) => {
       return { ...c, pct_entrega: conResultado > 0 ? Number(((c.entregados / conResultado) * 100).toFixed(1)) : 0 };
     }).sort((a, b) => b.despachados - a.despachados);
 
-    res.json({ trabajo_pendiente: trabajoPendiente, resultado_operativo: resultadoOperativo, desempeno_courier: desempenoCourier });
+    res.json({
+      trabajo_pendiente: trabajoPendiente,
+      resultado_operativo: resultadoOperativo,
+      desempeno_courier: desempenoCourier,
+      siguientes_acciones: resumenAccionesSiguientes(envios),
+    });
   } catch (error) {
     console.error('Error obteniendo dashboard general de pedidos:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -1468,3 +1734,4 @@ exports.deleteEnvio = async (req, res) => {
 };
 
 exports.descontarStockYSnapshot = descontarStockYSnapshot;
+exports.calcularAbastecimientoDesdeItems = calcularAbastecimientoDesdeItems;

@@ -232,10 +232,15 @@ class CostoGastoService {
 
   /**
    * Cards de resumen del dashboard (sección 4 del spec). "ingresos" es un
-   * cálculo aproximado (Envio.monto de pedidos no cancelados/perdidos/
-   * devueltos en el período) pensado para dar una primera foto del margen;
-   * se reemplaza por el cálculo real de pedidosAnalyticsService en la
-   * integración con Reportes/Analytics (fases siguientes).
+   * cálculo aproximado (Envio.monto de pedidos en estado "Entregado" en el
+   * período) pensado para dar una primera foto del margen; se reemplaza
+   * por el cálculo real de pedidosAnalyticsService en la integración con
+   * Reportes/Analytics (fases siguientes).
+   *
+   * Solo se cuentan pedidos Entregados y no, por ejemplo, Confirmados: un
+   * pedido confirmado todavía no puso plata en la caja (más aún con pago
+   * contra entrega, que es el método dominante) — recién al entregarse se
+   * puede considerar cobrado.
    */
   static async resumen(filtros, usuario_id) {
     const { fecha_desde, fecha_hasta } = filtros;
@@ -253,7 +258,7 @@ class CostoGastoService {
     const costosPeriodo = Number(totales.find(t => t.tipo === 'costo')?.total || 0);
     const totalEgresos = gastosPeriodo + costosPeriodo;
 
-    const whereEnvio = { usuario_id, estado: { [Op.notIn]: ['Cancelado', 'Perdido', 'Devuelto'] } };
+    const whereEnvio = { usuario_id, estado: { [Op.iLike]: 'entregado' } };
     if (fecha_desde && fecha_hasta) whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
 
     const ingresos = Number((await Envio.sum('monto', { where: whereEnvio })) || 0);
@@ -262,6 +267,41 @@ class CostoGastoService {
     const margen = ingresos > 0 ? Number(((resultado / ingresos) * 100).toFixed(1)) : 0;
 
     return { gastos_periodo: gastosPeriodo, costos_periodo: costosPeriodo, total_egresos: totalEgresos, ingresos, resultado, margen };
+  }
+
+  /**
+   * Datos completos para el reporte financiero exportable (Excel/PDF):
+   * el mismo resumen de `resumen()` más el detalle SIN paginar de cada
+   * gasto/costo y cada venta que compone esos totales, para que el
+   * usuario pueda auditar línea por línea de dónde sale cada número.
+   */
+  static async datosReporteFinanciero(filtros, usuario_id) {
+    const { fecha_desde, fecha_hasta } = filtros;
+    const resumenCalculado = await this.resumen(filtros, usuario_id);
+
+    const whereGastos = { usuario_id, activo: true };
+    if (fecha_desde && fecha_hasta) whereGastos.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
+
+    const gastos = await CostoGasto.findAll({
+      where: whereGastos,
+      include: INCLUDES_LISTA,
+      order: [['fecha', 'DESC'], ['id', 'DESC']],
+    });
+
+    const whereEnvio = { usuario_id, estado: { [Op.iLike]: 'entregado' } };
+    if (fecha_desde && fecha_hasta) whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
+
+    const ingresos = await Envio.findAll({
+      where: whereEnvio,
+      attributes: ['id', 'fecha', 'cliente', 'monto', 'estado'],
+      order: [['fecha', 'DESC'], ['id', 'DESC']],
+    });
+
+    return {
+      resumen: resumenCalculado,
+      gastos: gastos.map(this.serializar),
+      ingresos: ingresos.map(this.serializar),
+    };
   }
 
   /**
@@ -314,7 +354,7 @@ class CostoGastoService {
         raw: true,
       }),
       Envio.findAll({
-        where: { usuario_id, estado: { [Op.notIn]: ['Cancelado', 'Perdido', 'Devuelto'] }, fecha: { [Op.between]: [desde, hasta] } },
+        where: { usuario_id, estado: { [Op.iLike]: 'entregado' }, fecha: { [Op.between]: [desde, hasta] } },
         attributes: [
           [Envio.sequelize.fn('LEFT', Envio.sequelize.col('fecha'), 7), 'mes'],
           [Envio.sequelize.fn('SUM', Envio.sequelize.col('monto')), 'total'],

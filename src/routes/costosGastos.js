@@ -12,6 +12,8 @@ router.use(verificarToken);
 router.post('/buscar', verificarPermiso('ver_costos_gastos'), ctrl.buscar);
 router.get('/resumen', verificarPermiso('ver_costos_gastos'), ctrl.resumen);
 router.post('/reporte-desglose', verificarPermiso('ver_costos_gastos'), ctrl.reporteDesglose);
+router.get('/exportar/excel', verificarPermiso('ver_costos_gastos'), ctrl.exportarExcel);
+router.get('/exportar/pdf', verificarPermiso('ver_costos_gastos'), ctrl.exportarPdf);
 router.post('/', verificarPermiso('gestionar_costos_gastos'), ctrl.crear);
 router.get('/:id', verificarPermiso('ver_costos_gastos'), ctrl.detalle);
 router.put('/:id', verificarPermiso('gestionar_costos_gastos'), ctrl.actualizar);

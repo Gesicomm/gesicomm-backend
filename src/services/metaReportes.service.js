@@ -112,6 +112,10 @@ function parsearFechaMeta(valor) {
 }
 
 class MetaReportesService {
+  // El export de Meta en PYG viene sin IVA. Lo consume también el dashboard
+  // de rentabilidad, que tiene que mostrar el MISMO gasto que esta sección.
+  static get MULTIPLICADOR_IVA() { return MULTIPLICADOR_IVA; }
+
   // ============================================================
   // Campañas internas
   // ============================================================

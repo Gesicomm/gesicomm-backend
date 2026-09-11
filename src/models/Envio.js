@@ -272,6 +272,27 @@ const Envio = sequelize.define('Envio', {
     allowNull: true,
     comment: 'Snapshot: valor de venta de lo perdido − costo de envío, calculado al registrar la pérdida. Lo usa el motor de rendición.',
   },
+  abastecimiento_estado: {
+    type: DataTypes.STRING(30),
+    allowNull: false,
+    defaultValue: 'no_requiere',
+    validate: { isIn: [['no_requiere', 'pendiente_pago', 'en_proceso', 'recibido']] },
+    comment: 'Estado interno de abastecimiento Gesicom: no_requiere, pendiente_pago, en_proceso o recibido.',
+  },
+  abastecimiento_costo: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    comment: 'Costo estimado a pagar a Gesicom para abastecer los productos de catalogo del pedido.',
+  },
+  abastecimiento_pagado_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  abastecimiento_recibido_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
 }, {
   tableName: 'envios',
   timestamps: true,
