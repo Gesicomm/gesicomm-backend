@@ -3,10 +3,11 @@
 /**
  * Migración única: agrega `documento` (cédula del comprador) a Envio.
  *
- * PagoPar exige `comprador.documento` para cobrar online, y hasta ahora el
- * checkout solo guardaba `ruc`. Son cosas distintas: la cédula identifica a
- * la persona y la pide la pasarela SIEMPRE; el RUC solo hace falta si el
- * comprador quiere factura (y ahí se cobra IVA).
+ * El checkout público de la landing guarda sus pedidos como Envio, y hasta
+ * ahora solo tenía `ruc`. Son cosas distintas: la cédula identifica a la
+ * persona y la pide PagoPar SIEMPRE para cobrar online (`comprador.documento`,
+ * con `tipo_documento` fijo en "CI"); el RUC solo hace falta si el comprador
+ * pide factura.
  *
  * Nullable: los pedidos que ya existen no tienen el dato y no hay de dónde
  * sacarlo. Sin backfill inventado.
@@ -32,9 +33,11 @@ async function main() {
     await qi.addColumn('envios', 'documento', {
       type: DataTypes.STRING(30),
       allowNull: true,
-      comment: 'Cedula del comprador. Obligatoria para cobrar online (PagoPar comprador.documento).',
+      comment: 'Cedula del comprador. La pide PagoPar para cobrar online.',
     });
-    console.log('\n✓ Listo.');
+
+    const [[fila]] = await sequelize.query('SELECT COUNT(*)::int AS total FROM envios');
+    console.log(`\n✓ Listo. ${fila.total} pedido(s) existentes quedan con documento en null.`);
   } catch (err) {
     console.error('\n✗ Falló:', err.message);
     process.exitCode = 1;
