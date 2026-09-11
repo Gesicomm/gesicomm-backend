@@ -47,8 +47,10 @@ const internoRoutes = require('./src/routes/interno');
 const paymentGatewaysRoutes = require('./src/routes/payment-gateways');
 const webhooksRoutes = require('./src/routes/webhooks');
 const suscripcionesRoutes = require('./src/routes/suscripciones');
+const configRoutes = require('./src/routes/config');
 const afiliadosRoutes = require('./src/routes/afiliados');
 const adminAuthTrackingRoutes = require('./src/routes/adminAuthTracking');
+const brevoRoutes = require('./src/routes/brevo');
 
 const app = express();
 // 1 hop: Nginx resuelve la IP real del visitante ANTES de proxear acá y
@@ -224,8 +226,12 @@ app.use('/api/health', healthRoutes);
 // Fuera de /api a propósito: lo consulta Caddy en localhost, no un navegador.
 app.use('/interno', internoRoutes);
 app.use('/api/config/payment-gateways', paymentGatewaysRoutes);
+// Parametros del sistema. Se monta DESPUES del de pasarelas para no
+// interceptar sus rutas anidadas.
+app.use('/api/config', configRoutes);
 app.use('/api/afiliados', afiliadosRoutes);
 app.use('/api/webhooks', webhooksRoutes);
+app.use('/api/brevo', brevoRoutes);
 // Planes y suscripciones de Gesicomm (publicas: son el paso previo al alta)
 app.use('/api', suscripcionesRoutes);
 

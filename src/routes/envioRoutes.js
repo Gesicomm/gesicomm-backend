@@ -20,6 +20,10 @@ router.post('/', envioController.createEnvio);
 // Actualizar estado o courier
 router.put('/:id/estado', envioController.updateEstado);
 
+// Abastecimiento Gesicom: pago real por PagoPar o acreditación manual admin
+router.post('/:id/abastecimiento/pagopar', envioController.iniciarPagoAbastecimiento);
+router.post('/:id/abastecimiento/manual', envioController.actualizarAbastecimientoManual);
+
 // Devolución y pérdida, gestionadas por producto/cantidad (ver plan Gestión de Pedidos)
 router.post('/:id/devolucion', envioController.registrarDevolucion);
 router.post('/:id/perdida', envioController.registrarPerdida);

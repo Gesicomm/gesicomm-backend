@@ -73,8 +73,13 @@ describe('Webhook Controller - pagoparWebhook', () => {
   it('resuelve el pedido por hash_pedido cuando numero_pedido es el correlativo de PagoPar', async () => {
     req.body = bodyPlano({ numero_pedido: 'X-9999' });
     const envio = nuevoEnvio();
+    // Son TRES consultas, en este orden:
+    //   1. chequeo de pago de abastecimiento (sin metadata.tipo => sigue de largo)
+    //   2. ubicarEnvio, que resuelve el envio por hash
+    //   3. la transaccion del pago en si
     PaymentTransaction.findOne
-      .mockResolvedValueOnce({ envio_id: 123 })              // búsqueda por hash
+      .mockResolvedValueOnce({ envio_id: 123 })
+      .mockResolvedValueOnce({ envio_id: 123 })
       .mockResolvedValueOnce({ status: 'PENDING', save: jest.fn() });
     Envio.findByPk.mockResolvedValue(envio);
     PaymentGateway.findOne.mockResolvedValue({ private_key: PRIVATE_KEY });

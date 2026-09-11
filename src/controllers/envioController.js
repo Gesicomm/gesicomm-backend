@@ -1,9 +1,15 @@
-const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Rol, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
+const {
+  iniciarCheckoutAbastecimiento,
+  acreditarPagoAbastecimiento,
+  marcarAbastecimientoRecibido,
+} = require('../services/payments/abastecimientoPago');
+const PedidosNotificaciones = require('../services/notificaciones/pedidosNotificaciones.service');
 
 /**
  * Resuelve qué producto(s) y cuántas unidades físicas hay que descontar del
@@ -383,13 +389,40 @@ async function registrarViaje(envio, { numero, resultado, costo, motivo = null, 
 
 const ABASTECIMIENTO_ESTADOS = ['no_requiere', 'pendiente_pago', 'en_proceso', 'recibido'];
 
+function esAdministrador(req) {
+  return req.usuario?.rol === 'administrador';
+}
+
+function whereEnviosDeUsuario(req) {
+  return esAdministrador(req) ? {} : { usuario_id: req.usuario.id };
+}
+
+function agregarBusquedaClienteONumero(where, cliente) {
+  if (!cliente || !cliente.trim()) return;
+  const texto = cliente.trim();
+  const term = `%${texto}%`;
+  const condiciones = [
+    { nombre_cliente: { [Op.iLike]: term } },
+    { apellido_cliente: { [Op.iLike]: term } },
+    { cliente: { [Op.iLike]: term } },
+    { telefono: { [Op.iLike]: term } },
+  ];
+  const idPedido = Number(texto.replace(/^#/, ''));
+  if (Number.isInteger(idPedido) && idPedido > 0) {
+    condiciones.push({ id: idPedido });
+  }
+  where[Op.or] = condiciones;
+}
+
 function formatGsPlano(valor) {
   const n = Math.max(0, Math.round(Number(valor) || 0));
   return `Gs. ${n.toLocaleString('es-PY')}`;
 }
 
-function esProductoGesicom(prod, usuario_id) {
-  return !prod || prod.creado_por == null || Number(prod.creado_por) !== Number(usuario_id);
+function esProductoCargadoPorAdmin(prod) {
+  if (!prod) return false;
+  if (prod.creado_por == null) return true;
+  return prod.Creador?.Rol?.nombre === 'administrador';
 }
 
 /**
@@ -403,8 +436,11 @@ async function calcularAbastecimientoDesdeItems(items, usuario_id, t) {
   for (const item of items || []) {
     const receta = await resolverReceta(item, t);
     for (const { producto_id, cantidad } of receta) {
-      const prod = await Producto.findByPk(producto_id, { transaction: t });
-      if (!esProductoGesicom(prod, usuario_id)) continue;
+      const prod = await Producto.findByPk(producto_id, {
+        transaction: t,
+        include: [{ model: Usuario, as: 'Creador', include: [Rol] }],
+      });
+      if (!esProductoCargadoPorAdmin(prod)) continue;
       requiere = true;
       costo += costoParaComerciante(prod, usuario_id) * (Number(cantidad) || 0);
     }
@@ -450,10 +486,10 @@ function accionSiguientePedido(envioLike) {
       return {
         tipo: 'pagar_abastecimiento',
         titulo: `Pagar ${formatGsPlano(costo)} para iniciar abastecimiento`,
-        descripcion: 'Este pedido usa productos del catalogo Gesicom.',
-        cta: 'Marcar pagado',
+        descripcion: 'Tenes 24 horas para pagar el abastecimiento. Gesicom procesa el pedido recien cuando el pago este acreditado.',
+        cta: 'Pagar abastecimiento',
         tono: 'danger',
-        siguiente_abastecimiento_estado: 'en_proceso',
+        requiere_pago: true,
         prioridad: 20,
       };
     }
@@ -462,9 +498,8 @@ function accionSiguientePedido(envioLike) {
         tipo: 'abastecimiento_en_proceso',
         titulo: 'Abastecimiento en proceso',
         descripcion: 'Gesicom esta preparando la mercaderia para la tienda.',
-        cta: 'Marcar recibido',
+        cta: null,
         tono: 'info',
-        siguiente_abastecimiento_estado: 'recibido',
         prioridad: 30,
       };
     }
@@ -568,7 +603,7 @@ exports.listEnvios = async (req, res) => {
     // La regla del proyecto: endpoints con filtros dinámicos son POST y leen de req.body
     const { fecha_desde, fecha_hasta, estado, confirmador, courier_id, origen } = req.body;
 
-    const where = { usuario_id };
+    const where = whereEnviosDeUsuario(req);
     if (fecha_desde && fecha_hasta) {
       where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
     } else if (fecha_desde) {
@@ -628,7 +663,7 @@ exports.listEnviosPaginados = async (req, res) => {
       canal_venta_id,
     } = req.body;
 
-    const where = { usuario_id };
+    const where = whereEnviosDeUsuario(req);
 
     // Rango de fechas (dispatchedAt)
     if (fecha_desde && fecha_hasta) {
@@ -957,7 +992,7 @@ exports.updateEstado = async (req, res) => {
     }
 
     const envio = await Envio.findOne({
-      where: { id, usuario_id },
+      where: esAdministrador(req) ? { id } : { id, usuario_id },
       include: [{ model: EnvioItem, as: 'items' }],
       transaction: t,
     });
@@ -967,6 +1002,7 @@ exports.updateEstado = async (req, res) => {
     }
 
     const updateData = {};
+    let notificarPagoAbastecimiento = false;
 
     if (estado !== undefined && estado !== envio.estado) {
       if (estado === 'Devuelto' || estado === 'Perdido') {
@@ -993,6 +1029,33 @@ exports.updateEstado = async (req, res) => {
         });
       }
 
+      // El pedido VENÍA de "Reprogramado": este cambio de estado —sea cual
+      // sea el destino, incluso otro "Reprogramado"— es la resolución del
+      // viaje que se acababa de hacer, así que es acá donde recién se sabe
+      // cuánto costó (antes se pedía al ENTRAR a Reprogramado, pero en ese
+      // momento el courier todavía no había avisado el precio). El viaje en
+      // falso ya se hizo y ya se paga: se suma al costo del pedido en vez de
+      // perderse. Antes de esto el courier podía ir tres veces y el sistema
+      // registraba un solo envío, dejando el costo real fuera del margen y
+      // fuera de la rendición.
+      if (envio.estado === 'Reprogramado') {
+        const costoViajeAnterior = costo_intento !== undefined ? Math.max(0, Number(costo_intento) || 0) : 0;
+        const { cantidad, acumulado } = await viajesPrevios(envio.id, t);
+        await registrarViaje(envio, {
+          numero: cantidad + 1,
+          resultado: 'reprogramado',
+          costo: costoViajeAnterior,
+          // Motivo y fecha de ESTE viaje ya quedaron guardados en el envío
+          // cuando se entró a Reprogramado — acá solo se resuelve el costo.
+          motivo: envio.motivo_reprogramacion || null,
+          fecha_reprogramada: envio.fecha_reprogramada || null,
+        }, t);
+        updateData.costo_envio = acumulado + costoViajeAnterior;
+        if (costoViajeAnterior > 0) {
+          await registrarHistorial(envio.id, usuario_id, `Viaje en falso: Gs ${costoViajeAnterior.toLocaleString('es-PY')}`, t);
+        }
+      }
+
       if (estado === 'Reprogramado') {
         if (!fecha_reprogramada) {
           await t.rollback();
@@ -1000,24 +1063,6 @@ exports.updateEstado = async (req, res) => {
         }
         updateData.fecha_reprogramada = fecha_reprogramada;
         updateData.motivo_reprogramacion = motivo_reprogramacion || null;
-
-        // El viaje en falso ya se hizo y ya se paga: se suma al costo del
-        // pedido en vez de perderse. Antes de esto el courier podía ir tres
-        // veces y el sistema registraba un solo envío, dejando el costo real
-        // fuera del margen y fuera de la rendición.
-        const costoViaje = costo_intento !== undefined ? Math.max(0, Number(costo_intento) || 0) : 0;
-        const { cantidad, acumulado } = await viajesPrevios(envio.id, t);
-        await registrarViaje(envio, {
-          numero: cantidad + 1,
-          resultado: 'reprogramado',
-          costo: costoViaje,
-          motivo: motivo_reprogramacion || null,
-          fecha_reprogramada,
-        }, t);
-        updateData.costo_envio = acumulado + costoViaje;
-        if (costoViaje > 0) {
-          await registrarHistorial(envio.id, usuario_id, `Viaje en falso: Gs ${costoViaje.toLocaleString('es-PY')}`, t);
-        }
       }
 
       if (estado === 'Entregado') {
@@ -1079,6 +1124,7 @@ exports.updateEstado = async (req, res) => {
           abastecimiento_recibido_at: null,
         });
         if (abastecimiento.requiere) {
+          notificarPagoAbastecimiento = true;
           await registrarHistorial(
             envio.id,
             usuario_id,
@@ -1119,6 +1165,10 @@ exports.updateEstado = async (req, res) => {
     if (estado_comercial !== undefined) updateData.estado_comercial = estado_comercial;
     if (estado_logistico !== undefined && updateData.estado_logistico === undefined) updateData.estado_logistico = estado_logistico;
     if (abastecimiento_estado !== undefined) {
+      if (!esAdministrador(req)) {
+        await t.rollback();
+        return res.status(403).json({ error: 'Solo un administrador puede acreditar o recibir abastecimiento manualmente.' });
+      }
       if (!ABASTECIMIENTO_ESTADOS.includes(abastecimiento_estado)) {
         await t.rollback();
         return res.status(400).json({ error: `Estado de abastecimiento invalido: "${abastecimiento_estado}".` });
@@ -1219,6 +1269,10 @@ exports.updateEstado = async (req, res) => {
     await envio.update(updateData, { transaction: t });
     await t.commit();
 
+    if (notificarPagoAbastecimiento) {
+      PedidosNotificaciones.notificarAbastecimientoPendienteSinBloquear(envio.id);
+    }
+
     const result = await Envio.findByPk(envio.id, {
       include: [
         { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
@@ -1231,6 +1285,68 @@ exports.updateEstado = async (req, res) => {
     if (!t.finished) await t.rollback();
     console.error('Error updating estado:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+exports.iniciarPagoAbastecimiento = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { id } = req.params;
+    const envio = await Envio.findOne({
+      where: esAdministrador(req) ? { id } : { id, usuario_id },
+      include: [{ model: EnvioItem, as: 'items' }],
+    });
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+
+    const checkout = await iniciarCheckoutAbastecimiento(envio);
+    return res.json({ success: true, ...checkout });
+  } catch (error) {
+    const status = error.status || 500;
+    if (status >= 500) console.error('[Abastecimiento] Error iniciando pago:', error);
+    return res.status(status).json({ error: error.message || 'No se pudo iniciar el pago de abastecimiento.' });
+  }
+};
+
+exports.actualizarAbastecimientoManual = async (req, res) => {
+  try {
+    if (!esAdministrador(req)) {
+      return res.status(403).json({ error: 'Solo un administrador puede acreditar o recibir abastecimiento manualmente.' });
+    }
+
+    const { id } = req.params;
+    const { accion, metodo_acreditacion, nota } = req.body || {};
+    const envio = await Envio.findByPk(id, { include: [{ model: EnvioItem, as: 'items' }] });
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+
+    const metodo = String(metodo_acreditacion || 'manual').trim();
+    const detalle = [metodo, nota].filter(Boolean).join(' - ');
+
+    if (accion === 'acreditar_pago') {
+      await acreditarPagoAbastecimiento(envio, null, {
+        origen: 'acreditacion manual',
+        usuarioId: req.usuario.id,
+        detalle,
+      });
+    } else if (accion === 'recibir') {
+      await marcarAbastecimientoRecibido(envio, {
+        usuarioId: req.usuario.id,
+        detalle: nota || null,
+      });
+    } else {
+      return res.status(400).json({ error: 'Acción inválida. Usá acreditar_pago o recibir.' });
+    }
+
+    const result = await Envio.findByPk(envio.id, {
+      include: [
+        { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
+        { model: EnvioItem, as: 'items' },
+      ],
+    });
+    return res.json(decorarEnvio(result));
+  } catch (error) {
+    const status = error.status || 500;
+    if (status >= 500) console.error('[Abastecimiento] Error en actualización manual:', error);
+    return res.status(status).json({ error: error.message || 'No se pudo actualizar el abastecimiento.' });
   }
 };
 
@@ -1248,7 +1364,7 @@ exports.registrarDevolucion = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const { items, marcar_estado } = req.body;
+    const { items, marcar_estado, costo_intento } = req.body;
 
     if (!Array.isArray(items) || items.length === 0) {
       await t.rollback();
@@ -1269,6 +1385,23 @@ exports.registrarDevolucion = async (req, res) => {
     await registrarHistorial(envio.id, usuario_id, `Devolución registrada: ${items.length} producto(s)`, t);
 
     const updateData = {};
+    // Igual que en updateEstado: si el pedido venía de "Reprogramado", este
+    // es el momento en que recién se sabe cuánto costó ese viaje en falso.
+    if (envio.estado === 'Reprogramado') {
+      const costoViajeAnterior = costo_intento !== undefined ? Math.max(0, Number(costo_intento) || 0) : 0;
+      const { cantidad, acumulado } = await viajesPrevios(envio.id, t);
+      await registrarViaje(envio, {
+        numero: cantidad + 1,
+        resultado: 'reprogramado',
+        costo: costoViajeAnterior,
+        motivo: envio.motivo_reprogramacion || null,
+        fecha_reprogramada: envio.fecha_reprogramada || null,
+      }, t);
+      updateData.costo_envio = acumulado + costoViajeAnterior;
+      if (costoViajeAnterior > 0) {
+        await registrarHistorial(envio.id, usuario_id, `Viaje en falso: Gs ${costoViajeAnterior.toLocaleString('es-PY')}`, t);
+      }
+    }
     if (marcar_estado) {
       updateData.estado = 'Devuelto';
       updateData.estado_logistico = 'Devuelto';
@@ -1304,7 +1437,7 @@ exports.registrarPerdida = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const { items, marcar_estado } = req.body;
+    const { items, marcar_estado, costo_intento } = req.body;
 
     if (!Array.isArray(items) || items.length === 0) {
       await t.rollback();
@@ -1325,6 +1458,23 @@ exports.registrarPerdida = async (req, res) => {
     await registrarHistorial(envio.id, usuario_id, `Pérdida registrada: ${items.length} producto(s), cargo Gs. ${cargo.toLocaleString('es-PY')}`, t);
 
     const updateData = {};
+    // Igual que en updateEstado: si el pedido venía de "Reprogramado", este
+    // es el momento en que recién se sabe cuánto costó ese viaje en falso.
+    if (envio.estado === 'Reprogramado') {
+      const costoViajeAnterior = costo_intento !== undefined ? Math.max(0, Number(costo_intento) || 0) : 0;
+      const { cantidad, acumulado } = await viajesPrevios(envio.id, t);
+      await registrarViaje(envio, {
+        numero: cantidad + 1,
+        resultado: 'reprogramado',
+        costo: costoViajeAnterior,
+        motivo: envio.motivo_reprogramacion || null,
+        fecha_reprogramada: envio.fecha_reprogramada || null,
+      }, t);
+      updateData.costo_envio = acumulado + costoViajeAnterior;
+      if (costoViajeAnterior > 0) {
+        await registrarHistorial(envio.id, usuario_id, `Viaje en falso: Gs ${costoViajeAnterior.toLocaleString('es-PY')}`, t);
+      }
+    }
     if (marcar_estado) {
       updateData.estado = 'Perdido';
       updateData.estado_logistico = 'Perdido';
@@ -1358,7 +1508,7 @@ exports.conteoPorEstado = async (req, res) => {
     const usuario_id = req.usuario.id;
     const { fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, metodo_pago_id } = req.body;
 
-    const where = { usuario_id };
+    const where = whereEnviosDeUsuario(req);
     if (fecha_desde && fecha_hasta) {
       where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
     } else if (fecha_desde) {
@@ -1366,15 +1516,7 @@ exports.conteoPorEstado = async (req, res) => {
     } else if (fecha_hasta) {
       where.dispatchedAt = { [Op.lte]: fecha_hasta };
     }
-    if (cliente && cliente.trim()) {
-      const term = `%${cliente.trim()}%`;
-      where[Op.or] = [
-        { nombre_cliente: { [Op.iLike]: term } },
-        { apellido_cliente: { [Op.iLike]: term } },
-        { cliente: { [Op.iLike]: term } },
-        { telefono: { [Op.iLike]: term } },
-      ];
-    }
+    agregarBusquedaClienteONumero(where, cliente);
     if (ciudad && ciudad.trim()) where.ciudad = { [Op.iLike]: `%${ciudad.trim()}%` };
     if (courier_id && courier_id !== 'TODOS') where.courier_id = courier_id === 'null' ? null : Number(courier_id);
     if (confirmador && confirmador !== 'TODOS' && confirmador.trim()) where.confirmador = { [Op.iLike]: `%${confirmador.trim()}%` };
@@ -1426,7 +1568,7 @@ exports.resumenEntregados = async (req, res) => {
     const usuario_id = req.usuario.id;
     const { fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, metodo_pago_id } = req.body;
 
-    const where = { usuario_id, estado: 'Entregado' };
+    const where = { ...whereEnviosDeUsuario(req), estado: 'Entregado' };
     if (fecha_desde && fecha_hasta) {
       where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
     } else if (fecha_desde) {
@@ -1434,15 +1576,7 @@ exports.resumenEntregados = async (req, res) => {
     } else if (fecha_hasta) {
       where.dispatchedAt = { [Op.lte]: fecha_hasta };
     }
-    if (cliente && cliente.trim()) {
-      const term = `%${cliente.trim()}%`;
-      where[Op.or] = [
-        { nombre_cliente: { [Op.iLike]: term } },
-        { apellido_cliente: { [Op.iLike]: term } },
-        { cliente: { [Op.iLike]: term } },
-        { telefono: { [Op.iLike]: term } },
-      ];
-    }
+    agregarBusquedaClienteONumero(where, cliente);
     if (ciudad && ciudad.trim()) where.ciudad = { [Op.iLike]: `%${ciudad.trim()}%` };
     if (courier_id && courier_id !== 'TODOS') where.courier_id = courier_id === 'null' ? null : Number(courier_id);
     if (confirmador && confirmador !== 'TODOS' && confirmador.trim()) where.confirmador = { [Op.iLike]: `%${confirmador.trim()}%` };
@@ -1530,7 +1664,7 @@ exports.dashboardGeneralPedidos = async (req, res) => {
     const usuario_id = req.usuario.id;
     const { fecha_desde, fecha_hasta, courier_id, producto } = req.body;
 
-    const where = { usuario_id };
+    const where = whereEnviosDeUsuario(req);
     if (fecha_desde && fecha_hasta) {
       where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
     } else if (fecha_desde) {

@@ -11,11 +11,8 @@ router.post('/pagopar/test', verificarToken, ctrl.testPagoparConnection);
 // Paso #3 del flujo de PagoPar: consultar estado de un pedido (y reconciliar).
 router.post('/pagopar/consultar', verificarToken, ctrl.consultarPedidoPagopar);
 
-// Parametros del sistema (credenciales de PagoPar de Gesicomm). Se montan
-// bajo /api/config, junto a las pasarelas, pero son de OTRA naturaleza: estas
-// son del sistema, las de arriba son de cada comercio.
-router.get('/parametros', verificarToken, soloAdministrador, suscripcionesCtrl.listarParametros);
-router.put('/parametros', verificarToken, soloAdministrador, suscripcionesCtrl.guardarParametros);
+// Los parametros del SISTEMA se mudaron a routes/config.js (/api/config):
+// no son una pasarela de pago y la URL anidada confundia.
 router.get('/afiliados', verificarToken, soloAdministrador, suscripcionesCtrl.obtenerAfiliadosConfig);
 router.put('/afiliados', verificarToken, soloAdministrador, suscripcionesCtrl.guardarAfiliadosConfig);
 

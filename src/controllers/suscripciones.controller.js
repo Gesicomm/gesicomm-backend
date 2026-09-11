@@ -194,7 +194,7 @@ exports.listarParametros = async (req, res) => {
 };
 
 /**
- * PUT /api/config/parametros — guarda uno o varios.
+ * PUT /api/configa — guarda uno o varios.
  * body: { PAGOPAR_PUBLIC_KEY: '...', PAGOPAR_PRIVATE_KEY: '...' }
  * Un secreto vacío significa "dejalo como está", para poder editar el
  * público sin tener que volver a pegar el privado.

@@ -1,6 +1,11 @@
 const { Envio, EnvioItem, PaymentGateway, PaymentTransaction } = require('../models');
 const PagoParService = require('../services/payments/pagoParService');
 const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago');
+const SuscripcionService = require('../services/suscripcion.service');
+const {
+  TIPO_PAGO_ABASTECIMIENTO,
+  acreditarPagoAbastecimiento,
+} = require('../services/payments/abastecimientoPago');
 
 /**
  * Normaliza el cuerpo del callback de PagoPar.
@@ -79,6 +84,39 @@ exports.pagoparWebhook = async (req, res) => {
     const datos = normalizarPayload(req.body);
     if (!datos || (!datos.numero_pedido && !datos.hash_pedido)) {
       return res.status(400).json({ error: 'Cuerpo del webhook inválido o incompleto.' });
+    }
+
+    const transactionPorHash = datos.hash_pedido
+      ? await PaymentTransaction.findOne({
+        where: { provider: 'pagopar', payment_hash: datos.hash_pedido },
+      })
+      : null;
+
+    if (transactionPorHash?.metadata?.tipo === TIPO_PAGO_ABASTECIMIENTO) {
+      const envio = await Envio.findByPk(transactionPorHash.envio_id, { include: [{ model: EnvioItem, as: 'items' }] });
+      if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+
+      const gateway = await SuscripcionService.gatewayDeSistema();
+      if (!PagoParService.validateWebhookSignature(gateway.private_key, datos.hash_pedido, datos.token)) {
+        console.warn(`[Webhook PagoPar] Token inválido para abastecimiento ${datos.hash_pedido}`);
+        return res.status(400).json({ error: 'Token de seguridad inválido.' });
+      }
+
+      const montoEsperado = Number(transactionPorHash.amount || envio.abastecimiento_costo);
+      const montoRecibido = Math.round(parseFloat(datos.monto));
+      if (Number.isNaN(montoRecibido) || montoRecibido !== Math.round(montoEsperado)) {
+        console.warn(`[Webhook PagoPar] Monto de abastecimiento no coincide para ${datos.hash_pedido}. Esperado: ${montoEsperado}, Recibido: ${datos.monto}`);
+      }
+
+      if (!datos.pagado) {
+        return res.json({ message: 'Webhook procesado correctamente.' });
+      }
+
+      await acreditarPagoAbastecimiento(envio, transactionPorHash, {
+        origen: 'PagoPar',
+        respuestaPasarela: req.body,
+      });
+      return res.json({ message: 'Webhook de abastecimiento procesado correctamente.' });
     }
 
     const envio = await ubicarEnvio(datos);

@@ -2421,7 +2421,7 @@ class LandingService {
    * @returns {{pedido_id: number, monto: number, redirigir_whatsapp: boolean}}
    */
   static async crearCheckout(tienda, slug, datosCliente) {
-    const { nombre_cliente, ruc, razon_social, quiere_factura, telefono, ciudad, departamento, direccion, referencia, items } = datosCliente || {};
+    const { nombre_cliente, documento, ruc, razon_social, quiere_factura, telefono, ciudad, departamento, direccion, referencia, items } = datosCliente || {};
 
     if (!nombre_cliente?.trim()) throw new Error('El nombre y apellido es obligatorio.');
     if (!telefono?.trim()) throw new Error('El celular es obligatorio.');
@@ -2497,6 +2497,9 @@ class LandingService {
       nombre_cliente: nombre_cliente.trim(),
       apellido_cliente: null,
       quiere_factura: tieneFactura,
+      // La cedula es del comprador y va SIEMPRE que la haya: la pide la
+      // pasarela para cobrar online, sin relacion con la factura.
+      documento: documento?.trim() || null,
       ruc: rucLimpio,
       razon_social: razonSocialLimpia,
       telefono: telefono.trim(),
@@ -2566,10 +2569,12 @@ class LandingService {
         };
       } catch (error) {
         console.error('[LandingService] Error al crear transacción de pago:', error.message);
-        // Podríamos hacer rollback del envío, o dejarlo como Pendiente de pago manual.
-        // Como el modelo asume Efectivo por defecto (hasta ahora), lo dejamos pasar
-        // pero avisamos al frontend del error.
-        paymentData = { error: error.message };
+        // El pedido YA está creado, así que no se aborta: queda como pendiente
+        // de pago manual y el comercio lo ve igual. Pero se marca el fallo de
+        // forma explícita para que el frontend NO lo trate como un pedido
+        // normal — el cliente eligió pagar online y tiene que enterarse de
+        // que no se pudo, en vez de terminar en WhatsApp sin explicación.
+        paymentData = { error: error.message, payment_url: null };
       }
     }
 

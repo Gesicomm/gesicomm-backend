@@ -61,6 +61,14 @@ class TiendaService {
         errores.push(`${campo} debe ser un color hexadecimal válido (#rrggbb).`);
       }
     }
+    // Solo formato: obligatorio lo hace el onboarding, porque las tiendas que
+    // ya existian no tienen documento y no se las puede bloquear al guardar.
+    if (payload.documento && !/^[0-9.\-]{5,20}$/.test(String(payload.documento).trim())) {
+      errores.push('documento debe ser un número de cédula válido (solo dígitos, puntos o guiones).');
+    }
+    if (payload.ruc && !/^[0-9.\-]{5,20}$/.test(String(payload.ruc).trim())) {
+      errores.push('ruc debe ser un número válido (solo dígitos, puntos o guiones).');
+    }
     if (payload.whatsapp && !WHATSAPP_RE.test(payload.whatsapp)) {
       errores.push('whatsapp debe contener solo dígitos (código de país + número), entre 8 y 15 caracteres.');
     }
@@ -79,7 +87,8 @@ class TiendaService {
   static camposEditables(payload) {
     const campos = {};
     for (const campo of [
-      'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'color_primario', 'color_secundario', 'color_fondo',
+      'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'documento', 'ruc',
+      'color_primario', 'color_secundario', 'color_fondo',
       'meta_test_event_code', 'google_analytics_id', 'tiktok_pixel_id',
     ]) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo] || null;
@@ -100,6 +109,11 @@ class TiendaService {
 
     if (!payload.nombre?.trim()) throw new Error('El nombre de la tienda es obligatorio.');
     if (!payload.subdominio?.trim()) throw new Error('El subdominio es obligatorio.');
+    // Obligatorio SOLO al crear: PagoPar exige comprador.documento para
+    // cobrarle al comercio (abastecimiento, suscripciones). Las tiendas que ya
+    // existian quedaron sin el dato y lo cargan desde /mi-tienda, por eso
+    // actualizar() no lo exige.
+    if (!payload.documento?.trim()) throw new Error('El número de cédula es obligatorio.');
 
     const subdominio = payload.subdominio.trim().toLowerCase();
     const { valido, motivo } = validarFormatoSubdominio(subdominio);

@@ -132,17 +132,18 @@ exports.testPagoparConnection = async (req, res) => {
     //      del endpoint 2.0 (iniciar-transaccion). Los endpoints 1.1 lo
     //      esperan como `token_publico`.
     const token = crypto.createHash('sha1').update(`${gateway.private_key}FORMA-PAGO`).digest('hex');
-    console.log({
-      publicKey: gateway.public_key,
-      privateKeyLength: gateway.private_key?.length,
-      privateKeyPrefix: gateway.private_key?.substring(0, 4),
-      token
-    });
+
     const response = await axios.post('https://api.pagopar.com/api/forma-pago/1.1/traer/', {
       token,
       token_publico: gateway.public_key,
     });
-    console.warn('Respuesta de PagoPar:', JSON.stringify(response));
+
+    // Nunca serializar `response` entero: el objeto de axios trae el
+    // ClientRequest, que referencia a su IncomingMessage y este de vuelta al
+    // request — JSON.stringify explota con "Converting circular structure to
+    // JSON". Ese TypeError lo agarraba el catch de abajo y devolvía el error
+    // genérico de red, tapando lo que PagoPar realmente había contestado.
+    // Solo `response.data`, que es el cuerpo, y ya se loguea más abajo.
 
     if (response.data && response.data.respuesta === true) {
       return res.json({ success: true, message: 'Conexión exitosa' });
@@ -159,13 +160,27 @@ exports.testPagoparConnection = async (req, res) => {
         : 'PagoPar rechazó la conexión. Revisá que el token público y el privado sean del mismo comercio.',
     });
   } catch (error) {
-    const detalle = error.response?.data;
-    console.error('[PaymentGateways] Error en prueba de conexión:', detalle || error.message);
-    res.status(400).json({
+    console.error('[PaymentGateways] Error en prueba de conexión:', error.response?.data || error.message);
+
+    // PagoPar contestó, pero con un status de error.
+    if (error.response) {
+      return res.status(400).json({
+        success: false,
+        error: `PagoPar respondió ${error.response.status}. Si estás en producción, verificá que la IP del servidor esté habilitada en el panel de PagoPar.`,
+      });
+    }
+    // Ni siquiera salió la petición: recién acá es un problema de red.
+    if (error.request) {
+      return res.status(400).json({
+        success: false,
+        error: 'No se pudo contactar a PagoPar (problema de red o DNS).',
+      });
+    }
+    // Sin `response` ni `request` el fallo es NUESTRO, no de la pasarela.
+    // Reportarlo como red mandaba a revisar firewalls por un bug local.
+    return res.status(500).json({
       success: false,
-      error: error.response
-        ? `PagoPar respondió ${error.response.status}. Si estás en producción, verificá que la IP del servidor esté habilitada en el panel de PagoPar.`
-        : 'No se pudo contactar a PagoPar (problema de red o DNS).',
+      error: `Error interno al probar la conexión: ${error.message}`,
     });
   }
 };

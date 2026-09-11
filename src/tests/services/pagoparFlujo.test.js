@@ -79,6 +79,54 @@ describe('Paso 1 — iniciar transaccion', () => {
   });
 });
 
+describe('Paso 1 — contrato del payload de iniciar-transaccion', () => {
+  // PagoPar valida los nombres de campo y responde
+  // `Faltan campos en el json. ["compras_items"]`. Este test fija el contrato
+  // documentado para que no se vuelva a inventar un nombre.
+  it('manda compras_items (no compras_articulos) con los obligatorios de cada item', async () => {
+    axios.post.mockResolvedValue({ data: { respuesta: true, resultado: [{ data: HASH }] } });
+    const envio = envioMock({ items: [{ id: 7, producto_id: 42, nombre_producto: 'Chomba', cantidad: 2, subtotal: 150000 }] });
+
+    await PagoParService.createTransaction(gateway, envio, null);
+
+    const body = axios.post.mock.calls[0][1];
+    expect(body).toHaveProperty('compras_items');
+    expect(body).not.toHaveProperty('compras_articulos');
+
+    const item = body.compras_items[0];
+    // Los tres obligatorios segun la doc.
+    expect(item.nombre).toBe('Chomba');
+    expect(item.id_producto).toBe(42);
+    expect(item.precio_total).toBe(150000);
+    expect(item.cantidad).toBe(2);
+  });
+
+  it('cae al id del envio cuando el item no tiene producto_id', async () => {
+    axios.post.mockResolvedValue({ data: { respuesta: true, resultado: [{ data: HASH }] } });
+    await PagoParService.createTransaction(gateway, envioMock({ items: [] }), null);
+
+    const item = axios.post.mock.calls[0][1].compras_items[0];
+    expect(item.id_producto).toBe(1234);
+    expect(item.precio_total).toBe(150000);
+  });
+
+  it('manda comprador.ciudad null en vez del 1 hardcodeado', async () => {
+    axios.post.mockResolvedValue({ data: { respuesta: true, resultado: [{ data: HASH }] } });
+    await PagoParService.createTransaction(gateway, envioMock(), null);
+
+    expect(axios.post.mock.calls[0][1].comprador.ciudad).toBeNull();
+  });
+
+  it('propaga el motivo real cuando PagoPar rechaza con resultado string', async () => {
+    axios.post.mockResolvedValue({
+      data: { respuesta: false, resultado: 'Faltan campos en el json. ["compras_items"]' },
+    });
+
+    await expect(PagoParService.createTransaction(gateway, envioMock(), null))
+      .rejects.toThrow(/Faltan campos en el json/);
+  });
+});
+
 describe('Paso 2 — callback confirma el pedido y descuenta stock', () => {
   it('acepta el payload plano documentado', async () => {
     const envio = envioMock();

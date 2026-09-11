@@ -72,6 +72,7 @@ const AfiliadoComision = require('./AfiliadoComision');
 const AuthEvent = require('./AuthEvent');
 const UserSession = require('./UserSession');
 const AuthNotification = require('./AuthNotification');
+const NotificationEvent = require('./NotificationEvent');
 
 // ============================================================
 // Relaciones existentes
@@ -511,6 +512,11 @@ AuthNotification.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' })
 AuthEvent.hasMany(AuthNotification, { as: 'notificaciones', foreignKey: 'auth_event_id', onDelete: 'SET NULL' });
 AuthNotification.belongsTo(AuthEvent, { as: 'evento', foreignKey: 'auth_event_id' });
 
+Usuario.hasMany(NotificationEvent, { as: 'notification_events', foreignKey: 'usuario_id', onDelete: 'SET NULL' });
+NotificationEvent.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' });
+Envio.hasMany(NotificationEvent, { as: 'notification_events', foreignKey: 'envio_id', onDelete: 'SET NULL' });
+NotificationEvent.belongsTo(Envio, { as: 'envio', foreignKey: 'envio_id' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -590,4 +596,5 @@ module.exports = {
   AuthEvent,
   UserSession,
   AuthNotification,
+  NotificationEvent,
 };

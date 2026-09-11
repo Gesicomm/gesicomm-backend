@@ -1,6 +1,7 @@
 const { sequelize } = require('../../models');
 const envioController = require('../../controllers/envioController');
 const { registrarHistorial } = require('../../utils/historial');
+const PedidosNotificaciones = require('../notificaciones/pedidosNotificaciones.service');
 
 const { descontarStockYSnapshot } = envioController;
 const calcularAbastecimientoDesdeItems = envioController.calcularAbastecimientoDesdeItems || (async () => ({
@@ -33,6 +34,7 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar' } 
   if (transaction.status === 'PAID') return 'ya_pagado';
 
   let resultado = 'pago_registrado';
+  let notificarPagoAbastecimiento = false;
 
   await sequelize.transaction(async (t) => {
     transaction.status = 'PAID';
@@ -41,11 +43,12 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar' } 
     if (envio.estado !== 'Pendiente') return;
 
     if (!envio.stock_descontado) {
-      const abastecimiento = await calcularAbastecimientoDesdeItems(envio.items || [], t, envio.usuario_id);
+      const abastecimiento = await calcularAbastecimientoDesdeItems(envio.items || [], envio.usuario_id, t);
       envio.abastecimiento_estado = abastecimiento.estado;
       envio.abastecimiento_costo = abastecimiento.costo;
       envio.abastecimiento_pagado_at = null;
       envio.abastecimiento_recibido_at = null;
+      notificarPagoAbastecimiento = abastecimiento.requiere;
       await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id);
       envio.stock_descontado = true;
     }
@@ -63,6 +66,10 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar' } 
     );
     resultado = 'confirmado';
   });
+
+  if (notificarPagoAbastecimiento) {
+    PedidosNotificaciones.notificarAbastecimientoPendienteSinBloquear(envio.id);
+  }
 
   return resultado;
 }

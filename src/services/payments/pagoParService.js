@@ -3,6 +3,27 @@ const axios = require('axios');
 
 class PagoParService {
   /**
+   * Saca el motivo legible de una respuesta de PagoPar.
+   *
+   * `resultado` no tiene forma estable: a veces es un array de objetos
+   * ([{ datos: "..." }]), a veces un array de strings, y a veces un string
+   * suelto — por ejemplo "Comercio de desarrollo no habilitado o con acceso
+   * vencido.". Leerlo siempre como array hacía que `resultado[0]` fuera la
+   * primera LETRA del mensaje, `.datos` diera undefined, y el motivo real se
+   * perdiera detrás de un "Error desconocido".
+   */
+  static motivoDeRespuesta(data) {
+    const r = data?.resultado;
+    if (typeof r === 'string' && r.trim()) return r.trim();
+    if (Array.isArray(r) && r.length) {
+      const primero = r[0];
+      if (typeof primero === 'string') return primero;
+      return primero?.datos || primero?.mensaje || null;
+    }
+    return null;
+  }
+
+  /**
    * Genera el token (hash SHA1) requerido por PagoPar para iniciar una transacción.
    * sha1(comercio_token_privado + id_pedido + strval(floatval(monto_total)))
    */
@@ -71,10 +92,7 @@ class PagoParService {
       // (ej: "Comercio de desarrollo no habilitado o con acceso vencido.").
       // Leerlo siempre como array hacía que `resultado[0]` fuera la primera
       // LETRA del mensaje y el motivo real se perdiera.
-      const r = response.data?.resultado;
-      const detalle = (typeof r === 'string' && r.trim())
-        || (Array.isArray(r) && (typeof r[0] === 'string' ? r[0] : r[0]?.datos || r[0]?.mensaje))
-        || 'PagoPar rechazó la consulta.';
+      const detalle = PagoParService.motivoDeRespuesta(response.data) || 'PagoPar rechazó la consulta.';
       throw new Error(detalle);
     }
 
@@ -110,22 +128,51 @@ class PagoParService {
     // El costo del courier vive aparte, en `costo_envio`, para el arqueo.
     const amount = envio.monto;
 
+    // `documento` lo exige el comercio de PagoPar segun su configuracion: el
+    // de la tienda acepta pedidos sin documento, el del sistema (el que cobra
+    // abastecimiento y suscripciones) responde "El documento debe estar
+    // presente.". Por eso NO se bloquea aca: se manda lo que haya y decide
+    // PagoPar. El que necesite documento tiene que proveerlo en su flujo.
+    const documento = String(envio.documento || envio.ruc || '').trim();
+
     const token = this.generateToken(gateway.private_key, orderId, amount);
 
-    // Mapeo de items
+    // Mapeo de items. El array va como `compras_items` (NO
+    // "compras_articulos", que no existe: PagoPar respondia
+    // `Faltan campos en el json. ["compras_items"]`).
+    //
+    // Obligatorios por item segun la doc: nombre, id_producto, precio_total.
+    // El resto se manda vacio/por defecto porque no tenemos equivalente:
+    // `categoria` y `ciudad` son catalogos de PagoPar que no mapeamos, y los
+    // campos `vendedor_*` son para marketplaces multi-vendedor.
+    const armarItem = (nombre, cantidad, precioTotal, idProducto) => ({
+      ciudad: '1',
+      nombre,
+      cantidad,
+      categoria: '909',
+      public_key: gateway.public_key,
+      url_imagen: '',
+      descripcion: nombre,
+      id_producto: idProducto,
+      precio_total: precioTotal,
+      vendedor_telefono: '',
+      vendedor_direccion: '',
+      vendedor_direccion_referencia: '',
+      vendedor_direccion_coordenadas: '',
+    });
+
     let items = [];
     if (envio.items && envio.items.length > 0) {
-      items = envio.items.map(item => ({
-        nombre: item.nombre_producto || 'Producto',
-        cantidad: item.cantidad || 1,
-        precio_total: item.subtotal || amount
-      }));
+      items = envio.items.map((item, i) => armarItem(
+        item.nombre_producto || 'Producto',
+        item.cantidad || 1,
+        item.subtotal || amount,
+        // id_producto es obligatorio: se usa el del producto y, si el item no
+        // lo tiene (ej. una oferta armada), su posicion como ultimo recurso.
+        item.producto_id || item.id || (i + 1),
+      ));
     } else {
-      items = [{
-        nombre: `Pedido ${orderId}`,
-        cantidad: 1,
-        precio_total: amount
-      }];
+      items = [armarItem(`Pedido ${orderId}`, 1, amount, envio.id)];
     }
 
     const payload = {
@@ -135,27 +182,34 @@ class PagoParService {
         email: 'cliente@sin-email.com', // Gesicomm no requiere email obligatoriamente en checkout
         nombre: envio.cliente || 'Cliente',
         telefono: envio.telefono || '',
-        documento: envio.ruc || '', // Si no hay doc, usar ruc o vacío
+        documento, // validado arriba: nunca vacio
         coordenadas: '',
         razon_social: envio.razon_social || envio.cliente || '',
         tipo_documento: 'CI',
         direccion: envio.direccion || 'Sin dirección',
-        ciudad: envio.ciudad ? 1 : 1 // Idealmente mapear ID de ciudad de PagoPar
+        // La doc acepta null. Antes decia `envio.ciudad ? 1 : 1`, que devuelve
+        // 1 siempre — no mapeamos ciudades al catalogo de PagoPar.
+        ciudad: null,
+        direccion_referencia: envio.referencia || null
       },
       public_key: gateway.public_key,
       monto_total: amount,
       tipo_pedido: 'VENTA-COMERCIO',
-      compras_articulos: items,
+      compras_items: items,
       fecha_maxima_pago: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19), // +24hs formato YYYY-MM-DD HH:mm:ss
       id_pedido_comercio: orderId,
-      descripcion_resumen: `Pago de pedido ${orderId}`,
+      descripcion_resumen: envio.descripcion_resumen || `Pago de pedido ${orderId}`,
     };
 
     try {
       const response = await axios.post(endpoint, payload);
       
       if (!response.data.respuesta) {
-        throw new Error(response.data.resultado[0]?.datos || 'Error desconocido al crear transacción en PagoPar');
+        // HTTP 200 pero PagoPar rechazo el pedido. El cuerpo crudo va al log
+        // porque es la unica forma de diagnosticar un rechazo nuevo.
+        console.error('[PagoParService] PagoPar rechazo la transaccion:', JSON.stringify(response.data));
+        const motivo = PagoParService.motivoDeRespuesta(response.data);
+        throw new Error(motivo || 'Error desconocido al crear transacción en PagoPar');
       }
 
       return {
@@ -165,8 +219,18 @@ class PagoParService {
         payment_url: `https://www.pagopar.com/pagos/${response.data.resultado[0].data}`
       };
     } catch (error) {
-      console.error('[PagoParService] Error al iniciar transacción:', error.response?.data || error.message);
-      throw new Error('No se pudo iniciar la transacción con PagoPar');
+      const cuerpo = error.response?.data;
+      console.error('[PagoParService] Error al iniciar transacción:', cuerpo || error.message);
+
+      // Propagar el motivo REAL de PagoPar. Antes se tiraba siempre el mismo
+      // texto genérico, y como más arriba el checkout se lo traga y cae a
+      // WhatsApp, un cobro rechazado terminaba siendo indistinguible de un
+      // pedido normal: nadie se enteraba de por qué no se podía pagar.
+      const motivo = PagoParService.motivoDeRespuesta(cuerpo) || error.message;
+
+      throw new Error(
+        motivo ? `No se pudo iniciar la transacción con PagoPar: ${motivo}` : 'No se pudo iniciar la transacción con PagoPar',
+      );
     }
   }
 }

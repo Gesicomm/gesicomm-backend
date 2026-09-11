@@ -57,6 +57,25 @@ const Tienda = sequelize.define('Tienda', {
     defaultValue: true,
     comment: 'false = el dominio queda cargado pero no se sirve ni se le emite certificado.',
   },
+  // --- Identificacion fiscal del comercio ---
+  // PagoPar pide DOS campos distintos y simultaneos, no uno u otro:
+  //   documento        -> la cedula. Obligatorio, y `tipo_documento` va
+  //                       siempre con el literal "CI" (lo dice la doc:
+  //                       "siempre debe enviarse el valor 'CI'").
+  //   ruc              -> identificacion fiscal. Opcional; si no tiene, se
+  //                       manda cadena vacia.
+  // Se guardan nullable porque las tiendas que ya existian no los tienen; el
+  // onboarding los exige de aca en adelante.
+  documento: {
+    type: DataTypes.STRING(30),
+    allowNull: true,
+    comment: 'Cedula del titular. Va como comprador.documento en PagoPar (tipo_documento siempre "CI").',
+  },
+  ruc: {
+    type: DataTypes.STRING(30),
+    allowNull: true,
+    comment: 'RUC del comercio. Opcional: PagoPar lo acepta vacio si no tiene.',
+  },
   // --- Tema (default para todas las landings de la tienda) ---
   color_primario: {
     type: DataTypes.STRING(7),

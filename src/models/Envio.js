@@ -199,6 +199,11 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
+  documento: {
+    type: DataTypes.STRING(30),
+    allowNull: true,
+    comment: 'Cedula del comprador. La pide PagoPar para cobrar online, independientemente de si quiere factura.',
+  },
   ruc: {
     type: DataTypes.STRING(20),
     allowNull: true,
@@ -290,6 +295,10 @@ const Envio = sequelize.define('Envio', {
     allowNull: true,
   },
   abastecimiento_recibido_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  abastecimiento_notificado_at: {
     type: DataTypes.DATE,
     allowNull: true,
   },
