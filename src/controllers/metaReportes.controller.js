@@ -55,7 +55,7 @@ async function crearCampana(req, res) {
 
 async function listarCampanas(req, res) {
   try {
-    const campanas = await MetaReportesService.listarCampanas(req.usuario.tenantId, req.query);
+    const campanas = await MetaReportesService.listarCampanas(req.usuario.tenantId, req.usuario.id, req.query);
     return res.json(campanas);
   } catch (err) {
     console.error('[meta-reportes] listarCampanas:', err.message);
@@ -65,7 +65,7 @@ async function listarCampanas(req, res) {
 
 async function actualizarCampana(req, res) {
   try {
-    const campana = await MetaReportesService.actualizarCampana(req.params.id, req.usuario.tenantId, req.body);
+    const campana = await MetaReportesService.actualizarCampana(req.params.id, req.usuario.tenantId, req.usuario.id, req.body);
     return res.json(campana);
   } catch (err) {
     return manejarError(res, err, 'Error al actualizar la campaña.');
@@ -74,7 +74,7 @@ async function actualizarCampana(req, res) {
 
 async function eliminarCampana(req, res) {
   try {
-    await MetaReportesService.eliminarCampana(req.params.id, req.usuario.tenantId);
+    await MetaReportesService.eliminarCampana(req.params.id, req.usuario.tenantId, req.usuario.id);
     return res.json({ message: 'Campaña eliminada.' });
   } catch (err) {
     return manejarError(res, err, 'Error al eliminar la campaña.');
@@ -93,6 +93,7 @@ async function analizarCSV(req, res) {
 
     const analisis = await MetaReportesService.analizarCSV(req.file.buffer, {
       inquilino_id: req.usuario.tenantId,
+      usuario_id: req.usuario.id,
       nombre_archivo: req.file.originalname,
     });
 
@@ -137,7 +138,7 @@ async function importarCSV(req, res) {
 
 async function listarImportaciones(req, res) {
   try {
-    const importaciones = await MetaReportesService.listarImportaciones(req.usuario.tenantId, req.body);
+    const importaciones = await MetaReportesService.listarImportaciones(req.usuario.tenantId, req.usuario.id, req.body);
     return res.json(importaciones);
   } catch (err) {
     console.error('[meta-reportes] listarImportaciones:', err.message);
@@ -147,7 +148,7 @@ async function listarImportaciones(req, res) {
 
 async function eliminarImportacion(req, res) {
   try {
-    await MetaReportesService.eliminarImportacion(req.params.id, req.usuario.tenantId);
+    await MetaReportesService.eliminarImportacion(req.params.id, req.usuario.tenantId, req.usuario.id);
     return res.json({ message: 'Importación eliminada.' });
   } catch (err) {
     return manejarError(res, err, 'Error al eliminar la importación.');
@@ -161,7 +162,7 @@ async function eliminarImportacion(req, res) {
 
 async function listarFilas(req, res) {
   try {
-    const resultado = await MetaReportesService.listarFilas(req.usuario.tenantId, req.body);
+    const resultado = await MetaReportesService.listarFilas(req.usuario.tenantId, req.usuario.id, req.body);
     return res.json(resultado);
   } catch (err) {
     console.error('[meta-reportes] listarFilas:', err.message);
@@ -171,7 +172,7 @@ async function listarFilas(req, res) {
 
 async function vincularFila(req, res) {
   try {
-    const fila = await MetaReportesService.vincularFilaManual(req.params.id, req.usuario.tenantId, req.body.meta_campana_interna_id);
+    const fila = await MetaReportesService.vincularFilaManual(req.params.id, req.usuario.tenantId, req.usuario.id, req.body.meta_campana_interna_id);
     return res.json(fila);
   } catch (err) {
     return manejarError(res, err, 'Error al vincular la fila.');

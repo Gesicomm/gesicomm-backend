@@ -58,14 +58,11 @@ function calcularDesglose(envios, ajuste_manual = 0) {
     // cobra nada, se perdió antes de llegar al cliente) y el método de
     // pago usado deja el dinero en manos del courier.
     //
-    // Lo que el cliente le entrega NO siempre es `monto`. Cuando el pedido
-    // nace en el checkout público, `monto` son solo los productos y el
-    // flete se cobra aparte (pagoParService: `amount = monto + costo_envio`),
-    // así que el courier recibe `monto + flete`. Liquidar contra `monto`
-    // pelado le quitaba al comercio exactamente el valor del envío en cada
-    // pedido de ese tipo: con Gs 166.138 de producto y Gs 50.000 de flete,
-    // el courier entregaba Gs 216.138 y la rendición calculaba como si
-    // hubiera recibido Gs 166.138.
+    // Lo que el cliente le entrega al courier NO siempre es `monto`. En pagos
+    // online, PagoPar cobra solo los productos (`monto`). En contra entrega,
+    // si el delivery va fuera del monto del producto, el courier puede recibir
+    // `monto + flete`. Liquidar contra `monto` pelado le quitaba al comercio
+    // exactamente el valor del envío en cada pedido de ese tipo.
     const dv = desgloseDelivery(e);
     const cobrado_al_cliente = monto + dv.envio_fuera_del_monto;
     const dinero_courier = (e.estado === 'Entregado' && custodia === 'courier') ? cobrado_al_cliente : 0;

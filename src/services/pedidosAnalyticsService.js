@@ -1,6 +1,6 @@
 'use strict';
 
-const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto, CategoriaCostoGasto, PaymentTransaction, CanalVenta, Landing, LandingEvento, Tienda, MetodoPago, MetaReporteFila, MetaCampanaInterna } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto, CategoriaCostoGasto, PaymentTransaction, CanalVenta, Landing, LandingEvento, Tienda, MetodoPago, MetaReporteFila, MetaCampanaInterna, MetaReporteImport } = require('../models');
 const { Op, fn, col, literal } = require('sequelize');
 const sequelize = require('../config/database');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
@@ -312,8 +312,8 @@ function getKpisFinancieros(envios) {
  * Se aplica el mismo multiplicador de IVA que la sección de Ads, para que
  * las dos pantallas muestren el mismo número.
  */
-async function getGastoMetaAds(inquilino_id, desde, hasta) {
-  if (!inquilino_id) return { total: 0, sin_atribuir: 0, directo_por_producto: {} };
+async function getGastoMetaAds(usuario_id, inquilino_id, desde, hasta) {
+  if (!inquilino_id || !usuario_id) return { total: 0, sin_atribuir: 0, directo_por_producto: {} };
 
   const filas = await MetaReporteFila.findAll({
     // Solapamiento de rangos. Las filas sin fechas quedan afuera a
@@ -329,7 +329,14 @@ async function getGastoMetaAds(inquilino_id, desde, hasta) {
     // MetaCampanaInterna.producto_ids). Sin esto, cada guaraní de Meta caía
     // en la bolsa general y se repartía por unidades entre TODOS los
     // productos — incluidos los que jamás tuvieron un peso invertido.
-    include: [{ model: MetaCampanaInterna, as: 'campana', attributes: ['producto_ids'] }],
+    include: [
+      { model: MetaCampanaInterna, as: 'campana', attributes: ['producto_ids'] },
+      // El reporte es por usuario: sin este filtro, el gasto de Ads de
+      // CUALQUIER usuario del tenant se sumaba al dashboard de todos los
+      // demás (bug real: una tienda recién creada, sin campañas propias,
+      // mostraba utilidad negativa por el gasto de otra tienda).
+      { model: MetaReporteImport, attributes: [], where: { usuario_id }, required: true },
+    ],
     raw: true,
   });
 
@@ -465,7 +472,7 @@ async function getGastosOperativos(usuario_id, desde, hasta, inquilino_id = null
   // esos productos (ver getGastoMetaAds); si no, queda sin atribuir — no hay
   // forma honesta de decidir a qué producto imputar un CSV que no vino de
   // una campaña propia. En ningún caso entra al punto de equilibrio.
-  const metaAds = await getGastoMetaAds(inquilino_id, desde, hasta);
+  const metaAds = await getGastoMetaAds(usuario_id, inquilino_id, desde, hasta);
 
   return {
     gastos_operativos: gastos,

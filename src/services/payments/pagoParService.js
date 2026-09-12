@@ -120,6 +120,7 @@ class PagoParService {
     // autoincremental único): antes se prefijaba "GES-" y solo agregaba
     // ruido. Lo que autentica el callback es la firma, no el formato del id.
     const orderId = String(envio.id);
+    const orderLabel = String(envio.numero_pedido || envio.id);
     
     // Se cobra el `monto` y nada más: el delivery no se le carga al
     // comprador. El checkout público le muestra ese mismo número (subtotal −
@@ -172,7 +173,7 @@ class PagoParService {
         item.producto_id || item.id || (i + 1),
       ));
     } else {
-      items = [armarItem(`Pedido ${orderId}`, 1, amount, envio.id)];
+      items = [armarItem(`Pedido ${orderLabel}`, 1, amount, envio.id)];
     }
 
     const payload = {
@@ -198,7 +199,7 @@ class PagoParService {
       compras_items: items,
       fecha_maxima_pago: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19), // +24hs formato YYYY-MM-DD HH:mm:ss
       id_pedido_comercio: orderId,
-      descripcion_resumen: envio.descripcion_resumen || `Pago de pedido ${orderId}`,
+      descripcion_resumen: envio.descripcion_resumen || `Pago de pedido ${orderLabel}`,
     };
 
     try {

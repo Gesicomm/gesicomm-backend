@@ -14,10 +14,12 @@
  * POST /api/l/carrito         → ídem, para la landing es_home.
  */
 
-const { Landing, Tienda, Usuario } = require('../models');
+const { Envio, EnvioItem, Landing, PaymentGateway, PaymentTransaction, Tienda, Usuario } = require('../models');
 const LandingService = require('../services/landing.service');
 const MetaCapiService = require('../services/metaCapi.service');
 const BuilderPublicPageService = require('../services/builderPublicPage.service');
+const PagoParService = require('../services/payments/pagoParService');
+const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago');
 
 const EVENTOS_PERMITIDOS = new Set(['Contact', 'AddToCart', 'InitiateCheckout', 'ViewContent', 'Lead']);
 const MAX_CONTENT_IDS = 40;
@@ -307,6 +309,87 @@ async function crearCheckout(req, res) {
 }
 
 /**
+ * Recorta la respuesta de PagoPar antes de exponerla en un endpoint PUBLICO.
+ *
+ * El objeto crudo de PagoPar trae `token` —que es sha1(private_key +
+ * hash_pedido), o sea lo MISMO que nuestro webhook acepta como prueba de
+ * autenticidad— y `documento`, la cedula del comprador. Devolverlo entero
+ * permitia que cualquiera con el hash (que viaja en la URL de retorno del
+ * comprador) leyera el token y falsificara un callback marcando el pedido
+ * como pagado. Por eso se listan los campos permitidos en vez de filtrar los
+ * prohibidos: si PagoPar agrega un campo sensible manana, no se filtra solo.
+ */
+function datosPublicosPagopar(datos) {
+  if (!datos || typeof datos !== 'object') return null;
+  return {
+    pagado: datos.pagado === true || datos.pagado === 'true',
+    cancelado: datos.cancelado === true || datos.cancelado === 'true',
+    monto: datos.monto ?? null,
+    forma_pago: datos.forma_pago ?? null,
+    fecha_pago: datos.fecha_pago ?? null,
+    fecha_maxima_pago: datos.fecha_maxima_pago ?? null,
+    ultimo_mensaje_error: datos.ultimo_mensaje_error ?? null,
+  };
+}
+
+async function resultadoPago(req, res) {
+  try {
+    const { tienda } = await resolverTiendaYLanding(req);
+    if (!tienda) {
+      return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
+    }
+
+    const hash = limpiarTexto(req.params.hash, 200);
+    if (!hash) {
+      return res.status(400).json({ message: 'Falta el hash del pedido.' });
+    }
+
+    const transaction = await PaymentTransaction.findOne({
+      where: { provider: 'pagopar', payment_hash: hash },
+    });
+    if (!transaction) {
+      return res.status(404).json({ message: 'No encontramos una transacción de PagoPar para esta tienda.' });
+    }
+
+    const envio = await Envio.findByPk(transaction.envio_id, {
+      include: [{ model: EnvioItem, as: 'items' }],
+    });
+    if (!envio || envio.usuario_id !== tienda.usuario_id) {
+      return res.status(404).json({ message: 'No encontramos una transacción de PagoPar para esta tienda.' });
+    }
+
+    const gateway = await PaymentGateway.findOne({
+      where: { usuario_id: tienda.usuario_id, provider: 'pagopar' },
+    });
+    if (!gateway || !gateway.private_key || !gateway.public_key) {
+      return res.status(400).json({ message: 'La pasarela de PagoPar de esta tienda no está configurada.' });
+    }
+
+    const consulta = await PagoParService.consultarEstadoPedido(gateway, hash);
+    let reconciliacion = 'sin_cambios';
+    if (consulta.pagado) {
+      reconciliacion = await confirmarPedidoPagado(envio, transaction, { origen: 'PagoPar (retorno tienda)' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      pagado: consulta.pagado,
+      pedido_id: envio.id,
+      numero_pedido: envio.numero_pedido,
+      monto: envio.monto,
+      estado_pedido: envio.estado,
+      estado_transaccion: transaction.status,
+      reconciliacion,
+      // Saneado: nunca el objeto crudo (ver datosPublicosPagopar).
+      pagopar: datosPublicosPagopar(consulta.datos),
+    });
+  } catch (err) {
+    console.error('[landing-publica] resultadoPago:', err.response?.data || err.message);
+    return res.status(400).json({ message: err.message || 'No se pudo consultar el resultado del pago.' });
+  }
+}
+
+/**
  * Recálculo de carrito en vivo — SOLO LECTURA, nunca crea un Envío. Mismo
  * saneo de items que crearCheckout, sin los datos personales del cliente
  * (acá no hace falta un formulario completo, solo qué hay en el carrito).
@@ -427,4 +510,4 @@ async function registrarEvento(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, crearCheckout, recalcularCarrito, validarCupon };
+module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, crearCheckout, recalcularCarrito, validarCupon, resultadoPago };

@@ -15,8 +15,6 @@ const s = require('./src/config/database');
     console.error('ERROR:', error);
     process.exitCode = 1;
   } finally {
-    if (typeof s.close === 'function') {
-      await s.close();
-    }
+    if (s.close) await s.close();
   }
 })();

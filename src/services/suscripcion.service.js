@@ -236,19 +236,39 @@ class SuscripcionService {
    * Idempotente: si el pago ya estaba en PAID, devuelve lo mismo sin repetir.
    */
   static async acreditarPago(pago, datosCrudos = null) {
+    // Chequeo barato para el caso comun. El que decide de verdad es el de
+    // adentro, con la fila bloqueada: PagoPar REINTENTA el callback y la
+    // pantalla de resultado consulta al abrirse, asi que dos avisos del mismo
+    // pago pueden entrar a la vez. Sin bloqueo los dos pasaban este `if` (mira
+    // un objeto en memoria cargado antes) y se emitian DOS token_registro: el
+    // segundo pisaba al primero y dejaba muerto el enlace que la persona ya
+    // tenia en pantalla, habiendo pagado.
     if (pago.estado === 'PAID') {
       const susc = await Suscripcion.findByPk(pago.suscripcion_id);
       return { yaEstaba: true, suscripcion: susc };
     }
 
     return sequelize.transaction(async (t) => {
-      const suscripcion = await Suscripcion.findByPk(pago.suscripcion_id, { transaction: t });
+      const pagoFila = await PagoSuscripcion.findByPk(pago.id, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (!pagoFila || pagoFila.estado === 'PAID') {
+        const susc = await Suscripcion.findByPk(pago.suscripcion_id, { transaction: t });
+        return { yaEstaba: true, suscripcion: susc };
+      }
 
-      await pago.update({
+      const suscripcion = await Suscripcion.findByPk(pago.suscripcion_id, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      await pagoFila.update({
         estado: 'PAID',
         pagado_en: new Date(),
         respuesta_pasarela: datosCrudos,
       }, { transaction: t });
+      pago.estado = 'PAID'; // el caller sigue usando su copia
 
       const inicio = new Date();
       const plan = await Plan.findByPk(suscripcion.plan_id, { transaction: t });
@@ -267,7 +287,7 @@ class SuscripcionService {
       }
 
       await suscripcion.update(cambios, { transaction: t });
-      await AfiliadosService.crearComisionPorPago(pago, t);
+      await AfiliadosService.crearComisionPorPago(pagoFila, t);
       return { yaEstaba: false, suscripcion };
     });
   }

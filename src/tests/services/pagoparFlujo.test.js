@@ -15,8 +15,8 @@ jest.mock('../../models', () => ({
   Envio: { findByPk: jest.fn() },
   EnvioItem: {},
   PaymentGateway: { findOne: jest.fn() },
-  PaymentTransaction: { findOne: jest.fn(), create: jest.fn() },
-  sequelize: { transaction: jest.fn(fn => fn('TRX')) },
+  PaymentTransaction: { findOne: jest.fn(), create: jest.fn(), findByPk: jest.fn() },
+  sequelize: { transaction: jest.fn(fn => fn({ LOCK: { UPDATE: 'UPDATE' } })) },
 }));
 
 const PagoParService = require('../../services/payments/pagoParService');
@@ -58,7 +58,13 @@ const res = () => ({ status: jest.fn().mockReturnThis(), json: jest.fn() });
 
 beforeEach(() => {
   jest.clearAllMocks();
-  sequelize.transaction.mockImplementation((fn) => fn('TRX'));
+  // `t.LOCK.UPDATE`: confirmarPedidoPagado relee las filas con bloqueo.
+  sequelize.transaction.mockImplementation((fn) => fn({ LOCK: { UPDATE: 'UPDATE' } }));
+  // confirmarPedidoPagado relee la transaccion con bloqueo: en la base seria
+  // la MISMA fila que devolvio findOne, asi que se espeja.
+  PaymentTransaction.findByPk.mockImplementation(
+    (...args) => PaymentTransaction.findOne(...args),
+  );
 });
 
 describe('Paso 1 — iniciar transaccion', () => {
@@ -149,10 +155,10 @@ describe('Paso 2 — callback confirma el pedido y descuenta stock', () => {
     await pagoparWebhook(req, r);
 
     expect(trx.status).toBe('PAID');
-    expect(descontarStockYSnapshot).toHaveBeenCalledWith(envio.items, 'TRX', envio.usuario_id);
+    expect(descontarStockYSnapshot).toHaveBeenCalledWith(envio.items, expect.anything(), envio.usuario_id);
     expect(envio.stock_descontado).toBe(true);
     expect(envio.estado).toBe('Confirmado');
-    expect(r.json).toHaveBeenCalledWith({ message: 'Webhook procesado correctamente.' });
+    expect(r.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
   });
 
   it('rechaza un callback firmado con la formula vieja', async () => {

@@ -48,8 +48,9 @@ function normalizarPayload(body) {
 /**
  * Ubica el pedido del callback.
  *
- * `numero_pedido` es el `id_pedido_comercio` que mandamos nosotros: hoy es
- * el id del Envio pelado. Se sigue tolerando el prefijo "GES-" al LEER,
+ * `numero_pedido` es el nombre que usa PagoPar para devolver nuestro
+ * `id_pedido_comercio`: sigue siendo el id tecnico del Envio, no el
+ * numero_pedido visible por tienda. Se tolera el prefijo "GES-" al LEER,
  * porque las transacciones iniciadas antes de sacarlo ya viajaron con él y
  * su callback puede llegar en cualquier momento — pero al emitir ya no se
  * usa (ver PagoParService.createTransaction).
@@ -77,6 +78,23 @@ async function ubicarEnvio({ numero_pedido, hash_pedido }) {
   }
 
   return null;
+}
+
+/**
+ * Lo que PagoPar espera como RESPUESTA del callback.
+ *
+ * No alcanza con un 200: la doc pide que el comercio devuelva el mismo array
+ * `resultado` que recibio —  `echo json_encode($json_pagopar['resultado'])` en
+ * su ejemplo PHP—, y el simulador del panel compara byte a byte contra eso.
+ * Devolver {"message": "..."} hacia que el Paso 2 de la certificacion nunca
+ * se tildara, aunque el pago se acreditara bien de nuestro lado.
+ *
+ * Si el cuerpo viniera plano (sin el envoltorio), se responde envuelto en un
+ * array para conservar la forma que ellos esperan.
+ */
+function ecoPagopar(body) {
+  if (Array.isArray(body?.resultado)) return body.resultado;
+  return body && typeof body === 'object' ? [body] : [];
 }
 
 exports.pagoparWebhook = async (req, res) => {
@@ -109,14 +127,14 @@ exports.pagoparWebhook = async (req, res) => {
       }
 
       if (!datos.pagado) {
-        return res.json({ message: 'Webhook procesado correctamente.' });
+        return res.json(ecoPagopar(req.body));
       }
 
       await acreditarPagoAbastecimiento(envio, transactionPorHash, {
         origen: 'PagoPar',
         respuestaPasarela: req.body,
       });
-      return res.json({ message: 'Webhook de abastecimiento procesado correctamente.' });
+      return res.json(ecoPagopar(req.body));
     }
 
     const envio = await ubicarEnvio(datos);
@@ -150,8 +168,17 @@ exports.pagoparWebhook = async (req, res) => {
       // deja anotado para conciliación manual.
     }
 
-    let transaction = await PaymentTransaction.findOne({
+    // Un pedido puede acumular VARIAS transacciones: cada "Volver a intentar
+    // pagar" en PagoPar genera una nueva. Buscar solo por envio_id devolvia
+    // una arbitraria, asi que se marcaba como PAID una transaccion distinta de
+    // la que el comprador pago de verdad — y la pagada quedaba en PENDING.
+    // El hash identifica exactamente cual fue; el fallback a la mas reciente
+    // cubre un aviso sin hash.
+    let transaction = (datos.hash_pedido && await PaymentTransaction.findOne({
+      where: { envio_id: envio.id, provider: 'pagopar', payment_hash: datos.hash_pedido },
+    })) || await PaymentTransaction.findOne({
       where: { envio_id: envio.id, provider: 'pagopar' },
+      order: [['id', 'DESC']],
     });
 
     if (!transaction) {
@@ -167,16 +194,17 @@ exports.pagoparWebhook = async (req, res) => {
 
     // Idempotencia: PagoPar reintenta el callback hasta recibir un 2xx.
     if (transaction.status === 'PAID') {
-      return res.json({ message: 'El pedido ya fue procesado y pagado anteriormente.' });
+      // Idempotente: se responde el eco igual, para que PagoPar deje de reintentar.
+      return res.json(ecoPagopar(req.body));
     }
 
     if (!datos.pagado) {
-      return res.json({ message: 'Webhook procesado correctamente.' });
+      return res.json(ecoPagopar(req.body));
     }
 
     await confirmarPedidoPagado(envio, transaction, { origen: 'PagoPar' });
 
-    res.json({ message: 'Webhook procesado correctamente.' });
+    res.json(ecoPagopar(req.body));
   } catch (error) {
     console.error('[Webhook PagoPar] Error:', error);
     res.status(500).json({ error: 'Error interno al procesar el webhook.' });

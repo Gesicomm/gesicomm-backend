@@ -1,7 +1,6 @@
-const { sequelize } = require('../../models');
+const { sequelize, PaymentTransaction, Envio } = require('../../models');
 const envioController = require('../../controllers/envioController');
 const { registrarHistorial } = require('../../utils/historial');
-const PedidosNotificaciones = require('../notificaciones/pedidosNotificaciones.service');
 
 const { descontarStockYSnapshot } = envioController;
 const calcularAbastecimientoDesdeItems = envioController.calcularAbastecimientoDesdeItems || (async () => ({
@@ -21,8 +20,19 @@ const calcularAbastecimientoDesdeItems = envioController.calcularAbastecimientoD
  * Todo dentro de una transacción: si el descuento de stock falla, la
  * transacción no queda en PAID y el pedido no queda confirmado a medias.
  *
- * Es idempotente por dos vías: `transaction.status === 'PAID'` corta antes
- * de entrar, y `envio.stock_descontado` evita descontar dos veces.
+ * IDEMPOTENCIA BAJO CONCURRENCIA — el detalle que importa:
+ *
+ * Hay tres caminos que pueden ejecutarse a la vez sobre el mismo pedido: el
+ * callback de PagoPar (que ADEMAS reintenta), la pantalla de retorno del
+ * comprador (que reconcilia al abrirse) y la consulta manual del comercio.
+ * El caso frecuente es el callback y el retorno juntos, porque PagoPar
+ * dispara el aviso y redirige el navegador en el mismo instante.
+ *
+ * Antes el chequeo `transaction.status === 'PAID'` miraba el objeto EN
+ * MEMORIA que el caller habia cargado antes de entrar: dos avisos simultaneos
+ * lo pasaban los dos y el stock se descontaba DOS VECES. Ahora la fila se
+ * relee DENTRO de la transaccion con SELECT ... FOR UPDATE, asi el segundo
+ * espera al primero y encuentra el estado ya actualizado.
  *
  * @returns {'ya_pagado'|'confirmado'|'pago_registrado'}
  *   - ya_pagado: la transacción ya estaba en PAID, no se hizo nada.
@@ -31,32 +41,58 @@ const calcularAbastecimientoDesdeItems = envioController.calcularAbastecimientoD
  *     (ya lo habían movido a mano), así que no se tocó su estado.
  */
 async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar' } = {}) {
+  // Chequeo barato para el caso comun (evita abrir transaccion al pedo); el
+  // que realmente decide es el de adentro, con la fila bloqueada.
   if (transaction.status === 'PAID') return 'ya_pagado';
 
   let resultado = 'pago_registrado';
-  let notificarPagoAbastecimiento = false;
 
   await sequelize.transaction(async (t) => {
-    transaction.status = 'PAID';
-    await transaction.save({ transaction: t });
-
-    if (envio.estado !== 'Pendiente') return;
-
-    if (!envio.stock_descontado) {
-      const abastecimiento = await calcularAbastecimientoDesdeItems(envio.items || [], envio.usuario_id, t);
-      envio.abastecimiento_estado = abastecimiento.estado;
-      envio.abastecimiento_costo = abastecimiento.costo;
-      envio.abastecimiento_pagado_at = null;
-      envio.abastecimiento_recibido_at = null;
-      notificarPagoAbastecimiento = abastecimiento.requiere;
-      await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id);
-      envio.stock_descontado = true;
+    // Relectura con bloqueo: dos avisos simultaneos se serializan aca.
+    const trxFila = await PaymentTransaction.findByPk(transaction.id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (!trxFila || trxFila.status === 'PAID') {
+      resultado = 'ya_pagado';
+      return;
     }
 
-    envio.estado = 'Confirmado';
-    envio.estado_comercial = 'Confirmado';
-    envio.estado_logistico = 'Confirmado';
-    await envio.save({ transaction: t });
+    trxFila.status = 'PAID';
+    await trxFila.save({ transaction: t });
+    transaction.status = 'PAID'; // el caller sigue usando su copia
+
+    // El Envio se bloquea SIN include: en Postgres un FOR UPDATE sobre el
+    // lado nullable de un LEFT JOIN falla. Los items no cambian, asi que se
+    // usan los que ya venian cargados.
+    const envioFila = await Envio.findByPk(envio.id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (!envioFila || envioFila.estado !== 'Pendiente') return;
+
+    if (!envioFila.stock_descontado) {
+      const abastecimiento = await calcularAbastecimientoDesdeItems(envio.items || [], envioFila.usuario_id, t);
+      envioFila.abastecimiento_estado = abastecimiento.estado;
+      envioFila.abastecimiento_costo = abastecimiento.costo;
+      envioFila.abastecimiento_pagado_at = null;
+      envioFila.abastecimiento_recibido_at = null;
+      await descontarStockYSnapshot(envio.items || [], t, envioFila.usuario_id);
+      envioFila.stock_descontado = true;
+    }
+
+    envioFila.estado = 'Confirmado';
+    envioFila.estado_comercial = 'Confirmado';
+    envioFila.estado_logistico = 'Confirmado';
+    await envioFila.save({ transaction: t });
+
+    // Reflejar en el objeto del caller, que sigue leyendolo despues.
+    Object.assign(envio, {
+      estado: 'Confirmado',
+      estado_comercial: 'Confirmado',
+      estado_logistico: 'Confirmado',
+      stock_descontado: envioFila.stock_descontado,
+    });
 
     await registrarHistorial(
       envio.id,
@@ -66,10 +102,6 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar' } 
     );
     resultado = 'confirmado';
   });
-
-  if (notificarPagoAbastecimiento) {
-    PedidosNotificaciones.notificarAbastecimientoPendienteSinBloquear(envio.id);
-  }
 
   return resultado;
 }

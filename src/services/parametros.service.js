@@ -19,6 +19,7 @@ const DEFINICIONES = [
   { clave: 'AFILIADOS_COMISION_PCT', grupo: 'afiliados', secreto: false, descripcion: 'Porcentaje recurrente sobre suscripciones SaaS elegibles cobradas.' },
   { clave: 'AFILIADOS_REGLAS_JSON', grupo: 'afiliados', secreto: false, descripcion: 'Reglas comerciales visibles del Programa de Afiliados.' },
   { clave: 'ADMIN_TELEFONO_CONTACTO', grupo: 'contacto', secreto: false, descripcion: 'Número al que escriben los comercios ante un problema de cobro o de plan. Con código de país, sin espacios (ej: 595981234567).' },
+  { clave: 'ABASTECIMIENTO_NOTIFICACION_EMAIL', grupo: 'notificaciones', secreto: false, descripcion: 'Correo interno de Gesicom que recibe avisos de pedidos con abastecimiento pendiente.' },
 ];
 
 async function cargar() {

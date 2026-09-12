@@ -1,6 +1,7 @@
 const { sequelize, Envio, PaymentTransaction, Tienda } = require('../../models');
 const PagoParService = require('./pagoParService');
 const SuscripcionService = require('../suscripcion.service');
+const PedidosNotificaciones = require('../notificaciones/pedidosNotificaciones.service');
 const { registrarHistorial } = require('../../utils/historial');
 
 const TIPO_PAGO_ABASTECIMIENTO = 'abastecimiento_gesicom';
@@ -44,6 +45,7 @@ async function iniciarCheckoutAbastecimiento(envio) {
   }
 
   const referencia = `ABAST-${envio.id}-${Date.now()}`;
+  const numeroPedido = envio.numero_pedido || envio.id;
   const pedidoFicticio = {
     id: referencia,
     monto: amount,
@@ -55,9 +57,9 @@ async function iniciarCheckoutAbastecimiento(envio) {
     // documento = cedula (obligatorio), ruc = fiscal (vacio si no tiene).
     documento: tienda.documento,
     ruc: tienda.ruc || '',
-    descripcion_resumen: `Abastecimiento Gesicom pedido #${envio.id}`,
+    descripcion_resumen: `Abastecimiento Gesicom pedido #${numeroPedido}`,
     items: [{
-      nombre_producto: `Abastecimiento Gesicom pedido #${envio.id}`,
+      nombre_producto: `Abastecimiento Gesicom pedido #${numeroPedido}`,
       cantidad: 1,
       subtotal: amount,
     }],
@@ -134,6 +136,10 @@ async function acreditarPagoAbastecimiento(envio, transaction, {
     );
     resultado = 'acreditado';
   });
+
+  if (resultado === 'acreditado') {
+    PedidosNotificaciones.notificarAbastecimientoPagadoSinBloquear(envio.id);
+  }
 
   return resultado;
 }

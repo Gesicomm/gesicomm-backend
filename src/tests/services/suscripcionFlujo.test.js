@@ -49,7 +49,10 @@ beforeEach(() => {
     PAGOPAR_PUBLIC_KEY: PUBLIC,
     PAGOPAR_PRIVATE_KEY: PRIVATE,
   });
-  sequelize.transaction.mockImplementation(fn => fn('TRX'));
+  // acreditarPago relee las filas con bloqueo, asi que la transaccion tiene
+  // que exponer LOCK y findByPk devolver las MISMAS filas que findOne.
+  sequelize.transaction.mockImplementation(fn => fn({ LOCK: { UPDATE: 'UPDATE' } }));
+  PagoSuscripcion.findByPk.mockImplementation((...a) => PagoSuscripcion.findOne(...a));
 });
 
 describe('Credenciales del sistema', () => {
@@ -135,7 +138,7 @@ describe('Callback acredita la suscripcion', () => {
     expect(cambios.estado).toBe('activa');
     expect(cambios.token_registro).toHaveLength(64);
     expect(cambios.periodo_fin).toBeInstanceOf(Date);
-    expect(r.json).toHaveBeenCalledWith({ message: 'Webhook procesado correctamente.' });
+    expect(r.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
   });
 
   it('rechaza una firma invalida sin acreditar nada', async () => {
@@ -161,7 +164,7 @@ describe('Callback acredita la suscripcion', () => {
     await ctrl.webhookSuscripciones(req, r);
 
     expect(pago.update).not.toHaveBeenCalled();
-    expect(r.json).toHaveBeenCalledWith({ message: 'La suscripción ya estaba acreditada.' });
+    expect(r.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
   });
 
   it('con pagado:false no acredita', async () => {
@@ -173,7 +176,7 @@ describe('Callback acredita la suscripcion', () => {
     await ctrl.webhookSuscripciones(req, r);
 
     expect(pago.update).not.toHaveBeenCalled();
-    expect(r.json).toHaveBeenCalledWith({ message: 'Webhook procesado correctamente.' });
+    expect(r.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
   });
 
   it('404 si el hash no corresponde a ninguna suscripcion', async () => {

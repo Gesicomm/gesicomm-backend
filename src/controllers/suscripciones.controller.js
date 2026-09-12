@@ -149,16 +149,16 @@ exports.webhookSuscripciones = async (req, res) => {
       console.warn(`[Webhook Suscripciones] Monto no coincide para ${hash_pedido}. Esperado: ${pago.monto}, recibido: ${raiz.monto}`);
     }
 
+    // PagoPar espera de vuelta el mismo array `resultado` que mando, no un
+    // mensaje propio (ver ecoPagopar en webhooks.controller.js).
+    const eco = Array.isArray(body.resultado) ? body.resultado : [raiz];
+
     if (!pagado) {
-      return res.json({ message: 'Webhook procesado correctamente.' });
+      return res.json(eco);
     }
 
-    const { yaEstaba } = await SuscripcionService.acreditarPago(pago, raiz);
-    return res.json({
-      message: yaEstaba
-        ? 'La suscripción ya estaba acreditada.'
-        : 'Webhook procesado correctamente.',
-    });
+    await SuscripcionService.acreditarPago(pago, raiz);
+    return res.json(eco);
   } catch (error) {
     console.error('[Webhook Suscripciones] Error:', error);
     res.status(500).json({ error: 'Error interno al procesar el webhook.' });

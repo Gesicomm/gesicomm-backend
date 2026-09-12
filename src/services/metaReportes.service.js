@@ -188,9 +188,12 @@ class MetaReportesService {
     });
   }
 
-  static async listarCampanas(inquilino_id, filtros = {}) {
-    const where = { inquilino_id };
-    if (filtros.usuario_id) where.usuario_id = filtros.usuario_id;
+  static async listarCampanas(inquilino_id, usuario_id, filtros = {}) {
+    // Cada usuario ve únicamente sus propias campañas — nunca se confía en
+    // un usuario_id que venga por query string (cualquiera podría pedir el
+    // de otra cuenta). Ver bug real: el dashboard de una tienda recién
+    // creada mostraba gasto de Ads de otra tienda del mismo tenant.
+    const where = { inquilino_id, usuario_id };
     if (filtros.estado) where.estado = filtros.estado;
     if (filtros.meta_integration_id) where.meta_integration_id = filtros.meta_integration_id;
     if (filtros.producto_id) {
@@ -226,9 +229,9 @@ class MetaReportesService {
     });
   }
 
-  static async obtenerCampana(id, inquilino_id) {
+  static async obtenerCampana(id, inquilino_id, usuario_id) {
     const campana = await MetaCampanaInterna.findOne({
-      where: { id, inquilino_id },
+      where: { id, inquilino_id, usuario_id },
       include: [{
         model: Landing,
         as: 'funnel',
@@ -242,8 +245,8 @@ class MetaReportesService {
     return campana;
   }
 
-  static async actualizarCampana(id, inquilino_id, datos) {
-    const campana = await this.obtenerCampana(id, inquilino_id);
+  static async actualizarCampana(id, inquilino_id, usuario_id, datos) {
+    const campana = await this.obtenerCampana(id, inquilino_id, usuario_id);
 
     const permitido = {};
     if (datos.nombre_display !== undefined) permitido.nombre_display = datos.nombre_display.trim();
@@ -274,8 +277,8 @@ class MetaReportesService {
     return campana.reload();
   }
 
-  static async eliminarCampana(id, inquilino_id) {
-    const campana = await this.obtenerCampana(id, inquilino_id);
+  static async eliminarCampana(id, inquilino_id, usuario_id) {
+    const campana = await this.obtenerCampana(id, inquilino_id, usuario_id);
     const filasVinculadas = await MetaReporteFila.count({ where: { meta_campana_interna_id: id } });
     if (filasVinculadas > 0) {
       throw new Error(`Esta campaña ya tiene ${filasVinculadas} fila(s) de reporte importadas. Archivala en vez de eliminarla para no perder el historial.`);
@@ -347,9 +350,13 @@ class MetaReportesService {
    * importación real, para que lo que se muestra en la revisión sea
    * exactamente lo que después se guarda.
    */
-  static async _prepararFilas(inquilino_id, headers, filas, relaciones = {}) {
+  static async _prepararFilas(inquilino_id, usuario_id, headers, filas, relaciones = {}) {
+    // Solo se matchea contra las campañas del propio usuario: si no, un CSV
+    // con un código que por azar (o a propósito) coincide con el de otra
+    // cuenta terminaría vinculando la fila importada a una campaña ajena,
+    // filtrando su nombre/productos a través del listado de filas.
     const campanas = await MetaCampanaInterna.findAll({
-      where: { inquilino_id },
+      where: { inquilino_id, usuario_id },
       attributes: ['id', 'codigo', 'nombre_display'],
     });
     const mapaCodigo = new Map(campanas.map(c => [c.codigo.toUpperCase(), c.id]));
@@ -441,9 +448,9 @@ class MetaReportesService {
    * usuario revisa es lo que después se guarda.
    */
   static async analizarCSV(archivoBuffer, contexto) {
-    const { inquilino_id, nombre_archivo } = contexto;
+    const { inquilino_id, usuario_id, nombre_archivo } = contexto;
     const { headers, filas } = MetaReportesService._leerCSV(archivoBuffer);
-    const preparado = await MetaReportesService._prepararFilas(inquilino_id, headers, filas);
+    const preparado = await MetaReportesService._prepararFilas(inquilino_id, usuario_id, headers, filas);
 
     const reconocidas = [];
     const noReconocidas = [];
@@ -482,7 +489,7 @@ class MetaReportesService {
     const { inquilino_id, usuario_id, meta_integration_id, nombre_archivo, relaciones } = contexto;
 
     const { headers, filas } = MetaReportesService._leerCSV(archivoBuffer);
-    const preparado = await MetaReportesService._prepararFilas(inquilino_id, headers, filas, relaciones);
+    const preparado = await MetaReportesService._prepararFilas(inquilino_id, usuario_id, headers, filas, relaciones);
 
     return sequelize.transaction(async (t) => {
       const importacion = await MetaReporteImport.create({
@@ -555,8 +562,8 @@ class MetaReportesService {
    * (por solapamiento con el período del informe), `estado`
    * ('con_pendientes' | 'completo') y `orden`.
    */
-  static async listarImportaciones(inquilino_id, filtros = {}) {
-    const where = { inquilino_id };
+  static async listarImportaciones(inquilino_id, usuario_id, filtros = {}) {
+    const where = { inquilino_id, usuario_id };
 
     if (filtros.busqueda && String(filtros.busqueda).trim()) {
       where.nombre_archivo = { [Op.iLike]: `%${escaparLike(filtros.busqueda)}%` };
@@ -592,8 +599,8 @@ class MetaReportesService {
     };
   }
 
-  static async eliminarImportacion(id, inquilino_id) {
-    const importacion = await MetaReporteImport.findOne({ where: { id, inquilino_id } });
+  static async eliminarImportacion(id, inquilino_id, usuario_id) {
+    const importacion = await MetaReporteImport.findOne({ where: { id, inquilino_id, usuario_id } });
     if (!importacion) throw new Error('Importación no encontrada.');
     await importacion.destroy(); // CASCADE se lleva puestas sus filas (ver models/index.js)
   }
@@ -621,7 +628,7 @@ class MetaReportesService {
    * mano las que siguen sin vincular — con eso el total que se muestra
    * sería el de las dos cosas juntas.
    */
-  static async listarFilas(inquilino_id, filtros = {}) {
+  static async listarFilas(inquilino_id, usuario_id, filtros = {}) {
     const where = { inquilino_id };
     if (filtros.meta_reporte_import_id) where.meta_reporte_import_id = filtros.meta_reporte_import_id;
     if (filtros.meta_campana_interna_id) where.meta_campana_interna_id = filtros.meta_campana_interna_id;
@@ -645,7 +652,7 @@ class MetaReportesService {
     const productoId = filtros.producto_id ? parseInt(filtros.producto_id, 10) : null;
     if (productoId) {
       const campanasDelProducto = await MetaCampanaInterna.findAll({
-        where: { inquilino_id, producto_ids: { [Op.contains]: [productoId] } },
+        where: { inquilino_id, usuario_id, producto_ids: { [Op.contains]: [productoId] } },
         attributes: ['id'],
       });
       const ids = campanasDelProducto.map(c => c.id);
@@ -659,7 +666,12 @@ class MetaReportesService {
 
     const { rows, count } = await MetaReporteFila.findAndCountAll({
       where,
-      include: [{ model: MetaCampanaInterna, as: 'campana', attributes: ['id', 'nombre_display', 'nombre_interno', 'codigo', 'producto_ids', 'estado', 'landing_id'] }],
+      include: [
+        { model: MetaCampanaInterna, as: 'campana', attributes: ['id', 'nombre_display', 'nombre_interno', 'codigo', 'producto_ids', 'estado', 'landing_id'] },
+        // Cada fila pertenece a la importación de un usuario — nunca se
+        // devuelven filas de otra cuenta del mismo tenant.
+        { model: MetaReporteImport, attributes: [], where: { usuario_id }, required: true },
+      ],
       // NULLS LAST: ordenar por una métrica que muchas filas no traen
       // dejaría los huecos arriba y taparía justo lo que se quiere ver.
       // El campo ya pasó por la lista blanca de _orden, y el quoting lo
@@ -680,12 +692,15 @@ class MetaReportesService {
     };
   }
 
-  static async vincularFilaManual(filaId, inquilino_id, meta_campana_interna_id) {
-    const fila = await MetaReporteFila.findOne({ where: { id: filaId, inquilino_id } });
+  static async vincularFilaManual(filaId, inquilino_id, usuario_id, meta_campana_interna_id) {
+    const fila = await MetaReporteFila.findOne({
+      where: { id: filaId, inquilino_id },
+      include: [{ model: MetaReporteImport, attributes: [], where: { usuario_id }, required: true }],
+    });
     if (!fila) throw new Error('Fila de reporte no encontrada.');
 
     if (meta_campana_interna_id) {
-      const campana = await MetaCampanaInterna.findOne({ where: { id: meta_campana_interna_id, inquilino_id } });
+      const campana = await MetaCampanaInterna.findOne({ where: { id: meta_campana_interna_id, inquilino_id, usuario_id } });
       if (!campana) throw new Error('Campaña interna no válida.');
     }
 
@@ -738,14 +753,14 @@ class MetaReportesService {
     // 1. Resolver el set de productos objetivo (filtros de producto/campaña + paginación)
     let campanaFiltro = null;
     if (filtros.campana_id) {
-      campanaFiltro = await MetaCampanaInterna.findOne({ where: { id: filtros.campana_id, inquilino_id } });
+      campanaFiltro = await MetaCampanaInterna.findOne({ where: { id: filtros.campana_id, inquilino_id, usuario_id } });
       if (!campanaFiltro) throw new Error('Campaña no encontrada.');
     }
 
     const soloConGasto = filtros.solo_con_gasto !== false && filtros.solo_con_gasto !== 'false';
     const import_id = filtros.import_id || null;
     const idsForzados = await MetaReportesService._resolverIdsProducto(
-      inquilino_id, { ...filtros, import_id, solo_con_gasto: soloConGasto }, campanaFiltro,
+      inquilino_id, usuario_id, { ...filtros, import_id, solo_con_gasto: soloConGasto }, campanaFiltro,
     );
 
     const whereProducto = idsForzados
@@ -824,11 +839,11 @@ class MetaReportesService {
    * páginas casi todas vacías). `solo_con_gasto=false` recupera el
    * comportamiento anterior para quien quiera revisar el catálogo entero.
    */
-  static async _resolverIdsProducto(inquilino_id, filtros, campanaFiltro) {
+  static async _resolverIdsProducto(inquilino_id, usuario_id, filtros, campanaFiltro) {
     let ids = campanaFiltro ? (campanaFiltro.producto_ids || []) : null;
 
     if (filtros.solo_con_gasto) {
-      const conGasto = await MetaReportesService._idsProductosConGasto(inquilino_id, {
+      const conGasto = await MetaReportesService._idsProductosConGasto(inquilino_id, usuario_id, {
         fecha_desde: filtros.fecha_desde,
         fecha_hasta: filtros.fecha_hasta,
         campana_id: campanaFiltro ? campanaFiltro.id : null,
@@ -846,11 +861,14 @@ class MetaReportesService {
   }
 
   /** Ids de producto alcanzados por alguna campaña con filas de reporte en el período. */
-  static async _idsProductosConGasto(inquilino_id, rango = {}) {
+  static async _idsProductosConGasto(inquilino_id, usuario_id, rango = {}) {
     const filas = await MetaReporteFila.findAll({
       where: MetaReportesService._whereFilas(inquilino_id, rango, { solo_vinculadas: true }),
       attributes: ['id'],
-      include: [{ model: MetaCampanaInterna, as: 'campana', attributes: ['producto_ids'] }],
+      include: [
+        { model: MetaCampanaInterna, as: 'campana', attributes: ['producto_ids'] },
+        { model: MetaReporteImport, attributes: [], where: { usuario_id }, required: true },
+      ],
     });
 
     const ids = new Set();
@@ -899,7 +917,10 @@ class MetaReportesService {
         { solo_vinculadas: true },
       ),
       attributes: ['importe_gastado'],
-      include: [{ model: MetaCampanaInterna, as: 'campana', attributes: ['id', 'producto_ids'] }],
+      include: [
+        { model: MetaCampanaInterna, as: 'campana', attributes: ['id', 'producto_ids'] },
+        { model: MetaReporteImport, attributes: [], where: { usuario_id }, required: true },
+      ],
     });
 
     const gastoPorProducto = new Map();
@@ -1055,8 +1076,11 @@ class MetaReportesService {
       : null;
 
     const [relacionesPendientes, ultimaImportacion] = await Promise.all([
-      MetaReporteFila.count({ where: { inquilino_id, meta_campana_interna_id: null } }),
-      MetaReporteImport.findOne({ where: { inquilino_id }, order: [['created_at', 'DESC']] }),
+      MetaReporteFila.count({
+        where: { inquilino_id, meta_campana_interna_id: null },
+        include: [{ model: MetaReporteImport, attributes: [], where: { usuario_id }, required: true }],
+      }),
+      MetaReporteImport.findOne({ where: { inquilino_id, usuario_id }, order: [['created_at', 'DESC']] }),
     ]);
 
     // Comparar contra el período anterior solo tiene sentido si los datos
@@ -1096,7 +1120,10 @@ class MetaReportesService {
     // aunque la fila todavía no esté relacionada con una campaña interna.
     const filas = await MetaReporteFila.findAll({
       where: MetaReportesService._whereFilas(inquilino_id, rango),
-      include: [{ model: MetaCampanaInterna, as: 'campana', attributes: ['id', 'nombre_display', 'tipo', 'estado', 'producto_ids'] }],
+      include: [
+        { model: MetaCampanaInterna, as: 'campana', attributes: ['id', 'nombre_display', 'tipo', 'estado', 'producto_ids'] },
+        { model: MetaReporteImport, attributes: [], where: { usuario_id }, required: true },
+      ],
     });
 
     const meta = {
@@ -1165,7 +1192,7 @@ class MetaReportesService {
       .sort((a, b) => b.inversion - a.inversion);
 
     // Lado Courier: solo los productos que tuvieron gasto en el período.
-    const idsConGasto = await MetaReportesService._idsProductosConGasto(inquilino_id, rango);
+    const idsConGasto = await MetaReportesService._idsProductosConGasto(inquilino_id, usuario_id, rango);
     const courier = {
       productos_con_gasto: idsConGasto.length,
       pedidos: 0, confirmados: 0, entregados: 0, facturacion: 0, utilidad_bruta: 0,

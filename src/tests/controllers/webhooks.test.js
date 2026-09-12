@@ -9,10 +9,10 @@ jest.mock('../../models', () => ({
   Envio: { findByPk: jest.fn() },
   EnvioItem: {},
   PaymentGateway: { findOne: jest.fn() },
-  PaymentTransaction: { findOne: jest.fn(), create: jest.fn() },
+  PaymentTransaction: { findOne: jest.fn(), create: jest.fn(), findByPk: jest.fn() },
   // La transacción real no se toca en los tests: se ejecuta el callback
   // directo con un objeto de transacción de mentira.
-  sequelize: { transaction: jest.fn(fn => fn('TRX')) },
+  sequelize: { transaction: jest.fn(fn => fn({ LOCK: { UPDATE: 'UPDATE' } })) },
 }));
 jest.mock('../../services/payments/pagoParService');
 jest.mock('../../controllers/envioController', () => ({ descontarStockYSnapshot: jest.fn() }));
@@ -52,7 +52,10 @@ describe('Webhook Controller - pagoparWebhook', () => {
     jest.clearAllMocks();
     req = { body: bodyPlano() };
     res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
-    sequelize.transaction.mockImplementation(fn => fn('TRX'));
+    sequelize.transaction.mockImplementation(fn => fn({ LOCK: { UPDATE: 'UPDATE' } }));
+    // confirmarPedidoPagado relee la fila con bloqueo: en la base seria la
+    // MISMA que devolvio findOne.
+    PaymentTransaction.findByPk.mockImplementation((...a) => PaymentTransaction.findOne(...a));
     PagoParService.validateWebhookSignature.mockReturnValue(true);
   });
 
@@ -89,7 +92,7 @@ describe('Webhook Controller - pagoparWebhook', () => {
     expect(PaymentTransaction.findOne).toHaveBeenCalledWith(
       expect.objectContaining({ where: { provider: 'pagopar', payment_hash: HASH } })
     );
-    expect(res.json).toHaveBeenCalledWith({ message: 'Webhook procesado correctamente.' });
+    expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
   });
 
   it('valida la firma con sha1(private_key + hash_pedido)', async () => {
@@ -123,12 +126,12 @@ describe('Webhook Controller - pagoparWebhook', () => {
     await pagoparWebhook(req, res);
 
     expect(trx.status).toBe('PAID');
-    expect(descontarStockYSnapshot).toHaveBeenCalledWith(envio.items, 'TRX', envio.usuario_id);
+    expect(descontarStockYSnapshot).toHaveBeenCalledWith(envio.items, expect.anything(), envio.usuario_id);
     expect(envio.stock_descontado).toBe(true);
     expect(envio.estado).toBe('Confirmado');
     expect(envio.save).toHaveBeenCalled();
     expect(registrarHistorial).toHaveBeenCalled();
-    expect(res.json).toHaveBeenCalledWith({ message: 'Webhook procesado correctamente.' });
+    expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
   });
 
   it('no vuelve a descontar stock si el pedido ya lo tenía descontado', async () => {
@@ -154,7 +157,7 @@ describe('Webhook Controller - pagoparWebhook', () => {
 
     expect(descontarStockYSnapshot).not.toHaveBeenCalled();
     expect(envio.estado).toBe('Pendiente');
-    expect(res.json).toHaveBeenCalledWith({ message: 'Webhook procesado correctamente.' });
+    expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
   });
 
   it('es idempotente si la transacción ya está pagada', async () => {
@@ -167,7 +170,7 @@ describe('Webhook Controller - pagoparWebhook', () => {
 
     expect(trx.save).not.toHaveBeenCalled();
     expect(descontarStockYSnapshot).not.toHaveBeenCalled();
-    expect(res.json).toHaveBeenCalledWith({ message: 'El pedido ya fue procesado y pagado anteriormente.' });
+    expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
   });
 
   it('sigue aceptando el envoltorio resultado[] si PagoPar lo mandara', async () => {
@@ -178,7 +181,7 @@ describe('Webhook Controller - pagoparWebhook', () => {
 
     await pagoparWebhook(req, res);
 
-    expect(res.json).toHaveBeenCalledWith({ message: 'Webhook procesado correctamente.' });
+    expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
   });
 });
 
@@ -216,6 +219,80 @@ describe('Webhook - compatibilidad con el prefijo GES- viejo', () => {
     await pagoparWebhook(req, res);
 
     expect(Envio.findByPk).toHaveBeenCalledWith(123, expect.anything());
-    expect(res.json).toHaveBeenCalledWith({ message: 'Webhook procesado correctamente.' });
+    expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ hash_pedido: HASH })]);
+  });
+});
+
+/**
+ * PagoPar no valida solo el status: su simulador compara la RESPUESTA contra
+ * el array `resultado` que mando. Devolver un mensaje propio hacia que el
+ * Paso 2 de la certificacion nunca se tildara.
+ */
+describe('Webhook - eco de la respuesta que exige PagoPar', () => {
+  function prepararOk() {
+    Envio.findByPk.mockResolvedValue(nuevoEnvio());
+    PaymentGateway.findOne.mockResolvedValue({ private_key: PRIVATE_KEY });
+    PaymentTransaction.findOne.mockResolvedValue({ status: 'PENDING', save: jest.fn() });
+    PagoParService.validateWebhookSignature.mockReturnValue(true);
+  }
+
+  it('devuelve el array resultado tal cual cuando viene envuelto', async () => {
+    prepararOk();
+    const item = bodyPlano();
+    const req = { body: { resultado: [item], respuesta: true } };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+
+    await pagoparWebhook(req, res);
+
+    // Mismo array, misma referencia de contenido: no se reescribe nada.
+    expect(res.json).toHaveBeenCalledWith([item]);
+  });
+
+  it('envuelve en array si el cuerpo viniera plano', async () => {
+    prepararOk();
+    const item = bodyPlano();
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+
+    await pagoparWebhook({ body: item }, res);
+
+    expect(res.json).toHaveBeenCalledWith([item]);
+  });
+
+  it('no devuelve el eco cuando la firma es invalida', async () => {
+    Envio.findByPk.mockResolvedValue(nuevoEnvio());
+    PaymentGateway.findOne.mockResolvedValue({ private_key: PRIVATE_KEY });
+    PagoParService.validateWebhookSignature.mockReturnValue(false);
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+
+    await pagoparWebhook({ body: bodyPlano() }, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Token de seguridad inválido.' });
+  });
+});
+
+/**
+ * Cada "Volver a intentar pagar" en PagoPar crea una transaccion nueva para el
+ * mismo pedido. Hay que acreditar EXACTAMENTE la que se pago, no una
+ * cualquiera: de lo contrario la pagada queda PENDING y otra figura cobrada.
+ */
+describe('Webhook - varias transacciones para el mismo pedido', () => {
+  it('acredita la transaccion cuyo hash coincide con el aviso', async () => {
+    const laPagada = { id: 10, status: 'PENDING', save: jest.fn() };
+    Envio.findByPk.mockResolvedValue(nuevoEnvio());
+    PaymentGateway.findOne.mockResolvedValue({ private_key: PRIVATE_KEY });
+    PagoParService.validateWebhookSignature.mockReturnValue(true);
+    PaymentTransaction.findOne.mockResolvedValue(laPagada);
+
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    await pagoparWebhook({ body: bodyPlano() }, res);
+
+    // La primera consulta tiene que filtrar por hash, no solo por envio_id.
+    expect(PaymentTransaction.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ payment_hash: HASH, envio_id: 123 }),
+      }),
+    );
+    expect(laPagada.status).toBe('PAID');
   });
 });

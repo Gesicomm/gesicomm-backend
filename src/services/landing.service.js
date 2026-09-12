@@ -30,6 +30,7 @@ const PricingService = require('./pricing.service');
 const PaymentService = require('./payments/paymentService');
 const CanalVentaService = require('./canalVenta.service');
 const CuponService = require('./cupon.service');
+const PedidoNumeracion = require('./pedidoNumeracion.service');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
@@ -2418,7 +2419,7 @@ class LandingService {
    * @param {object} tienda - instancia de Tienda ya resuelta (con Usuario incluido).
    * @param {string|null} slug - null/undefined → landing es_home de la tienda.
    * @param {object} datosCliente - { nombre_cliente, ruc, telefono, ciudad, departamento, direccion, referencia, items }
-   * @returns {{pedido_id: number, monto: number, redirigir_whatsapp: boolean}}
+   * @returns {{pedido_id: number, numero_pedido: number, monto: number, redirigir_whatsapp: boolean}}
    */
   static async crearCheckout(tienda, slug, datosCliente) {
     const { nombre_cliente, documento, ruc, razon_social, quiere_factura, telefono, ciudad, departamento, direccion, referencia, items } = datosCliente || {};
@@ -2491,78 +2492,83 @@ class LandingService {
       producto_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, precio_normal, origen_venta, subtotal,
     }));
 
-    const nuevoEnvio = await Envio.create({
-      usuario_id: tienda.usuario_id,
-      cliente: nombre_cliente.trim(),
-      nombre_cliente: nombre_cliente.trim(),
-      apellido_cliente: null,
-      quiere_factura: tieneFactura,
-      // La cedula es del comprador y va SIEMPRE que la haya: la pide la
-      // pasarela para cobrar online, sin relacion con la factura.
-      documento: documento?.trim() || null,
-      ruc: rucLimpio,
-      razon_social: razonSocialLimpia,
-      telefono: telefono.trim(),
-      ciudad: ciudadEnvio,
-      departamento: departamentoEnvio,
-      direccion: direccion.trim(),
-      referencia: referencia?.trim() || null,
-      monto,
-      costo_envio: costoEnvio,
-      // El checkout público NO le suma el flete al comprador: `monto` es
-      // subtotal − cupón, y el costo del courier queda como costo del
-      // comercio. Sin dejarlo explícito, estos pedidos tomaban el default
-      // 'cliente' y la reportería iba a leer que el flete lo pagó alguien
-      // que en realidad nunca lo pagó.
-      delivery_a_cargo: 'negocio',
-      courier_id: courierIdDelivery,
-      metodo_pago: 'Efectivo',
-      estado: 'Pendiente',
-      estado_logistico: 'Pendiente',
-      // No 'Confirmado' (el default del modelo, pensado para carga manual
-      // por personal de confianza) — acá nadie revisó todavía el pedido.
-      estado_comercial: 'Pendiente',
-      origen: 'LANDING',
-      // El pedido nace con su canal puesto. `origen` queda como snapshot
-      // de texto, pero la reportería agrupa por canal_venta_id: si esto no
-      // se setea acá, cada venta de la landing aparece en "Sin canal" hasta
-      // que alguien corra la migración de arranque (bug real: el pedido
-      // #375 quedó fuera del embudo de Formularios Web por esto).
-      canal_venta_id: await CanalVentaService.idPorSlug('web'),
-      // De qué landing salió, para que el embudo del dashboard mida una sola
-      // página de punta a punta (visitas Y pedidos) en vez de mezclar el
-      // tráfico de una con las ventas de toda la tienda. `landing` viene de
-      // resolverCarrito, que ya la resolvió por slug para armar el carrito.
-      landing_id: landing ? landing.id : null,
-      // Código e importe como snapshot: el pedido tiene que poder explicar
-      // por qué se cobró eso aunque después se borre o se edite el cupón.
-      cupon_id: cuponAplicado ? cuponAplicado.id : null,
-      cupon_codigo: cuponAplicado ? cuponAplicado.codigo : null,
-      cupon_descuento: descuentoCupon,
-      fecha: fechaPy,
-      // El Kanban de Courier filtra "envíos del día" por ESTE campo, no por
-      // "fecha" — sin setearlo, el pedido queda invisible en el tablero
-      // sin importar qué fecha se elija (bug real: así se creó el #46).
-      dispatchedAt: fechaPy,
-      hora: horaPy,
-      items: itemsParaEnvio,
-    }, { include: [{ model: EnvioItem, as: 'items' }] });
+    const nuevoEnvio = await sequelize.transaction(async (t) => {
+      const numeroPedido = await PedidoNumeracion.reservarNumeroPedido(tienda.usuario_id, t);
+      const envioCreado = await Envio.create({
+        usuario_id: tienda.usuario_id,
+        numero_pedido: numeroPedido,
+        cliente: nombre_cliente.trim(),
+        nombre_cliente: nombre_cliente.trim(),
+        apellido_cliente: null,
+        quiere_factura: tieneFactura,
+        // La cedula es del comprador y va SIEMPRE que la haya: la pide la
+        // pasarela para cobrar online, sin relacion con la factura.
+        documento: documento?.trim() || null,
+        ruc: rucLimpio,
+        razon_social: razonSocialLimpia,
+        telefono: telefono.trim(),
+        ciudad: ciudadEnvio,
+        departamento: departamentoEnvio,
+        direccion: direccion.trim(),
+        referencia: referencia?.trim() || null,
+        monto,
+        costo_envio: costoEnvio,
+        // El checkout público NO le suma el flete al comprador: `monto` es
+        // subtotal − cupón, y el costo del courier queda como costo del
+        // comercio. Sin dejarlo explícito, estos pedidos tomaban el default
+        // 'cliente' y la reportería iba a leer que el flete lo pagó alguien
+        // que en realidad nunca lo pagó.
+        delivery_a_cargo: 'negocio',
+        courier_id: courierIdDelivery,
+        metodo_pago: 'Efectivo',
+        estado: 'Pendiente',
+        estado_logistico: 'Pendiente',
+        // No 'Confirmado' (el default del modelo, pensado para carga manual
+        // por personal de confianza) — acá nadie revisó todavía el pedido.
+        estado_comercial: 'Pendiente',
+        origen: 'LANDING',
+        // El pedido nace con su canal puesto. `origen` queda como snapshot
+        // de texto, pero la reportería agrupa por canal_venta_id: si esto no
+        // se setea acá, cada venta de la landing aparece en "Sin canal" hasta
+        // que alguien corra la migración de arranque (bug real: el pedido
+        // #375 quedó fuera del embudo de Formularios Web por esto).
+        canal_venta_id: await CanalVentaService.idPorSlug('web'),
+        // De qué landing salió, para que el embudo del dashboard mida una sola
+        // página de punta a punta (visitas Y pedidos) en vez de mezclar el
+        // tráfico de una con las ventas de toda la tienda. `landing` viene de
+        // resolverCarrito, que ya la resolvió por slug para armar el carrito.
+        landing_id: landing ? landing.id : null,
+        // Código e importe como snapshot: el pedido tiene que poder explicar
+        // por qué se cobró eso aunque después se borre o se edite el cupón.
+        cupon_id: cuponAplicado ? cuponAplicado.id : null,
+        cupon_codigo: cuponAplicado ? cuponAplicado.codigo : null,
+        cupon_descuento: descuentoCupon,
+        fecha: fechaPy,
+        // El Kanban de Courier filtra "envíos del día" por ESTE campo, no por
+        // "fecha" — sin setearlo, el pedido queda invisible en el tablero
+        // sin importar qué fecha se elija (bug real: así se creó el #46).
+        dispatchedAt: fechaPy,
+        hora: horaPy,
+        items: itemsParaEnvio,
+      }, { include: [{ model: EnvioItem, as: 'items' }], transaction: t });
 
-    // El uso se cuenta recién acá, con el pedido ya creado: validar un
-    // código no lo gasta, así probarlo tres veces no agota un cupón de
-    // "primeras 10 compras".
-    if (cuponAplicado) {
-      await CuponService.registrarUso(cuponAplicado.id);
-    }
+      // El uso se cuenta recién acá, con el pedido ya creado: validar un
+      // código no lo gasta, así probarlo tres veces no agota un cupón de
+      // "primeras 10 compras".
+      if (cuponAplicado) {
+        await CuponService.registrarUso(cuponAplicado.id, t);
+      }
+
+      await registrarHistorial(envioCreado.id, null, 'Pedido creado automáticamente', t);
+      return envioCreado;
+    });
 
     // Procesar pasarela de pago si fue solicitada (ej. payment_method === 'pagopar')
     let paymentData = null;
     
     if (paymentMethod === 'pagopar') {
       try {
-        // En la fase 2 se integrará la URL de retorno real
-        const returnUrl = 'https://api.gesicomm.com'; 
-        const trx = await PaymentService.createTransaction(nuevoEnvio, 'pagopar', returnUrl);
+        const trx = await PaymentService.createTransaction(nuevoEnvio, 'pagopar', null);
         paymentData = {
           payment_url: trx.payment_url,
           hash_pedido: trx.hash_pedido,
@@ -2578,10 +2584,9 @@ class LandingService {
       }
     }
 
-    await registrarHistorial(nuevoEnvio.id, null, 'Pedido creado automáticamente');
-
     return {
       pedido_id: nuevoEnvio.id,
+      numero_pedido: nuevoEnvio.numero_pedido,
       monto,
       costo_envio: costoEnvio,
       envio_incluido: envioIncluido,

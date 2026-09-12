@@ -1,15 +1,15 @@
-const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Rol, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Rol, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
+const PedidoNumeracion = require('../services/pedidoNumeracion.service');
 const {
   iniciarCheckoutAbastecimiento,
   acreditarPagoAbastecimiento,
   marcarAbastecimientoRecibido,
 } = require('../services/payments/abastecimientoPago');
-const PedidosNotificaciones = require('../services/notificaciones/pedidosNotificaciones.service');
 
 /**
  * Resuelve qué producto(s) y cuántas unidades físicas hay que descontar del
@@ -409,9 +409,42 @@ function agregarBusquedaClienteONumero(where, cliente) {
   ];
   const idPedido = Number(texto.replace(/^#/, ''));
   if (Number.isInteger(idPedido) && idPedido > 0) {
-    condiciones.push({ id: idPedido });
+    condiciones.push({ numero_pedido: idPedido });
   }
   where[Op.or] = condiciones;
+}
+
+function numeroFiltro(valor) {
+  const numero = valor ? parseInt(String(valor).replace(/#/g, '').trim(), 10) : null;
+  return Number.isInteger(numero) && numero > 0 ? numero : null;
+}
+
+function aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id } = {}) {
+  const numeroPedido = numeroFiltro(pedido_id);
+  if (numeroPedido) {
+    where.numero_pedido = numeroPedido;
+  }
+
+  const envioId = numeroFiltro(envio_id);
+  if (envioId && esAdministrador(req)) {
+    where.id = envioId;
+  }
+}
+
+function aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado } = {}) {
+  if (abastecimiento_estado && abastecimiento_estado !== 'TODOS') {
+    if (!ABASTECIMIENTO_ESTADOS.includes(abastecimiento_estado)) {
+      const err = new Error(`Estado de abastecimiento inválido: "${abastecimiento_estado}".`);
+      err.status = 400;
+      throw err;
+    }
+    where.abastecimiento_estado = abastecimiento_estado;
+    return;
+  }
+
+  if (solo_abastecimiento) {
+    where.abastecimiento_estado = { [Op.in]: ['pendiente_pago', 'en_proceso', 'recibido'] };
+  }
 }
 
 function formatGsPlano(valor) {
@@ -652,6 +685,8 @@ exports.listEnviosPaginados = async (req, res) => {
     const {
       page = 1,
       limit = 10,
+      pedido_id,
+      envio_id,
       fecha_desde,
       fecha_hasta,
       estados,          // array de strings, ej: ['Pendiente', 'Confirmado']
@@ -661,11 +696,16 @@ exports.listEnviosPaginados = async (req, res) => {
       confirmador,
       origen,
       canal_venta_id,
+      producto_busqueda,
+      solo_abastecimiento,
+      abastecimiento_estado,
     } = req.body;
 
     const where = whereEnviosDeUsuario(req);
 
     // Rango de fechas (dispatchedAt)
+    aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });
+
     if (fecha_desde && fecha_hasta) {
       where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
     } else if (fecha_desde) {
@@ -699,7 +739,7 @@ exports.listEnviosPaginados = async (req, res) => {
       ];
 
       if (!isNaN(numericId) && numericId > 0 && String(numericId) === cleanNum) {
-        orList.push({ id: numericId });
+        orList.push({ numero_pedido: numericId });
       }
 
       where[Op.or] = orList;
@@ -723,10 +763,31 @@ exports.listEnviosPaginados = async (req, res) => {
     if (canal_venta_id && canal_venta_id !== 'TODOS') {
       where.canal_venta_id = canal_venta_id;
     }
+    aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado });
+    if (producto_busqueda && producto_busqueda.trim()) {
+      const term = producto_busqueda.trim().replace(/'/g, "''");
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        Sequelize.literal(`EXISTS (
+          SELECT 1
+          FROM envio_items filtro_producto_item
+          WHERE filtro_producto_item.envio_id = "Envio"."id"
+            AND (
+              filtro_producto_item.nombre_producto ILIKE '%${term}%'
+              OR filtro_producto_item.oferta_nombre ILIKE '%${term}%'
+            )
+        )`),
+      ];
+    }
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
     const offset = (pageNum - 1) * limitNum;
+    const order = abastecimiento_estado === 'en_proceso'
+      ? [['abastecimiento_pagado_at', 'DESC'], ['id', 'DESC']]
+      : abastecimiento_estado === 'recibido'
+      ? [['abastecimiento_recibido_at', 'DESC'], ['id', 'DESC']]
+      : [['id', 'DESC']];
 
     const { count, rows } = await Envio.findAndCountAll({
       where,
@@ -739,8 +800,20 @@ exports.listEnviosPaginados = async (req, res) => {
             attributes: ['id', 'producto_id', 'cantidad', 'cantidad_devuelta_vendible', 'cantidad_devuelta_danada', 'cantidad_perdida'],
           }],
         },
+        // Solo para la bandeja de abastecimiento: adónde el admin le manda
+        // de vuelta la mercadería al usuario que la vendió (no confundir
+        // con la dirección del cliente final, que ya viven como columnas
+        // propias del Envio).
+        ...(solo_abastecimiento || (abastecimiento_estado && abastecimiento_estado !== 'TODOS') ? [{
+          model: Usuario,
+          attributes: ['id', 'nombre'],
+          include: [{
+            model: Tienda,
+            attributes: ['deposito_departamento', 'deposito_ciudad', 'deposito_direccion', 'deposito_referencia', 'deposito_telefono', 'whatsapp'],
+          }],
+        }] : []),
       ],
-      order: [['id', 'DESC']],
+      order,
       limit: limitNum,
       offset,
       distinct: true, // necesario con includes para que count sea correcto
@@ -834,9 +907,12 @@ exports.createEnvio = async (req, res) => {
       ? new Map((await Oferta.findAll({ where: { id: ofertaIds, inquilino_id: req.usuario.tenantId }, transaction: t })).map(o => [o.id, o]))
       : new Map();
 
+    const numeroPedido = await PedidoNumeracion.reservarNumeroPedido(usuario_id, t);
+
     const nuevoEnvio = await Envio.create(
       {
         usuario_id,
+        numero_pedido: numeroPedido,
         courier_id: courier_id || null,
         cliente: fullCliente,
         fecha: hoy,
@@ -991,8 +1067,28 @@ exports.updateEstado = async (req, res) => {
       return res.status(400).json({ error: 'Se requiere al menos estado o courier_id' });
     }
 
+    const filtro = esAdministrador(req) ? { id } : { id, usuario_id };
+
+    // Bloqueo de la fila ANTES de leerla con sus items. Sin esto, dos cambios
+    // de estado simultáneos sobre el mismo pedido —un doble click en
+    // "Confirmar", o dos operadores a la vez— leían ambos `stock_descontado`
+    // en false y descontaban stock DOS VECES: con READ COMMITTED (el default
+    // de Postgres) ninguno ve el cambio del otro hasta que commitea.
+    //
+    // El lock va en una consulta aparte, SIN include: un FOR UPDATE sobre el
+    // lado nullable de un LEFT JOIN es un error en Postgres.
+    const bloqueo = await Envio.findOne({
+      where: filtro,
+      transaction: t,
+      lock: Transaction.LOCK.UPDATE,
+    });
+    if (!bloqueo) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Envío no encontrado' });
+    }
+
     const envio = await Envio.findOne({
-      where: esAdministrador(req) ? { id } : { id, usuario_id },
+      where: filtro,
       include: [{ model: EnvioItem, as: 'items' }],
       transaction: t,
     });
@@ -1002,8 +1098,6 @@ exports.updateEstado = async (req, res) => {
     }
 
     const updateData = {};
-    let notificarPagoAbastecimiento = false;
-
     if (estado !== undefined && estado !== envio.estado) {
       if (estado === 'Devuelto' || estado === 'Perdido') {
         await t.rollback();
@@ -1124,7 +1218,6 @@ exports.updateEstado = async (req, res) => {
           abastecimiento_recibido_at: null,
         });
         if (abastecimiento.requiere) {
-          notificarPagoAbastecimiento = true;
           await registrarHistorial(
             envio.id,
             usuario_id,
@@ -1269,10 +1362,6 @@ exports.updateEstado = async (req, res) => {
     await envio.update(updateData, { transaction: t });
     await t.commit();
 
-    if (notificarPagoAbastecimiento) {
-      PedidosNotificaciones.notificarAbastecimientoPendienteSinBloquear(envio.id);
-    }
-
     const result = await Envio.findByPk(envio.id, {
       include: [
         { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
@@ -1371,7 +1460,14 @@ exports.registrarDevolucion = async (req, res) => {
       return res.status(400).json({ error: 'Se requiere al menos un ítem a devolver' });
     }
 
-    const envio = await Envio.findOne({ where: { id, usuario_id }, transaction: t });
+    // Bloqueo de fila: esta operacion mueve stock y dos pedidos simultaneos
+    // sobre el mismo envio lo moverian dos veces (READ COMMITTED no los
+    // aisla). Sin include, asi que el FOR UPDATE es directo.
+    const envio = await Envio.findOne({
+      where: { id, usuario_id },
+      transaction: t,
+      lock: Transaction.LOCK.UPDATE,
+    });
     if (!envio) {
       await t.rollback();
       return res.status(404).json({ error: 'Envío no encontrado' });
@@ -1444,7 +1540,14 @@ exports.registrarPerdida = async (req, res) => {
       return res.status(400).json({ error: 'Se requiere al menos un ítem perdido' });
     }
 
-    const envio = await Envio.findOne({ where: { id, usuario_id }, transaction: t });
+    // Bloqueo de fila: esta operacion mueve stock y dos pedidos simultaneos
+    // sobre el mismo envio lo moverian dos veces (READ COMMITTED no los
+    // aisla). Sin include, asi que el FOR UPDATE es directo.
+    const envio = await Envio.findOne({
+      where: { id, usuario_id },
+      transaction: t,
+      lock: Transaction.LOCK.UPDATE,
+    });
     if (!envio) {
       await t.rollback();
       return res.status(404).json({ error: 'Envío no encontrado' });
@@ -1506,9 +1609,10 @@ exports.registrarPerdida = async (req, res) => {
 exports.conteoPorEstado = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
-    const { fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, metodo_pago_id } = req.body;
+    const { pedido_id, envio_id, fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, producto_busqueda, metodo_pago_id, solo_abastecimiento, abastecimiento_estado } = req.body;
 
     const where = whereEnviosDeUsuario(req);
+    aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });
     if (fecha_desde && fecha_hasta) {
       where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
     } else if (fecha_desde) {
@@ -1522,9 +1626,25 @@ exports.conteoPorEstado = async (req, res) => {
     if (confirmador && confirmador !== 'TODOS' && confirmador.trim()) where.confirmador = { [Op.iLike]: `%${confirmador.trim()}%` };
     if (origen && origen !== 'TODOS') where.origen = origen;
     if (metodo_pago_id && metodo_pago_id !== 'TODOS') where.metodo_pago_id = Number(metodo_pago_id);
+    aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado });
+    if (producto_busqueda && producto_busqueda.trim()) {
+      const term = producto_busqueda.trim().replace(/'/g, "''");
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        Sequelize.literal(`EXISTS (
+          SELECT 1
+          FROM envio_items conteo_producto_item
+          WHERE conteo_producto_item.envio_id = "Envio"."id"
+            AND (
+              conteo_producto_item.nombre_producto ILIKE '%${term}%'
+              OR conteo_producto_item.oferta_nombre ILIKE '%${term}%'
+            )
+        )`),
+      ];
+    }
 
     const include = [];
-    if (producto && producto !== 'TODOS') {
+    if (producto && producto !== 'TODOS' && !producto_busqueda) {
       include.push({
         model: EnvioItem,
         as: 'items',
@@ -1555,20 +1675,27 @@ exports.conteoPorEstado = async (req, res) => {
   }
 };
 
-/**
- * POST /api/envios/resumen-entregados — resumen financiero minimalista de
- * la pestaña "Entregados" (ver plan sección 22). Respeta los mismos
- * filtros que listEnviosPaginados/conteoPorEstado. "Dinero en poder del
- * courier" vs. "Cobrado directamente por la tienda" se decide por
- * MetodoPago.custodia_cobro, igual que en el motor de rendición — nunca por
- * comparación de texto contra el nombre del método.
- */
-exports.resumenEntregados = async (req, res) => {
+exports.conteoPorAbastecimiento = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
-    const { fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, metodo_pago_id } = req.body;
+    const {
+      pedido_id,
+      envio_id,
+      fecha_desde,
+      fecha_hasta,
+      cliente,
+      ciudad,
+      courier_id,
+      confirmador,
+      origen,
+      producto,
+      producto_busqueda,
+      metodo_pago_id,
+    } = req.body;
 
-    const where = { ...whereEnviosDeUsuario(req), estado: 'Entregado' };
+    const where = whereEnviosDeUsuario(req);
+    aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });
+    where.abastecimiento_estado = { [Op.in]: ['pendiente_pago', 'en_proceso', 'recibido'] };
+
     if (fecha_desde && fecha_hasta) {
       where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
     } else if (fecha_desde) {
@@ -1582,7 +1709,104 @@ exports.resumenEntregados = async (req, res) => {
     if (confirmador && confirmador !== 'TODOS' && confirmador.trim()) where.confirmador = { [Op.iLike]: `%${confirmador.trim()}%` };
     if (origen && origen !== 'TODOS') where.origen = origen;
     if (metodo_pago_id && metodo_pago_id !== 'TODOS') where.metodo_pago_id = Number(metodo_pago_id);
-    const productoId = producto && producto !== 'TODOS' ? Number(producto) : null;
+    if (producto_busqueda && producto_busqueda.trim()) {
+      const term = producto_busqueda.trim().replace(/'/g, "''");
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        Sequelize.literal(`EXISTS (
+          SELECT 1
+          FROM envio_items conteo_abastecimiento_item
+          WHERE conteo_abastecimiento_item.envio_id = "Envio"."id"
+            AND (
+              conteo_abastecimiento_item.nombre_producto ILIKE '%${term}%'
+              OR conteo_abastecimiento_item.oferta_nombre ILIKE '%${term}%'
+            )
+        )`),
+      ];
+    }
+
+    const include = [];
+    if (producto && producto !== 'TODOS' && !producto_busqueda) {
+      include.push({
+        model: EnvioItem,
+        as: 'items',
+        attributes: [],
+        where: { producto_id: Number(producto) },
+        required: true,
+      });
+    }
+
+    const filas = await Envio.findAll({
+      where,
+      include,
+      attributes: ['abastecimiento_estado', [Sequelize.fn('COUNT', Sequelize.fn('DISTINCT', Sequelize.col('Envio.id'))), 'cantidad']],
+      group: ['abastecimiento_estado'],
+      raw: true,
+    });
+
+    const conteos = { pendiente_pago: 0, en_proceso: 0, recibido: 0, TODOS: 0 };
+    for (const fila of filas) {
+      const estado = fila.abastecimiento_estado;
+      const cantidad = parseInt(fila.cantidad, 10) || 0;
+      if (estado in conteos) {
+        conteos[estado] = cantidad;
+        conteos.TODOS += cantidad;
+      }
+    }
+
+    res.json(conteos);
+  } catch (error) {
+    const status = error.status || 500;
+    console.error('Error obteniendo conteo por abastecimiento:', error);
+    res.status(status).json({ error: status === 500 ? 'Error interno del servidor' : error.message });
+  }
+};
+
+/**
+ * POST /api/envios/resumen-entregados — resumen financiero minimalista de
+ * la pestaña "Entregados" (ver plan sección 22). Respeta los mismos
+ * filtros que listEnviosPaginados/conteoPorEstado. "Dinero en poder del
+ * courier" vs. "Cobrado directamente por la tienda" se decide por
+ * MetodoPago.custodia_cobro, igual que en el motor de rendición — nunca por
+ * comparación de texto contra el nombre del método.
+ */
+exports.resumenEntregados = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { pedido_id, envio_id, fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, producto_busqueda, metodo_pago_id, solo_abastecimiento, abastecimiento_estado } = req.body;
+
+    const where = { ...whereEnviosDeUsuario(req), estado: 'Entregado' };
+    aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });
+    if (fecha_desde && fecha_hasta) {
+      where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
+    } else if (fecha_desde) {
+      where.dispatchedAt = { [Op.gte]: fecha_desde };
+    } else if (fecha_hasta) {
+      where.dispatchedAt = { [Op.lte]: fecha_hasta };
+    }
+    agregarBusquedaClienteONumero(where, cliente);
+    if (ciudad && ciudad.trim()) where.ciudad = { [Op.iLike]: `%${ciudad.trim()}%` };
+    if (courier_id && courier_id !== 'TODOS') where.courier_id = courier_id === 'null' ? null : Number(courier_id);
+    if (confirmador && confirmador !== 'TODOS' && confirmador.trim()) where.confirmador = { [Op.iLike]: `%${confirmador.trim()}%` };
+    if (origen && origen !== 'TODOS') where.origen = origen;
+    if (metodo_pago_id && metodo_pago_id !== 'TODOS') where.metodo_pago_id = Number(metodo_pago_id);
+    aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado });
+    if (producto_busqueda && producto_busqueda.trim()) {
+      const term = producto_busqueda.trim().replace(/'/g, "''");
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        Sequelize.literal(`EXISTS (
+          SELECT 1
+          FROM envio_items resumen_producto_item
+          WHERE resumen_producto_item.envio_id = "Envio"."id"
+            AND (
+              resumen_producto_item.nombre_producto ILIKE '%${term}%'
+              OR resumen_producto_item.oferta_nombre ILIKE '%${term}%'
+            )
+        )`),
+      ];
+    }
+    const productoId = producto && producto !== 'TODOS' && !producto_busqueda ? Number(producto) : null;
     if (Number.isFinite(productoId)) {
       where[Op.and] = [
         ...(where[Op.and] || []),
@@ -1824,6 +2048,19 @@ exports.deleteEnvio = async (req, res) => {
     if (req.usuario.rol !== 'ADMIN') {
       await t.rollback();
       return res.status(403).json({ error: 'Solo los administradores pueden eliminar pedidos' });
+    }
+
+    // Este borrado libera stock (ver mas abajo), asi que la fila se bloquea
+    // antes de leerla con sus items. El lock va en una consulta aparte porque
+    // un FOR UPDATE sobre el lado nullable de un LEFT JOIN falla en Postgres.
+    const bloqueoBorrado = await Envio.findOne({
+      where: { id, usuario_id: req.usuario.tenantId },
+      transaction: t,
+      lock: Transaction.LOCK.UPDATE,
+    });
+    if (!bloqueoBorrado) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Pedido no encontrado' });
     }
 
     const envio = await Envio.findOne({

@@ -74,6 +74,7 @@ router.post('/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheck
 // frontend lo llama seguido (cada cambio de cantidad/oferta).
 router.post('/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
 router.post('/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);
+router.get('/pagopar/resultado/:hash', limitePublico, resolverTiendaOpcional, ctrl.resultadoPago);
 router.get('/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 router.get('/:slug', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);
 router.get('/:slug/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);

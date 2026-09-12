@@ -143,6 +143,29 @@ const Tienda = sequelize.define('Tienda', {
     allowNull: false,
     defaultValue: true,
   },
+  // --- Dirección de depósito: adónde el administrador le envía la
+  // mercadería que este usuario vendió (no es la dirección del cliente
+  // final, esa vive en Envio). Nullable: se completa desde Mi Tienda. ---
+  deposito_departamento: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
+  deposito_ciudad: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
+  deposito_direccion: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  deposito_referencia: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  deposito_telefono: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+  },
 }, {
   tableName: 'tiendas',
   timestamps: true,

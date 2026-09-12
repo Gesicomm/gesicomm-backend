@@ -31,6 +31,9 @@ router.post('/:id/perdida', envioController.registrarPerdida);
 // Contador de pedidos por estado, respetando los filtros activos (pestañas de la bandeja)
 router.post('/conteo-por-estado', envioController.conteoPorEstado);
 
+// Contador operativo para la bandeja de abastecimientos del administrador
+router.post('/conteo-por-abastecimiento', envioController.conteoPorAbastecimiento);
+
 // Resumen financiero minimalista de la pestaña Entregados
 router.post('/resumen-entregados', envioController.resumenEntregados);
 

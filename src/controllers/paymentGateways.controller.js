@@ -1,8 +1,9 @@
 const crypto = require('crypto');
 const axios = require('axios');
-const { Envio, EnvioItem, PaymentGateway, PaymentTransaction } = require('../models');
+const { Envio, EnvioItem, PaymentGateway, PaymentTransaction, Tienda } = require('../models');
 const PagoParService = require('../services/payments/pagoParService');
 const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago');
+const { BASE_DOMAIN } = require('../middleware/resolverTienda');
 
 /**
  * Saca el motivo legible de una respuesta de rechazo de PagoPar.
@@ -24,9 +25,18 @@ function detallePagopar(data) {
   return null;
 }
 
+function urlRetornoPagopar(tienda) {
+  if (!tienda) return null;
+  const hostname = tienda.dominio_propio_habilitado && tienda.dominio_propio_verificado && tienda.dominio_propio
+    ? tienda.dominio_propio
+    : `${tienda.subdominio}.${BASE_DOMAIN}`;
+  return `https://${hostname}/pagopar/resultado/($hash)`;
+}
+
 exports.getPagoparConfig = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
+    const tienda = await Tienda.findOne({ where: { usuario_id } });
     const gateway = await PaymentGateway.findOne({
       where: { usuario_id, provider: 'pagopar' }
     });
@@ -37,7 +47,8 @@ exports.getPagoparConfig = async (req, res) => {
         is_active: false,
         has_private_key: false,
         environment: 'sandbox',
-        public_key: ''
+        public_key: '',
+        pagopar_return_url: urlRetornoPagopar(tienda),
       });
     }
 
@@ -46,7 +57,8 @@ exports.getPagoparConfig = async (req, res) => {
       is_active: gateway.is_active,
       environment: gateway.environment,
       public_key: gateway.public_key,
-      has_private_key: !!gateway.private_key
+      has_private_key: !!gateway.private_key,
+      pagopar_return_url: urlRetornoPagopar(tienda),
     });
   } catch (error) {
     console.error('[PaymentGateways] Error al obtener configuración:', error);

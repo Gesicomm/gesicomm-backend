@@ -40,6 +40,7 @@ const MetaReportesService = require('../services/metaReportes.service');
 const { MetaReporteImport, MetaReporteFila } = require('../models');
 
 const INQUILINO = 1;
+const USUARIO = 42;
 
 // Export "Rendimiento de campaña" recortado: 3 filas, 2 campañas de Meta,
 // una con código [GSC-…] y otra sin, más una columna que el sistema no usa.
@@ -62,6 +63,7 @@ describe('analizarCSV — análisis previo, sin escribir nada', () => {
   beforeAll(async () => {
     analisis = await MetaReportesService.analizarCSV(buffer(CSV), {
       inquilino_id: INQUILINO,
+      usuario_id: USUARIO,
       nombre_archivo: 'reporte.csv',
     });
   });
@@ -117,7 +119,7 @@ describe('_prepararFilas — relaciones elegidas en la revisión', () => {
   });
 
   it('aplica la relación manual a las filas sin código', async () => {
-    const res = await MetaReportesService._prepararFilas(INQUILINO, headers, filas, { 'Campaña sin código': 9 });
+    const res = await MetaReportesService._prepararFilas(INQUILINO, USUARIO, headers, filas, { 'Campaña sin código': 9 });
 
     expect(res.matcheadas).toBe(3);
     expect(res.porRelacionManual).toBe(2);
@@ -126,19 +128,19 @@ describe('_prepararFilas — relaciones elegidas en la revisión', () => {
   });
 
   it('nunca pisa un vínculo por código con una relación manual', async () => {
-    const res = await MetaReportesService._prepararFilas(INQUILINO, headers, filas, { '[GSC-ABC123] Promo Enero': 9 });
+    const res = await MetaReportesService._prepararFilas(INQUILINO, USUARIO, headers, filas, { '[GSC-ABC123] Promo Enero': 9 });
     expect(res.filasParaInsertar[0].meta_campana_interna_id).toBe(7);
   });
 
   it('descarta ids de campaña que no son del tenant', async () => {
     // `relaciones` viene del cliente: un id ajeno no puede vincular nada.
-    const res = await MetaReportesService._prepararFilas(INQUILINO, headers, filas, { 'Campaña sin código': 4242 });
+    const res = await MetaReportesService._prepararFilas(INQUILINO, USUARIO, headers, filas, { 'Campaña sin código': 4242 });
     expect(res.sinMatch).toBe(2);
     expect(res.porRelacionManual).toBe(0);
   });
 
   it('sin relaciones, solo vincula lo que matchea por código', async () => {
-    const res = await MetaReportesService._prepararFilas(INQUILINO, headers, filas);
+    const res = await MetaReportesService._prepararFilas(INQUILINO, USUARIO, headers, filas);
     expect(res.matcheadas).toBe(1);
     expect(res.sinMatch).toBe(2);
     expect(res.porRelacionManual).toBe(0);
@@ -159,7 +161,7 @@ describe('_leerCSV — validación del archivo', () => {
   it('avisa las columnas clave que faltan, pero deja importar', async () => {
     const flaco = '"Nombre de la campaña","Alcance"\n"Campaña X","500"';
     const analisis = await MetaReportesService.analizarCSV(buffer(flaco), {
-      inquilino_id: INQUILINO, nombre_archivo: 'flaco.csv',
+      inquilino_id: INQUILINO, usuario_id: USUARIO, nombre_archivo: 'flaco.csv',
     });
 
     expect(analisis.columnas.faltantes).toHaveLength(MetaReportesService.COLUMNAS_CLAVE.length);
@@ -230,7 +232,7 @@ describe('listarImportaciones — historial filtrable', () => {
   });
 
   it('pagina de 10 y ordena por importación más reciente', async () => {
-    const res = await MetaReportesService.listarImportaciones(INQUILINO);
+    const res = await MetaReportesService.listarImportaciones(INQUILINO, USUARIO);
 
     expect(argumentos().limit).toBe(10);
     expect(argumentos().offset).toBe(0);
@@ -239,31 +241,32 @@ describe('listarImportaciones — historial filtrable', () => {
   });
 
   it('busca por nombre de archivo sin dejar pasar comodines', async () => {
-    await MetaReportesService.listarImportaciones(INQUILINO, { busqueda: '100%_meta' });
+    await MetaReportesService.listarImportaciones(INQUILINO, USUARIO, { busqueda: '100%_meta' });
 
     // El % y el _ del texto se escapan: si no, "100%" traería todo.
     expect(argumentos().where.nombre_archivo[Op.iLike]).toBe('%100\\%\\_meta%');
   });
 
   it('filtra por estado de relación', async () => {
-    await MetaReportesService.listarImportaciones(INQUILINO, { estado: 'con_pendientes' });
+    await MetaReportesService.listarImportaciones(INQUILINO, USUARIO, { estado: 'con_pendientes' });
     expect(argumentos().where.filas_sin_match).toEqual({ [Op.gt]: 0 });
 
     MetaReporteImport.findAndCountAll.mockClear();
-    await MetaReportesService.listarImportaciones(INQUILINO, { estado: 'completo' });
+    await MetaReportesService.listarImportaciones(INQUILINO, USUARIO, { estado: 'completo' });
     expect(argumentos().where.filas_sin_match).toBe(0);
   });
 
   it('acota por período con el mismo criterio de solapamiento que las filas', async () => {
-    await MetaReportesService.listarImportaciones(INQUILINO, { fecha_desde: '2026-08-01', fecha_hasta: '2026-08-31' });
+    await MetaReportesService.listarImportaciones(INQUILINO, USUARIO, { fecha_desde: '2026-08-01', fecha_hasta: '2026-08-31' });
 
     expect(argumentos().where.fecha_fin_reporte).toEqual({ [Op.gte]: '2026-08-01' });
     expect(argumentos().where.fecha_inicio_reporte).toEqual({ [Op.lte]: '2026-08-31' });
   });
 
-  it('siempre acota al tenant', async () => {
-    await MetaReportesService.listarImportaciones(INQUILINO, { busqueda: 'x', estado: 'completo' });
+  it('siempre acota al tenant y al usuario dueño', async () => {
+    await MetaReportesService.listarImportaciones(INQUILINO, USUARIO, { busqueda: 'x', estado: 'completo' });
     expect(argumentos().where.inquilino_id).toBe(INQUILINO);
+    expect(argumentos().where.usuario_id).toBe(USUARIO);
   });
 });
 
@@ -276,7 +279,7 @@ describe('listarFilas — filas filtrables', () => {
   });
 
   it('pagina de 10 y ordena por fecha descendente', async () => {
-    const res = await MetaReportesService.listarFilas(INQUILINO);
+    const res = await MetaReportesService.listarFilas(INQUILINO, USUARIO);
 
     expect(argumentos().limit).toBe(10);
     expect(argumentos().order[0]).toEqual(['fecha_inicio', 'DESC NULLS LAST']);
@@ -284,34 +287,41 @@ describe('listarFilas — filas filtrables', () => {
   });
 
   it('separa pendientes de relacionadas en la consulta, no en el cliente', async () => {
-    await MetaReportesService.listarFilas(INQUILINO, { estado_vinculo: 'sin_vincular' });
+    await MetaReportesService.listarFilas(INQUILINO, USUARIO, { estado_vinculo: 'sin_vincular' });
     expect(argumentos().where.meta_campana_interna_id).toBeNull();
 
     MetaReporteFila.findAndCountAll.mockClear();
-    await MetaReportesService.listarFilas(INQUILINO, { estado_vinculo: 'vinculadas' });
+    await MetaReportesService.listarFilas(INQUILINO, USUARIO, { estado_vinculo: 'vinculadas' });
     expect(argumentos().where.meta_campana_interna_id).toEqual({ [Op.ne]: null });
   });
 
   it('sigue aceptando el filtro viejo sin_vincular', async () => {
-    await MetaReportesService.listarFilas(INQUILINO, { sin_vincular: 'true' });
+    await MetaReportesService.listarFilas(INQUILINO, USUARIO, { sin_vincular: 'true' });
     expect(argumentos().where.meta_campana_interna_id).toBeNull();
   });
 
   it('busca por nombre de campaña de Meta', async () => {
-    await MetaReportesService.listarFilas(INQUILINO, { busqueda: 'promo' });
+    await MetaReportesService.listarFilas(INQUILINO, USUARIO, { busqueda: 'promo' });
     expect(argumentos().where.nombre_campana_meta[Op.iLike]).toBe('%promo%');
   });
 
   it('ordena por una métrica dejando los nulos al final', async () => {
     // Ordenar por una métrica que muchas filas no traen pondría los
     // huecos arriba y taparía justo lo que se quiere ver.
-    await MetaReportesService.listarFilas(INQUILINO, { orden: { campo: 'roas', direccion: 'DESC' } });
+    await MetaReportesService.listarFilas(INQUILINO, USUARIO, { orden: { campo: 'roas', direccion: 'DESC' } });
     expect(argumentos().order[0]).toEqual(['roas', 'DESC NULLS LAST']);
   });
 
   it('no deja pasar un campo de orden arbitrario', async () => {
-    await MetaReportesService.listarFilas(INQUILINO, { orden: { campo: 'datos_crudos' } });
+    await MetaReportesService.listarFilas(INQUILINO, USUARIO, { orden: { campo: 'datos_crudos' } });
     expect(argumentos().order[0]).toEqual(['fecha_inicio', 'DESC NULLS LAST']);
+  });
+
+  it('acota siempre las filas a las importaciones del usuario dueño', async () => {
+    await MetaReportesService.listarFilas(INQUILINO, USUARIO, {});
+    const includeImport = argumentos().include.find((i) => i.where && i.where.usuario_id !== undefined);
+    expect(includeImport.where.usuario_id).toBe(USUARIO);
+    expect(includeImport.required).toBe(true);
   });
 });
 

@@ -90,6 +90,8 @@ class TiendaService {
       'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'documento', 'ruc',
       'color_primario', 'color_secundario', 'color_fondo',
       'meta_test_event_code', 'google_analytics_id', 'tiktok_pixel_id',
+      'deposito_departamento', 'deposito_ciudad', 'deposito_direccion',
+      'deposito_referencia', 'deposito_telefono',
     ]) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo] || null;
     }
@@ -114,6 +116,12 @@ class TiendaService {
     // existian quedaron sin el dato y lo cargan desde /mi-tienda, por eso
     // actualizar() no lo exige.
     if (!payload.documento?.trim()) throw new Error('El número de cédula es obligatorio.');
+    // Ídem: obligatorio solo al crear. Sin esto el admin no sabe adónde
+    // devolverle la mercadería que el usuario venda.
+    if (!payload.deposito_departamento?.trim()) throw new Error('El departamento de tu depósito es obligatorio.');
+    if (!payload.deposito_ciudad?.trim()) throw new Error('La ciudad de tu depósito es obligatoria.');
+    if (!payload.deposito_direccion?.trim()) throw new Error('La dirección de tu depósito es obligatoria.');
+    if (!payload.deposito_telefono?.trim()) throw new Error('El teléfono de contacto de tu depósito es obligatorio.');
 
     const subdominio = payload.subdominio.trim().toLowerCase();
     const { valido, motivo } = validarFormatoSubdominio(subdominio);

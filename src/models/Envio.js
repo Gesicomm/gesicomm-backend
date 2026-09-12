@@ -11,6 +11,11 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  numero_pedido: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    comment: 'Número visible y correlativo por usuario/tienda. El id global queda como identificador técnico interno.',
+  },
   courier_id: {
     type: DataTypes.INTEGER,
     allowNull: true,
@@ -315,6 +320,11 @@ const Envio = sequelize.define('Envio', {
     {
       name: 'idx_envios_analytics_dispatchedAt',
       fields: ['usuario_id', 'dispatchedAt']
+    },
+    {
+      name: 'uq_envios_usuario_numero_pedido',
+      unique: true,
+      fields: ['usuario_id', 'numero_pedido']
     }
   ]
 });
