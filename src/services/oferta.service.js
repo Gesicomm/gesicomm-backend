@@ -152,7 +152,17 @@ class OfertaService {
    */
   static normalizarExtras(payload) {
     const extras = {};
-    if (payload.imagen_url !== undefined) extras.imagen_url = payload.imagen_url?.trim() || null;
+    if (payload.imagen_url !== undefined) {
+      extras.imagen_url = payload.imagen_url?.trim() || null;
+      // Editar imagen_url como texto libre (no por el endpoint de subida) ya
+      // no corresponde a ningún objeto de R2 propio — limpiar storage_key
+      // para no dejarlo apuntando a una key que no coincide con la URL.
+      extras.imagen_storage_key = null;
+      extras.imagen_mime_type = null;
+      extras.imagen_size = null;
+      extras.imagen_width = null;
+      extras.imagen_height = null;
+    }
     if (payload.fecha_inicio !== undefined) extras.fecha_inicio = payload.fecha_inicio || null;
     if (payload.fecha_fin !== undefined) extras.fecha_fin = payload.fecha_fin || null;
     return extras;
@@ -165,15 +175,24 @@ class OfertaService {
    * oferta se administra desde la carga de productos y desde el armador de
    * landing, y tiene que ser la misma foto en los dos lados.
    *
-   * @returns {{imagen_url: string|null, anterior: string|null}} `anterior`
-   *   es la URL que se reemplaza, para que el controller borre ese archivo
-   *   del disco (mismo contrato que LandingService._actualizarImagenCampo).
+   * `imagenData` es el objeto de ImagenService.procesarArchivoParaR2
+   * ({url, storage_key, mime_type, size, width, height}) o null para quitar.
+   *
+   * @returns {{imagen_url: string|null, anterior: {url: string, storage_key: string|null}|null}}
+   *   `anterior` es la imagen que se reemplaza, para que el controller borre
+   *   ese objeto de R2 (o el archivo legacy en disco).
    */
-  static async actualizarImagen(id, inquilino_id, url) {
+  static async actualizarImagen(id, inquilino_id, imagenData) {
     const oferta = await Oferta.findOne({ where: { id, inquilino_id } });
     if (!oferta) throw new Error('Oferta no encontrada.');
-    const anterior = oferta.imagen_url;
-    oferta.imagen_url = url;
+    const anterior = oferta.imagen_url ? { url: oferta.imagen_url, storage_key: oferta.imagen_storage_key } : null;
+
+    oferta.imagen_url = imagenData ? imagenData.url : null;
+    oferta.imagen_storage_key = imagenData ? imagenData.storage_key : null;
+    oferta.imagen_mime_type = imagenData ? imagenData.mime_type : null;
+    oferta.imagen_size = imagenData ? imagenData.size : null;
+    oferta.imagen_width = imagenData ? imagenData.width : null;
+    oferta.imagen_height = imagenData ? imagenData.height : null;
     await oferta.save();
     return { imagen_url: oferta.imagen_url, anterior };
   }

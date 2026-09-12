@@ -97,8 +97,13 @@ const Oferta = sequelize.define('Oferta', {
   imagen_url: {
     type: DataTypes.STRING(500),
     allowNull: true,
-    comment: 'Imagen propia de la oferta. NULL = se usa la del producto ancla.',
+    comment: 'Imagen propia de la oferta. NULL = se usa la del producto ancla. storage_key es la fuente de verdad cuando existe (subida por archivo); si se editó como URL de texto, storage_key queda null.',
   },
+  imagen_storage_key: { type: DataTypes.STRING(700), allowNull: true },
+  imagen_mime_type: { type: DataTypes.STRING(100), allowNull: true },
+  imagen_size: { type: DataTypes.INTEGER, allowNull: true },
+  imagen_width: { type: DataTypes.INTEGER, allowNull: true },
+  imagen_height: { type: DataTypes.INTEGER, allowNull: true },
   /**
    * Ventana de vigencia. Fuera de ella la oferta no se muestra ni se puede
    * cobrar, aunque `activo` siga en true — son dos cosas distintas: `activo`

@@ -221,13 +221,27 @@ class CostoGastoService {
     return this.detalle(id, usuario_id);
   }
 
-  static async guardarComprobante(id, usuario_id, url, nombreOriginal) {
+  /**
+   * `imagenData` es el objeto de ComprobanteService.procesarComprobanteParaR2
+   * ({url, storage_key, mime_type, size}).
+   * @returns {{registro: object, anterior: {url: string, storage_key: string|null}|null}}
+   *   `anterior` es el comprobante que se reemplaza, para que el controller
+   *   borre ese objeto de R2 (o el archivo legacy en disco).
+   */
+  static async guardarComprobante(id, usuario_id, imagenData, nombreOriginal) {
     const registro = await CostoGasto.findOne({ where: { id, usuario_id } });
     if (!registro) throw new Error('Costo/gasto no encontrado.');
-    registro.comprobante_url = url;
+    const anterior = registro.comprobante_url
+      ? { url: registro.comprobante_url, storage_key: registro.comprobante_storage_key }
+      : null;
+
+    registro.comprobante_url = imagenData.url;
+    registro.comprobante_storage_key = imagenData.storage_key;
+    registro.comprobante_mime_type = imagenData.mime_type;
+    registro.comprobante_size = imagenData.size;
     registro.comprobante_nombre = nombreOriginal || null;
     await registro.save();
-    return this.detalle(id, usuario_id);
+    return { registro: await this.detalle(id, usuario_id), anterior };
   }
 
   /**

@@ -187,24 +187,18 @@ async function cambiarEstado(req, res) {
   }
 }
 
-async function subirImagenGenerica(req, res, { actualizar, opts, defaultMsg }) {
+async function subirImagenGenerica(req, res, { actualizar, opts, keyPrefix, defaultMsg }) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
     if (!tienda) { await ImagenService.borrarArchivoSeguro(req.file?.path); return; }
 
     if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
 
-    let url;
-    try {
-      url = await ImagenService.guardarArchivo(req.file, opts);
-    } catch (err) {
-      await ImagenService.borrarArchivoSeguro(req.file.path);
-      throw err;
-    }
+    const imagenData = await ImagenService.procesarArchivoParaR2(req.file, `${keyPrefix}/${req.params.id}`, opts);
 
-    const { landing, anterior } = await actualizar(req.params.id, tienda.id, url);
+    const { landing, anterior } = await actualizar(req.params.id, tienda.id, imagenData);
     if (anterior) {
-      await ImagenService.borrarArchivoSeguro(path.join(process.cwd(), 'public', anterior));
+      await ImagenService.eliminarObjetoStorage(anterior);
     }
     return res.status(201).json(landing);
   } catch (err) {
@@ -220,7 +214,7 @@ async function eliminarImagenGenerica(req, res, { quitar, defaultMsg }) {
 
     const { landing, anterior } = await quitar(req.params.id, tienda.id);
     if (anterior) {
-      await ImagenService.borrarArchivoSeguro(path.join(process.cwd(), 'public', anterior));
+      await ImagenService.eliminarObjetoStorage(anterior);
     }
     return res.json(landing);
   } catch (err) {
@@ -230,8 +224,9 @@ async function eliminarImagenGenerica(req, res, { quitar, defaultMsg }) {
 
 async function subirLogo(req, res) {
   return subirImagenGenerica(req, res, {
-    actualizar: (id, tiendaId, url) => LandingSimpleService.actualizarImagenLogo(id, tiendaId, url),
+    actualizar: (id, tiendaId, imagenData) => LandingSimpleService.actualizarImagenLogo(id, tiendaId, imagenData),
     opts: { width: 400, quality: 85 },
+    keyPrefix: 'landings/logo',
     defaultMsg: 'Error al subir el logo.',
   });
 }
@@ -245,8 +240,9 @@ async function eliminarLogo(req, res) {
 
 async function subirHeroImagen(req, res) {
   return subirImagenGenerica(req, res, {
-    actualizar: (id, tiendaId, url) => LandingSimpleService.actualizarImagenHero(id, tiendaId, url),
+    actualizar: (id, tiendaId, imagenData) => LandingSimpleService.actualizarImagenHero(id, tiendaId, imagenData),
     opts: { width: 1600, quality: 82 },
+    keyPrefix: 'landings/banner',
     defaultMsg: 'Error al subir la imagen del hero.',
   });
 }

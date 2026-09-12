@@ -42,9 +42,24 @@ function buildPublicUrl(storageKey, env = process.env) {
   return `${baseUrl.replace(/\/+$/, '')}/${storageKey.replace(/^\/+/, '')}`;
 }
 
+/**
+ * Inversa de buildPublicUrl: si `url` es una URL pública de R2 (empieza con
+ * R2_PUBLIC_BASE_URL), devuelve su storage_key; si no (URL externa, legacy
+ * /uploads, o falta config), devuelve null. Sirve para módulos donde el
+ * storage_key no se persiste en su propia columna (ej. testimonios, cuyas
+ * filas se recrean en bloque) — se recalcula desde la URL guardada.
+ */
+function extractStorageKeyFromUrl(url, env = process.env) {
+  const baseUrl = env.R2_PUBLIC_BASE_URL;
+  if (!baseUrl || !url) return null;
+  const prefix = `${baseUrl.replace(/\/+$/, '')}/`;
+  return url.startsWith(prefix) ? url.slice(prefix.length) : null;
+}
+
 module.exports = {
   REQUIRED_R2_ENV_VARS,
   R2ConfigError,
   getR2Config,
   buildPublicUrl,
+  extractStorageKeyFromUrl,
 };

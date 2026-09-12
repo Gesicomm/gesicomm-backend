@@ -15,6 +15,7 @@ const path = require('path');
 const multer = require('multer');
 const CostoGastoService = require('../services/costoGasto.service');
 const ComprobanteService = require('../services/comprobante.service');
+const ImagenService = require('../services/imagen.service');
 const { generarExcelReporteFinanciero, generarPdfReporteFinanciero } = require('../services/reporteFinanciero.export');
 
 const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
@@ -181,12 +182,15 @@ async function subirComprobante(req, res) {
     try {
       await CostoGastoService.detalle(req.params.id, req.usuario.id);
     } catch (e) {
-      await ComprobanteService.borrarArchivoSeguro(req.file.path);
+      await ImagenService.borrarArchivoSeguro(req.file.path);
       return res.status(404).json({ message: 'Costo/gasto no encontrado.' });
     }
 
-    const url = await ComprobanteService.guardarArchivo(req.file);
-    const registro = await CostoGastoService.guardarComprobante(req.params.id, req.usuario.id, url, req.file.originalname);
+    const imagenData = await ComprobanteService.procesarComprobanteParaR2(req.file, req.params.id);
+    const { registro, anterior } = await CostoGastoService.guardarComprobante(req.params.id, req.usuario.id, imagenData, req.file.originalname);
+    // Reemplazar es subir el nuevo y borrar el viejo: si no, cada
+    // reemplazo de comprobante deja un objeto huérfano en R2 para siempre.
+    if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.status(201).json(registro);
   } catch (err) {
     console.error(err);

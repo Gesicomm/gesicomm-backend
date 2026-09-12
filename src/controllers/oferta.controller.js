@@ -52,26 +52,24 @@ function subirImagenMiddleware(req, res, next) {
   });
 }
 
-const rutaEnDisco = (url) => path.join(process.cwd(), 'public', url);
-
 async function subirImagen(req, res) {
   try {
     if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
 
-    let url;
+    let imagenData;
     try {
-      url = await ImagenService.guardarArchivo(req.file, { width: 800 });
+      imagenData = await ImagenService.procesarArchivoParaR2(req.file, `offers/${req.params.id}`, { width: 800 });
     } catch (err) {
       console.error('[oferta] subirImagen:', err.message);
       return res.status(500).json({ message: 'No se pudo procesar la imagen.' });
     }
 
     const { imagen_url, anterior } = await OfertaService.actualizarImagen(
-      Number(req.params.id), req.usuario.tenantId, url
+      Number(req.params.id), req.usuario.tenantId, imagenData
     );
     // Reemplazar es subir la nueva y borrar la vieja: si no, cada cambio de
-    // foto deja un archivo huérfano en public/uploads para siempre.
-    if (anterior) await ImagenService.borrarArchivoSeguro(rutaEnDisco(anterior));
+    // foto deja un objeto huérfano en R2 para siempre.
+    if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.status(201).json({ imagen_url });
   } catch (err) {
     console.error('[oferta] subirImagen:', err.message);
@@ -85,7 +83,7 @@ async function quitarImagen(req, res) {
     const { anterior } = await OfertaService.actualizarImagen(
       Number(req.params.id), req.usuario.tenantId, null
     );
-    if (anterior) await ImagenService.borrarArchivoSeguro(rutaEnDisco(anterior));
+    if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.json({ imagen_url: null });
   } catch (err) {
     console.error('[oferta] quitarImagen:', err.message);

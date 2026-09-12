@@ -17,9 +17,10 @@
  */
 
 const { Op } = require('sequelize');
-const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate } = require('../models');
+const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate, Testimonio } = require('../models');
 const LandingService = require('./landing.service');
 const LandingCodigoService = require('./landingCodigo.service');
+const ImagenService = require('./imagen.service');
 const PaginaFactory = require('../factories/PaginaFactory');
 
 // Los dos modos que administra este servicio, ambos "una landing por
@@ -448,12 +449,35 @@ class LandingSimpleService {
    * Los funnels (tipo_pagina 'funnel') NO se tocan: son páginas de producto
    * con vida propia, no satélites de la home.
    */
+  /**
+   * Borra de R2 (o disco legacy) banner/seo/logo de la landing y las fotos
+   * de sus testimonios — la fila se borra sola en cascada (FK), esto no.
+   */
+  static async _limpiarImagenesLanding(landing) {
+    for (const campo of ['banner_imagen', 'seo_og_imagen', 'logo_imagen']) {
+      if (landing[campo]) {
+        await ImagenService.eliminarObjetoStorage({ url: landing[campo], storage_key: landing[`${campo}_storage_key`] });
+      }
+    }
+    const testimonios = await Testimonio.findAll({ where: { landing_id: landing.id }, attributes: ['foto'] });
+    for (const foto of new Set(testimonios.map(t => t.foto).filter(Boolean))) {
+      await ImagenService.eliminarObjetoStorage({ url: foto });
+    }
+  }
+
   static async eliminar(id, tienda_id) {
     const landing = await this.buscarPropia(id, tienda_id);
     const eraPrincipal = Boolean(landing.es_home) || landing.tipo_pagina === 'inicio';
+    await this._limpiarImagenesLanding(landing);
     await landing.destroy();
 
     if (eraPrincipal) {
+      const companeras = await Landing.findAll({
+        where: { tienda_id, tipo_pagina: { [Op.in]: ['catalogo', 'contacto'] } },
+      });
+      for (const companera of companeras) {
+        await this._limpiarImagenesLanding(companera);
+      }
       await Landing.destroy({
         where: { tienda_id, tipo_pagina: { [Op.in]: ['catalogo', 'contacto'] } },
       });
@@ -462,30 +486,40 @@ class LandingSimpleService {
   }
 
   /**
-   * @returns {{landing: object, anterior: string|null}} anterior = URL vieja,
-   * para que el controller borre ese archivo del disco (mismo contrato que
+   * @returns {{landing: object, anterior: {url: string, storage_key: string|null}|null}}
+   * anterior = imagen vieja, para que el controller borre ese objeto de R2
+   * (o el archivo legacy en disco) (mismo contrato que
    * LandingService._actualizarImagenCampo, sin reusarlo directamente: acá
    * el DTO de retorno debe ser el de landingSimple, con template incluido
-   * y sin secciones/testimonios del sistema flexible).
+   * y sin secciones/testimonios del sistema flexible). `imagenData` es el
+   * objeto de ImagenService.procesarArchivoParaR2 o null para quitar.
    */
-  static async _actualizarImagenCampo(id, tienda_id, campo, url) {
+  static async _actualizarImagenCampo(id, tienda_id, campo, imagenData) {
     const landing = await this.buscarPropia(id, tienda_id);
-    const anterior = landing[campo];
-    landing[campo] = url;
+    const claveStorage = `${campo}_storage_key`;
+    const anteriorUrl = landing[campo];
+    const anterior = anteriorUrl ? { url: anteriorUrl, storage_key: landing[claveStorage] } : null;
+
+    landing[campo] = imagenData ? imagenData.url : null;
+    landing[claveStorage] = imagenData ? imagenData.storage_key : null;
+    landing[`${campo}_mime_type`] = imagenData ? imagenData.mime_type : null;
+    landing[`${campo}_size`] = imagenData ? imagenData.size : null;
+    landing[`${campo}_width`] = imagenData ? imagenData.width : null;
+    landing[`${campo}_height`] = imagenData ? imagenData.height : null;
     await landing.save();
     return { landing: await this.obtener(id, tienda_id), anterior };
   }
 
-  static actualizarImagenLogo(id, tienda_id, url) {
-    return this._actualizarImagenCampo(id, tienda_id, 'logo_imagen', url);
+  static actualizarImagenLogo(id, tienda_id, imagenData) {
+    return this._actualizarImagenCampo(id, tienda_id, 'logo_imagen', imagenData);
   }
 
   static quitarImagenLogo(id, tienda_id) {
     return this._actualizarImagenCampo(id, tienda_id, 'logo_imagen', null);
   }
 
-  static actualizarImagenHero(id, tienda_id, url) {
-    return this._actualizarImagenCampo(id, tienda_id, 'banner_imagen', url);
+  static actualizarImagenHero(id, tienda_id, imagenData) {
+    return this._actualizarImagenCampo(id, tienda_id, 'banner_imagen', imagenData);
   }
 
   static quitarImagenHero(id, tienda_id) {

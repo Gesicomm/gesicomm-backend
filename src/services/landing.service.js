@@ -401,16 +401,29 @@ class LandingService {
    * los items.
    */
   static async sincronizarTestimonios(landing_id, testimonios = []) {
+    // Reemplazo en bloque = cualquier foto que tenía un testimonio viejo y
+    // no sobrevive en el payload nuevo queda huérfana en R2 si no se limpia
+    // acá — es el único lugar por donde pasan todos los cambios (reemplazar
+    // la foto de un testimonio existente, o sacarlo de la lista).
+    const nuevasFotos = new Set(testimonios.map(t => t.foto).filter(Boolean));
+    const actuales = await Testimonio.findAll({ where: { landing_id }, attributes: ['foto'] });
+    const fotosHuerfanas = [...new Set(actuales.map(t => t.foto).filter(foto => foto && !nuevasFotos.has(foto)))];
+
     await Testimonio.destroy({ where: { landing_id } });
-    if (!testimonios.length) return;
-    await Testimonio.bulkCreate(testimonios.map((t, idx) => ({
-      landing_id,
-      nombre: t.nombre.trim(),
-      foto: t.foto || null,
-      calificacion: Number(t.calificacion),
-      comentario: t.comentario.trim(),
-      orden: t.orden !== undefined ? Number(t.orden) : idx,
-    })));
+    if (testimonios.length) {
+      await Testimonio.bulkCreate(testimonios.map((t, idx) => ({
+        landing_id,
+        nombre: t.nombre.trim(),
+        foto: t.foto || null,
+        calificacion: Number(t.calificacion),
+        comentario: t.comentario.trim(),
+        orden: t.orden !== undefined ? Number(t.orden) : idx,
+      })));
+    }
+
+    for (const foto of fotosHuerfanas) {
+      await ImagenService.eliminarObjetoStorage({ url: foto });
+    }
   }
 
   static async sincronizarFaq(landing_id, faq = []) {
@@ -1000,6 +1013,17 @@ class LandingService {
     }
     if (landing.seo_og_imagen) {
       await ImagenService.eliminarObjetoStorage({ url: landing.seo_og_imagen, storage_key: landing.seo_og_imagen_storage_key });
+    }
+    if (landing.logo_imagen) {
+      await ImagenService.eliminarObjetoStorage({ url: landing.logo_imagen, storage_key: landing.logo_imagen_storage_key });
+    }
+
+    // testimonios se borran en cascada (FK) al destruir la landing — eso
+    // limpia la fila, no el objeto en R2, así que hay que hacerlo acá.
+    const testimonios = await Testimonio.findAll({ where: { landing_id: landing.id }, attributes: ['foto'] });
+    const fotos = [...new Set(testimonios.map(t => t.foto).filter(Boolean))];
+    for (const foto of fotos) {
+      await ImagenService.eliminarObjetoStorage({ url: foto });
     }
 
     await landing.destroy();

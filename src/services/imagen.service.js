@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const sharp = require('sharp');
 const { ProductoImagen } = require('../models');
 const { R2Service, IMMUTABLE_CACHE_CONTROL } = require('./r2/r2.service');
-const { buildPublicUrl } = require('./r2/r2.config');
+const { buildPublicUrl, extractStorageKeyFromUrl } = require('./r2/r2.config');
 
 const UPLOADS_PUBLIC = path.join(process.cwd(), 'public', 'uploads');
 
@@ -119,11 +119,14 @@ class ImagenService {
   /**
    * Borra el objeto de R2 (storage_key) o, si es un registro legacy sin
    * storage_key, el archivo local en /uploads. Común a cualquier campo de
-   * imagen que se reemplaza o se quita.
+   * imagen que se reemplaza o se quita. Si no se pasa storage_key (módulos
+   * que no lo persisten en su propia columna, ej. testimonios) se lo
+   * deriva de `url` cuando es una URL pública de R2.
    */
   static async eliminarObjetoStorage({ url, storage_key } = {}) {
-    if (storage_key) {
-      await R2Service.deleteObject(storage_key);
+    const key = storage_key || extractStorageKeyFromUrl(url);
+    if (key) {
+      await R2Service.deleteObject(key);
     } else if (url?.startsWith('/uploads/')) {
       const filePath = path.join(process.cwd(), 'public', url);
       await this.borrarArchivoSeguro(filePath);

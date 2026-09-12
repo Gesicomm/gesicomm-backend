@@ -116,6 +116,9 @@ const CostoGasto = sequelize.define('CostoGasto', {
     type: DataTypes.STRING(255),
     allowNull: true,
   },
+  comprobante_storage_key: { type: DataTypes.STRING(700), allowNull: true },
+  comprobante_mime_type: { type: DataTypes.STRING(100), allowNull: true },
+  comprobante_size: { type: DataTypes.INTEGER, allowNull: true },
   activo: {
     type: DataTypes.BOOLEAN,
     defaultValue: true,

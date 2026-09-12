@@ -290,8 +290,8 @@ async function subirTestimonioFoto(req, res) {
     await LandingService.verificarPertenece(req.params.id, tienda.id);
 
     // Cuadrada y liviana — es un avatar, no un banner.
-    const url = await ImagenService.guardarArchivo(req.file, { width: 400, quality: 82 });
-    return res.status(201).json({ url });
+    const imagenData = await ImagenService.procesarArchivoParaR2(req.file, `testimonials/${req.params.id}`, { width: 400, quality: 82 });
+    return res.status(201).json({ url: imagenData.url });
   } catch (err) {
     await ImagenService.borrarArchivoSeguro(req.file?.path);
     return manejarError(res, err, 'Error al subir la foto del testimonio.');
@@ -316,8 +316,8 @@ async function subirImagenSeccion(req, res) {
     await LandingService.verificarPertenece(req.params.id, tienda.id);
 
     // Ancho de banner (hero), no de avatar — a diferencia de la foto de testimonio.
-    const url = await ImagenService.guardarArchivo(req.file, { width: 1600, quality: 82 });
-    return res.status(201).json({ url });
+    const imagenData = await ImagenService.procesarArchivoParaR2(req.file, `sections/${req.params.id}`, { width: 1600, quality: 82 });
+    return res.status(201).json({ url: imagenData.url });
   } catch (err) {
     await ImagenService.borrarArchivoSeguro(req.file?.path);
     return manejarError(res, err, 'Error al subir la imagen de la sección.');
