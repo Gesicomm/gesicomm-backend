@@ -6,7 +6,8 @@ const sequelize = require('../config/database');
  * - variante_id es opcional: si se asigna, la imagen pertenece a esa variante específica.
  * - es_principal marca la imagen destacada del producto.
  * - orden define el orden de galería.
- * - Las imágenes se procesan con sharp antes de guardarse (max 1200px, JPEG 80%).
+ * - Las imágenes nuevas se procesan con sharp y se almacenan en R2; url se
+ *   conserva como contrato de API para consumidores existentes.
  */
 const ProductoImagen = sequelize.define('ProductoImagen', {
   id: {
@@ -32,6 +33,27 @@ const ProductoImagen = sequelize.define('ProductoImagen', {
     type: DataTypes.STRING(500),
     allowNull: false,
   },
+  storage_key: {
+    type: DataTypes.STRING(700),
+    allowNull: true,
+    comment: 'Key del objeto en Cloudflare R2. Null para imágenes legacy en /uploads.',
+  },
+  mime_type: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
+  size: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  width: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  height: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   es_principal: {
     type: DataTypes.BOOLEAN,
     defaultValue: false,
@@ -51,6 +73,7 @@ const ProductoImagen = sequelize.define('ProductoImagen', {
     { fields: ['producto_id'] },
     { fields: ['variante_id'] },
     { fields: ['inquilino_id'] },
+    { fields: ['storage_key'] },
   ],
 });
 

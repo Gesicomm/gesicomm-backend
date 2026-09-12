@@ -198,29 +198,23 @@ async function cambiarEstado(req, res) {
 }
 
 /**
- * Compartido por banner y por imagen OG: sube+redimensiona el archivo y
- * lo cuelga del campo que indique `actualizar` (una de las dos funciones
- * _actualizarImagenCampo de LandingService), borrando la imagen vieja del
- * disco si había una.
+ * Compartido por banner y por imagen OG: sube+redimensiona el archivo a R2
+ * y lo cuelga del campo que indique `actualizar` (una de las dos funciones
+ * _actualizarImagenCampo de LandingService), borrando de R2 (o del disco,
+ * si la landing todavía tenía una imagen legacy) la anterior si había.
  */
-async function subirImagenGenerica(req, res, { actualizar, opts, defaultMsg }) {
+async function subirImagenGenerica(req, res, { actualizar, opts, keyPrefix, defaultMsg }) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
     if (!tienda) { await ImagenService.borrarArchivoSeguro(req.file?.path); return; }
 
     if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
 
-    let url;
-    try {
-      url = await ImagenService.guardarArchivo(req.file, opts);
-    } catch (err) {
-      await ImagenService.borrarArchivoSeguro(req.file.path);
-      throw err;
-    }
+    const imagenData = await ImagenService.procesarArchivoParaR2(req.file, `${keyPrefix}/${req.params.id}`, opts);
 
-    const { landing, anterior } = await actualizar(req.params.id, tienda.id, url);
+    const { landing, anterior } = await actualizar(req.params.id, tienda.id, imagenData);
     if (anterior) {
-      await ImagenService.borrarArchivoSeguro(path.join(process.cwd(), 'public', anterior));
+      await ImagenService.eliminarObjetoStorage(anterior);
     }
     return res.status(201).json(landing);
   } catch (err) {
@@ -235,7 +229,7 @@ async function eliminarImagenGenerica(req, res, { quitar, defaultMsg }) {
 
     const { landing, anterior } = await quitar(req.params.id, tienda.id);
     if (anterior) {
-      await ImagenService.borrarArchivoSeguro(path.join(process.cwd(), 'public', anterior));
+      await ImagenService.eliminarObjetoStorage(anterior);
     }
     return res.json(landing);
   } catch (err) {
@@ -247,8 +241,9 @@ async function subirBanner(req, res) {
   // Banner en formato ancho (hero) — no tiene sentido el mismo recorte de
   // 1200px que una foto de producto cuadrada/vertical.
   return subirImagenGenerica(req, res, {
-    actualizar: (id, tiendaId, url) => LandingService.actualizarImagenBanner(id, tiendaId, url),
+    actualizar: (id, tiendaId, imagenData) => LandingService.actualizarImagenBanner(id, tiendaId, imagenData),
     opts: { width: 1600, quality: 82 },
+    keyPrefix: 'landings/banner',
     defaultMsg: 'Error al subir la imagen del banner.',
   });
 }
@@ -262,8 +257,9 @@ async function eliminarBanner(req, res) {
 
 async function subirSeoImagen(req, res) {
   return subirImagenGenerica(req, res, {
-    actualizar: (id, tiendaId, url) => LandingService.actualizarImagenSeo(id, tiendaId, url),
+    actualizar: (id, tiendaId, imagenData) => LandingService.actualizarImagenSeo(id, tiendaId, imagenData),
     opts: { width: 1200, quality: 82 },
+    keyPrefix: 'landings/seo',
     defaultMsg: 'Error al subir la imagen OG.',
   });
 }

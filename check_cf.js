@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const s = require('./src/config/database');
+const { gatewayDeSistema } = require('./src/services/suscripcion.service');
 
 (async () => {
   try {
@@ -20,3 +21,4 @@ const s = require('./src/config/database');
     }
   }
 })();
+

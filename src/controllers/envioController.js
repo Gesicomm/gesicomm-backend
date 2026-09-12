@@ -447,6 +447,17 @@ function aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimient
   }
 }
 
+function requiereBandejaAbastecimiento({ solo_abastecimiento, abastecimiento_estado } = {}) {
+  return Boolean(solo_abastecimiento || (abastecimiento_estado && abastecimiento_estado !== 'TODOS'));
+}
+
+function asegurarAdminParaBandejaAbastecimiento(req, filtros = {}) {
+  if (!requiereBandejaAbastecimiento(filtros) || esAdministrador(req)) return;
+  const err = new Error('La bandeja de abastecimiento es exclusiva para administradores.');
+  err.status = 403;
+  throw err;
+}
+
 function formatGsPlano(valor) {
   const n = Math.max(0, Math.round(Number(valor) || 0));
   return `Gs. ${n.toLocaleString('es-PY')}`;
@@ -700,6 +711,8 @@ exports.listEnviosPaginados = async (req, res) => {
       solo_abastecimiento,
       abastecimiento_estado,
     } = req.body;
+
+    asegurarAdminParaBandejaAbastecimiento(req, { solo_abastecimiento, abastecimiento_estado });
 
     const where = whereEnviosDeUsuario(req);
 
@@ -1610,6 +1623,7 @@ exports.conteoPorEstado = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { pedido_id, envio_id, fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, producto_busqueda, metodo_pago_id, solo_abastecimiento, abastecimiento_estado } = req.body;
+    asegurarAdminParaBandejaAbastecimiento(req, { solo_abastecimiento, abastecimiento_estado });
 
     const where = whereEnviosDeUsuario(req);
     aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });
@@ -1677,6 +1691,10 @@ exports.conteoPorEstado = async (req, res) => {
 
 exports.conteoPorAbastecimiento = async (req, res) => {
   try {
+    if (!esAdministrador(req)) {
+      return res.status(403).json({ error: 'La bandeja de abastecimiento es exclusiva para administradores.' });
+    }
+
     const {
       pedido_id,
       envio_id,
@@ -1774,6 +1792,7 @@ exports.resumenEntregados = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { pedido_id, envio_id, fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, producto_busqueda, metodo_pago_id, solo_abastecimiento, abastecimiento_estado } = req.body;
+    asegurarAdminParaBandejaAbastecimiento(req, { solo_abastecimiento, abastecimiento_estado });
 
     const where = { ...whereEnviosDeUsuario(req), estado: 'Entregado' };
     aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });

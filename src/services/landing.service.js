@@ -31,6 +31,7 @@ const PaymentService = require('./payments/paymentService');
 const CanalVentaService = require('./canalVenta.service');
 const CuponService = require('./cupon.service');
 const PedidoNumeracion = require('./pedidoNumeracion.service');
+const ImagenService = require('./imagen.service');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
@@ -816,29 +817,40 @@ class LandingService {
 
   /**
    * Setea/quita un campo de imagen directo (fuera de camposEditables — ver
-   * el comentario ahí). Devuelve la URL vieja para que el controller borre
-   * ese archivo del disco; landing.service.js no toca el filesystem.
-   * @returns {{landing: object, anterior: string|null}}
+   * el comentario ahí). `imagenData` es el objeto devuelto por
+   * ImagenService.procesarArchivoParaR2 ({url, storage_key, mime_type,
+   * size, width, height}) o null para quitar. Devuelve el valor anterior
+   * ({url, storage_key}) para que el controller borre ese objeto de R2 (o
+   * el archivo legacy en disco); landing.service.js no toca storage.
+   * @returns {{landing: object, anterior: {url: string, storage_key: string|null}|null}}
    */
-  static async _actualizarImagenCampo(id, tienda_id, campo, url) {
+  static async _actualizarImagenCampo(id, tienda_id, campo, imagenData) {
     const landing = await Landing.findOne({ where: { id, tienda_id } });
     if (!landing) throw new Error('Landing no encontrada.');
-    const anterior = landing[campo];
-    landing[campo] = url;
+    const claveStorage = `${campo}_storage_key`;
+    const anteriorUrl = landing[campo];
+    const anterior = anteriorUrl ? { url: anteriorUrl, storage_key: landing[claveStorage] } : null;
+
+    landing[campo] = imagenData ? imagenData.url : null;
+    landing[claveStorage] = imagenData ? imagenData.storage_key : null;
+    landing[`${campo}_mime_type`] = imagenData ? imagenData.mime_type : null;
+    landing[`${campo}_size`] = imagenData ? imagenData.size : null;
+    landing[`${campo}_width`] = imagenData ? imagenData.width : null;
+    landing[`${campo}_height`] = imagenData ? imagenData.height : null;
     await landing.save();
     return { landing: await this.obtener(id, tienda_id), anterior };
   }
 
-  static actualizarImagenBanner(id, tienda_id, url) {
-    return this._actualizarImagenCampo(id, tienda_id, 'banner_imagen', url);
+  static actualizarImagenBanner(id, tienda_id, imagenData) {
+    return this._actualizarImagenCampo(id, tienda_id, 'banner_imagen', imagenData);
   }
 
   static quitarImagenBanner(id, tienda_id) {
     return this._actualizarImagenCampo(id, tienda_id, 'banner_imagen', null);
   }
 
-  static actualizarImagenSeo(id, tienda_id, url) {
-    return this._actualizarImagenCampo(id, tienda_id, 'seo_og_imagen', url);
+  static actualizarImagenSeo(id, tienda_id, imagenData) {
+    return this._actualizarImagenCampo(id, tienda_id, 'seo_og_imagen', imagenData);
   }
 
   static quitarImagenSeo(id, tienda_id) {
@@ -982,6 +994,14 @@ class LandingService {
   static async eliminar(id, tienda_id) {
     const landing = await Landing.findOne({ where: { id, tienda_id } });
     if (!landing) throw new Error('Landing no encontrada.');
+
+    if (landing.banner_imagen) {
+      await ImagenService.eliminarObjetoStorage({ url: landing.banner_imagen, storage_key: landing.banner_imagen_storage_key });
+    }
+    if (landing.seo_og_imagen) {
+      await ImagenService.eliminarObjetoStorage({ url: landing.seo_og_imagen, storage_key: landing.seo_og_imagen_storage_key });
+    }
+
     await landing.destroy();
     return true;
   }

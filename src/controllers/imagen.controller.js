@@ -9,6 +9,9 @@ const path = require('path');
 const multer = require('multer');
 const { Producto } = require('../models');
 const ImagenService = require('../services/imagen.service');
+const { R2StorageError } = require('../services/r2/r2.errors');
+const { R2ConfigError } = require('../services/r2/r2.config');
+const { logger } = require('../utils/logger');
 
 const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
 const MAX_IMAGEN_BYTES = 1 * 1024 * 1024; // 1MB
@@ -85,8 +88,17 @@ async function subirImagen(req, res) {
     const imagen = await ImagenService.subir(id, inquilino_id, req.file, req.body);
     return res.status(201).json(imagen);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: err.message || 'Error al procesar la imagen.' });
+    logger.error({
+      mensaje: 'Error al procesar imagen de producto',
+      producto_id: req.params.id,
+      operation: err.operation,
+      errorCode: err.code || err.name,
+    });
+    const status = err instanceof R2StorageError && err.status < 500 ? err.status : 500;
+    const message = err instanceof R2ConfigError || err instanceof R2StorageError
+      ? 'No se pudo almacenar el archivo.'
+      : (err.message || 'Error al procesar la imagen.');
+    return res.status(status).json({ message });
   }
 }
 
@@ -97,7 +109,12 @@ async function actualizarImagen(req, res) {
     const imagen = await ImagenService.actualizar(req.params.imgId, req.params.id, inquilino_id, req.body);
     return res.json(imagen);
   } catch (err) {
-    console.error(err);
+    logger.error({
+      mensaje: 'Error al actualizar imagen de producto',
+      producto_id: req.params.id,
+      imagen_id: req.params.imgId,
+      errorCode: err.code || err.name,
+    });
     const status = err.message.includes('no encontrada') ? 404 : 500;
     return res.status(status).json({ message: err.message || 'Error al actualizar imagen.' });
   }
@@ -110,9 +127,19 @@ async function eliminarImagen(req, res) {
     await ImagenService.eliminar(req.params.imgId, req.params.id, inquilino_id);
     return res.json({ message: 'Imagen eliminada.' });
   } catch (err) {
-    console.error(err);
-    const status = err.message.includes('no encontrada') ? 404 : 500;
-    return res.status(status).json({ message: err.message || 'Error al eliminar imagen.' });
+    logger.error({
+      mensaje: 'Error al eliminar imagen de producto',
+      producto_id: req.params.id,
+      imagen_id: req.params.imgId,
+      operation: err.operation,
+      errorCode: err.code || err.name,
+    });
+    if (err.message.includes('no encontrada')) {
+      return res.status(404).json({ message: err.message });
+    }
+    const status = err instanceof R2StorageError && err.status < 500 ? err.status : 500;
+    const message = err instanceof R2StorageError ? 'No se pudo eliminar el archivo.' : (err.message || 'Error al eliminar imagen.');
+    return res.status(status).json({ message });
   }
 }
 
