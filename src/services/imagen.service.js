@@ -8,8 +8,6 @@ const { ProductoImagen } = require('../models');
 const { R2Service, IMMUTABLE_CACHE_CONTROL } = require('./r2/r2.service');
 const { buildPublicUrl, extractStorageKeyFromUrl } = require('./r2/r2.config');
 
-const UPLOADS_PUBLIC = path.join(process.cwd(), 'public', 'uploads');
-
 function esperar(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 class ImagenService {
@@ -44,33 +42,6 @@ class ImagenService {
       data.url = buildPublicUrl(data.storage_key);
     }
     return data;
-  }
-
-  /**
-   * Redimensiona y guarda un archivo subido por multer en public/uploads,
-   * devolviendo la URL pública relativa (misma convención en todo el
-   * proyecto: "/uploads/archivo.jpg", servida por express.static).
-   * No crea ninguna fila en base — eso lo decide cada caller (producto,
-   * banner de landing, etc.), acá solo vive el procesamiento del archivo.
-   */
-  static async guardarArchivo(fileData, { width = 1200, quality = 80 } = {}) {
-    const tmpPath = fileData.path;
-    try {
-      const buffer = await fs.promises.readFile(tmpPath);
-      const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
-      const finalPath = path.join(UPLOADS_PUBLIC, filename);
-
-      await sharp(buffer)
-        .resize({ width, withoutEnlargement: true })
-        .jpeg({ quality })
-        .toFile(finalPath);
-
-      await this.borrarArchivoSeguro(tmpPath);
-      return `/uploads/${filename}`;
-    } catch (err) {
-      await this.borrarArchivoSeguro(tmpPath);
-      throw err;
-    }
   }
 
   /**

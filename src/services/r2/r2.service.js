@@ -101,14 +101,22 @@ class R2Service {
     }
   }
 
+  /** Pagina automáticamente — ListObjectsV2 devuelve como máximo 1000 objetos por página. */
   static async listObjects(prefix) {
     const operation = 'ListObjectsV2';
+    const objects = [];
+    let continuationToken;
     try {
-      const result = await getR2Client().send(new ListObjectsV2Command({
-        Bucket: this.bucketName,
-        Prefix: prefix,
-      }));
-      return result.Contents || [];
+      do {
+        const result = await getR2Client().send(new ListObjectsV2Command({
+          Bucket: this.bucketName,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        }));
+        objects.push(...(result.Contents || []));
+        continuationToken = result.IsTruncated ? result.NextContinuationToken : undefined;
+      } while (continuationToken);
+      return objects;
     } catch (error) {
       const normalized = normalizeR2Error(error, { operation, key: prefix });
       safeLogError(normalized, { operation, key: prefix });
