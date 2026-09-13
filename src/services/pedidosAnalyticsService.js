@@ -1204,14 +1204,23 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
 async function getPagosOnlineAnalytics(whereBase) {
   const pagos = await PaymentTransaction.findAll({
     where: { status: 'PAID' },
-    attributes: ['id', 'amount'],
+    attributes: ['id', 'amount', 'payment_reference', 'metadata'],
     include: [{ model: Envio, as: 'envio', attributes: [], where: whereBase, required: true }],
     raw: true,
   });
 
+  const pagosCheckout = pagos.filter((p) => {
+    // `payment_transactions` tambien guarda cobros internos de abastecimiento
+    // Gesicom. Esos son pagos del comercio al sistema, no pagos del comprador
+    // en la tienda, y no deben inflar el embudo "Pago Web".
+    const metadata = p.metadata || {};
+    const referencia = String(p.payment_reference || '');
+    return metadata.tipo !== 'abastecimiento_gesicom' && !referencia.startsWith('ABAST-');
+  });
+
   return {
-    pagos_realizados: pagos.length,
-    monto_pagado: pagos.reduce((acc, p) => acc + Number(p.amount || 0), 0),
+    pagos_realizados: pagosCheckout.length,
+    monto_pagado: pagosCheckout.reduce((acc, p) => acc + Number(p.amount || 0), 0),
   };
 }
 

@@ -15,6 +15,8 @@ let cacheHasta = 0;
 const DEFINICIONES = [
   { clave: 'PAGOPAR_PUBLIC_KEY', grupo: 'pagopar', secreto: false, descripcion: 'Token público del comercio de Gesicomm en PagoPar.' },
   { clave: 'PAGOPAR_PRIVATE_KEY', grupo: 'pagopar', secreto: true, descripcion: 'Token privado. Se cifra y nunca vuelve por la API.' },
+  { clave: 'PAGOPAR_COMISION_FALLBACK_PCT', grupo: 'pagopar', secreto: false, descripcion: 'Porcentaje de comisión usado para estimar neto si PagoPar no devuelve comisión.' },
+  { clave: 'PAGOPAR_COMISIONES_JSON', grupo: 'pagopar', secreto: false, descripcion: 'Mapa opcional de comisiones por forma de pago. Ej: {"26":3.5,"tarjetas":3.5}.' },
   { clave: 'AFILIADOS_PROGRAMA_ACTIVO', grupo: 'afiliados', secreto: false, descripcion: 'Activa o pausa el Programa de Afiliados Gesicom.' },
   { clave: 'AFILIADOS_COMISION_PCT', grupo: 'afiliados', secreto: false, descripcion: 'Porcentaje recurrente sobre suscripciones SaaS elegibles cobradas.' },
   { clave: 'AFILIADOS_REGLAS_JSON', grupo: 'afiliados', secreto: false, descripcion: 'Reglas comerciales visibles del Programa de Afiliados.' },

@@ -1,5 +1,22 @@
 const { Op, QueryTypes } = require('sequelize');
-const { AuthEvent, UserSession, AuthNotification, Usuario, sequelize } = require('../models');
+const {
+  AuthEvent,
+  UserSession,
+  AuthNotification,
+  Usuario,
+  PagoSuscripcion,
+  Suscripcion,
+  Plan,
+  PaymentTransaction,
+  Envio,
+  EnvioItem,
+  EnvioItemComponente,
+  Producto,
+  Proveedor,
+  sequelize,
+} = require('../models');
+const parametros = require('./parametros.service');
+const PagoParService = require('./payments/pagoParService');
 
 const SESSION_COOKIE = 'authSessionId';
 const VENTANA_ACTIVA_MS = 15 * 60 * 1000;
@@ -198,6 +215,13 @@ function rangoDias(dias) {
   return new Date(Date.now() - n * 24 * 60 * 60 * 1000);
 }
 
+function ymd(fecha) {
+  const d = fecha instanceof Date ? fecha : new Date(fecha);
+  if (Number.isNaN(d.getTime())) return null;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function numeroPagina(pagina) {
   return Math.max(1, Number.parseInt(pagina, 10) || 1);
 }
@@ -332,6 +356,350 @@ async function resumen({ dias = 30 } = {}) {
   };
 }
 
+function filaResumenPago(tipo, label) {
+  return {
+    tipo,
+    label,
+    cantidad_total: 0,
+    monto_bruto_total: 0,
+    comision_total: 0,
+    monto_neto_total: 0,
+    estados: {
+      PENDING: { cantidad: 0, bruto: 0, comision: 0, neto: 0 },
+      PAID: { cantidad: 0, bruto: 0, comision: 0, neto: 0 },
+      FAILED: { cantidad: 0, bruto: 0, comision: 0, neto: 0 },
+    },
+  };
+}
+
+function payloadPagoPar(valor) {
+  if (!valor) return null;
+  const raiz = valor.resultado && Array.isArray(valor.resultado) ? valor.resultado[0] : valor;
+  return raiz && typeof raiz === 'object' ? raiz : null;
+}
+
+function normalizarTexto(valor) {
+  return String(valor || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+async function obtenerReglasComisionPagoPar() {
+  const valores = await parametros.obtenerVarios([
+    'PAGOPAR_PUBLIC_KEY',
+    'PAGOPAR_PRIVATE_KEY',
+    'PAGOPAR_COMISION_FALLBACK_PCT',
+    'PAGOPAR_COMISIONES_JSON',
+  ]);
+
+  const reglas = new Map();
+  let fallbackPct = Number(valores.PAGOPAR_COMISION_FALLBACK_PCT);
+  if (!Number.isFinite(fallbackPct)) fallbackPct = 0;
+  let origen = fallbackPct > 0 ? 'parametros' : 'sin_configurar';
+
+  if (valores.PAGOPAR_COMISIONES_JSON) {
+    try {
+      const parsed = JSON.parse(valores.PAGOPAR_COMISIONES_JSON);
+      Object.entries(parsed || {}).forEach(([clave, pct]) => {
+        const n = Number(pct);
+        if (Number.isFinite(n)) reglas.set(normalizarTexto(clave), n);
+      });
+    } catch {
+      // Se ignora: el fallback y/o PagoPar siguen cubriendo el cálculo.
+    }
+  }
+
+  if (valores.PAGOPAR_PUBLIC_KEY && valores.PAGOPAR_PRIVATE_KEY) {
+    try {
+      const datos = await PagoParService.obtenerDatosComercio({
+        public_key: valores.PAGOPAR_PUBLIC_KEY,
+        private_key: valores.PAGOPAR_PRIVATE_KEY,
+      });
+      const pctGeneral = Number(datos.porcentaje_comision);
+      if (Number.isFinite(pctGeneral)) fallbackPct = pctGeneral;
+      for (const forma of datos.forma_pago || []) {
+        const pct = Number(forma.porcentaje_comision ?? pctGeneral);
+        if (!Number.isFinite(pct)) continue;
+        if (forma.forma_pago) reglas.set(normalizarTexto(forma.forma_pago), pct);
+        if (forma.tipo) reglas.set(normalizarTexto(forma.tipo), pct);
+      }
+      origen = 'pagopar';
+    } catch (error) {
+      origen = fallbackPct > 0 || reglas.size > 0 ? 'parametros' : 'sin_configurar';
+    }
+  }
+
+  return { fallbackPct, reglas, origen };
+}
+
+function porcentajeComisionParaPago(datos, reglasComision) {
+  const payload = payloadPagoPar(datos);
+  const candidatos = [
+    payload?.forma_pago_identificador,
+    payload?.forma_pago,
+    payload?.forma_pago?.forma_pago,
+    payload?.forma_pago?.tipo,
+  ].filter(Boolean).map(normalizarTexto);
+
+  for (const candidato of candidatos) {
+    if (reglasComision.reglas.has(candidato)) return reglasComision.reglas.get(candidato);
+    for (const [clave, pct] of reglasComision.reglas.entries()) {
+      if (clave && (candidato.includes(clave) || clave.includes(candidato))) return pct;
+    }
+  }
+  return reglasComision.fallbackPct || 0;
+}
+
+function sumarPago(resumen, { tipo, estado, monto, respuestaPasarela }, reglasComision) {
+  const estadoNormalizado = ['PENDING', 'PAID', 'FAILED'].includes(estado) ? estado : 'PENDING';
+  const bruto = Math.max(0, Math.round(Number(monto) || 0));
+  const pct = estadoNormalizado === 'PAID' ? porcentajeComisionParaPago(respuestaPasarela, reglasComision) : 0;
+  const comision = Math.round(bruto * (pct / 100));
+  const neto = Math.max(0, bruto - comision);
+
+  resumen.cantidad_total += 1;
+  resumen.monto_bruto_total += bruto;
+  resumen.comision_total += comision;
+  resumen.monto_neto_total += neto;
+  resumen.estados[estadoNormalizado].cantidad += 1;
+  resumen.estados[estadoNormalizado].bruto += bruto;
+  resumen.estados[estadoNormalizado].comision += comision;
+  resumen.estados[estadoNormalizado].neto += neto;
+}
+
+async function resumenPagosAdmin({ dias = 30 } = {}) {
+  const desde = rangoDias(dias);
+  const reglasComision = await obtenerReglasComisionPagoPar();
+  const porTipo = {
+    suscripciones: filaResumenPago('suscripciones', 'Suscripciones'),
+    abastecimiento: filaResumenPago('abastecimiento', 'Abastecimiento'),
+  };
+
+  const totales = filaResumenPago('total', 'Total Gesicomm');
+
+  const [pagosSuscripciones, pagosAbastecimiento] = await Promise.all([
+    PagoSuscripcion.findAll({
+      where: { created_at: { [Op.gte]: desde } },
+      attributes: ['estado', 'monto', 'respuesta_pasarela'],
+    }),
+    PaymentTransaction.findAll({
+      where: {
+        created_at: { [Op.gte]: desde },
+        [Op.and]: sequelize.where(sequelize.json('metadata.tipo'), 'abastecimiento_gesicom'),
+      },
+      attributes: ['status', 'amount', 'metadata'],
+    }),
+  ]);
+
+  for (const pago of pagosSuscripciones) {
+    sumarPago(porTipo.suscripciones, {
+      tipo: 'suscripciones',
+      estado: pago.estado,
+      monto: pago.monto,
+      respuestaPasarela: pago.respuesta_pasarela,
+    }, reglasComision);
+    sumarPago(totales, {
+      tipo: 'total',
+      estado: pago.estado,
+      monto: pago.monto,
+      respuestaPasarela: pago.respuesta_pasarela,
+    }, reglasComision);
+  }
+
+  for (const pago of pagosAbastecimiento) {
+    const respuestaPasarela = pago.metadata?.respuesta_pasarela || null;
+    sumarPago(porTipo.abastecimiento, {
+      tipo: 'abastecimiento',
+      estado: pago.status,
+      monto: pago.amount,
+      respuestaPasarela,
+    }, reglasComision);
+    sumarPago(totales, {
+      tipo: 'total',
+      estado: pago.status,
+      monto: pago.amount,
+      respuestaPasarela,
+    }, reglasComision);
+  }
+
+  return {
+    periodo_dias: Math.max(1, Math.min(Number(dias) || 30, 90)),
+    moneda: 'PYG',
+    comision_pasarela: {
+      origen: reglasComision.origen,
+      fallback_pct: reglasComision.fallbackPct,
+    },
+    totales,
+    tipos: Object.values(porTipo),
+  };
+}
+
+async function listarPagosSuscripcion({ pagina = 1, filtros = {} } = {}) {
+  const where = {};
+  if (filtros.estado && filtros.estado !== 'todos') where.estado = filtros.estado;
+  filtroFecha(where, filtros, 'created_at');
+
+  const reglasComision = await obtenerReglasComisionPagoPar();
+  const paginaPagos = await buscarPaginado(PagoSuscripcion, {
+    where,
+    order: [['created_at', 'DESC']],
+    include: [{
+      model: Suscripcion,
+      attributes: ['id', 'email', 'nombre', 'telefono', 'documento', 'estado', 'usuario_id'],
+      include: [{ model: Plan, attributes: ['id', 'codigo', 'nombre'] }],
+    }],
+  }, pagina);
+
+  paginaPagos.items = (paginaPagos.items || []).map((pago) => {
+    const data = pago.toJSON ? pago.toJSON() : pago;
+    const bruto = Math.max(0, Math.round(Number(data.monto) || 0));
+    const pct = data.estado === 'PAID' ? porcentajeComisionParaPago(data.respuesta_pasarela, reglasComision) : 0;
+    const comision = Math.round(bruto * (pct / 100));
+    return {
+      ...data,
+      monto_bruto: bruto,
+      comision_pasarela_pct: pct,
+      comision_pasarela_monto: comision,
+      monto_neto: Math.max(0, bruto - comision),
+    };
+  });
+
+  return paginaPagos;
+}
+
+async function topProductosAdmin({ dias = 30, limite = 8 } = {}) {
+  const desde = rangoDias(dias);
+  const desdeStr = ymd(desde);
+  const filas = await EnvioItem.findAll({
+    attributes: ['id', 'producto_id', 'nombre_producto', 'cantidad', 'precio_unitario', 'subtotal'],
+    include: [
+      {
+        model: Envio,
+        attributes: ['id', 'estado', 'monto', 'fecha', 'dispatchedAt'],
+        required: true,
+        where: {
+          estado: { [Op.iLike]: 'entregado' },
+          [Op.or]: [
+            { dispatchedAt: { [Op.gte]: desdeStr } },
+            { fecha: { [Op.gte]: desdeStr } },
+          ],
+        },
+      },
+      {
+        model: Producto,
+        attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base'],
+        required: false,
+        include: [{ model: Proveedor, as: 'proveedor', attributes: ['id', 'nombre'], required: false }],
+      },
+      {
+        model: EnvioItemComponente,
+        as: 'componentes_vendidos',
+        attributes: ['producto_id', 'cantidad', 'costo_unitario'],
+        required: false,
+        include: [{
+          model: Producto,
+          as: 'producto',
+          attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base'],
+          required: false,
+          include: [{ model: Proveedor, as: 'proveedor', attributes: ['id', 'nombre'], required: false }],
+        }],
+      },
+    ],
+    order: [['created_at', 'DESC']],
+  });
+
+  const mapa = new Map();
+
+  for (const item of filas) {
+    const data = item.toJSON ? item.toJSON() : item;
+    const cantidadItem = Number(data.cantidad || 1);
+    const componentes = data.componentes_vendidos || [];
+
+    if (componentes.length > 0) {
+      for (const comp of componentes) {
+        const producto = comp.producto || data.Producto || null;
+        const cantidad = Math.max(0, Number(comp.cantidad || 0));
+        // Dashboard admin = margen mayorista Gesicomm:
+        // - venta: lo que la tienda le paga a Gesicomm por abastecimiento
+        //   (snapshot costo_unitario para el comerciante).
+        // - costo: lo que Gesicomm pagó al proveedor (precio_costo admin).
+        // Nunca usar EnvioItem.subtotal/precio_unitario acá: ese es el
+        // precio retail que la tienda cobró al cliente final.
+        const ventaUnitarioTienda = Number(comp.costo_unitario || producto?.precio_base || 0);
+        const costoUnitarioAdmin = Number(producto?.precio_costo || 0);
+        sumarProductoRanking(mapa, {
+          producto,
+          productoId: comp.producto_id || producto?.id || data.producto_id,
+          nombre: producto?.nombre || data.nombre_producto,
+          proveedor: producto?.proveedor || null,
+          cantidad,
+          venta: Math.round(ventaUnitarioTienda * cantidad),
+          costo: Math.round(costoUnitarioAdmin * cantidad),
+        });
+      }
+    } else {
+      const producto = data.Producto || null;
+      const ventaUnitarioTienda = Number(producto?.precio_base || data.precio_unitario || 0);
+      const costoUnitarioAdmin = Number(producto?.precio_costo || 0);
+      sumarProductoRanking(mapa, {
+        producto,
+        productoId: data.producto_id || producto?.id || null,
+        nombre: producto?.nombre || data.nombre_producto,
+        proveedor: producto?.proveedor || null,
+        cantidad: cantidadItem,
+        venta: Math.round(ventaUnitarioTienda * cantidadItem),
+        costo: Math.round(costoUnitarioAdmin * cantidadItem),
+      });
+    }
+  }
+
+  const productos = Array.from(mapa.values())
+    .map((p) => ({
+      ...p,
+      ganancia: p.venta_total - p.costo_total,
+      margen_pct: p.venta_total > 0 ? Number((((p.venta_total - p.costo_total) / p.venta_total) * 100).toFixed(1)) : 0,
+      precio_venta_promedio: p.unidades > 0 ? Math.round(p.venta_total / p.unidades) : 0,
+      costo_promedio: p.unidades > 0 ? Math.round(p.costo_total / p.unidades) : 0,
+    }))
+    .sort((a, b) => b.unidades - a.unidades)
+    .slice(0, Math.max(1, Math.min(Number(limite) || 8, 20)));
+
+  const totales = productos.reduce((acc, p) => ({
+    unidades: acc.unidades + p.unidades,
+    venta_total: acc.venta_total + p.venta_total,
+    costo_total: acc.costo_total + p.costo_total,
+    ganancia: acc.ganancia + p.ganancia,
+  }), { unidades: 0, venta_total: 0, costo_total: 0, ganancia: 0 });
+
+  return {
+    periodo_dias: Math.max(1, Math.min(Number(dias) || 30, 90)),
+    moneda: 'PYG',
+    productos,
+    totales,
+  };
+}
+
+function sumarProductoRanking(mapa, { producto, productoId, nombre, proveedor, cantidad, venta, costo }) {
+  const clave = productoId ? `p_${productoId}` : `name_${nombre}`;
+  if (!mapa.has(clave)) {
+    mapa.set(clave, {
+      producto_id: productoId || null,
+      nombre: nombre || 'Producto',
+      sku: producto?.sku || null,
+      proveedor: proveedor ? { id: proveedor.id, nombre: proveedor.nombre } : null,
+      unidades: 0,
+      venta_total: 0,
+      costo_total: 0,
+    });
+  }
+  const row = mapa.get(clave);
+  row.unidades += Math.max(0, Number(cantidad || 0));
+  row.venta_total += Math.max(0, Math.round(Number(venta || 0)));
+  row.costo_total += Math.max(0, Math.round(Number(costo || 0)));
+}
+
 async function listarEventos({ pagina = 1, filtros = {} } = {}) {
   const where = {};
   if (Array.isArray(filtros.tipos) && filtros.tipos.length) {
@@ -448,6 +816,9 @@ module.exports = {
   marcarActividad,
   cerrarSesion,
   resumen,
+  resumenPagosAdmin,
+  listarPagosSuscripcion,
+  topProductosAdmin,
   listarEventos,
   listarSesionesActivas,
   listarNotificaciones,

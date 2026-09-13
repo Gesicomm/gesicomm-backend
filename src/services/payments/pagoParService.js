@@ -81,11 +81,20 @@ class PagoParService {
 
     const token = crypto.createHash('sha1').update(`${gateway.private_key}CONSULTA`).digest('hex');
 
-    const response = await axios.post('https://api.pagopar.com/api/pedidos/1.1/traer', {
-      hash_pedido: hashPedido,
-      token,
-      token_publico: gateway.public_key,
-    });
+    let response;
+    try {
+      response = await axios.post('https://api.pagopar.com/api/pedidos/1.1/traer', {
+        hash_pedido: hashPedido,
+        token,
+        token_publico: gateway.public_key,
+      });
+    } catch (error) {
+      const detalle = PagoParService.motivoDeRespuesta(error.response?.data)
+        || error.response?.data?.message
+        || error.message
+        || 'No se pudo conectar con PagoPar.';
+      throw new Error(detalle);
+    }
 
     if (!response.data?.respuesta) {
       // `resultado` puede venir como array de objetos o como string suelto
@@ -101,6 +110,38 @@ class PagoParService {
       pagado: datos?.pagado === true || datos?.pagado === 'true',
       datos: datos || null,
     };
+  }
+
+  /**
+   * Retorna datos del comercio de PagoPar, incluyendo porcentaje de comisión
+   * general y, cuando está disponible, comisiones por forma de pago.
+   */
+  static async obtenerDatosComercio(gateway) {
+    if (!gateway?.private_key || !gateway?.public_key) {
+      throw new Error('La pasarela del comercio no está configurada correctamente.');
+    }
+
+    const token = crypto.createHash('sha1').update(`${gateway.private_key}DATOS-COMERCIO`).digest('hex');
+    let response;
+    try {
+      response = await axios.post('https://api.pagopar.com/api/comercios/2.0/datos-comercio/', {
+        token,
+        public_key: gateway.public_key,
+      });
+    } catch (error) {
+      const detalle = PagoParService.motivoDeRespuesta(error.response?.data)
+        || error.response?.data?.message
+        || error.message
+        || 'No se pudo consultar los datos del comercio en PagoPar.';
+      throw new Error(detalle);
+    }
+
+    if (!response.data?.respuesta) {
+      const detalle = PagoParService.motivoDeRespuesta(response.data) || 'PagoPar rechazó la consulta de datos del comercio.';
+      throw new Error(detalle);
+    }
+
+    return response.data.resultado || {};
   }
 
   /**
