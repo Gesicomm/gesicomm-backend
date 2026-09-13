@@ -136,7 +136,12 @@ async function crearLienzoBlanco(req, res) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
     if (!tienda) return;
-    const landing = await LandingSimpleService.crearLienzoBlanco(tienda.id, req.usuario.tenantId, tienda.nombre);
+    const landing = await LandingSimpleService.crearLienzoBlanco(
+      tienda.id,
+      req.usuario.tenantId,
+      tienda.nombre,
+      req.body.items || [],
+    );
     return res.status(201).json(landing);
   } catch (err) {
     return manejarError(res, err, 'Error al crear la landing en blanco.');

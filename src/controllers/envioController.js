@@ -1426,6 +1426,7 @@ exports.actualizarAbastecimientoManual = async (req, res) => {
     if (accion === 'acreditar_pago') {
       await acreditarPagoAbastecimiento(envio, null, {
         origen: 'acreditacion manual',
+        req,
         usuarioId: req.usuario.id,
         detalle,
       });

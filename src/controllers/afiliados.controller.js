@@ -55,6 +55,24 @@ exports.registrarClick = async (req, res) => {
   }
 };
 
+exports.miAfiliado = async (req, res) => {
+  try {
+    res.json({ afiliado: await AfiliadosService.obtenerDeUsuario(req.usuario.id, { baseUrl: baseUrl(req) }) });
+  } catch (error) {
+    if (!error.status || error.status >= 500) console.error('[Afiliados] mi afiliado:', error);
+    res.status(error.status || 500).json({ message: error.message || 'No se pudo cargar tu afiliación.' });
+  }
+};
+
+exports.solicitarMiAfiliado = async (req, res) => {
+  try {
+    const afiliado = await AfiliadosService.solicitarParaUsuario(req.usuario.id, req.body || {}, { baseUrl: baseUrl(req) });
+    res.status(201).json({ afiliado });
+  } catch (error) {
+    res.status(error.status || 500).json({ message: error.message || 'No se pudo activar tu afiliación.' });
+  }
+};
+
 exports.listarComisiones = async (req, res) => {
   try {
     res.json(await AfiliadosService.listarComisiones());

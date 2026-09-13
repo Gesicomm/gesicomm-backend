@@ -326,6 +326,8 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
       codigo_verificacion: otp,
       codigo_verificacion_expira: otpExpira,
       plan: suscripcion && suscripcion.Plan ? suscripcion.Plan.equivale_plan : null,
+      affiliate_ref: suscripcion?.afiliado_codigo || null,
+      affiliate_id: suscripcion?.afiliado_id || null,
     }, { transaction: t });
 
     // Ata la suscripcion al usuario y quema el token (un solo uso).

@@ -368,7 +368,7 @@ async function resultadoPago(req, res) {
     const consulta = await PagoParService.consultarEstadoPedido(gateway, hash);
     let reconciliacion = 'sin_cambios';
     if (consulta.pagado) {
-      reconciliacion = await confirmarPedidoPagado(envio, transaction, { origen: 'PagoPar (retorno tienda)' });
+      reconciliacion = await confirmarPedidoPagado(envio, transaction, { origen: 'PagoPar (retorno tienda)', req });
     }
 
     return res.status(200).json({

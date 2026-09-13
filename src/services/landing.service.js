@@ -1451,6 +1451,36 @@ class LandingService {
     // tracking.
     this.registrarVisita(landing.id);
 
+    // Tipo de template: se necesita antes de sintetizar items para el
+    // lienzo en blanco y se reutiliza más abajo para el DTO.
+    const esRigida = landing.template?.kind === 'rigido';
+    const esFunnel = landing.template?.kind === 'funnel';
+    const esCodigo = landing.template?.kind === 'codigo';
+
+    let itemsFallbackCodigo = null;
+    if (esCodigo && !(landing.items || []).length) {
+      const productosFallback = await Producto.findAll({
+        where: {
+          inquilino_id: tienda.inquilino_id,
+          activo: true,
+          estado_venta: 'en_venta',
+        },
+        attributes: ['id', 'created_at'],
+        order: [['created_at', 'DESC']],
+        limit: MAX_ITEMS_POR_LANDING,
+      });
+      itemsFallbackCodigo = productosFallback.map((p, idx) => ({
+        tipo: 'producto',
+        referencia_id: p.id,
+        precio_ancla: null,
+        etiqueta: null,
+        orden: idx,
+        mostrar_en_inicio: true,
+        envio_incluido: false,
+        createdAt: p.created_at,
+      }));
+    }
+
     // Un funnel nunca tiene LandingItem: su único producto vive en
     // Landing.producto_id (ver cambiarEstado()). Se sintetiza acá el
     // LandingItem que le faltaría para que todo el pipeline de abajo
@@ -1465,22 +1495,13 @@ class LandingService {
         mostrar_en_inicio: true,
         createdAt: landing.createdAt,
       }]
+      : (itemsFallbackCodigo || null)
+        ? itemsFallbackCodigo
       : (landing.items || []);
     const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
-    // Templates rígidos (Fitness/Beauty/Tech/Básico) — ver landingSimple.
-    // service.js. "Beneficios" es contenido propio de ESAS landings, el
-    // sistema flexible nunca escribe filas ahí.
-    const esRigida = landing.template?.kind === 'rigido';
-    // Embudo de un solo producto (ver funnel.service.js). También escribe
-    // beneficios propios, así que entra en la misma consulta que las
-    // rígidas — sin esto la sección "Beneficios rápidos" del embudo
-    // llegaba siempre vacía al frontend.
-    const esFunnel = landing.template?.kind === 'funnel';
-    // Lienzo en blanco (ver landingCodigo.service.js): no tiene secciones
-    // ni beneficios ni banner — todo lo que se ve es el HTML/CSS/JS que
-    // escribió el comercio, ya sanitizado al guardarse.
-    const esCodigo = landing.template?.kind === 'codigo';
+    // Templates rígidos (Fitness/Beauty/Tech/Básico), funnels y lienzo en
+    // blanco: ver landingSimple.service.js / funnel.service.js.
 
     const [productos, combos, ofertas, testimonios, faqs, beneficios] = await Promise.all([
       idsProducto.length
@@ -1798,6 +1819,7 @@ class LandingService {
       itemsDto.push({
         // ID público estable — nunca LandingItem.id (cambiaría entre landings para el mismo producto).
         content_id: entidad.slug || `${item.tipo}-${entidad.id}`,
+        referencia_id: entidad.id,
         tipo: item.tipo,
         nombre: entidad.nombre,
         descripcion: esCombo ? entidad.descripcion : (override?.descripcion || entidad.descripcion_corta),

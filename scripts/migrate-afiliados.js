@@ -27,14 +27,53 @@ async function main() {
     if (!(await existeTabla(qi, 'afiliados', t))) {
       await qi.createTable('afiliados', {
         id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+        usuario_id: {
+          type: DataTypes.INTEGER,
+          allowNull: true,
+          unique: true,
+          references: { model: 'usuarios', key: 'id' },
+          onUpdate: 'CASCADE',
+          onDelete: 'SET NULL',
+        },
         nombre: { type: DataTypes.STRING(150), allowNull: false },
         email: { type: DataTypes.STRING(255), allowNull: true },
+        telefono: { type: DataTypes.STRING(50), allowNull: true },
         codigo: { type: DataTypes.STRING(80), allowNull: false, unique: true },
         comision_pct: { type: DataTypes.DECIMAL(5, 2), allowNull: false, defaultValue: 40 },
         estado: { type: DataTypes.ENUM('activo', 'pausado'), allowNull: false, defaultValue: 'activo' },
+        metodo_pago: { type: DataTypes.STRING(50), allowNull: true },
+        entidad_pago: { type: DataTypes.STRING(120), allowNull: true },
+        titular_pago: { type: DataTypes.STRING(150), allowNull: true },
+        documento_pago: { type: DataTypes.STRING(80), allowNull: true },
+        cuenta_pago: { type: DataTypes.STRING(160), allowNull: true },
         notas: { type: DataTypes.TEXT, allowNull: true },
         ...TIMESTAMPS,
       }, { transaction: t });
+    }
+
+    if (!(await existeColumna(qi, 'afiliados', 'usuario_id', t))) {
+      await qi.addColumn('afiliados', 'usuario_id', {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: { model: 'usuarios', key: 'id' },
+        onUpdate: 'CASCADE',
+        onDelete: 'SET NULL',
+      }, { transaction: t });
+      await qi.addIndex('afiliados', ['usuario_id'], { unique: true, transaction: t });
+    }
+
+    const columnasAfiliado = {
+      telefono: { type: DataTypes.STRING(50), allowNull: true },
+      metodo_pago: { type: DataTypes.STRING(50), allowNull: true },
+      entidad_pago: { type: DataTypes.STRING(120), allowNull: true },
+      titular_pago: { type: DataTypes.STRING(150), allowNull: true },
+      documento_pago: { type: DataTypes.STRING(80), allowNull: true },
+      cuenta_pago: { type: DataTypes.STRING(160), allowNull: true },
+    };
+    for (const [columna, definicion] of Object.entries(columnasAfiliado)) {
+      if (!(await existeColumna(qi, 'afiliados', columna, t))) {
+        await qi.addColumn('afiliados', columna, definicion, { transaction: t });
+      }
     }
 
     if (!(await existeColumna(qi, 'suscripciones', 'afiliado_id', t))) {

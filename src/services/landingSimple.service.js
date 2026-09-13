@@ -329,14 +329,28 @@ class LandingSimpleService {
    * estructura fija — ni banner, ni FAQ, ni beneficios, ni items. Todo lo
    * que se ve sale de content.codigo, que el comercio escribe a mano.
    */
-  static async crearLienzoBlanco(tienda_id, inquilino_id, nombreTienda) {
+  static async crearLienzoBlanco(tienda_id, inquilino_id, nombreTienda, items = []) {
     const template = await this.obtenerTemplateLienzoBlanco();
+    if (Array.isArray(items) && items.length) {
+      await LandingService.resolverItemsCatalogo(items, inquilino_id);
+    }
     const landing = await this._crearFila(tienda_id, inquilino_id, template, {
       titulo: nombreTienda || template.name,
       mostrar_faq: false,
       mostrar_banner: false,
       content: { codigo: codigoInicial(nombreTienda) },
     });
+    if (Array.isArray(items) && items.length) {
+      await LandingService.sincronizarItems(landing.id, items.map((item, idx) => ({
+        tipo: item.tipo,
+        referencia_id: item.referencia_id,
+        etiqueta: item.etiqueta || '',
+        orden: item.orden !== undefined ? item.orden : idx,
+        precio_ancla: item.precio_ancla || null,
+        envio_incluido: item.envio_incluido === true,
+        mostrar_en_inicio: item.mostrar_en_inicio !== false,
+      })));
+    }
     return this.obtener(landing.id, tienda_id);
   }
 
@@ -360,17 +374,20 @@ class LandingSimpleService {
   }
 
   /**
-   * Guardado del lienzo en blanco. Nada de items/faq/beneficios/secciones
-   * acá: en este modo la landing es exactamente lo que el comercio
-   * escribió, y lo único que se persiste del código es lo que devuelve
-   * LandingCodigoService.sanitizar() — el payload crudo nunca toca la fila.
+   * Guardado del lienzo en blanco. La estructura visual sigue siendo
+   * exactamente lo que el comercio escribió, pero los items seleccionados
+   * sí se sincronizan como catálogo curado de la landing para que la capa
+   * pública pueda mostrar productos y abrir el checkout real.
    *
    * Las advertencias ("te saqué los <script> del HTML") viajan en el DTO
    * como `codigo_advertencias`; no se guardan, son del guardado que las
    * generó.
    */
-  static async actualizarCodigo(landing, tienda_id, payload) {
+  static async actualizarCodigo(landing, tienda_id, inquilino_id, payload) {
     let advertencias = [];
+    if (payload.items !== undefined) {
+      await LandingService.resolverItemsCatalogo(payload.items, inquilino_id);
+    }
     if (payload.codigo !== undefined) {
       const limpio = LandingCodigoService.sanitizar(payload.codigo);
       advertencias = limpio.advertencias;
@@ -382,6 +399,9 @@ class LandingSimpleService {
     }
     Object.assign(landing, this.camposEditables(payload, 'codigo'));
     await landing.save();
+    if (payload.items !== undefined) {
+      await LandingService.sincronizarItems(landing.id, payload.items);
+    }
     const dto = await this.obtener(landing.id, tienda_id);
     return { ...dto, codigo_advertencias: advertencias };
   }
@@ -392,7 +412,7 @@ class LandingSimpleService {
     const landing = await this.buscarPropia(id, tienda_id);
 
     if (landing.template?.kind === 'codigo') {
-      return this.actualizarCodigo(landing, tienda_id, payload);
+      return this.actualizarCodigo(landing, tienda_id, inquilino_id, payload);
     }
     if (payload.codigo !== undefined) {
       const err = new Error('Validación fallida.');

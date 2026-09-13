@@ -2,6 +2,7 @@ const { PagoSuscripcion } = require('../models');
 const SuscripcionService = require('../services/suscripcion.service');
 const PagoParService = require('../services/payments/pagoParService');
 const parametros = require('../services/parametros.service');
+const { logger } = require('../utils/logger');
 
 const AFILIADOS_DEFAULT = {
   activo: true,
@@ -42,10 +43,46 @@ function normalizarAfiliadosConfig(payload = {}) {
 /** GET /api/planes — catálogo público. */
 exports.listarPlanes = async (req, res) => {
   try {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.json(await SuscripcionService.listarPlanesPagos());
   } catch (error) {
     console.error('[Suscripciones] Error al listar planes:', error);
     res.status(500).json({ error: 'No se pudieron cargar los planes.' });
+  }
+};
+
+/** GET /api/config/payment-gateways/planes — catálogo completo para admin. */
+exports.listarPlanesAdmin = async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.json(await SuscripcionService.listarPlanesAdmin());
+  } catch (error) {
+    console.error('[Planes Admin] Error al listar planes:', error);
+    res.status(500).json({ message: 'No se pudieron cargar los planes.' });
+  }
+};
+
+/** PUT /api/config/payment-gateways/planes — guarda catálogo comercial. */
+exports.guardarPlanesAdmin = async (req, res) => {
+  try {
+    const planes = await SuscripcionService.guardarPlanesAdmin(req.body?.planes || req.body);
+    res.json(planes);
+  } catch (error) {
+    const status = error.status || 500;
+    if (status === 500) console.error('[Planes Admin] Error al guardar planes:', error);
+    res.status(status).json({ message: error.message || 'No se pudieron guardar los planes.' });
+  }
+};
+
+/** DELETE /api/config/payment-gateways/planes/:codigo — borra un plan sin uso. */
+exports.eliminarPlanAdmin = async (req, res) => {
+  try {
+    const planes = await SuscripcionService.eliminarPlanAdmin(req.params.codigo);
+    res.json(planes);
+  } catch (error) {
+    const status = error.status || 500;
+    if (status === 500) console.error('[Planes Admin] Error al borrar plan:', error);
+    res.status(status).json({ message: error.message || 'No se pudo borrar el plan.' });
   }
 };
 
@@ -59,29 +96,18 @@ exports.miEstado = async (req, res) => {
   }
 };
 
-/** POST /api/suscripciones/pagopar-dummy — simula un pago acreditado en PagoPar. */
-exports.pagoDummyPagopar = async (req, res) => {
-  try {
-    const { plan_codigo, afiliado_codigo } = req.body || {};
-    const resultado = await SuscripcionService.simularPagoPagopar(req.usuario.id, plan_codigo, afiliado_codigo);
-    return res.status(resultado.ya_estaba_activa ? 200 : 201).json({
-      message: resultado.ya_estaba_activa
-        ? 'Tu plan ya estaba activo.'
-        : 'PagoPar dummy acreditó tu plan correctamente.',
-      ...resultado,
-    });
-  } catch (error) {
-    const status = error.status || 500;
-    if (status === 500) console.error('[Suscripciones] Error en PagoPar dummy:', error);
-    return res.status(status).json({ message: error.message || 'No se pudo simular el pago.' });
-  }
-};
-
 /** POST /api/suscripciones/checkout — arranca el pago de un plan. */
 exports.iniciarCheckout = async (req, res) => {
   try {
-    const { plan_codigo, email, nombre, afiliado_codigo } = req.body || {};
-    const resultado = await SuscripcionService.iniciarCheckout({ plan_codigo, email, nombre, afiliado_codigo });
+    const { plan_codigo, email, nombre, telefono, documento, afiliado_codigo, checkout_intent_token } = req.body || {};
+    if (req.body?.affiliate_id !== undefined) {
+      logger.warn({
+        mensaje: '[Checkout] Payload intentó setear affiliate_id desde frontend. Campo ignorado.',
+        email,
+        plan_codigo,
+      });
+    }
+    const resultado = await SuscripcionService.iniciarCheckout({ plan_codigo, email, nombre, telefono, documento, afiliado_codigo, checkout_intent_token });
     res.json(resultado);
   } catch (error) {
     const status = error.status || 500;
@@ -90,10 +116,26 @@ exports.iniciarCheckout = async (req, res) => {
   }
 };
 
+/** POST /api/suscripciones/checkout-intents — fija plan y afiliado candidato. */
+exports.crearCheckoutIntent = async (req, res) => {
+  try {
+    const { plan_codigo, afiliado_codigo } = req.body || {};
+    const resultado = await SuscripcionService.crearCheckoutIntent({ plan_codigo, afiliado_codigo });
+    res.status(201).json(resultado);
+  } catch (error) {
+    const status = error.status || 500;
+    if (status === 500) console.error('[Suscripciones] Error creando checkout intent:', error);
+    res.status(status).json({ error: error.message || 'No se pudo preparar la selección del plan.' });
+  }
+};
+
 /** GET /api/suscripciones/estado/:hash — para la pantalla de resultado. */
 exports.estadoPago = async (req, res) => {
   try {
-    const estado = await SuscripcionService.estadoPorHash(req.params.hash);
+    const estado = await SuscripcionService.consultarYReconciliarPagoPorHash(req.params.hash, {
+      req,
+      origen: 'PagoPar consulta resultado suscripción',
+    });
     if (!estado) return res.status(404).json({ error: 'No encontramos ese pago.' });
     res.json(estado);
   } catch (error) {
@@ -154,10 +196,14 @@ exports.webhookSuscripciones = async (req, res) => {
     const eco = Array.isArray(body.resultado) ? body.resultado : [raiz];
 
     if (!pagado) {
+      const tieneRechazoExplicito = raiz.cancelado === true || raiz.cancelado === 'true' || !!raiz.ultimo_mensaje_error;
+      if (tieneRechazoExplicito) {
+        await SuscripcionService.rechazarPago(pago, raiz);
+      }
       return res.json(eco);
     }
 
-    await SuscripcionService.acreditarPago(pago, raiz);
+    await SuscripcionService.acreditarPago(pago, raiz, { req, origen: 'PagoPar webhook' });
     return res.json(eco);
   } catch (error) {
     console.error('[Webhook Suscripciones] Error:', error);
@@ -175,6 +221,8 @@ exports.validarToken = async (req, res) => {
     res.json({
       email: suscripcion.email,
       nombre: suscripcion.nombre,
+      telefono: suscripcion.telefono,
+      documento: suscripcion.documento,
       plan: suscripcion.Plan ? { codigo: suscripcion.Plan.codigo, nombre: suscripcion.Plan.nombre } : null,
     });
   } catch (error) {

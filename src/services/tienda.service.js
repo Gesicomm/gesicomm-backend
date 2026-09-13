@@ -7,7 +7,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Tienda, Usuario, ProveedorDns } = require('../models');
+const { Tienda, Usuario, ProveedorDns, Suscripcion, Plan } = require('../models');
 const EncryptionService = require('../utils/EncryptionService');
 const { validarFormato: validarFormatoSubdominio, disponible: subdominioDisponible } = require('../utils/validarSubdominio');
 const { ESTADOS, registrosPara, apuntaANuestroServidor, sirvePorHttps } = require('../utils/dominios');
@@ -24,6 +24,40 @@ const PLANES_VALIDOS = new Set(['free', 'pago']);
 // hostname. La comprobación real de que existe y apunta acá la hace
 // verificarDominioPropio resolviendo su DNS.
 const DOMINIO_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+
+async function suscripcionActivaDeUsuario(usuarioId) {
+  return Suscripcion.findOne({
+    where: {
+      usuario_id: usuarioId,
+      estado: 'activa',
+      [Op.or]: [
+        { periodo_fin: null },
+        { periodo_fin: { [Op.gt]: new Date() } },
+      ],
+    },
+    include: [Plan],
+    order: [['periodo_inicio', 'DESC'], ['created_at', 'DESC']],
+  });
+}
+
+function serializarSuscripcion(suscripcion) {
+  if (!suscripcion) return null;
+  const data = suscripcion.toJSON ? suscripcion.toJSON() : suscripcion;
+  return {
+    id: data.id,
+    estado: data.estado,
+    periodo_inicio: data.periodo_inicio,
+    periodo_fin: data.periodo_fin,
+    plan: data.Plan ? {
+      codigo: data.Plan.codigo,
+      nombre: data.Plan.nombre,
+      precio: data.Plan.precio,
+      moneda: ['PYG', 'USD'].includes(data.Plan.moneda) ? data.Plan.moneda : 'PYG',
+      periodicidad: data.Plan.periodicidad,
+      equivale_plan: data.Plan.equivale_plan,
+    } : null,
+  };
+}
 
 /**
  * Los nameservers de la zona a la que pertenece el dominio. Se sube
@@ -49,8 +83,19 @@ class TiendaService {
   static async obtenerPorUsuario(usuario_id) {
     const tienda = await Tienda.findOne({ where: { usuario_id } });
     if (!tienda) return null;
-    const usuario = await Usuario.findByPk(usuario_id, { attributes: ['plan'] });
-    return { ...this.serializar(tienda), plan: usuario?.plan ?? null };
+    const [usuario, suscripcion] = await Promise.all([
+      Usuario.findByPk(usuario_id, { attributes: ['plan'] }),
+      suscripcionActivaDeUsuario(usuario_id),
+    ]);
+    const plan = suscripcion?.Plan?.equivale_plan || usuario?.plan || null;
+    if (suscripcion && usuario?.plan !== plan) {
+      await Usuario.update({ plan }, { where: { id: usuario_id } });
+    }
+    return {
+      ...this.serializar(tienda),
+      plan,
+      suscripcion: serializarSuscripcion(suscripcion),
+    };
   }
 
   static validarCamposComunes(payload) {
@@ -129,7 +174,8 @@ class TiendaService {
     if (!(await subdominioDisponible(subdominio))) throw new Error('Ese subdominio ya está en uso.');
 
     const usuario = await Usuario.findByPk(usuario_id, { attributes: ['plan'] });
-    const plan = payload.plan !== undefined ? payload.plan : (usuario?.plan || 'pago');
+    const suscripcion = await suscripcionActivaDeUsuario(usuario_id);
+    const plan = suscripcion?.Plan?.equivale_plan || usuario?.plan || 'pago';
     if (!PLANES_VALIDOS.has(plan)) throw new Error('plan debe ser "free" o "pago".');
 
     const errores = this.validarCamposComunes(payload);
@@ -147,13 +193,11 @@ class TiendaService {
       nombre: payload.nombre.trim(),
     });
 
-    // El plan es de la cuenta (Usuario), no de la tienda. Si el onboarding
-    // llega después del cobro, se preserva el plan pago ya acreditado.
-    if (payload.plan !== undefined) {
-      await Usuario.update({ plan }, { where: { id: usuario_id } });
-    }
-
-    return { ...this.serializar(tienda), plan };
+    return {
+      ...this.serializar(tienda),
+      plan,
+      suscripcion: serializarSuscripcion(suscripcion),
+    };
   }
 
   static async actualizar(usuario_id, payload) {
@@ -175,10 +219,6 @@ class TiendaService {
       }
     }
 
-    if (payload.plan !== undefined && !PLANES_VALIDOS.has(payload.plan)) {
-      errores.push('plan debe ser "free" o "pago".');
-    }
-
     if (errores.length) {
       const err = new Error('Validación fallida.');
       err.errores = errores;
@@ -189,13 +229,20 @@ class TiendaService {
     if (nuevoSubdominio !== null) tienda.subdominio = nuevoSubdominio;
     await tienda.save();
 
-    // El plan vive en Usuario, no en Tienda — ver comentario en Usuario.js.
-    if (payload.plan !== undefined) {
-      await Usuario.update({ plan: payload.plan }, { where: { id: usuario_id } });
+    const [usuario, suscripcion] = await Promise.all([
+      Usuario.findByPk(usuario_id, { attributes: ['plan'] }),
+      suscripcionActivaDeUsuario(usuario_id),
+    ]);
+    const plan = suscripcion?.Plan?.equivale_plan || usuario?.plan || null;
+    if (suscripcion && usuario?.plan !== plan) {
+      await Usuario.update({ plan }, { where: { id: usuario_id } });
     }
-    const usuario = await Usuario.findByPk(usuario_id, { attributes: ['plan'] });
 
-    return { ...this.serializar(tienda), plan: usuario?.plan ?? null };
+    return {
+      ...this.serializar(tienda),
+      plan,
+      suscripcion: serializarSuscripcion(suscripcion),
+    };
   }
 
   static async verificarDisponibilidadSubdominio(sub, usuario_id = null) {

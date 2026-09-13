@@ -15,5 +15,8 @@ router.post('/pagopar/consultar', verificarToken, ctrl.consultarPedidoPagopar);
 // no son una pasarela de pago y la URL anidada confundia.
 router.get('/afiliados', verificarToken, soloAdministrador, suscripcionesCtrl.obtenerAfiliadosConfig);
 router.put('/afiliados', verificarToken, soloAdministrador, suscripcionesCtrl.guardarAfiliadosConfig);
+router.get('/planes', verificarToken, soloAdministrador, suscripcionesCtrl.listarPlanesAdmin);
+router.put('/planes', verificarToken, soloAdministrador, suscripcionesCtrl.guardarPlanesAdmin);
+router.delete('/planes/:codigo', verificarToken, soloAdministrador, suscripcionesCtrl.eliminarPlanAdmin);
 
 module.exports = router;

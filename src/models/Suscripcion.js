@@ -28,6 +28,16 @@ const Suscripcion = sequelize.define('Suscripcion', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  checkout_intent_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Intent original que fijó plan y atribución antes del pago.',
+  },
+  subscription_purchase_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Snapshot inmutable de compra que originó esta suscripción.',
+  },
   usuario_id: {
     type: DataTypes.INTEGER,
     allowNull: true,
@@ -42,6 +52,16 @@ const Suscripcion = sequelize.define('Suscripcion', {
     type: DataTypes.STRING(150),
     allowNull: true,
     comment: 'Nombre declarado antes de pagar, para precargar el formulario de registro.',
+  },
+  telefono: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+    comment: 'Teléfono declarado antes de pagar. Se envía a PagoPar y se precarga en onboarding.',
+  },
+  documento: {
+    type: DataTypes.STRING(30),
+    allowNull: true,
+    comment: 'Cédula declarada antes de pagar. PagoPar la exige para iniciar la transacción.',
   },
   estado: {
     type: DataTypes.ENUM('pendiente_pago', 'activa', 'vencida', 'cancelada'),
@@ -92,6 +112,8 @@ const Suscripcion = sequelize.define('Suscripcion', {
   indexes: [
     { fields: ['email'] },
     { fields: ['usuario_id'] },
+    { fields: ['checkout_intent_id'] },
+    { fields: ['subscription_purchase_id'] },
     { fields: ['estado'] },
     { fields: ['afiliado_id'] },
   ],

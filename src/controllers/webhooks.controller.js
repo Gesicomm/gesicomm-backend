@@ -1,4 +1,4 @@
-const { Envio, EnvioItem, PaymentGateway, PaymentTransaction } = require('../models');
+const { Envio, EnvioItem, PagoSuscripcion, PaymentGateway, PaymentTransaction } = require('../models');
 const PagoParService = require('../services/payments/pagoParService');
 const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago');
 const SuscripcionService = require('../services/suscripcion.service');
@@ -131,8 +131,46 @@ exports.pagoparWebhook = async (req, res) => {
       }
 
       await acreditarPagoAbastecimiento(envio, transactionPorHash, {
-        origen: 'PagoPar',
+        origen: 'PagoPar webhook',
+        req,
         respuestaPasarela: req.body,
+      });
+      return res.json(ecoPagopar(req.body));
+    }
+
+    // Suscripciones de Gesicomm: PagoPar puede estar configurado con una sola
+    // URL de respuesta (/api/webhooks/pagopar). Si el hash no pertenece a
+    // payment_transactions pero sí existe en pagos_suscripcion, se deriva acá
+    // en vez de devolver "Pedido no encontrado".
+    const pagoSuscripcion = datos.hash_pedido
+      ? await PagoSuscripcion.findOne({ where: { hash_pedido: datos.hash_pedido } })
+      : null;
+
+    if (pagoSuscripcion) {
+      const gateway = await SuscripcionService.gatewayDeSistema();
+      if (!PagoParService.validateWebhookSignature(gateway.private_key, datos.hash_pedido, datos.token)) {
+        console.warn(`[Webhook PagoPar] Token inválido para suscripción ${datos.hash_pedido}`);
+        return res.status(400).json({ error: 'Token de seguridad inválido.' });
+      }
+
+      const montoEsperado = Number(pagoSuscripcion.monto);
+      const montoRecibido = Math.round(parseFloat(datos.monto));
+      if (Number.isNaN(montoRecibido) || montoRecibido !== Math.round(montoEsperado)) {
+        console.warn(`[Webhook PagoPar] Monto de suscripción no coincide para ${datos.hash_pedido}. Esperado: ${montoEsperado}, Recibido: ${datos.monto}`);
+      }
+
+      const raiz = Array.isArray(req.body?.resultado) ? req.body.resultado[0] : req.body;
+      if (!datos.pagado) {
+        const tieneRechazoExplicito = raiz?.cancelado === true || raiz?.cancelado === 'true' || !!raiz?.ultimo_mensaje_error;
+        if (tieneRechazoExplicito) {
+          await SuscripcionService.rechazarPago(pagoSuscripcion, raiz);
+        }
+        return res.json(ecoPagopar(req.body));
+      }
+
+      await SuscripcionService.acreditarPago(pagoSuscripcion, raiz, {
+        req,
+        origen: 'PagoPar webhook unificado',
       });
       return res.json(ecoPagopar(req.body));
     }
@@ -202,7 +240,7 @@ exports.pagoparWebhook = async (req, res) => {
       return res.json(ecoPagopar(req.body));
     }
 
-    await confirmarPedidoPagado(envio, transaction, { origen: 'PagoPar' });
+    await confirmarPedidoPagado(envio, transaction, { origen: 'PagoPar webhook', req });
 
     res.json(ecoPagopar(req.body));
   } catch (error) {

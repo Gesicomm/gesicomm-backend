@@ -1,6 +1,7 @@
-const { sequelize, PaymentTransaction, Envio } = require('../../models');
+const { sequelize, PaymentTransaction, Envio, Usuario } = require('../../models');
 const envioController = require('../../controllers/envioController');
 const { registrarHistorial } = require('../../utils/historial');
+const AuthTracking = require('../authTracking.service');
 
 const { descontarStockYSnapshot } = envioController;
 const calcularAbastecimientoDesdeItems = envioController.calcularAbastecimientoDesdeItems || (async () => ({
@@ -40,7 +41,7 @@ const calcularAbastecimientoDesdeItems = envioController.calcularAbastecimientoD
  *   - pago_registrado: se marcó PAID pero el pedido no estaba Pendiente
  *     (ya lo habían movido a mano), así que no se tocó su estado.
  */
-async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar' } = {}) {
+async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', req = null } = {}) {
   // Chequeo barato para el caso comun (evita abrir transaccion al pedo); el
   // que realmente decide es el de adentro, con la fila bloqueada.
   if (transaction.status === 'PAID') return 'ya_pagado';
@@ -102,6 +103,26 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar' } 
     );
     resultado = 'confirmado';
   });
+
+  if (resultado === 'confirmado' || resultado === 'pago_registrado') {
+    const usuario = Usuario?.findByPk ? await Usuario.findByPk(envio.usuario_id).catch(() => null) : null;
+    await AuthTracking.registrarEventoConNotificacion({
+      tipo: 'store_order_payment_paid',
+      req,
+      usuario,
+      email: usuario?.correo_electronico || null,
+      metadata: {
+        origen,
+        envio_id: envio.id,
+        numero_pedido: envio.numero_pedido || envio.id,
+        payment_transaction_id: transaction.id,
+        payment_hash: transaction.payment_hash,
+        monto: Number(transaction.amount || envio.monto || 0),
+        estado_resultado: resultado,
+        cliente: envio.cliente || [envio.nombre_cliente, envio.apellido_cliente].filter(Boolean).join(' ') || null,
+      },
+    });
+  }
 
   return resultado;
 }

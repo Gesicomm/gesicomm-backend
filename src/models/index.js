@@ -63,6 +63,8 @@ const BuilderDomain = require('./BuilderDomain');
 const PaymentGateway = require('./PaymentGateway');
 const PaymentTransaction = require('./PaymentTransaction');
 const Plan = require('./Plan');
+const CheckoutIntent = require('./CheckoutIntent');
+const SubscriptionPurchase = require('./SubscriptionPurchase');
 const Suscripcion = require('./Suscripcion');
 const PagoSuscripcion = require('./PagoSuscripcion');
 const Parametro = require('./Parametro');
@@ -481,11 +483,34 @@ Suscripcion.belongsTo(Plan, { foreignKey: 'plan_id' });
 Usuario.hasMany(Suscripcion, { foreignKey: 'usuario_id' });
 Suscripcion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
+Plan.hasMany(CheckoutIntent, { foreignKey: 'plan_id' });
+CheckoutIntent.belongsTo(Plan, { foreignKey: 'plan_id' });
+Usuario.hasMany(CheckoutIntent, { foreignKey: 'usuario_id' });
+CheckoutIntent.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+Afiliado.hasMany(CheckoutIntent, { as: 'checkout_intents', foreignKey: 'affiliate_id', onDelete: 'SET NULL' });
+CheckoutIntent.belongsTo(Afiliado, { as: 'affiliate', foreignKey: 'affiliate_id' });
+
+CheckoutIntent.hasMany(SubscriptionPurchase, { as: 'purchases', foreignKey: 'checkout_intent_id', onDelete: 'RESTRICT' });
+SubscriptionPurchase.belongsTo(CheckoutIntent, { as: 'checkout_intent', foreignKey: 'checkout_intent_id' });
+Plan.hasMany(SubscriptionPurchase, { foreignKey: 'plan_id' });
+SubscriptionPurchase.belongsTo(Plan, { foreignKey: 'plan_id' });
+Usuario.hasMany(SubscriptionPurchase, { foreignKey: 'usuario_id' });
+SubscriptionPurchase.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+Afiliado.hasMany(SubscriptionPurchase, { as: 'subscription_purchases', foreignKey: 'affiliate_id', onDelete: 'SET NULL' });
+SubscriptionPurchase.belongsTo(Afiliado, { as: 'affiliate', foreignKey: 'affiliate_id' });
+
 Suscripcion.hasMany(PagoSuscripcion, { as: 'pagos', foreignKey: 'suscripcion_id', onDelete: 'CASCADE' });
 PagoSuscripcion.belongsTo(Suscripcion, { foreignKey: 'suscripcion_id' });
+SubscriptionPurchase.hasMany(PagoSuscripcion, { as: 'pagos', foreignKey: 'subscription_purchase_id', onDelete: 'SET NULL' });
+PagoSuscripcion.belongsTo(SubscriptionPurchase, { as: 'subscription_purchase', foreignKey: 'subscription_purchase_id' });
 
 Afiliado.hasMany(Suscripcion, { as: 'suscripciones_referidas', foreignKey: 'afiliado_id', onDelete: 'SET NULL' });
 Suscripcion.belongsTo(Afiliado, { as: 'afiliado', foreignKey: 'afiliado_id' });
+
+Usuario.hasOne(Afiliado, { as: 'afiliado', foreignKey: 'usuario_id', onDelete: 'SET NULL' });
+Afiliado.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' });
+Usuario.belongsTo(Afiliado, { as: 'afiliado_atribucion', foreignKey: 'affiliate_id' });
+Afiliado.hasMany(Usuario, { as: 'usuarios_atribuidos', foreignKey: 'affiliate_id', onDelete: 'SET NULL' });
 
 Afiliado.hasMany(AfiliadoClick, { as: 'clicks', foreignKey: 'afiliado_id', onDelete: 'CASCADE' });
 AfiliadoClick.belongsTo(Afiliado, { as: 'afiliado', foreignKey: 'afiliado_id' });
@@ -587,6 +612,8 @@ module.exports = {
   PaymentTransaction,
   ProveedorDns,
   Plan,
+  CheckoutIntent,
+  SubscriptionPurchase,
   Suscripcion,
   PagoSuscripcion,
   Parametro,

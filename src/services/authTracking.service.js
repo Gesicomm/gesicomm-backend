@@ -33,6 +33,28 @@ const EVENTOS_NOTIFICABLES = {
     titulo: 'Landing generada',
     mensaje: ({ nombre, email }) => `${nombre || email || 'Un usuario'} generó su landing inicial desde onboarding.`,
   },
+  subscription_payment_paid: {
+    titulo: 'Plan pagado',
+    mensaje: ({ nombre, email, metadata }) => {
+      const plan = metadata?.plan_nombre || metadata?.plan_codigo || 'un plan';
+      const monto = metadata?.monto != null ? ` por ${metadata.moneda || 'USD'} ${metadata.monto}` : '';
+      return `${nombre || email || 'Un usuario'} pagó ${plan}${monto}.`;
+    },
+  },
+  store_order_payment_paid: {
+    titulo: 'Pedido pagado online',
+    mensaje: ({ nombre, email, metadata }) => {
+      const pedido = metadata?.numero_pedido || metadata?.envio_id || 'un pedido';
+      return `${nombre || email || 'Un comercio'} recibió pago online del pedido #${pedido}.`;
+    },
+  },
+  stock_payment_paid: {
+    titulo: 'Abastecimiento pagado',
+    mensaje: ({ nombre, email, metadata }) => {
+      const pedido = metadata?.numero_pedido || metadata?.envio_id || 'un pedido';
+      return `${nombre || email || 'Un comercio'} pagó el abastecimiento del pedido #${pedido}.`;
+    },
+  },
 };
 
 function emailNormalizado(email) {
@@ -58,6 +80,7 @@ async function crearNotificacion(evento, usuario) {
   const datos = {
     nombre: usuario?.nombre || null,
     email: evento.email,
+    metadata: evento.metadata || {},
   };
 
   return AuthNotification.create({
@@ -70,6 +93,7 @@ async function crearNotificacion(evento, usuario) {
       email: evento.email,
       ip: evento.ip,
       session_id: evento.session_id,
+      ...(evento.metadata || {}),
     },
   });
 }
@@ -243,6 +267,9 @@ async function resumen({ dias = 30 } = {}) {
     onboardingIniciadosPeriodo,
     onboardingLandingPeriodo,
     onboardingSaltadosPeriodo,
+    pagosPlanPeriodo,
+    pagosPedidosPeriodo,
+    pagosAbastecimientoPeriodo,
     fallosPeriodo,
     sesionesActivas,
     notificacionesNoLeidas,
@@ -255,6 +282,9 @@ async function resumen({ dias = 30 } = {}) {
     AuthEvent.count({ where: { tipo: 'onboarding_started', created_at: { [Op.gte]: desde } } }),
     AuthEvent.count({ where: { tipo: 'onboarding_landing_generated', created_at: { [Op.gte]: desde } } }),
     AuthEvent.count({ where: { tipo: 'onboarding_skipped', created_at: { [Op.gte]: desde } } }),
+    AuthEvent.count({ where: { tipo: 'subscription_payment_paid', created_at: { [Op.gte]: desde } } }),
+    AuthEvent.count({ where: { tipo: 'store_order_payment_paid', created_at: { [Op.gte]: desde } } }),
+    AuthEvent.count({ where: { tipo: 'stock_payment_paid', created_at: { [Op.gte]: desde } } }),
     AuthEvent.count({ where: { resultado: 'fallo', created_at: { [Op.gte]: desde } } }),
     UserSession.count({ where: { estado: 'activa', ended_at: null, last_seen_at: { [Op.gte]: activoDesde } } }),
     AuthNotification.count({ where: { leida: false } }),
@@ -266,6 +296,9 @@ async function resumen({ dias = 30 } = {}) {
         COUNT(*) FILTER (WHERE tipo = 'login_success')::int AS logins,
         COUNT(*) FILTER (WHERE tipo = 'onboarding_started')::int AS onboarding_started,
         COUNT(*) FILTER (WHERE tipo = 'onboarding_landing_generated')::int AS onboarding_landing_generated,
+        COUNT(*) FILTER (WHERE tipo = 'subscription_payment_paid')::int AS subscription_payment_paid,
+        COUNT(*) FILTER (WHERE tipo = 'store_order_payment_paid')::int AS store_order_payment_paid,
+        COUNT(*) FILTER (WHERE tipo = 'stock_payment_paid')::int AS stock_payment_paid,
         COUNT(*) FILTER (WHERE resultado = 'fallo')::int AS fallos
       FROM auth_events
       WHERE created_at >= :desde
@@ -283,19 +316,29 @@ async function resumen({ dias = 30 } = {}) {
     onboarding_iniciados_periodo: onboardingIniciadosPeriodo,
     onboarding_landings_periodo: onboardingLandingPeriodo,
     onboarding_saltados_periodo: onboardingSaltadosPeriodo,
+    pagos_plan_periodo: pagosPlanPeriodo,
+    pagos_pedidos_periodo: pagosPedidosPeriodo,
+    pagos_abastecimiento_periodo: pagosAbastecimientoPeriodo,
     fallos_periodo: fallosPeriodo,
     sesiones_activas: sesionesActivas,
     notificaciones_no_leidas: notificacionesNoLeidas,
     nuevos_registros_24h: await AuthEvent.count({ where: { tipo: 'register', created_at: { [Op.gte]: desde24h } } }),
     nuevos_logins_24h: await AuthEvent.count({ where: { tipo: 'login_success', created_at: { [Op.gte]: desde24h } } }),
     nuevos_onboarding_24h: await AuthEvent.count({ where: { tipo: 'onboarding_started', created_at: { [Op.gte]: desde24h } } }),
+    nuevos_pagos_plan_24h: await AuthEvent.count({ where: { tipo: 'subscription_payment_paid', created_at: { [Op.gte]: desde24h } } }),
+    nuevos_pagos_pedidos_24h: await AuthEvent.count({ where: { tipo: 'store_order_payment_paid', created_at: { [Op.gte]: desde24h } } }),
+    nuevos_pagos_abastecimiento_24h: await AuthEvent.count({ where: { tipo: 'stock_payment_paid', created_at: { [Op.gte]: desde24h } } }),
     serie,
   };
 }
 
 async function listarEventos({ pagina = 1, filtros = {} } = {}) {
   const where = {};
-  if (filtros.tipo && filtros.tipo !== 'todos') where.tipo = filtros.tipo;
+  if (Array.isArray(filtros.tipos) && filtros.tipos.length) {
+    where.tipo = { [Op.in]: filtros.tipos.map(t => String(t)).filter(Boolean) };
+  } else if (filtros.tipo && filtros.tipo !== 'todos') {
+    where.tipo = filtros.tipo;
+  }
   if (filtros.resultado && filtros.resultado !== 'todos') where.resultado = filtros.resultado;
   if (filtros.usuario_id) where.usuario_id = Number(filtros.usuario_id);
   if (filtros.ip) where.ip = { [Op.iLike]: busquedaTexto(filtros.ip) || String(filtros.ip) };
@@ -361,7 +404,11 @@ async function listarNotificaciones({ pagina = 1, filtros = {} } = {}) {
   const where = {};
   if (filtros.solo_no_leidas === true) where.leida = false;
   if (typeof filtros.leida === 'boolean') where.leida = filtros.leida;
-  if (filtros.tipo && filtros.tipo !== 'todos') where.tipo = filtros.tipo;
+  if (Array.isArray(filtros.tipos) && filtros.tipos.length) {
+    where.tipo = { [Op.in]: filtros.tipos.map(t => String(t)).filter(Boolean) };
+  } else if (filtros.tipo && filtros.tipo !== 'todos') {
+    where.tipo = filtros.tipo;
+  }
   if (filtros.usuario_id) where.usuario_id = Number(filtros.usuario_id);
   if (filtros.busqueda) {
     const q = busquedaTexto(filtros.busqueda);

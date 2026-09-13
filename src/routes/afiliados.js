@@ -7,6 +7,10 @@ const ctrl = require('../controllers/afiliados.controller');
 router.post('/track', ctrl.registrarClick);
 
 router.use(verificarToken);
+
+router.get('/me', ctrl.miAfiliado);
+router.post('/me', ctrl.solicitarMiAfiliado);
+
 router.use(soloAdministrador);
 
 router.get('/', ctrl.listar);

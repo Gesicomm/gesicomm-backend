@@ -24,6 +24,11 @@ const PagoSuscripcion = sequelize.define('PagoSuscripcion', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  subscription_purchase_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Snapshot de compra que originó este pago de suscripción.',
+  },
   provider: {
     type: DataTypes.STRING(50),
     allowNull: false,
@@ -65,6 +70,7 @@ const PagoSuscripcion = sequelize.define('PagoSuscripcion', {
   updatedAt: 'updated_at',
   indexes: [
     { fields: ['suscripcion_id'] },
+    { fields: ['subscription_purchase_id'] },
     { fields: ['hash_pedido'] },
     { unique: true, fields: ['referencia'] },
   ],

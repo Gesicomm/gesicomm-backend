@@ -1,8 +1,9 @@
-const { sequelize, Envio, PaymentTransaction, Tienda } = require('../../models');
+const { sequelize, Envio, PaymentTransaction, Tienda, Usuario } = require('../../models');
 const PagoParService = require('./pagoParService');
 const SuscripcionService = require('../suscripcion.service');
 const PedidosNotificaciones = require('../notificaciones/pedidosNotificaciones.service');
 const { registrarHistorial } = require('../../utils/historial');
+const AuthTracking = require('../authTracking.service');
 
 const TIPO_PAGO_ABASTECIMIENTO = 'abastecimiento_gesicom';
 
@@ -90,6 +91,7 @@ async function iniciarCheckoutAbastecimiento(envio) {
 
 async function acreditarPagoAbastecimiento(envio, transaction, {
   origen = 'PagoPar',
+  req = null,
   usuarioId = null,
   detalle = null,
   respuestaPasarela = null,
@@ -139,6 +141,23 @@ async function acreditarPagoAbastecimiento(envio, transaction, {
 
   if (resultado === 'acreditado') {
     PedidosNotificaciones.notificarAbastecimientoPagadoSinBloquear(envio.id);
+    const usuario = Usuario?.findByPk ? await Usuario.findByPk(envio.usuario_id).catch(() => null) : null;
+    await AuthTracking.registrarEventoConNotificacion({
+      tipo: 'stock_payment_paid',
+      req,
+      usuario,
+      email: usuario?.correo_electronico || null,
+      metadata: {
+        origen,
+        detalle,
+        envio_id: envio.id,
+        numero_pedido: envio.numero_pedido || envio.id,
+        payment_transaction_id: transaction?.id || null,
+        payment_hash: transaction?.payment_hash || null,
+        monto: montoAbastecimiento(envio),
+        acreditado_por_usuario_id: usuarioId,
+      },
+    });
   }
 
   return resultado;

@@ -251,7 +251,7 @@ exports.consultarPedidoPagopar = async (req, res) => {
 
     let reconciliacion = 'sin_cambios';
     if (consulta.pagado) {
-      reconciliacion = await confirmarPedidoPagado(envio, transaction, { origen: 'PagoPar (consulta)' });
+      reconciliacion = await confirmarPedidoPagado(envio, transaction, { origen: 'PagoPar (consulta)', req });
     }
 
     return res.json({

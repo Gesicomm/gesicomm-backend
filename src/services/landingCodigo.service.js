@@ -158,7 +158,7 @@ const CSS_PROHIBIDO = [
   { re: /@import\b/i, motivo: '@import (traé la fuente con un <link> en el HTML o pegá el @font-face)' },
   { re: /expression\s*\(/i, motivo: 'expression()' },
   { re: /-moz-binding/i, motivo: '-moz-binding' },
-  { re: /behavior\s*:/i, motivo: 'behavior:' },
+  { re: /(^|[;{}\s])behavior\s*:/i, motivo: 'behavior:' },
   { re: /url\s*\(\s*['"]?\s*(javascript|vbscript)\s*:/i, motivo: 'url(javascript:)' },
   { re: /<\s*\/?\s*(style|script)\b/i, motivo: 'etiquetas <style>/<script> dentro del CSS' },
 ];
@@ -187,6 +187,68 @@ const JS_PROHIBIDO = [
   { re: /\bserviceWorker\b/i, motivo: 'serviceWorker' },
   { re: /<\s*\/?\s*script\b/i, motivo: 'etiquetas <script> dentro del JS' },
 ];
+
+function jsSinComentarios(js) {
+  const texto = String(js || '');
+  let salida = '';
+  let i = 0;
+  let quote = null;
+  let escapado = false;
+
+  while (i < texto.length) {
+    const actual = texto[i];
+    const siguiente = texto[i + 1];
+
+    if (quote) {
+      salida += actual;
+      if (escapado) {
+        escapado = false;
+      } else if (actual === '\\') {
+        escapado = true;
+      } else if (actual === quote) {
+        quote = null;
+      }
+      i += 1;
+      continue;
+    }
+
+    if (actual === '"' || actual === "'" || actual === '`') {
+      quote = actual;
+      salida += actual;
+      i += 1;
+      continue;
+    }
+
+    if (actual === '/' && siguiente === '/') {
+      salida += '  ';
+      i += 2;
+      while (i < texto.length && texto[i] !== '\n') {
+        salida += ' ';
+        i += 1;
+      }
+      continue;
+    }
+
+    if (actual === '/' && siguiente === '*') {
+      salida += '  ';
+      i += 2;
+      while (i < texto.length && !(texto[i] === '*' && texto[i + 1] === '/')) {
+        salida += texto[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      if (i < texto.length) {
+        salida += '  ';
+        i += 2;
+      }
+      continue;
+    }
+
+    salida += actual;
+    i += 1;
+  }
+
+  return salida;
+}
 
 // Marcas de que lo pegado en la pestaña HTML no es un fragmento sino una
 // página entera. Es el caso normal: el comercio copia una plantilla de
@@ -324,7 +386,7 @@ class LandingCodigoService {
 
   /** @returns {string[]} motivos por los que el JS no se puede guardar (vacío = OK) */
   static revisarJs(js) {
-    const texto = String(js || '');
+    const texto = jsSinComentarios(js);
     return JS_PROHIBIDO
       .filter(({ re }) => re.test(texto))
       .map(({ motivo }) => `El JavaScript no puede usar ${motivo}.`);

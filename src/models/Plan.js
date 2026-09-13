@@ -40,6 +40,13 @@ const Plan = sequelize.define('Plan', {
     defaultValue: 0,
     comment: 'Precio en guaraníes, sin decimales (PYG no los usa).',
   },
+  moneda: {
+    type: DataTypes.STRING(3),
+    allowNull: false,
+    defaultValue: 'PYG',
+    validate: { isIn: [['PYG', 'USD']] },
+    comment: 'Moneda visible y operativa del plan. PagoPar cobra en PYG; USD queda solo para planes dolarizados explícitos.',
+  },
   periodicidad: {
     type: DataTypes.ENUM('mensual', 'anual', 'unico'),
     allowNull: false,

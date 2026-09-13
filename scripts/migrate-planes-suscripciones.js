@@ -100,14 +100,45 @@ async function existeTabla(qi, nombre) {
   return tablas.map(t => (typeof t === 'string' ? t : t.tableName)).includes(nombre);
 }
 
+async function existeColumna(qi, tabla, columna) {
+  const descripcion = await qi.describeTable(tabla);
+  return !!descripcion[columna];
+}
+
+async function asegurarColumnasSuscripciones(qi, transaction) {
+  if (!(await existeTabla(qi, 'suscripciones'))) return false;
+
+  let cambio = false;
+  if (!(await existeColumna(qi, 'suscripciones', 'telefono'))) {
+    console.log('→ Agregando columna "suscripciones.telefono"...');
+    await qi.addColumn('suscripciones', 'telefono', {
+      type: DataTypes.STRING(40),
+      allowNull: true,
+    }, { transaction });
+    cambio = true;
+  }
+
+  if (!(await existeColumna(qi, 'suscripciones', 'documento'))) {
+    console.log('→ Agregando columna "suscripciones.documento"...');
+    await qi.addColumn('suscripciones', 'documento', {
+      type: DataTypes.STRING(30),
+      allowNull: true,
+    }, { transaction });
+    cambio = true;
+  }
+
+  return cambio;
+}
+
 async function main() {
   const qi = sequelize.getQueryInterface();
   const t = await sequelize.transaction();
 
   try {
     if (await existeTabla(qi, 'planes')) {
-      console.log('→ La tabla "planes" ya existe. Nada que hacer.');
-      await t.rollback();
+      const huboCambio = await asegurarColumnasSuscripciones(qi, t);
+      if (!huboCambio) console.log('→ Las tablas de planes y suscripciones ya están al día.');
+      await t.commit();
       return;
     }
 
@@ -145,6 +176,8 @@ async function main() {
       },
       email: { type: DataTypes.STRING(255), allowNull: false },
       nombre: { type: DataTypes.STRING(150), allowNull: true },
+      telefono: { type: DataTypes.STRING(40), allowNull: true },
+      documento: { type: DataTypes.STRING(30), allowNull: true },
       estado: {
         type: DataTypes.ENUM('pendiente_pago', 'activa', 'vencida', 'cancelada'),
         allowNull: false, defaultValue: 'pendiente_pago',

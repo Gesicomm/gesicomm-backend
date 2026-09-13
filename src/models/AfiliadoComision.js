@@ -14,6 +14,8 @@ const AfiliadoComision = sequelize.define('AfiliadoComision', {
     allowNull: false,
     defaultValue: 'pendiente',
   },
+  brevo_notificado_en: { type: DataTypes.DATE, allowNull: true },
+  brevo_notificacion_error: { type: DataTypes.TEXT, allowNull: true },
   notas: { type: DataTypes.TEXT, allowNull: true },
 }, {
   tableName: 'afiliado_comisiones',

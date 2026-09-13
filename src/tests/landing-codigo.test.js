@@ -106,6 +106,15 @@ describe('LandingCodigoService.sanitizar', () => {
       expect(advertencias.length).toBeGreaterThanOrEqual(3);
     });
 
+    it('permite scroll-behavior pero sigue quitando la propiedad behavior peligrosa', () => {
+      const { css, advertencias } = LandingCodigoService.sanitizar({
+        css: 'html { scroll-behavior: smooth; }\n.ie { behavior: url(x.htc); }',
+      });
+      expect(css).toContain('scroll-behavior: smooth');
+      expect(css).not.toContain('url(x.htc)');
+      expect(advertencias.join(' ')).toMatch(/behavior:/);
+    });
+
     it('no deja cerrar el <style> del documento', () => {
       const { css } = LandingCodigoService.sanitizar({
         css: 'body{color:red}\n</style><script>alert(1)</script>',
@@ -139,6 +148,18 @@ describe('LandingCodigoService.sanitizar', () => {
       ['postMessage', "postMessage('x', '*');"],
     ])('rechaza el guardado si el JS usa %s', (_etiqueta, js) => {
       expect(() => LandingCodigoService.sanitizar({ js })).toThrow('Validación fallida.');
+    });
+
+    it('no rechaza palabras prohibidas cuando aparecen solo dentro de comentarios', () => {
+      const js = [
+        '/*',
+        '  No usamos fetch.',
+        '  No usamos localStorage.',
+        '*/',
+        "document.querySelector('button')?.addEventListener('click', () => console.log('ok'));",
+      ].join('\n');
+
+      expect(() => LandingCodigoService.sanitizar({ js })).not.toThrow();
     });
 
     it('el error lista cada motivo, para poder mostrarlos en el editor', () => {

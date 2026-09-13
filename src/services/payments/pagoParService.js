@@ -180,18 +180,16 @@ class PagoParService {
       token: token,
       comprador: {
         ruc: envio.ruc || '',
-        email: 'cliente@sin-email.com', // Gesicomm no requiere email obligatoriamente en checkout
+        email: envio.email || 'cliente@sin-email.com',
         nombre: envio.cliente || 'Cliente',
         telefono: envio.telefono || '',
         documento, // validado arriba: nunca vacio
         coordenadas: '',
         razon_social: envio.razon_social || envio.cliente || '',
         tipo_documento: 'CI',
-        direccion: envio.direccion || 'Sin dirección',
-        // La doc acepta null. Antes decia `envio.ciudad ? 1 : 1`, que devuelve
-        // 1 siempre — no mapeamos ciudades al catalogo de PagoPar.
-        ciudad: null,
-        direccion_referencia: envio.referencia || null
+        direccion: envio.direccion || '',
+        ciudad: envio.ciudad || '1',
+        direccion_referencia: envio.referencia || ''
       },
       public_key: gateway.public_key,
       monto_total: amount,

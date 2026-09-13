@@ -51,6 +51,16 @@ const Usuario = sequelize.define('Usuario', {
     type: DataTypes.ENUM('free', 'pago'),
     allowNull: true,
   },
+  affiliate_ref: {
+    type: DataTypes.STRING(80),
+    allowNull: true,
+    comment: 'Código público del afiliado atribuido en el signup original. No se sobreescribe por clicks futuros.',
+  },
+  affiliate_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'ID interno del afiliado atribuido en el signup original. Lo fija el backend desde el checkout intent.',
+  },
   email_verificado: {
     type: DataTypes.BOOLEAN,
     allowNull: false,
