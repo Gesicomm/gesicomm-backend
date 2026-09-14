@@ -378,13 +378,15 @@ class PrecioUsuarioService {
       }) : [],
       idsCombos.length ? ProductoCombo.findAll({
         where: { id: { [require('sequelize').Op.in]: idsCombos } },
-        attributes: ['id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at'],
+        attributes: ['id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at',
+          'propuesta_valor', 'beneficios', 'confianza', 'preguntas_frecuentes', 'faq_titulo', 'ficha_rubro', 'ficha_datos',
+        ],
         include: [
           {
             model: ProductoComboItem,
             as: 'items',
-            attributes: ['id'],
-            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre'] }],
+            attributes: ['id', 'cantidad', 'producto_incluido_id'],
+            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base', 'beneficios'] }],
           },
           {
             model: ProductoComboImagen,
@@ -438,6 +440,9 @@ class PrecioUsuarioService {
     const idsParaImagen = [
       ...productos.map(p => p.id),
       ...combos.map(c => c.producto_padre?.id).filter(Boolean),
+      // Los productos incluidos en cada combo también necesitan imagen para
+      // "¿Qué incluye?" y "Detalle de cada producto" de la ficha del combo.
+      ...combos.flatMap(c => (c.items || []).map(i => i.producto_incluido_id)).filter(Boolean),
     ];
     // Galería completa por producto, no solo la principal: las tarjetas de
     // la landing pasan de una imagen a la otra al pasar el mouse por encima
@@ -516,7 +521,23 @@ class PrecioUsuarioService {
         precio_minimo: c.precio_minimo !== null ? parseFloat(c.precio_minimo) : null,
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
+        // Nombres nomás — compatibilidad con VitrinaGrid/ProductDetailBlock.
         productos_incluidos: (c.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean),
+        // Detalle enriquecido — usa la ficha del combo (template "Combo").
+        // Mismo criterio que listarCatalogo; sin esto el armador de landings
+        // no puede renderizar "¿Qué incluye?" ni "Detalle de cada producto".
+        productos_combo: (c.items || []).map(i => {
+          const prod = i.producto_incluido;
+          if (!prod) return null;
+          return {
+            id: prod.id,
+            nombre: prod.nombre,
+            cantidad: Number(i.cantidad) || 1,
+            precio: prod.precio_base != null ? parseFloat(prod.precio_base) : null,
+            imagen: imgMap.get(prod.id) || null,
+            beneficios: (prod.beneficios || []).filter(b => b?.titulo?.trim()).map(b => b.titulo),
+          };
+        }).filter(Boolean),
         imagen: imagenesCombo[0] || (padre ? (imgMap.get(padre.id) || null) : null),
         imagenes: imagenesCombo.length ? imagenesCombo : imagenesFallback,
         categoria: padre?.categoria?.nombre || null,
@@ -526,6 +547,14 @@ class PrecioUsuarioService {
         destacado: false,
         creado_en: c.created_at,
         creado_por: padre?.creado_por ?? null,
+        // Vista del combo — alimenta la ficha (template "Combo") en el armador.
+        propuesta_valor: c.propuesta_valor || null,
+        beneficios: c.beneficios || [],
+        confianza: c.confianza || [],
+        preguntas_frecuentes: c.preguntas_frecuentes || [],
+        faq_titulo: c.faq_titulo || null,
+        ficha_rubro: c.ficha_rubro || null,
+        ficha_datos: c.ficha_datos || {},
       }];
     }));
 
