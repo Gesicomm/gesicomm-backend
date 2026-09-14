@@ -20,6 +20,13 @@ const { sequelize } = require('../models');
 const ComboService = require('../services/combo.service');
 const { rollbackSeguro } = require('../utils/transaction');
 
+function contextoEconomico(req) {
+  return {
+    usuario_id: req.usuario.id,
+    esAdmin: req.usuario.rol === 'administrador',
+  };
+}
+
 // ─── POST /api/combos/simular ─────────────────────────────────────────────────
 
 async function simular(req, res) {
@@ -31,7 +38,7 @@ async function simular(req, res) {
       return res.status(400).json({ message: 'El campo principalProductId es requerido.' });
     }
 
-    const resultado = await ComboService.simular(principalProductId, upsells, inquilino_id);
+    const resultado = await ComboService.simular(principalProductId, upsells, inquilino_id, contextoEconomico(req));
     return res.json(resultado);
   } catch (err) {
     console.error('[combo] simular:', err.message);
@@ -61,7 +68,7 @@ async function crear(req, res) {
   const t = await sequelize.transaction();
   try {
     const inquilino_id = req.usuario.tenantId;
-    const combo = await ComboService.crear(req.body, inquilino_id, t);
+    const combo = await ComboService.crear(req.body, inquilino_id, t, contextoEconomico(req));
     await t.commit();
     return res.status(201).json(combo);
   } catch (err) {
@@ -78,7 +85,7 @@ async function crear(req, res) {
 
 async function detalle(req, res) {
   try {
-    const combo = await ComboService.obtener(Number(req.params.id), req.usuario.tenantId);
+    const combo = await ComboService.obtener(Number(req.params.id), req.usuario.tenantId, contextoEconomico(req));
     return res.json(combo);
   } catch (err) {
     console.error('[combo] detalle:', err.message);
@@ -92,7 +99,7 @@ async function detalle(req, res) {
 async function actualizar(req, res) {
   const t = await sequelize.transaction();
   try {
-    const combo = await ComboService.actualizar(Number(req.params.id), req.body, req.usuario.tenantId, t);
+    const combo = await ComboService.actualizar(Number(req.params.id), req.body, req.usuario.tenantId, t, contextoEconomico(req));
     await t.commit();
     return res.json(combo);
   } catch (err) {

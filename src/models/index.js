@@ -13,6 +13,7 @@ const ProductoImagen = require('./ProductoImagen');
 const ProductoFaq = require('./ProductoFaq');
 const ProductoCombo = require('./ProductoCombo');
 const ProductoComboItem = require('./ProductoComboItem');
+const ProductoComboImagen = require('./ProductoComboImagen');
 const ProductoRelacionado = require('./ProductoRelacionado');
 const HistorialPrecio = require('./HistorialPrecio');
 const ComboConfiguracion = require('./ComboConfiguracion');
@@ -225,6 +226,9 @@ ProductoCombo.belongsTo(Producto, { as: 'producto_padre', foreignKey: 'producto_
 
 ProductoCombo.hasMany(ProductoComboItem, { as: 'items', foreignKey: 'combo_id', onDelete: 'CASCADE' });
 ProductoComboItem.belongsTo(ProductoCombo, { foreignKey: 'combo_id' });
+
+ProductoCombo.hasMany(ProductoComboImagen, { as: 'imagenes', foreignKey: 'combo_id', onDelete: 'CASCADE' });
+ProductoComboImagen.belongsTo(ProductoCombo, { foreignKey: 'combo_id' });
 
 Producto.hasMany(ProductoComboItem, { as: 'como_item_de_combo', foreignKey: 'producto_incluido_id', onDelete: 'CASCADE' });
 ProductoComboItem.belongsTo(Producto, { as: 'producto_incluido', foreignKey: 'producto_incluido_id' });
@@ -558,6 +562,7 @@ module.exports = {
   ProductoFaq,
   ProductoCombo,
   ProductoComboItem,
+  ProductoComboImagen,
   ProductoRelacionado,
   HistorialPrecio,
   ComboConfiguracion,

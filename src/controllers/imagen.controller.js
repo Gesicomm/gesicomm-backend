@@ -14,7 +14,7 @@ const { R2ConfigError } = require('../services/r2/r2.config');
 const { logger } = require('../utils/logger');
 
 const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
-const MAX_IMAGEN_BYTES = 1 * 1024 * 1024; // 1MB
+const MAX_IMAGEN_BYTES = 5 * 1024 * 1024; // 5MB por imagen
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_TMP),
@@ -64,7 +64,7 @@ function subirImagenMiddleware(req, res, next) {
   upload.single('imagen')(req, res, (err) => {
     if (!err) return next();
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ message: 'La imagen supera el máximo permitido de 1MB.' });
+      return res.status(413).json({ message: 'La imagen supera el máximo permitido de 5MB.' });
     }
     return res.status(400).json({ message: err.message || 'Error al subir la imagen.' });
   });

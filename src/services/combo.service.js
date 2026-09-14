@@ -16,11 +16,20 @@
  */
 
 const { Op } = require('sequelize');
-const { ProductoCombo, ProductoComboItem, Producto } = require('../models');
+const { ProductoCombo, ProductoComboItem, ProductoComboImagen, Producto, ProductoImagen, PrecioUsuario } = require('../models');
 const comboPricing = require('../utils/comboPricing');
 const ComboConfiguracionService = require('./comboConfiguracion.service');
+const ImagenService = require('./imagen.service');
 
 class ComboService {
+  static serializarImagenesCombo(combo) {
+    (combo?.imagenes || []).forEach((imagen) => {
+      const data = ImagenService.serializar(imagen);
+      if (imagen.setDataValue) imagen.setDataValue('url', data.url);
+      else imagen.url = data.url;
+    });
+    return combo;
+  }
 
   /**
    * Normaliza el precio_minimo recibido del payload: null/undefined/''/0 → null
@@ -30,6 +39,30 @@ class ComboService {
     if (valor === undefined || valor === null || valor === '') return null;
     const num = parseFloat(valor);
     return num > 0 ? num : null;
+  }
+
+  /**
+   * Misma semántica económica que ve el editor de combos:
+   * - Admin: costo interno (precio_costo) y venta mayorista (precio_base).
+   * - Usuario tienda: costo = precio_base del catálogo Gesicomm; venta =
+   *   PrecioUsuario si existe, o precio_base como punto de partida.
+   * Para productos propios de la tienda, precio_costo vuelve a ser su costo
+   * real porque no es un costo interno de Gesicomm.
+   */
+  static economiaProducto(producto, { esAdmin = false, usuario_id = null, preciosUsuario = new Map() } = {}) {
+    const precioCosto = parseFloat(producto.precio_costo) || 0;
+    const precioBase = parseFloat(producto.precio_base) || 0;
+    const precioUsuario = preciosUsuario.has(Number(producto.id)) ? preciosUsuario.get(Number(producto.id)) : null;
+
+    if (esAdmin) {
+      return { cost: precioCosto, salePrice: precioBase };
+    }
+
+    const esPropio = usuario_id != null && producto.creado_por != null && Number(producto.creado_por) === Number(usuario_id);
+    return {
+      cost: esPropio && precioCosto > 0 ? precioCosto : precioBase,
+      salePrice: precioUsuario !== null ? precioUsuario : precioBase,
+    };
   }
 
   // ─── DTO Mapping ──────────────────────────────────────────────────────────
@@ -43,21 +76,25 @@ class ComboService {
    * @param {object} config - Instancia de ComboConfiguracion
    * @returns {object} Input para comboPricing.calcular()
    */
-  static toMotorInput(principal, upsellsData, config) {
+  static toMotorInput(principal, upsellsData, config, contexto = {}) {
+    const economiaPrincipal = this.economiaProducto(principal, contexto);
     return {
       principal: {
         id: principal.id,
         name: principal.nombre,
-        cost: parseFloat(principal.precio_costo) || 0,
-        salePrice: parseFloat(principal.precio_base) || 0,
+        cost: economiaPrincipal.cost,
+        salePrice: economiaPrincipal.salePrice,
       },
-      upsells: upsellsData.map(({ producto, descuento_porcentaje }) => ({
-        id: producto.id,
-        name: producto.nombre,
-        cost: parseFloat(producto.precio_costo) || 0,
-        salePrice: parseFloat(producto.precio_base) || 0,
-        discountPercentage: parseFloat(descuento_porcentaje) || 0,
-      })),
+      upsells: upsellsData.map(({ producto, descuento_porcentaje }) => {
+        const economia = this.economiaProducto(producto, contexto);
+        return {
+          id: producto.id,
+          name: producto.nombre,
+          cost: economia.cost,
+          salePrice: economia.salePrice,
+          discountPercentage: parseFloat(descuento_porcentaje) || 0,
+        };
+      }),
       costs: ComboConfiguracionService.toMotorCosts(config),
       targetMargins: config.margenes_objetivo || [15, 30, 45],
       minimumMargin: parseFloat(config.margen_minimo) || 10,
@@ -77,7 +114,8 @@ class ComboService {
    * @param {number} inquilino_id
    * @returns {Promise<object>} Resultado del motor de cálculo
    */
-  static async simular(principalId, upsells = [], inquilino_id) {
+  static async simular(principalId, upsells = [], inquilino_id, opciones = {}) {
+    const { usuario_id = null, esAdmin = false } = opciones;
     // 1. Validaciones de forma (sin DB) — se rechazan antes de gastar una
     // ida-vuelta a la base en un payload que ya se sabe inválido.
     const upsellIds = upsells.map(u => Number(u.productId));
@@ -96,7 +134,21 @@ class ComboService {
     ]);
 
     if (!principal) throw new Error('El producto principal no existe o no está activo.');
-    if (!principal.precio_costo) throw new Error(`El producto "${principal.nombre}" no tiene precio de costo configurado.`);
+
+    const idsMotor = [Number(principalId), ...upsellIds].filter(Boolean);
+    const preciosUsuarioRows = (!esAdmin && usuario_id && idsMotor.length)
+      ? await PrecioUsuario.findAll({
+        where: { usuario_id, tipo: 'producto', referencia_id: { [Op.in]: idsMotor } },
+        attributes: ['referencia_id', 'precio'],
+      })
+      : [];
+    const preciosUsuario = new Map(preciosUsuarioRows.map(p => [Number(p.referencia_id), parseFloat(p.precio)]));
+    const contextoMotor = { usuario_id, esAdmin, preciosUsuario };
+
+    const economiaPrincipal = this.economiaProducto(principal, contextoMotor);
+    if (!(economiaPrincipal.cost > 0)) {
+      throw new Error(`El producto "${principal.nombre}" no tiene costo configurado para calcular el combo.`);
+    }
 
     // 3. Resolver upsells del catálogo (nunca confiar en precios del frontend)
     let upsellsData = [];
@@ -108,8 +160,9 @@ class ComboService {
       const productoMap = new Map(productosUpsell.map(p => [p.id, p]));
       upsellsData = upsells.map(u => {
         const producto = productoMap.get(Number(u.productId));
-        if (!producto.precio_costo) {
-          throw new Error(`El producto "${producto.nombre}" no tiene precio de costo configurado.`);
+        const economia = this.economiaProducto(producto, contextoMotor);
+        if (!(economia.cost > 0)) {
+          throw new Error(`El producto "${producto.nombre}" no tiene costo configurado para calcular el combo.`);
         }
         return {
           producto,
@@ -119,7 +172,7 @@ class ComboService {
     }
 
     // 4. Construir DTO y ejecutar motor
-    const motorInput = this.toMotorInput(principal, upsellsData, config);
+    const motorInput = this.toMotorInput(principal, upsellsData, config, contextoMotor);
     const resultado = comboPricing.calcular(motorInput);
 
     // 5. Agregar advertencias de stock
@@ -175,9 +228,9 @@ class ComboService {
     const where = { inquilino_id };
     if (filtros.estado) where.estado = filtros.estado;
 
-    return ProductoCombo.findAll({
+    const combos = await ProductoCombo.findAll({
       where,
-      attributes: { exclude: ['descripcion', 'fecha_inicio', 'fecha_fin'] }, // Exclude large or unnecessary fields if any, though reducing relations is more critical
+      attributes: { exclude: ['descripcion', 'fecha_inicio', 'fecha_fin', 'sobre_este_producto', 'propuesta_valor', 'beneficios', 'confianza', 'preguntas_frecuentes', 'ficha_datos'] }, // La vista del combo no hace falta en el listado
       include: [
         {
           model: Producto,
@@ -194,9 +247,16 @@ class ComboService {
             attributes: ['id', 'nombre'],
           }],
         },
+        {
+          model: ProductoComboImagen,
+          as: 'imagenes',
+          attributes: ['id', 'url', 'storage_key', 'es_principal', 'orden'],
+        },
       ],
-      order: [['created_at', 'DESC']],
+      order: [['created_at', 'DESC'], [{ model: ProductoComboImagen, as: 'imagenes' }, 'orden', 'ASC']],
     });
+    combos.forEach(combo => this.serializarImagenesCombo(combo));
+    return combos;
   }
 
   /**
@@ -205,14 +265,16 @@ class ComboService {
    * @param {number} comboId
    * @param {number} inquilino_id
    */
-  static async obtener(comboId, inquilino_id) {
+  static async obtener(comboId, inquilino_id, opciones = {}) {
+    const { usuario_id = null, esAdmin = false } = opciones;
     const combo = await ProductoCombo.findOne({
       where: { id: comboId, inquilino_id },
       include: [
         {
           model: Producto,
           as: 'producto_padre',
-          attributes: ['id', 'nombre', 'precio_base', 'precio_costo', 'sku', 'estado_venta', 'cantidad_disponible'],
+          attributes: ['id', 'nombre', 'precio_base', 'precio_costo', 'sku', 'estado_venta', 'cantidad_disponible', 'creado_por', 'beneficios'],
+          include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }],
         },
         {
           model: ProductoComboItem,
@@ -220,13 +282,55 @@ class ComboService {
           include: [{
             model: Producto,
             as: 'producto_incluido',
-            attributes: ['id', 'nombre', 'precio_base', 'precio_costo', 'sku', 'estado_venta', 'cantidad_disponible'],
+            attributes: ['id', 'nombre', 'precio_base', 'precio_costo', 'sku', 'estado_venta', 'cantidad_disponible', 'creado_por', 'beneficios'],
+            include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }],
           }],
           order: [['orden', 'ASC']],
         },
+        {
+          model: ProductoComboImagen,
+          as: 'imagenes',
+          attributes: ['id', 'url', 'storage_key', 'es_principal', 'orden'],
+        },
       ],
+      order: [[{ model: ProductoComboImagen, as: 'imagenes' }, 'orden', 'ASC']],
     });
     if (!combo) throw new Error('Combo no encontrado.');
+    this.serializarImagenesCombo(combo);
+
+    // El editor de combos reutiliza productos de la vitrina. Para un usuario
+    // tienda, el costo es lo que le cobra Gesicomm (Producto.precio_base) y el
+    // precio de venta es su PrecioUsuario si ya lo configuró en "Mi catálogo".
+    // Sin este DTO enriquecido, al reabrir un combo el frontend solo recibía
+    // precio_base y terminaba mostrando "precio de venta = costo tienda".
+    if (!esAdmin && usuario_id) {
+      const idsProducto = [
+        combo.producto_id,
+        ...(combo.items || []).map(i => i.producto_incluido_id),
+      ].filter(Boolean);
+
+      const precios = idsProducto.length
+        ? await PrecioUsuario.findAll({
+          where: { usuario_id, tipo: 'producto', referencia_id: { [Op.in]: idsProducto } },
+          attributes: ['referencia_id', 'precio'],
+        })
+        : [];
+      const preciosPorProducto = new Map(precios.map(p => [Number(p.referencia_id), parseFloat(p.precio)]));
+
+      const aplicarPrecioTienda = (producto) => {
+        if (!producto) return;
+        const data = producto.toJSON ? producto.toJSON() : producto;
+        const precioBase = parseFloat(data.precio_base) || 0;
+        const precioUsuario = preciosPorProducto.has(Number(data.id)) ? preciosPorProducto.get(Number(data.id)) : null;
+        producto.setDataValue('costo_tienda', precioBase);
+        producto.setDataValue('precio_usuario', precioUsuario);
+        producto.setDataValue('precio_efectivo', precioUsuario !== null ? precioUsuario : precioBase);
+      };
+
+      aplicarPrecioTienda(combo.producto_padre);
+      (combo.items || []).forEach(item => aplicarPrecioTienda(item.producto_incluido));
+    }
+
     return combo;
   }
 
@@ -237,7 +341,26 @@ class ComboService {
    * @param {number} inquilino_id
    * @param {object} transaction
    */
-  static async crear(payload, inquilino_id, transaction) {
+  /**
+   * Campos de "Vista del combo" — mismo criterio que Producto: solo se
+   * incluyen las claves presentes en el payload, para no pisar lo guardado
+   * con `undefined` en actualizaciones parciales.
+   */
+  static camposVistaCombo(payload) {
+    const campos = {};
+    if ('sobre_este_producto' in payload) campos.sobre_este_producto = payload.sobre_este_producto?.trim() || null;
+    if ('propuesta_valor' in payload) campos.propuesta_valor = payload.propuesta_valor?.trim() || null;
+    if ('beneficios' in payload) campos.beneficios = Array.isArray(payload.beneficios) ? payload.beneficios : [];
+    if ('confianza' in payload) campos.confianza = Array.isArray(payload.confianza) ? payload.confianza : [];
+    if ('preguntas_frecuentes' in payload) campos.preguntas_frecuentes = Array.isArray(payload.preguntas_frecuentes) ? payload.preguntas_frecuentes : [];
+    if ('faq_titulo' in payload) campos.faq_titulo = payload.faq_titulo?.trim() || null;
+    if ('relacionados_titulo' in payload) campos.relacionados_titulo = payload.relacionados_titulo?.trim() || null;
+    if ('ficha_rubro' in payload) campos.ficha_rubro = payload.ficha_rubro || null;
+    if ('ficha_datos' in payload) campos.ficha_datos = (payload.ficha_datos && typeof payload.ficha_datos === 'object') ? payload.ficha_datos : {};
+    return campos;
+  }
+
+  static async crear(payload, inquilino_id, transaction, opciones = {}) {
     const { nombre, descripcion, precio_total, principalProductId, upsells = [], fecha_inicio, fecha_fin } = payload;
 
     if (!nombre?.trim()) throw new Error('El nombre del combo es obligatorio.');
@@ -251,7 +374,7 @@ class ComboService {
     }
 
     // Ejecutar simulación para obtener snapshot
-    const resultado = await this.simular(principalProductId, upsells, inquilino_id);
+    const resultado = await this.simular(principalProductId, upsells, inquilino_id, opciones);
 
     const comboInstancia = await ProductoCombo.create({
       inquilino_id,
@@ -266,6 +389,8 @@ class ComboService {
       fecha_fin: fecha_fin || null,
       // Snapshot económico
       ...this.buildSnapshot(resultado, await ComboConfiguracionService.obtenerOCrear(inquilino_id)),
+      // Vista del combo
+      ...this.camposVistaCombo(payload),
     }, { transaction });
 
     await this.sincronizarUpsells(comboInstancia.id, upsells, resultado, transaction);
@@ -282,7 +407,7 @@ class ComboService {
    * @param {number} inquilino_id
    * @param {object} transaction
    */
-  static async actualizar(comboId, payload, inquilino_id, transaction) {
+  static async actualizar(comboId, payload, inquilino_id, transaction, opciones = {}) {
     const combo = await ProductoCombo.findOne({
       where: { id: comboId, inquilino_id },
       transaction,
@@ -309,7 +434,7 @@ class ComboService {
     }
 
     // Recalcular snapshot con valores actuales del catálogo
-    const resultado = await this.simular(pId, upsList, inquilino_id);
+    const resultado = await this.simular(pId, upsList, inquilino_id, opciones);
     const config = await ComboConfiguracionService.obtenerOCrear(inquilino_id);
 
     const updates = {
@@ -321,6 +446,7 @@ class ComboService {
       ...(fecha_inicio !== undefined && { fecha_inicio }),
       ...(fecha_fin !== undefined && { fecha_fin }),
       ...this.buildSnapshot(resultado, config),
+      ...this.camposVistaCombo(payload),
     };
 
     await combo.update(updates, { transaction });

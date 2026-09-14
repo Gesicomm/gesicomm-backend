@@ -41,6 +41,49 @@ const ProductoCombo = sequelize.define('ProductoCombo', {
     type: DataTypes.STRING(500),
     allowNull: true,
   },
+  // ─── Vista del combo ────────────────────────────────────────────────────
+  // Mismos campos que Producto (ver models/Producto.js) para que el combo
+  // tenga su propia "ficha" de marketing, igual que un producto individual.
+  sobre_este_producto: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+  propuesta_valor: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+  beneficios: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: [],
+  },
+  confianza: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: [],
+  },
+  preguntas_frecuentes: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    defaultValue: [],
+  },
+  faq_titulo: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  relacionados_titulo: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  ficha_rubro: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+  },
+  ficha_datos: {
+    type: DataTypes.JSONB,
+    allowNull: false,
+    defaultValue: {},
+  },
   // Precio comercial publicado. Editable por el admin.
   // El motor calcula sugerencias, pero este valor es la decisión final.
   precio_total: {

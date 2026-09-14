@@ -19,6 +19,7 @@ const { verificarToken } = require('../middleware/autenticacion');
 const { verificarPermiso } = require('../middleware/autorizacion');
 const comboCtrl = require('../controllers/combo.controller');
 const configCtrl = require('../controllers/comboConfiguracion.controller');
+const comboImagenCtrl = require('../controllers/comboImagen.controller');
 
 // Todos los endpoints del módulo requieren autenticación
 router.use(verificarToken);
@@ -34,6 +35,10 @@ router.post('/simular', verificarPermiso('crear_combos'), comboCtrl.simular);
 // ─── CRUD de combos ───────────────────────────────────────────────────────────
 router.get('/', verificarPermiso('ver_combos'), comboCtrl.listar);
 router.post('/', verificarPermiso('crear_combos'), comboCtrl.crear);
+router.get('/:id/imagenes', verificarPermiso('ver_combos'), comboImagenCtrl.listarImagenes);
+router.post('/:id/imagenes', verificarPermiso('editar_combos'), comboImagenCtrl.subirImagenMiddleware, comboImagenCtrl.subirImagen);
+router.put('/:id/imagenes/:imgId', verificarPermiso('editar_combos'), comboImagenCtrl.actualizarImagen);
+router.delete('/:id/imagenes/:imgId', verificarPermiso('editar_combos'), comboImagenCtrl.eliminarImagen);
 router.get('/:id', verificarPermiso('ver_combos'), comboCtrl.detalle);
 router.put('/:id', verificarPermiso('editar_combos'), comboCtrl.actualizar);
 

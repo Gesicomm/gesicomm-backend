@@ -14,10 +14,11 @@
  */
 
 const { Op } = require('sequelize');
-const { Producto, ProductoCombo, ProductoComboItem, ProductoImagen, PrecioUsuario, Marca } = require('../models');
+const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca } = require('../models');
 const ComboConfiguracionService = require('./comboConfiguracion.service');
 const ComboService = require('./combo.service');
 const comboPricing = require('../utils/comboPricing');
+const ImagenService = require('./imagen.service');
 
 class PrecioUsuarioService {
 
@@ -100,16 +101,26 @@ class PrecioUsuarioService {
       }),
       ProductoCombo.findAll({
         where: { inquilino_id, estado: 'ACTIVO' },
-        attributes: ['id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at'],
+        attributes: [
+          'id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at',
+          // Vista del combo — para que el armador de landings pueda armar
+          // la ficha del combo (template "Combo") sin pegarle a un
+          // endpoint admin-only (ver ComboEditor "Vista del combo").
+          'propuesta_valor', 'beneficios', 'confianza', 'preguntas_frecuentes', 'faq_titulo', 'ficha_rubro', 'ficha_datos',
+        ],
         include: [
           {
             model: ProductoComboItem,
             as: 'items',
-            attributes: ['id'],
-            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre'] }],
+            attributes: ['id', 'cantidad', 'producto_incluido_id'],
+            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base', 'beneficios'] }],
           },
-          // Un combo no tiene categoría/marca/imagen propias: las hereda del
-          // producto principal, igual que hace landing.service al publicar.
+          {
+            model: ProductoComboImagen,
+            as: 'imagenes',
+            attributes: ['id', 'url', 'storage_key', 'es_principal', 'orden'],
+          },
+          // Categoría y marca se heredan del producto principal para filtros.
           // required: true = INNER JOIN: si el padre está inactivo, el combo
           // queda excluido del catálogo — coherente con obtenerPublica(), que
           // aplica la misma condición y nunca mostraría ese combo en la landing.
@@ -137,6 +148,9 @@ class PrecioUsuarioService {
     const idsParaImagen = [
       ...productos.map(p => p.id),
       ...combos.map(c => c.producto_padre?.id).filter(Boolean),
+      // Los productos que arman cada combo también necesitan imagen propia
+      // para "Qué incluye"/"Detalle de cada producto" de la ficha del combo.
+      ...combos.flatMap(c => (c.items || []).map(i => i.producto_incluido_id)).filter(Boolean),
     ];
     // Galería completa por producto, no solo la principal: las tarjetas de
     // la landing pasan de una imagen a la otra al pasar el mouse por encima
@@ -194,6 +208,12 @@ class PrecioUsuarioService {
       const precioUsuario = mapaPrecios.has(`combo:${c.id}`) ? mapaPrecios.get(`combo:${c.id}`) : null;
       const precioBase = parseFloat(c.precio_total);
       const padre = c.producto_padre;
+      const imagenesCombo = (c.imagenes || [])
+        .slice()
+        .sort((a, b) => (b.es_principal === true) - (a.es_principal === true) || (Number(a.orden) || 0) - (Number(b.orden) || 0))
+        .map(img => ImagenService.serializar(img).url)
+        .filter(Boolean);
+      const imagenesFallback = padre ? (galeriaMap.get(padre.id) || []) : [];
       return {
         id: c.id,
         tipo: 'combo',
@@ -203,15 +223,40 @@ class PrecioUsuarioService {
         precio_minimo: c.precio_minimo !== null ? parseFloat(c.precio_minimo) : null,
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
+        // Nombres nomás — lo que ya consumen VitrinaGrid.jsx, ProductDetailBlock.jsx,
+        // etc. (join(', ') en varios lados). NO cambiar la forma acá.
         productos_incluidos: (c.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean),
-        imagen: padre ? (imgMap.get(padre.id) || null) : null,
-        imagenes: padre ? (galeriaMap.get(padre.id) || []) : [],
+        // Detalle enriquecido — solo lo usa la ficha del combo (template
+        // "Combo"), ver templates/combo/fichaCombo.js.
+        productos_combo: (c.items || []).map(i => {
+          const prod = i.producto_incluido;
+          if (!prod) return null;
+          return {
+            id: prod.id,
+            nombre: prod.nombre,
+            cantidad: Number(i.cantidad) || 1,
+            precio: prod.precio_base != null ? parseFloat(prod.precio_base) : null,
+            imagen: imgMap.get(prod.id) || null,
+            beneficios: (prod.beneficios || []).filter(b => b?.titulo?.trim()).map(b => b.titulo),
+          };
+        }).filter(Boolean),
+        imagen: imagenesCombo[0] || (padre ? (imgMap.get(padre.id) || null) : null),
+        imagenes: imagenesCombo.length ? imagenesCombo : imagenesFallback,
         categoria: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
         stock: padre?.cantidad_disponible ?? null,
         destacado: false,
         creado_en: c.created_at,
         creado_por: padre?.creado_por ?? null,
+        // Vista del combo — alimenta la ficha (template "Combo") en el
+        // armador de landings sin pegarle a un endpoint admin-only.
+        propuesta_valor: c.propuesta_valor || null,
+        beneficios: c.beneficios || [],
+        confianza: c.confianza || [],
+        preguntas_frecuentes: c.preguntas_frecuentes || [],
+        faq_titulo: c.faq_titulo || null,
+        ficha_rubro: c.ficha_rubro || null,
+        ficha_datos: c.ficha_datos || {},
       };
     });
 
@@ -312,7 +357,7 @@ class PrecioUsuarioService {
     const idsProductos = paginatedItems.filter(i => i.tipo === 'producto').map(i => i.id);
     const idsCombos = paginatedItems.filter(i => i.tipo === 'combo').map(i => i.id);
 
-    const { Producto, ProductoCombo, ProductoComboItem, ProductoImagen, PrecioUsuario, Marca, Proveedor } = require('../models');
+    const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca, Proveedor } = require('../models');
 
     const [productos, combos, precios, categoriasUnicasData, proveedoresUnicasData] = await Promise.all([
       idsProductos.length ? Producto.findAll({
@@ -340,6 +385,11 @@ class PrecioUsuarioService {
             as: 'items',
             attributes: ['id'],
             include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre'] }],
+          },
+          {
+            model: ProductoComboImagen,
+            as: 'imagenes',
+            attributes: ['id', 'url', 'storage_key', 'es_principal', 'orden'],
           },
           {
             model: Producto,
@@ -451,6 +501,12 @@ class PrecioUsuarioService {
       const precioUsuario = mapaPrecios.has(`combo:${c.id}`) ? mapaPrecios.get(`combo:${c.id}`) : null;
       const precioBase = parseFloat(c.precio_total);
       const padre = c.producto_padre;
+      const imagenesCombo = (c.imagenes || [])
+        .slice()
+        .sort((a, b) => (b.es_principal === true) - (a.es_principal === true) || (Number(a.orden) || 0) - (Number(b.orden) || 0))
+        .map(img => ImagenService.serializar(img).url)
+        .filter(Boolean);
+      const imagenesFallback = padre ? (galeriaMap.get(padre.id) || []) : [];
       return [c.id, {
         id: c.id,
         tipo: 'combo',
@@ -461,8 +517,8 @@ class PrecioUsuarioService {
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
         productos_incluidos: (c.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean),
-        imagen: padre ? (imgMap.get(padre.id) || null) : null,
-        imagenes: padre ? (galeriaMap.get(padre.id) || []) : [],
+        imagen: imagenesCombo[0] || (padre ? (imgMap.get(padre.id) || null) : null),
+        imagenes: imagenesCombo.length ? imagenesCombo : imagenesFallback,
         categoria: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
         proveedor: padre?.proveedor?.nombre || null,

@@ -2,7 +2,7 @@
 
 const { Op } = require('sequelize');
 const slugify = require('slugify');
-const { sequelize, Producto, HistorialPrecio, ProductoVariante, Oferta, OfertaComponente, ProductoFaq } = require('../models');
+const { sequelize, Producto, HistorialPrecio, ProductoVariante, Oferta, OfertaComponente, ProductoFaq, PrecioUsuario } = require('../models');
 const { calcularPrecioEfectivo, validarPrecioMinimo } = require('../utils/precio');
 const PricingService = require('./pricing.service');
 
@@ -181,6 +181,29 @@ class ProductoService {
     const { rows: productos, count } = await Producto.findAndCountAll(queryParams);
 
     const productosSerializados = productos.map(p => this.serializar(p, esAdmin, usuarioId));
+
+    if (!esAdmin && usuarioId != null && productosSerializados.length > 0) {
+      const preciosPropios = await PrecioUsuario.findAll({
+        where: {
+          usuario_id: usuarioId,
+          tipo: 'producto',
+          referencia_id: { [Op.in]: productosSerializados.map(p => p.id) },
+        },
+        attributes: ['referencia_id', 'precio'],
+      });
+      const precioPorProducto = new Map(preciosPropios.map(p => [Number(p.referencia_id), parseFloat(p.precio)]));
+      productosSerializados.forEach(p => {
+        const precioBase = parseFloat(p.precio_base) || 0;
+        const precioUsuario = precioPorProducto.has(Number(p.id)) ? precioPorProducto.get(Number(p.id)) : null;
+        // Para el editor de combos y otros flujos de tienda:
+        // costo_tienda = lo que la tienda paga por el catálogo Gesicomm;
+        // precio_efectivo = lo que la tienda configuró para vender.
+        // No se expone precio_costo de productos ajenos.
+        p.costo_tienda = precioBase;
+        p.precio_usuario = precioUsuario;
+        p.precio_efectivo = precioUsuario !== null ? precioUsuario : precioBase;
+      });
+    }
 
     if (productosSerializados.length > 0) {
       const { ProductoImagen } = require('../models');

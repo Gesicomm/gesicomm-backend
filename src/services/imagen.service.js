@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const sharp = require('sharp');
-const { ProductoImagen } = require('../models');
+const { ProductoImagen, ProductoComboImagen } = require('../models');
 const { R2Service, IMMUTABLE_CACHE_CONTROL } = require('./r2/r2.service');
 const { buildPublicUrl, extractStorageKeyFromUrl } = require('./r2/r2.config');
 
@@ -31,6 +31,14 @@ class ImagenService {
   static async listarPorProducto(producto_id, inquilino_id) {
     const imagenes = await ProductoImagen.findAll({
       where: { producto_id, inquilino_id },
+      order: [['orden', 'ASC']],
+    });
+    return imagenes.map((imagen) => this.serializar(imagen));
+  }
+
+  static async listarPorCombo(combo_id, inquilino_id) {
+    const imagenes = await ProductoComboImagen.findAll({
+      where: { combo_id, inquilino_id },
       order: [['orden', 'ASC']],
     });
     return imagenes.map((imagen) => this.serializar(imagen));
@@ -85,6 +93,10 @@ class ImagenService {
 
   static async procesarProductoParaR2(fileData, producto_id, opts = {}) {
     return this.procesarArchivoParaR2(fileData, `products/${producto_id}`, opts);
+  }
+
+  static async procesarComboParaR2(fileData, combo_id, opts = {}) {
+    return this.procesarArchivoParaR2(fileData, `combos/${combo_id}`, opts);
   }
 
   /**
@@ -152,6 +164,58 @@ class ImagenService {
 
   static async eliminar(imagen_id, producto_id, inquilino_id) {
     const imagen = await ProductoImagen.findOne({ where: { id: imagen_id, producto_id, inquilino_id } });
+    if (!imagen) throw new Error('Imagen no encontrada.');
+
+    await this.eliminarObjetoStorage(imagen);
+    await imagen.destroy();
+    return true;
+  }
+
+  static async subirCombo(combo_id, inquilino_id, fileData, bodyData = {}) {
+    const existentes = await ProductoComboImagen.count({ where: { combo_id, inquilino_id } });
+    if (existentes >= 5) throw new Error('El combo ya tiene el máximo de 5 imágenes.');
+
+    const imagenProcesada = await this.procesarComboParaR2(fileData, combo_id);
+    const maxOrden = await ProductoComboImagen.max('orden', { where: { combo_id, inquilino_id } }) || 0;
+    const esPrincipal = existentes === 0 || bodyData.es_principal === 'true' || bodyData.es_principal === true;
+
+    if (esPrincipal) {
+      await ProductoComboImagen.update({ es_principal: false }, { where: { combo_id, inquilino_id } });
+    }
+
+    const imagen = await ProductoComboImagen.create({
+      inquilino_id,
+      combo_id,
+      url: imagenProcesada.url,
+      storage_key: imagenProcesada.storage_key,
+      mime_type: imagenProcesada.mime_type,
+      size: imagenProcesada.size,
+      width: imagenProcesada.width,
+      height: imagenProcesada.height,
+      es_principal: esPrincipal,
+      orden: maxOrden + 1,
+    });
+
+    return this.serializar(imagen);
+  }
+
+  static async actualizarCombo(imagen_id, combo_id, inquilino_id, datos) {
+    const imagen = await ProductoComboImagen.findOne({ where: { id: imagen_id, combo_id, inquilino_id } });
+    if (!imagen) throw new Error('Imagen no encontrada.');
+
+    if (datos.es_principal === true || datos.es_principal === 'true') {
+      await ProductoComboImagen.update({ es_principal: false }, { where: { combo_id, inquilino_id } });
+      imagen.es_principal = true;
+    }
+
+    if (datos.orden !== undefined) imagen.orden = datos.orden;
+
+    await imagen.save();
+    return this.serializar(imagen);
+  }
+
+  static async eliminarCombo(imagen_id, combo_id, inquilino_id) {
+    const imagen = await ProductoComboImagen.findOne({ where: { id: imagen_id, combo_id, inquilino_id } });
     if (!imagen) throw new Error('Imagen no encontrada.');
 
     await this.eliminarObjetoStorage(imagen);

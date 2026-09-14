@@ -280,6 +280,7 @@ const { migrarLandingIdEnvios } = require('./scripts/migrar-landing-id-envios');
 const { migrarIntentosEntrega } = require('./scripts/migrar-intentos-entrega');
 const { migrarAuthTracking } = require('./scripts/migrar-auth-tracking');
 const { migrarNumeroPedido } = require('./scripts/migrar-numero-pedido');
+const { migrarComboImagenes } = require('./scripts/migrar-combo-imagenes');
 const CategoriaCostoGastoService = require('./src/services/categoriaCostoGasto.service');
 const CanalVentaService = require('./src/services/canalVenta.service');
 const { iniciarJobCostosRecurrentes } = require('./src/services/cron/costosRecurrentes.job');
@@ -295,6 +296,7 @@ sequelize.authenticate().then(async () => {
     await migrarIntentosEntrega();
     await migrarAuthTracking();
     await migrarNumeroPedido();
+    await migrarComboImagenes();
     await CategoriaCostoGastoService.seedDefaults();
     await CanalVentaService.seedDefaults();
     // Después del seed: necesita los canales ya creados para mapearles los

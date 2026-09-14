@@ -21,7 +21,7 @@ const { Op } = require('sequelize');
 const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
-  ProductoImagen, ProductoVariante, ProductoFaq, LandingSeccion, LandingEvento, Testimonio, Faq, LandingBeneficio, Envio, EnvioItem,
+  ProductoComboImagen, ProductoImagen, ProductoVariante, ProductoFaq, LandingSeccion, LandingEvento, Testimonio, Faq, LandingBeneficio, Envio, EnvioItem,
   Oferta, OfertaComponente, Tienda, LandingTemplate, Courier, CourierTarifa, DeliveryZonaTarifa, sequelize
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
@@ -1523,8 +1523,13 @@ class LandingService {
             {
               model: ProductoComboItem,
               as: 'items',
-              attributes: ['id'],
-              include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre'] }],
+              attributes: ['id', 'cantidad', 'producto_incluido_id'],
+              include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base', 'beneficios'] }],
+            },
+            {
+              model: ProductoComboImagen,
+              as: 'imagenes',
+              attributes: ['id', 'url', 'storage_key', 'es_principal', 'orden'],
             },
           ],
         })
@@ -1574,7 +1579,9 @@ class LandingService {
 
     const referenciasProducto = productos.map(p => p.id);
     const referenciasCombo = combos.map(c => c.id);
-    // Imagen/galería: para combos se usa la del producto_padre (los combos no tienen imagen propia).
+    // Imagen/galería: el combo usa sus propias fotos si las tiene; si no,
+    // cae a la galería del producto padre para mantener compatibilidad con
+    // combos viejos creados antes de tener galería propia.
     const idsParaImagen = [
       ...productos.map(p => p.id),
       ...combos.map(c => c.producto_padre?.id).filter(Boolean),
@@ -1652,13 +1659,19 @@ class LandingService {
     // porque `mapaProducto`/`mapaImagenes` solo tienen los items de la
     // landing. Se traen solo nombre e imagen: nada de precios ni stock, que
     // no se muestran y no hace falta exponer.
-    const idsComponentesAjenos = [...new Set(
-      ofertas.flatMap(o => (o.componentes || []).map(c => c.producto_id))
-    )].filter(id => !mapaProducto.has(id));
+    // Los productos que arma un combo (ProductoComboItem.producto_incluido)
+    // tampoco están garantizados en `mapaProducto`/`mapaImagenes`: son del
+    // catálogo general del admin, no items propios de esta landing. Sin
+    // esto, "Qué incluye" en la ficha del combo no tenía ni imagen ni precio
+    // de referencia de cada producto.
+    const idsComponentesAjenos = [...new Set([
+      ...ofertas.flatMap(o => (o.componentes || []).map(c => c.producto_id)),
+      ...combos.flatMap(c => (c.items || []).map(i => i.producto_incluido_id)),
+    ])].filter(id => !mapaProducto.has(id));
 
     if (idsComponentesAjenos.length) {
       const [productosAjenos, imagenesAjenas] = await Promise.all([
-        Producto.findAll({ where: { id: { [Op.in]: idsComponentesAjenos } }, attributes: ['id', 'nombre'] }),
+        Producto.findAll({ where: { id: { [Op.in]: idsComponentesAjenos } }, attributes: ['id', 'nombre', 'precio_base', 'beneficios'] }),
         ProductoImagen.findAll({
           where: { producto_id: { [Op.in]: idsComponentesAjenos }, variante_id: null },
           attributes: ['producto_id', 'variante_id', 'url', 'es_principal'],
@@ -1693,12 +1706,19 @@ class LandingService {
       const { base: precioBaseEfectivo, efectivo: precioEfectivo } = PricingService.calcularPrecioBase(precioBaseConDescuento, precioMinimo, precioUsuario);
 
       const galeriaFuente = productoParaFiltros ? (mapaImagenes.get(productoParaFiltros.id) || []) : [];
+      const galeriaCombo = esCombo
+        ? (entidad.imagenes || [])
+          .slice()
+          .sort((a, b) => (b.es_principal === true) - (a.es_principal === true) || (Number(a.orden) || 0) - (Number(b.orden) || 0))
+          .map(img => ({ url: ImagenService.serializar(img).url }))
+          .filter(img => img.url)
+        : [];
       // Galería general: todas las imágenes que no son de una variante
       // puntual. Si un producto no tiene ninguna imagen "general" (todas
       // están atadas a variantes), se usan todas igual — mejor mostrar
       // algo que una galería vacía.
       const galeriaGeneral = galeriaFuente.filter(i => !i.variante_id);
-      const imagenesDto = (galeriaGeneral.length ? galeriaGeneral : galeriaFuente).map(i => i.url);
+      const imagenesDto = (galeriaCombo.length ? galeriaCombo : (galeriaGeneral.length ? galeriaGeneral : galeriaFuente)).map(i => i.url);
 
       // Variantes: precio_diferencial es un delta ABSOLUTO que fijó el
       // admin sobre precio_base (ej: "el talle XL cuesta 10.000 más"). Ese
@@ -1733,19 +1753,21 @@ class LandingService {
           const propio = (o.componentes || []).find(c => c.producto_id === entidad.id);
           unidades = propio?.cantidad || (o.componentes || []).reduce((s, c) => s + (c.cantidad || 0), 0) || null;
         }
-        // Ofertas de checkout (order bump / combo): a diferencia de un pack,
+        // Ofertas de checkout (order bump / upsell / combo): a diferencia de un pack,
         // acá SÍ hace falta mostrar QUÉ se está ofreciendo de más (ej.
         // "Agregá el Mouse por Gs 15.000" con su propia foto) — sin esto la
         // casilla del checkout no tendría nombre ni imagen que mostrar. Se
         // exponen solo nombre/imagen, nunca cantidades ni la receta completa
         // (mismo criterio de privacidad que "unidades" arriba).
-        // Un order bump se ofrece DENTRO del checkout; un combo se elige
-        // antes, en la ficha del producto. Los dos necesitan mostrar qué
-        // traen, pero solo el bump cobra el precio promocional.
+        // Un order bump se ofrece DENTRO del checkout; un upsell aparece como
+        // paso de mejora antes de confirmar; un combo se elige antes, en la
+        // ficha del producto. Todos necesitan mostrar qué traen, pero solo el
+        // bump cobra el precio promocional si tiene `precio_order_bump`.
         const esOrderBump = o.estrategia === 'order_bump';
+        const esUpsell = o.estrategia === 'upsell';
         let productoComplementario = null;
         let productosIncluidos = [];
-        if (esOrderBump || o.estrategia === 'combo') {
+        if (esOrderBump || esUpsell || o.estrategia === 'combo') {
           const resolverProducto = (productoId) => {
             const prod = mapaProducto.get(productoId);
             if (!prod) return null;
@@ -1755,7 +1777,8 @@ class LandingService {
           };
           // Un combo se muestra como paquete completo ("3 productos x
           // 120.000"), así que lista TODOS sus productos — el ancla incluido.
-          // Un order bump es un agregado, así que muestra solo lo que suma.
+          // Un order bump/upsell es un agregado, así que muestra solo lo que
+          // suma respecto al producto que la persona ya eligió.
           const componentes = o.estrategia === 'combo'
             ? (o.componentes || [])
             : (o.componentes || []).filter(c => c.producto_id !== entidad.id);
@@ -1797,9 +1820,12 @@ class LandingService {
         };
       }) : [];
 
-      // Lo que el comercio personalizó de este producto EN ESTA LANDING
-      // (ver overrideDeProducto). Pisa el catálogo global sin tocarlo.
-      const override = esCombo ? null : this.overrideDeProducto(landing.content, entidad.id);
+      // Lo que el comercio personalizó de este producto/combo EN ESTA
+      // LANDING (ver overrideDeProducto/overrideDeCombo). Pisa el catálogo
+      // global sin tocarlo.
+      const override = esCombo
+        ? this.overrideDeCombo(landing.content, entidad.id)
+        : this.overrideDeProducto(landing.content, entidad.id);
 
       // Precio fantasía: si está seteado en la landing (item.precio_ancla) o en el producto (entidad.precio_tachado).
       // Si el producto tiene un descuento comercial y no hay un ancla visual explícita, 
@@ -1846,21 +1872,58 @@ class LandingService {
         ficha_beauty: !esCombo ? (override?.ficha_beauty || null) : null,
         // Ídem para la ficha del template Básico
         ficha_basico: !esCombo ? (override?.ficha_basico || null) : null,
-        // Rubro y campos propios del rubro, cargados en Mis Productos
-        // (especificaciones, "en la caja", comparativa para Tecnología;
-        // ingredientes para Suplementos). Son DEL PRODUCTO, así que valen
-        // en todas sus landings sin volver a cargarlos.
-        ficha_rubro: !esCombo ? (entidad.ficha_rubro || null) : null,
-        ficha_datos: !esCombo ? (entidad.ficha_datos || {}) : {},
-        faq: !esCombo ? (override?.faq || mapaFaq.get(entidad.id) || []) : [],
-        faq_titulo: !esCombo ? (override?.faq_titulo || entidad.faq_titulo || null) : null,
-        productos_incluidos: esCombo ? (entidad.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean) : undefined,
-        // Campos de marketing — solo aplica a productos simples (no combos)
-        propuesta_valor: !esCombo ? (entidad.propuesta_valor || null) : null,
-        beneficios: !esCombo ? (entidad.beneficios || []) : [],
-        confianza: !esCombo ? (entidad.confianza || []) : [],
-        preguntas_frecuentes: !esCombo ? (entidad.preguntas_frecuentes || []) : [],
-        sobre_este_producto: !esCombo ? (override?.descripcion || entidad.sobre_este_producto || null) : null,
+        // Ficha propia del Combo (ver templates/combo/fichaCombo.js en el
+        // frontend). Mismo mecanismo que las otras: lo que este combo pisa
+        // EN ESTA landing. El navegador la mezcla con `content.ficha_combo`
+        // y con los campos propios del combo (Vista del combo).
+        ficha_combo: esCombo ? (override?.ficha_combo || null) : null,
+        // Rubro y campos propios del rubro, cargados en Mis Productos o en
+        // la Vista del combo (especificaciones, "en la caja", comparativa
+        // para Tecnología; ingredientes para Suplementos). Son DE LA
+        // ENTIDAD, así que valen en todas sus landings sin volver a
+        // cargarlos.
+        ficha_rubro: entidad.ficha_rubro || null,
+        ficha_datos: entidad.ficha_datos || {},
+        faq: esCombo
+          ? (override?.faq || entidad.preguntas_frecuentes || [])
+          : (override?.faq || mapaFaq.get(entidad.id) || []),
+        faq_titulo: override?.faq_titulo || entidad.faq_titulo || null,
+        // Nombres nomás — lo que ya consumían ProductDetailBlock.jsx,
+        // ProductPagePublica.jsx, VitrinaGrid.jsx, etc. (join(', ') en
+        // varios lados). NO cambiar la forma acá: ver `productos_combo`
+        // abajo para el detalle enriquecido que necesita la ficha nueva.
+        productos_incluidos: esCombo ? (entidad.items || []).map(i => (i.producto_incluido?.nombre || mapaProducto.get(i.producto_incluido_id)?.nombre)).filter(Boolean) : undefined,
+        // "Qué incluye"/"Detalle de cada producto" de la ficha del combo
+        // (templates/combo/): cada producto que lo compone, con precio de
+        // referencia e imagen (resueltos vía mapaProducto/mapaImagenes, ver
+        // idsComponentesAjenos más arriba — los productos de un combo no
+        // siempre son items propios de esta landing). Campo NUEVO y propio
+        // de la ficha nueva — no lo lee nadie más, así que no pisa la forma
+        // de `productos_incluidos` de arriba.
+        productos_combo: esCombo ? (entidad.items || []).map(i => {
+          const prod = mapaProducto.get(i.producto_incluido_id) || i.producto_incluido;
+          if (!prod) return null;
+          const imgs = mapaImagenes.get(prod.id) || [];
+          const principal = imgs.find(im => im.es_principal) || imgs[0];
+          return {
+            id: prod.id,
+            nombre: prod.nombre,
+            cantidad: Number(i.cantidad) || 1,
+            precio: prod.precio_base != null ? parseFloat(prod.precio_base) : null,
+            imagen: principal?.url || null,
+            // Checks del detalle del combo: se reusan los beneficios que YA
+            // tiene cargados ese producto individual — nada inventado.
+            beneficios: (prod.beneficios || []).filter(b => b?.titulo?.trim()).map(b => b.titulo),
+          };
+        }).filter(Boolean) : [],
+        // Campos de marketing / "Vista del producto" (o "Vista del combo").
+        propuesta_valor: entidad.propuesta_valor || null,
+        beneficios: entidad.beneficios || [],
+        confianza: entidad.confianza || [],
+        preguntas_frecuentes: entidad.preguntas_frecuentes || [],
+        sobre_este_producto: esCombo
+          ? (entidad.sobre_este_producto || null)
+          : (override?.descripcion || entidad.sobre_este_producto || null),
         categoria: productoParaFiltros?.categoria?.nombre || null,
         marca: productoParaFiltros?.Marca?.nombre || null,
         etiqueta: item.etiqueta,
@@ -1975,6 +2038,7 @@ class LandingService {
         // ficha caía en los textos de fábrica.
         ficha_beauty: landing.content?.ficha_beauty || null,
         ficha_basico: landing.content?.ficha_basico || null,
+        ficha_combo: landing.content?.ficha_combo || null,
       }),
       titulo: landing.titulo,
       descripcion: landing.descripcion,
@@ -2144,6 +2208,16 @@ class LandingService {
     return porProducto[String(productoId)] || null;
   }
 
+  /**
+   * Mismo mecanismo que overrideDeProducto() pero para combos — vive en
+   * Landing.content.combos["<id>"]. Forma: { faq_titulo, faq, ficha_combo }.
+   */
+  static overrideDeCombo(contenidoLanding, comboId) {
+    const porCombo = contenidoLanding?.combos;
+    if (!porCombo || typeof porCombo !== 'object' || Array.isArray(porCombo)) return null;
+    return porCombo[String(comboId)] || null;
+  }
+
   static async obtenerProductoPublico(tienda, slug, productoSlug) {
     const landing = await this.obtenerPublica(tienda, slug);
     if (landing === null) return null;
@@ -2194,12 +2268,18 @@ class LandingService {
         }
         relacionados = relacionadosDto;
         
-        // Inyectar el precio ancla y etiqueta de la landing actual a los productos relacionados
-        if (relacionados && relacionados.items && landing.items) {
+        // Inyectar el precio ancla y etiqueta de la landing actual a los
+        // productos relacionados. En plantillas rígidas `items` son solo los
+        // destacados del home; el catálogo completo vive en `catalogo_items`.
+        // Filtrar contra `items` borraba relacionados perfectamente válidos
+        // que estaban configurados para la página de producto pero no para el
+        // home.
+        const catalogoRelacionados = landing.catalogo_items?.length ? landing.catalogo_items : (landing.items || []);
+        if (relacionados && relacionados.items && catalogoRelacionados.length) {
           relacionados.items = relacionados.items.filter(relItem => 
-            landing.items.some(i => i.content_id === relItem.slug || (Number(i.referencia_id) === Number(relItem.id) && i.tipo === 'producto'))
+            catalogoRelacionados.some(i => i.content_id === relItem.slug || (Number(i.referencia_id) === Number(relItem.id) && i.tipo === 'producto'))
           ).map(relItem => {
-            const lItem = landing.items.find(i => i.content_id === relItem.slug || (Number(i.referencia_id) === Number(relItem.id) && i.tipo === 'producto'));
+            const lItem = catalogoRelacionados.find(i => i.content_id === relItem.slug || (Number(i.referencia_id) === Number(relItem.id) && i.tipo === 'producto'));
             if (lItem) {
               return {
                 ...relItem,
