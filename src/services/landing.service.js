@@ -1524,7 +1524,15 @@ class LandingService {
               model: ProductoComboItem,
               as: 'items',
               attributes: ['id', 'cantidad', 'producto_incluido_id'],
-              include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base', 'beneficios'] }],
+              include: [{
+                model: Producto,
+                as: 'producto_incluido',
+                attributes: [
+                  'id', 'nombre', 'precio_base', 'precio_minimo',
+                  'descuento_porcentaje', 'descuento_inicio', 'descuento_fin',
+                  'beneficios',
+                ],
+              }],
             },
             {
               model: ProductoComboImagen,
@@ -1628,6 +1636,26 @@ class LandingService {
     ]);
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
 
+    const precioVentaProducto = (producto) => {
+      if (!producto) return null;
+      const precioBaseProducto = parseFloat(producto.precio_base) || 0;
+      const precioMinimoProducto = producto.precio_minimo !== null && producto.precio_minimo !== undefined
+        ? parseFloat(producto.precio_minimo)
+        : null;
+      const precioUsuarioProducto = mapaPrecios.get(`producto:${producto.id}`);
+      const precioBaseConDescuentoProducto = PricingService.aplicarDescuentoFecha(
+        precioBaseProducto,
+        producto.descuento_porcentaje,
+        producto.descuento_inicio,
+        producto.descuento_fin
+      );
+      return PricingService.calcularPrecioBase(
+        precioBaseConDescuentoProducto,
+        precioMinimoProducto,
+        precioUsuarioProducto
+      ).efectivo;
+    };
+
     const mapaFaq = new Map(); // producto_id -> {pregunta, respuesta}[]
     preguntas.forEach(f => {
       const lista = mapaFaq.get(f.producto_id) || [];
@@ -1666,18 +1694,34 @@ class LandingService {
     // de referencia de cada producto.
     const idsComponentesAjenos = [...new Set([
       ...ofertas.flatMap(o => (o.componentes || []).map(c => c.producto_id)),
+      ...combos.map(c => c.producto_padre?.id),
       ...combos.flatMap(c => (c.items || []).map(i => i.producto_incluido_id)),
     ])].filter(id => !mapaProducto.has(id));
 
     if (idsComponentesAjenos.length) {
-      const [productosAjenos, imagenesAjenas] = await Promise.all([
-        Producto.findAll({ where: { id: { [Op.in]: idsComponentesAjenos } }, attributes: ['id', 'nombre', 'precio_base', 'beneficios'] }),
+      const [productosAjenos, imagenesAjenas, preciosAjenos] = await Promise.all([
+        Producto.findAll({
+          where: { id: { [Op.in]: idsComponentesAjenos } },
+          attributes: [
+            'id', 'nombre', 'precio_base', 'precio_minimo',
+            'descuento_porcentaje', 'descuento_inicio', 'descuento_fin',
+            'beneficios',
+          ],
+        }),
         ProductoImagen.findAll({
           where: { producto_id: { [Op.in]: idsComponentesAjenos }, variante_id: null },
           attributes: ['producto_id', 'variante_id', 'url', 'es_principal'],
           order: [['es_principal', 'DESC'], ['orden', 'ASC']],
         }),
+        PrecioUsuario.findAll({
+          where: {
+            usuario_id: tienda.usuario_id,
+            tipo: 'producto',
+            referencia_id: { [Op.in]: idsComponentesAjenos },
+          },
+        }),
       ]);
+      preciosAjenos.forEach(p => mapaPrecios.set(`producto:${p.referencia_id}`, parseFloat(p.precio)));
       productosAjenos.forEach(p => mapaProducto.set(p.id, p));
       imagenesAjenas.forEach(img => {
         const lista = mapaImagenes.get(img.producto_id) || [];
@@ -1892,7 +1936,18 @@ class LandingService {
         // ProductPagePublica.jsx, VitrinaGrid.jsx, etc. (join(', ') en
         // varios lados). NO cambiar la forma acá: ver `productos_combo`
         // abajo para el detalle enriquecido que necesita la ficha nueva.
-        productos_incluidos: esCombo ? (entidad.items || []).map(i => (i.producto_incluido?.nombre || mapaProducto.get(i.producto_incluido_id)?.nombre)).filter(Boolean) : undefined,
+        productos_incluidos: esCombo ? (() => {
+          const vistos = new Set();
+          const nombres = [];
+          const agregar = (prod) => {
+            if (!prod || vistos.has(prod.id)) return;
+            vistos.add(prod.id);
+            nombres.push(prod.nombre);
+          };
+          agregar(mapaProducto.get(entidad.producto_padre?.id) || entidad.producto_padre);
+          (entidad.items || []).forEach(i => agregar(mapaProducto.get(i.producto_incluido_id) || i.producto_incluido));
+          return nombres.filter(Boolean);
+        })() : undefined,
         // "Qué incluye"/"Detalle de cada producto" de la ficha del combo
         // (templates/combo/): cada producto que lo compone, con precio de
         // referencia e imagen (resueltos vía mapaProducto/mapaImagenes, ver
@@ -1900,22 +1955,29 @@ class LandingService {
         // siempre son items propios de esta landing). Campo NUEVO y propio
         // de la ficha nueva — no lo lee nadie más, así que no pisa la forma
         // de `productos_incluidos` de arriba.
-        productos_combo: esCombo ? (entidad.items || []).map(i => {
-          const prod = mapaProducto.get(i.producto_incluido_id) || i.producto_incluido;
-          if (!prod) return null;
-          const imgs = mapaImagenes.get(prod.id) || [];
-          const principal = imgs.find(im => im.es_principal) || imgs[0];
-          return {
-            id: prod.id,
-            nombre: prod.nombre,
-            cantidad: Number(i.cantidad) || 1,
-            precio: prod.precio_base != null ? parseFloat(prod.precio_base) : null,
-            imagen: principal?.url || null,
-            // Checks del detalle del combo: se reusan los beneficios que YA
-            // tiene cargados ese producto individual — nada inventado.
-            beneficios: (prod.beneficios || []).filter(b => b?.titulo?.trim()).map(b => b.titulo),
+        productos_combo: esCombo ? (() => {
+          const vistos = new Set();
+          const agregar = (prod, cantidad = 1) => {
+            if (!prod || vistos.has(prod.id)) return null;
+            vistos.add(prod.id);
+            const imgs = mapaImagenes.get(prod.id) || [];
+            const principal = imgs.find(im => im.es_principal) || imgs[0];
+            return {
+              id: prod.id,
+              nombre: prod.nombre,
+              cantidad: Number(cantidad) || 1,
+              precio: precioVentaProducto(prod),
+              imagen: principal?.url || null,
+              // Checks del detalle del combo: se reusan los beneficios que YA
+              // tiene cargados ese producto individual — nada inventado.
+              beneficios: (prod.beneficios || []).filter(b => b?.titulo?.trim()).map(b => b.titulo),
+            };
           };
-        }).filter(Boolean) : [],
+          return [
+            agregar(mapaProducto.get(entidad.producto_padre?.id) || entidad.producto_padre, 1),
+            ...(entidad.items || []).map(i => agregar(mapaProducto.get(i.producto_incluido_id) || i.producto_incluido, i.cantidad)),
+          ].filter(Boolean);
+        })() : [],
         // Campos de marketing / "Vista del producto" (o "Vista del combo").
         propuesta_valor: entidad.propuesta_valor || null,
         beneficios: entidad.beneficios || [],

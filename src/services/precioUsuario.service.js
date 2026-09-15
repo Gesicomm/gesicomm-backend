@@ -127,7 +127,7 @@ class PrecioUsuarioService {
           {
             model: Producto,
             as: 'producto_padre',
-            attributes: ['id', 'cantidad_disponible', 'creado_por'],
+            attributes: ['id', 'nombre', 'precio_base', 'beneficios', 'cantidad_disponible', 'creado_por'],
             where: { activo: true, ...visibilidadProducto },
             required: true,
             include: [
@@ -142,6 +142,34 @@ class PrecioUsuarioService {
     ]);
 
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
+    const precioVentaProducto = (prod) => {
+      if (!prod) return null;
+      const precioUsuario = mapaPrecios.has(`producto:${prod.id}`) ? mapaPrecios.get(`producto:${prod.id}`) : null;
+      return precioUsuario !== null
+        ? precioUsuario
+        : (prod.precio_base != null ? parseFloat(prod.precio_base) : null);
+    };
+    const productosDelCombo = (combo) => {
+      const vistos = new Set();
+      const agregar = (prod, cantidad = 1) => {
+        if (!prod || vistos.has(prod.id)) return null;
+        vistos.add(prod.id);
+        return {
+          id: prod.id,
+          nombre: prod.nombre,
+          cantidad: Number(cantidad) || 1,
+          // Precio que ve el comprador final en la tienda: primero el precio
+          // personalizado del usuario y, si no existe, el precio base B2B.
+          precio: precioVentaProducto(prod),
+          imagen: imgMap.get(prod.id) || null,
+          beneficios: (prod.beneficios || []).filter(b => b?.titulo?.trim()).map(b => b.titulo),
+        };
+      };
+      return [
+        agregar(combo.producto_padre, 1),
+        ...(combo.items || []).map(i => agregar(i.producto_incluido, i.cantidad)),
+      ].filter(Boolean);
+    };
 
     // Depende de los IDs recién resueltos, no se puede paralelizar con lo anterior.
     // Los combos entran con el id de su producto_padre: la imagen del combo es la del principal.
@@ -225,21 +253,10 @@ class PrecioUsuarioService {
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
         // Nombres nomás — lo que ya consumen VitrinaGrid.jsx, ProductDetailBlock.jsx,
         // etc. (join(', ') en varios lados). NO cambiar la forma acá.
-        productos_incluidos: (c.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean),
+        productos_incluidos: productosDelCombo(c).map(p => p.nombre).filter(Boolean),
         // Detalle enriquecido — solo lo usa la ficha del combo (template
         // "Combo"), ver templates/combo/fichaCombo.js.
-        productos_combo: (c.items || []).map(i => {
-          const prod = i.producto_incluido;
-          if (!prod) return null;
-          return {
-            id: prod.id,
-            nombre: prod.nombre,
-            cantidad: Number(i.cantidad) || 1,
-            precio: prod.precio_base != null ? parseFloat(prod.precio_base) : null,
-            imagen: imgMap.get(prod.id) || null,
-            beneficios: (prod.beneficios || []).filter(b => b?.titulo?.trim()).map(b => b.titulo),
-          };
-        }).filter(Boolean),
+        productos_combo: productosDelCombo(c),
         imagen: imagenesCombo[0] || (padre ? (imgMap.get(padre.id) || null) : null),
         imagenes: imagenesCombo.length ? imagenesCombo : imagenesFallback,
         categoria: padre?.categoria?.nombre || null,
@@ -396,7 +413,7 @@ class PrecioUsuarioService {
           {
             model: Producto,
             as: 'producto_padre',
-            attributes: ['id', 'cantidad_disponible', 'categoria_id', 'creado_por'],
+            attributes: ['id', 'nombre', 'precio_base', 'beneficios', 'cantidad_disponible', 'categoria_id', 'creado_por'],
             where: {
               inquilino_id,
               activo: true,
@@ -436,6 +453,51 @@ class PrecioUsuarioService {
     const proveedoresUnicos = proveedoresUnicasData ? proveedoresUnicasData.map(p => p.nombre) : [];
 
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
+    const idsProductosEnCombos = [
+      ...new Set([
+        ...combos.map(c => c.producto_padre?.id).filter(Boolean),
+        ...combos.flatMap(c => (c.items || []).map(i => i.producto_incluido_id)).filter(Boolean),
+      ]),
+    ];
+    const idsProductosEnCombosSinPrecio = idsProductosEnCombos.filter(id => !mapaPrecios.has(`producto:${id}`));
+    if (idsProductosEnCombosSinPrecio.length > 0) {
+      const preciosComponentes = await PrecioUsuario.findAll({
+        where: {
+          usuario_id,
+          tipo: 'producto',
+          referencia_id: { [require('sequelize').Op.in]: idsProductosEnCombosSinPrecio },
+        },
+      });
+      preciosComponentes.forEach(p => mapaPrecios.set(`producto:${p.referencia_id}`, parseFloat(p.precio)));
+    }
+    const precioVentaProducto = (prod) => {
+      if (!prod) return null;
+      const precioUsuario = mapaPrecios.has(`producto:${prod.id}`) ? mapaPrecios.get(`producto:${prod.id}`) : null;
+      return precioUsuario !== null
+        ? precioUsuario
+        : (prod.precio_base != null ? parseFloat(prod.precio_base) : null);
+    };
+    const productosDelCombo = (combo) => {
+      const vistos = new Set();
+      const agregar = (prod, cantidad = 1) => {
+        if (!prod || vistos.has(prod.id)) return null;
+        vistos.add(prod.id);
+        return {
+          id: prod.id,
+          nombre: prod.nombre,
+          cantidad: Number(cantidad) || 1,
+          // Precio que ve el comprador final en la tienda: primero el precio
+          // personalizado del usuario y, si no existe, el precio base B2B.
+          precio: precioVentaProducto(prod),
+          imagen: imgMap.get(prod.id) || null,
+          beneficios: (prod.beneficios || []).filter(b => b?.titulo?.trim()).map(b => b.titulo),
+        };
+      };
+      return [
+        agregar(combo.producto_padre, 1),
+        ...(combo.items || []).map(i => agregar(i.producto_incluido, i.cantidad)),
+      ].filter(Boolean);
+    };
 
     const idsParaImagen = [
       ...productos.map(p => p.id),
@@ -522,22 +584,11 @@ class PrecioUsuarioService {
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
         // Nombres nomás — compatibilidad con VitrinaGrid/ProductDetailBlock.
-        productos_incluidos: (c.items || []).map(i => i.producto_incluido?.nombre).filter(Boolean),
+        productos_incluidos: productosDelCombo(c).map(p => p.nombre).filter(Boolean),
         // Detalle enriquecido — usa la ficha del combo (template "Combo").
         // Mismo criterio que listarCatalogo; sin esto el armador de landings
         // no puede renderizar "¿Qué incluye?" ni "Detalle de cada producto".
-        productos_combo: (c.items || []).map(i => {
-          const prod = i.producto_incluido;
-          if (!prod) return null;
-          return {
-            id: prod.id,
-            nombre: prod.nombre,
-            cantidad: Number(i.cantidad) || 1,
-            precio: prod.precio_base != null ? parseFloat(prod.precio_base) : null,
-            imagen: imgMap.get(prod.id) || null,
-            beneficios: (prod.beneficios || []).filter(b => b?.titulo?.trim()).map(b => b.titulo),
-          };
-        }).filter(Boolean),
+        productos_combo: productosDelCombo(c),
         imagen: imagenesCombo[0] || (padre ? (imgMap.get(padre.id) || null) : null),
         imagenes: imagenesCombo.length ? imagenesCombo : imagenesFallback,
         categoria: padre?.categoria?.nombre || null,
