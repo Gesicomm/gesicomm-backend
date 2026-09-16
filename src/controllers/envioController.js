@@ -1390,6 +1390,90 @@ exports.updateEstado = async (req, res) => {
   }
 };
 
+/**
+ * Cambia el precio_unitario de UN item de un pedido ya creado — para el
+ * caso real de seguimiento comercial: alguien consultó, no compró, y
+ * después se le ofrece un descuento puntual para cerrar la venta. No toca
+ * `Producto.precio` (el catálogo no se entera), y no está restringido por
+ * estado: el precio de un pedido ya Entregado también puede corregirse.
+ *
+ * El monto del envío se ajusta por DELTA (nuevo_subtotal - subtotal_viejo),
+ * nunca recalculando `monto` desde cero — updateEstado ya sufrió ese bug
+ * (#385: recalcular como subtotales + flete pisaba pedidos donde el monto
+ * no incluía el flete). El delta es correcto sea cual sea la composición
+ * original del monto.
+ */
+exports.actualizarPrecioItem = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const usuario_id = req.usuario.id;
+    const { id, itemId } = req.params;
+    const { precio_unitario } = req.body;
+
+    const nuevoPrecio = Number(precio_unitario);
+    if (!Number.isFinite(nuevoPrecio) || nuevoPrecio < 0) {
+      await t.rollback();
+      return res.status(400).json({ error: 'precio_unitario debe ser un número mayor o igual a 0.' });
+    }
+
+    const filtro = esAdministrador(req) ? { id } : { id, usuario_id };
+
+    // Mismo patrón de bloqueo que updateEstado: lock en consulta aparte,
+    // sin include, para no golpear un FOR UPDATE contra el lado nullable
+    // de un LEFT JOIN.
+    const bloqueo = await Envio.findOne({ where: filtro, transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (!bloqueo) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Envío no encontrado' });
+    }
+
+    const item = await EnvioItem.findOne({
+      where: { id: itemId, envio_id: bloqueo.id },
+      transaction: t,
+      lock: Transaction.LOCK.UPDATE,
+    });
+    if (!item) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Ítem del pedido no encontrado' });
+    }
+
+    const precioAnterior = Number(item.precio_unitario) || 0;
+    if (precioAnterior === nuevoPrecio) {
+      await t.rollback();
+      const sinCambios = await Envio.findOne({
+        where: { id: bloqueo.id },
+        include: [{ model: EnvioItem, as: 'items' }, { model: Courier }],
+      });
+      return res.json(decorarEnvio(sinCambios));
+    }
+
+    const subtotalAnterior = Number(item.subtotal) || 0;
+    const subtotalNuevo = nuevoPrecio * (Number(item.cantidad) || 1);
+
+    await item.update({ precio_unitario: nuevoPrecio, subtotal: subtotalNuevo }, { transaction: t });
+    await bloqueo.update({ monto: (Number(bloqueo.monto) || 0) + (subtotalNuevo - subtotalAnterior) }, { transaction: t });
+
+    await registrarHistorial(
+      bloqueo.id,
+      usuario_id,
+      `Precio de "${item.nombre_producto}" cambiado de ${formatGsPlano(precioAnterior)} a ${formatGsPlano(nuevoPrecio)}`,
+      t,
+    );
+
+    await t.commit();
+
+    const result = await Envio.findOne({
+      where: { id: bloqueo.id },
+      include: [{ model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] }, { model: EnvioItem, as: 'items' }],
+    });
+    res.json(decorarEnvio(result));
+  } catch (error) {
+    if (!t.finished) await t.rollback();
+    console.error('Error actualizando precio de item:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
 exports.iniciarPagoAbastecimiento = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;

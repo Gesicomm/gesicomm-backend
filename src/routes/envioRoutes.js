@@ -20,6 +20,9 @@ router.post('/', envioController.createEnvio);
 // Actualizar estado o courier
 router.put('/:id/estado', envioController.updateEstado);
 
+// Editar el precio de un item puntual (ej. descuento por seguimiento comercial)
+router.patch('/:id/items/:itemId/precio', envioController.actualizarPrecioItem);
+
 // Abastecimiento Gesicom: pago real por PagoPar o acreditación manual admin
 router.post('/:id/abastecimiento/pagopar', envioController.iniciarPagoAbastecimiento);
 router.post('/:id/abastecimiento/manual', envioController.actualizarAbastecimientoManual);
