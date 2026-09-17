@@ -1,5 +1,5 @@
 const { Op, fn, col, literal } = require('sequelize');
-const { Envio, EnvioItem, EnvioItemComponente, Producto, Oferta, Usuario, ProductoVariante, MetodoPago } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Producto, Oferta, Usuario, ProductoVariante, MetodoPago, Courier } = require('../models');
 const { ESTADOS_ANALITICA } = require('../utils/analyticsConstants');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
@@ -1071,6 +1071,318 @@ class ReporteService {
         tasa_fallo: pedidosCerrados > 0 ? (pedidosFallidos / pedidosCerrados) * 100 : 0,
         venta_potencial_no_realizada: ventaPotencial,
         costo_operativo_asociado: costoOperativoAsociado
+      }
+    };
+  }
+
+
+  // --- FASE 4: Deep-Dives (Geografía, Logística, Cross-Selling) ---
+
+  static async obtenerReporteGeografia(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
+
+    const envios = await Envio.findAll({
+      where: whereEnvio,
+      attributes: ['id', 'estado', 'monto', 'ciudad', 'departamento']
+    });
+
+    const mapa = {};
+    let ventasNetasGlobales = 0;
+
+    envios.forEach(e => {
+      const isExitoso = ESTADOS_ANALITICA.EXITOSOS.includes(e.estado);
+      const isFallido = ESTADOS_ANALITICA.FALLIDOS.includes(e.estado);
+      if (!isExitoso && !isFallido) return; // solo cerrados para las tasas
+
+      // Normalizar ubicación
+      const ciudad = (e.ciudad && e.ciudad.trim()) ? e.ciudad.trim() : null;
+      const departamento = (e.departamento && e.departamento.trim()) ? e.departamento.trim() : null;
+      
+      // Clave compuesta: si no hay ciudad, agrupar como "Sin ubicación"
+      const geoKey = ciudad
+        ? `${departamento || 'Sin departamento'}|${ciudad}`
+        : 'SIN_UBICACION|Sin ubicación';
+      
+      if (!mapa[geoKey]) {
+        mapa[geoKey] = {
+          departamento: departamento || (ciudad ? 'Sin departamento' : null),
+          ciudad: ciudad || 'Sin ubicación',
+          pedidos_exitosos: 0,
+          pedidos_fallidos: 0,
+          pedidos_cerrados: 0,
+          ventas_netas: 0
+        };
+      }
+
+      mapa[geoKey].pedidos_cerrados++;
+      if (isExitoso) {
+        mapa[geoKey].pedidos_exitosos++;
+        mapa[geoKey].ventas_netas += Number(e.monto) || 0;
+        ventasNetasGlobales += Number(e.monto) || 0;
+      } else {
+        mapa[geoKey].pedidos_fallidos++;
+      }
+    });
+
+    // Calcular métricas derivadas
+    let arrayData = Object.values(mapa).map(g => {
+      g.tasa_fallo = g.pedidos_cerrados > 0 ? (g.pedidos_fallidos / g.pedidos_cerrados) * 100 : null;
+      g.ticket_promedio = g.pedidos_exitosos > 0 ? Math.round(g.ventas_netas / g.pedidos_exitosos) : 0;
+      g.participacion_ventas = ventasNetasGlobales > 0 ? (g.ventas_netas / ventasNetasGlobales) * 100 : 0;
+
+      // Semáforo basado en muestra mínima + tasa de fallo
+      // ⚪ < 10 cerrados → sin datos suficientes
+      // 🟢 < 15% fallo
+      // 🟡 15-30%
+      // 🔴 > 30%
+      if (g.pedidos_cerrados < 10) {
+        g.semaforo = 'sin_datos';
+      } else if (g.tasa_fallo < 15) {
+        g.semaforo = 'bajo';
+      } else if (g.tasa_fallo <= 30) {
+        g.semaforo = 'medio';
+      } else {
+        g.semaforo = 'alto';
+      }
+
+      return g;
+    });
+
+    arrayData.sort((a, b) => b.ventas_netas - a.ventas_netas);
+
+    return {
+      total: arrayData.length,
+      paginas: Math.ceil(arrayData.length / limite) || 1,
+      actual: pagina,
+      data: arrayData.slice(offset, offset + limite),
+      kpis: {
+        ventas_netas_globales: ventasNetasGlobales,
+        ciudades_activas: arrayData.filter(g => g.pedidos_exitosos > 0 && g.ciudad !== 'Sin ubicación').length,
+        ciudad_top: arrayData.find(g => g.ciudad !== 'Sin ubicación')?.ciudad || '-'
+      }
+    };
+  }
+
+  static async obtenerReporteLogistica(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
+
+    const envios = await Envio.findAll({
+      where: whereEnvio,
+      attributes: ['id', 'estado', 'courier_id', 'costo_envio'],
+      include: [{
+        model: Courier,
+        attributes: ['id', 'nombre'],
+        required: false
+      }]
+    });
+
+    const mapa = {};
+    let totalEntregados = 0;
+
+    envios.forEach(e => {
+      const isEntregado = e.estado === 'Entregado';
+      const isDevuelto = ['Devuelto', 'Rechazado'].includes(e.estado);
+      const isEnTransito = ['Pendiente', 'Confirmado', 'Empacado', 'En tránsito'].includes(e.estado);
+      const isCancelado = e.estado === 'Cancelado'; // cancelado antes de asignarse a courier
+
+      const courierKey = e.courier_id ? `C_${e.courier_id}` : 'SIN_COURIER';
+      const courierNombre = e.Courier ? e.Courier.nombre : (e.courier_id ? 'Courier Desconocido' : 'Sin courier asignado');
+
+      if (!mapa[courierKey]) {
+        mapa[courierKey] = {
+          id: courierKey,
+          nombre: courierNombre,
+          pedidos_asignados: 0,
+          pedidos_entregados: 0,
+          pedidos_devueltos: 0,
+          pedidos_en_transito: 0,
+          pedidos_logisticos_cerrados: 0, // entregados + devueltos
+          costo_total_envio: 0,
+          tasa_entrega: null,
+          costo_promedio_envio: 0,
+          costo_por_entrega_exitosa: null
+        };
+      }
+
+      const r = mapa[courierKey];
+
+      // Solo contamos pedidos que realmente le fueron asignados
+      if (!isCancelado) r.pedidos_asignados++;
+
+      if (isEntregado) {
+        r.pedidos_entregados++;
+        r.pedidos_logisticos_cerrados++;
+        r.costo_total_envio += Number(e.costo_envio) || 0;
+        totalEntregados++;
+      } else if (isDevuelto) {
+        r.pedidos_devueltos++;
+        r.pedidos_logisticos_cerrados++;
+        r.costo_total_envio += Number(e.costo_envio) || 0;
+      } else if (isEnTransito) {
+        r.pedidos_en_transito++;
+      }
+    });
+
+    const arrayData = Object.values(mapa).map(r => {
+      // Tasa de entrega solo sobre cerrados logísticos (entregado + devuelto)
+      r.tasa_entrega = r.pedidos_logisticos_cerrados > 0
+        ? (r.pedidos_entregados / r.pedidos_logisticos_cerrados) * 100
+        : null;
+
+      // Costo promedio sobre todos los que tuvieron movimiento (entregados + devueltos)
+      const pedidosConCosto = r.pedidos_entregados + r.pedidos_devueltos;
+      r.costo_promedio_envio = pedidosConCosto > 0 ? Math.round(r.costo_total_envio / pedidosConCosto) : 0;
+
+      // Costo por entrega exitosa: métrica de eficiencia económica
+      r.costo_por_entrega_exitosa = r.pedidos_entregados > 0
+        ? Math.round(r.costo_total_envio / r.pedidos_entregados)
+        : null;
+
+      return r;
+    }).sort((a, b) => b.pedidos_entregados - a.pedidos_entregados);
+
+    return {
+      total: arrayData.length,
+      paginas: Math.ceil(arrayData.length / limite) || 1,
+      actual: pagina,
+      data: arrayData.slice(offset, offset + limite),
+      kpis: {
+        total_entregados: totalEntregados,
+        couriers_activos: arrayData.filter(c => c.pedidos_asignados > 0 && c.id !== 'SIN_COURIER').length
+      }
+    };
+  }
+
+  static async obtenerReporteCrossSelling(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
+
+    // 1. Traer todos los items de pedidos EXITOSOS
+    //    (DISTINCT producto_id por pedido para evitar inflar pares por cantidades)
+    const items = await EnvioItem.findAll({
+      include: [{
+        model: Envio,
+        where: whereEnvio,
+        attributes: ['id', 'estado', 'monto'],
+        required: true
+      }, {
+        model: Producto,
+        attributes: ['id', 'nombre'],
+        required: false
+      }],
+      attributes: ['envio_id', 'producto_id', 'nombre_producto', 'subtotal'],
+      where: { producto_id: { [Op.ne]: null } }
+    });
+
+    // 2. Agrupar: mapa envio_id → Set de producto_ids (únicos por pedido)
+    const pedidoProductos = {};     // envio_id → { prodId → { nombre, subtotal } }
+    const pedidosExitosos = new Set();
+    const productoPedidos = {};     // prodId → Set de envio_ids (para calcular totales por producto)
+    const productoNombres = {};
+
+    items.forEach(item => {
+      const envio = item.Envio;
+      if (!ESTADOS_ANALITICA.EXITOSOS.includes(envio.estado)) return;
+
+      const envioId = item.envio_id;
+      const prodId = item.producto_id;
+      const nombre = item.Producto?.nombre || item.nombre_producto || `Producto ${prodId}`;
+      
+      pedidosExitosos.add(envioId);
+      
+      if (!pedidoProductos[envioId]) pedidoProductos[envioId] = {};
+      if (!pedidoProductos[envioId][prodId]) {
+        pedidoProductos[envioId][prodId] = { nombre, monto: Number(envio.monto) || 0 };
+      }
+      
+      if (!productoPedidos[prodId]) productoPedidos[prodId] = new Set();
+      productoPedidos[prodId].add(envioId);
+      productoNombres[prodId] = nombre;
+    });
+
+    // 3. Generar pares canónicos: a.id < b.id (evita A+B y B+A)
+    const pares = {};
+
+    Object.entries(pedidoProductos).forEach(([envioId, productos]) => {
+      const prodIds = Object.keys(productos).map(Number).sort((a, b) => a - b);
+      const monto = Object.values(productos)[0]?.monto || 0;
+
+      for (let i = 0; i < prodIds.length; i++) {
+        for (let j = i + 1; j < prodIds.length; j++) {
+          const idA = prodIds[i];
+          const idB = prodIds[j];
+          const parKey = `${idA}|${idB}`;
+
+          if (!pares[parKey]) {
+            pares[parKey] = {
+              producto_a_id: idA,
+              producto_a: productoNombres[idA] || `Producto ${idA}`,
+              producto_b_id: idB,
+              producto_b: productoNombres[idB] || `Producto ${idB}`,
+              pedidos_juntos: 0,
+              ventas_pedidos_combinados: 0
+            };
+          }
+
+          pares[parKey].pedidos_juntos++;
+          pares[parKey].ventas_pedidos_combinados += monto;
+        }
+      }
+    });
+
+    // 4. Calcular tasas de combinación: A→B y B→A
+    //    tasa_a_con_b = pedidos_juntos / total_pedidos_de_A
+    const arrayData = Object.values(pares).map(par => {
+      const pedidosA = productoPedidos[par.producto_a_id]?.size || 0;
+      const pedidosB = productoPedidos[par.producto_b_id]?.size || 0;
+
+      // Validación de invariante: pedidos_juntos <= min(pedidos_A, pedidos_B)
+      const pedidosJuntos = Math.min(par.pedidos_juntos, Math.min(pedidosA, pedidosB));
+
+      const tasa_a_con_b = pedidosA > 0 ? (pedidosJuntos / pedidosA) * 100 : 0;
+      const tasa_b_con_a = pedidosB > 0 ? (pedidosJuntos / pedidosB) * 100 : 0;
+
+      // LIFT: P(A∩B) / (P(A) * P(B))
+      // Arquitectura preparada — no se muestra en el frontend de Fase 4
+      const totalPedidos = pedidosExitosos.size;
+      const pA = pedidosA / totalPedidos;
+      const pB = pedidosB / totalPedidos;
+      const pAB = pedidosJuntos / totalPedidos;
+      const lift = (pA > 0 && pB > 0) ? pAB / (pA * pB) : null;
+
+      return {
+        producto_a_id: par.producto_a_id,
+        producto_a: par.producto_a,
+        producto_b_id: par.producto_b_id,
+        producto_b: par.producto_b,
+        pedidos_juntos: pedidosJuntos,
+        pedidos_producto_a: pedidosA,
+        pedidos_producto_b: pedidosB,
+        tasa_a_con_b: Math.round(tasa_a_con_b * 10) / 10,
+        tasa_b_con_a: Math.round(tasa_b_con_a * 10) / 10,
+        ventas_pedidos_combinados: par.ventas_pedidos_combinados,
+        lift // preparado para futuras vistas de recomendaciones
+      };
+    });
+
+    arrayData.sort((a, b) => b.pedidos_juntos - a.pedidos_juntos);
+
+    return {
+      total: arrayData.length,
+      paginas: Math.ceil(arrayData.length / limite) || 1,
+      actual: pagina,
+      data: arrayData.slice(offset, offset + limite),
+      kpis: {
+        pares_detectados: arrayData.length,
+        pedidos_exitosos_analizados: pedidosExitosos.size,
+        par_top: arrayData[0]
+          ? `${arrayData[0].producto_a} + ${arrayData[0].producto_b}`
+          : 'Sin datos'
       }
     };
   }

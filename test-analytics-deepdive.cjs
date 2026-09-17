@@ -86,6 +86,70 @@ async function run() {
       process.exit(1);
     }
 
+    // ============================================================
+    // FASE 4: GEOGRAFÍA, LOGÍSTICA Y CROSS-SELLING
+    // ============================================================
+    const repGeo = await ReporteService.obtenerReporteGeografia(usuario.id, 1, 500, filtros);
+    const repLog = await ReporteService.obtenerReporteLogistica(usuario.id, 1, 500, filtros);
+    const repCross = await ReporteService.obtenerReporteCrossSelling(usuario.id, 1, 500, filtros);
+
+    console.log('\n--- FASE 4: GEOGRAFÍA, LOGÍSTICA Y CROSS-SELLING ---');
+
+    // ---- Geografía ----
+    const sumaVentasGeo = repGeo.data.reduce((acc, g) => acc + g.ventas_netas, 0);
+    console.log('Ventas netas geográficas:', sumaVentasGeo, '=== KPI global:', repGeo.kpis.ventas_netas_globales);
+    if (sumaVentasGeo !== repGeo.kpis.ventas_netas_globales) {
+      console.error('❌ INVARIANTE ROTA: SUM(ventas_geo) !== ventas_netas_globales');
+      process.exit(1);
+    }
+    if (sumaVentasGeo !== vKPI) {
+      console.error('❌ INVARIANTE ROTA: SUM(ventas_geo) !== KPI global de ventas');
+      process.exit(1);
+    }
+    // Tasa de fallo solo sobre cerrados (no null para sin_datos)
+    const geoConTasa = repGeo.data.filter(g => g.tasa_fallo !== null);
+    const geoConFalloInvalido = geoConTasa.filter(g => g.tasa_fallo < 0 || g.tasa_fallo > 100);
+    if (geoConFalloInvalido.length > 0) {
+      console.error('❌ INVARIANTE ROTA: tasa_fallo fuera de rango [0,100]');
+      process.exit(1);
+    }
+
+    // ---- Logística ----
+    const sumaEntregados = repLog.data.reduce((acc, c) => acc + c.pedidos_entregados, 0);
+    console.log('Pedidos entregados por courier:', sumaEntregados, '=== KPI:', repLog.kpis.total_entregados);
+    if (sumaEntregados !== repLog.kpis.total_entregados) {
+      console.error('❌ INVARIANTE ROTA: SUM(entregados_por_courier) !== total_entregados');
+      process.exit(1);
+    }
+    // Tasa de entrega válida: null o [0,100]
+    const logConTasaInvalida = repLog.data.filter(c => c.tasa_entrega !== null && (c.tasa_entrega < 0 || c.tasa_entrega > 100));
+    if (logConTasaInvalida.length > 0) {
+      console.error('❌ INVARIANTE ROTA: tasa_entrega fuera de rango [0,100]');
+      process.exit(1);
+    }
+    // pedidos_logisticos_cerrados = entregados + devueltos
+    const logCerradosInvalidos = repLog.data.filter(c => c.pedidos_logisticos_cerrados !== c.pedidos_entregados + c.pedidos_devueltos);
+    if (logCerradosInvalidos.length > 0) {
+      console.error('❌ INVARIANTE ROTA: pedidos_logisticos_cerrados !== entregados + devueltos');
+      process.exit(1);
+    }
+
+    // ---- Cross-Selling ----
+    console.log('Pares de afinidad detectados:', repCross.kpis.pares_detectados);
+    console.log('Pedidos exitosos analizados:', repCross.kpis.pedidos_exitosos_analizados);
+    // pedidos_juntos <= min(pedidos_A, pedidos_B)
+    const crossViolations = repCross.data.filter(p => p.pedidos_juntos > Math.min(p.pedidos_producto_a, p.pedidos_producto_b));
+    if (crossViolations.length > 0) {
+      console.error('❌ INVARIANTE ROTA: pedidos_juntos > min(pedidos_A, pedidos_B)');
+      process.exit(1);
+    }
+    // Tasas en rango [0,100]
+    const crossTasasInvalidas = repCross.data.filter(p => p.tasa_a_con_b > 100 || p.tasa_b_con_a > 100 || p.tasa_a_con_b < 0 || p.tasa_b_con_a < 0);
+    if (crossTasasInvalidas.length > 0) {
+      console.error('❌ INVARIANTE ROTA: tasas de combinación fuera de rango [0,100]');
+      process.exit(1);
+    }
+
     console.log('\n✅ SIN DISCREPANCIAS. Todas las invariantes lógicas y sumatorias coinciden.');
     process.exit(0);
 

@@ -147,4 +147,41 @@ router.post('/fallos', verificarToken, async (req, res) => {
   }
 });
 
+
+// POST /api/reportes/geografia
+router.post('/geografia', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteGeografia(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de geografia:', error);
+    res.status(500).json({ error: 'Error al generar reporte de geografia' });
+  }
+});
+
+// POST /api/reportes/logistica
+router.post('/logistica', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteLogistica(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de logistica:', error);
+    res.status(500).json({ error: 'Error al generar reporte de logistica' });
+  }
+});
+
+// POST /api/reportes/cross-selling
+router.post('/cross-selling', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteCrossSelling(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de cross-selling:', error);
+    res.status(500).json({ error: 'Error al generar reporte de cross-selling' });
+  }
+});
+
 module.exports = router;
