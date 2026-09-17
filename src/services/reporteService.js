@@ -8,13 +8,14 @@ class ReporteService {
    * o si se pasa usuario_id, filtra por ese usuario directamente.
    */
   static _aplicarFiltrosGlobales(whereEnvio, filtros) {
-    const { estado, metodo_pago, canal_venta_id, producto_id, fecha_desde, fecha_hasta, buscador } = filtros;
+    const { estado, metodo_pago, canal_venta_id, ciudad, fecha_desde, fecha_hasta, buscador } = filtros;
     if (fecha_desde && fecha_hasta) {
       whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
     }
     if (estado && estado !== 'TODOS') whereEnvio.estado = estado;
     if (metodo_pago && metodo_pago !== 'TODOS') whereEnvio.metodo_pago = metodo_pago;
     if (canal_venta_id && canal_venta_id !== 'TODOS') whereEnvio.canal_venta_id = canal_venta_id;
+    if (ciudad) whereEnvio.ciudad = { [Op.iLike]: `%${ciudad}%` };
     if (buscador) {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
@@ -278,7 +279,7 @@ class ReporteService {
         {
           model: Envio,
           where: whereEnvio,
-          attributes: ['id', 'cliente', 'fecha', 'hora', 'monto', 'metodo_pago', 'quiere_factura']
+          attributes: ['id', 'numero_pedido', 'cliente', 'fecha', 'hora', 'monto', 'metodo_pago', 'quiere_factura']
         },
         {
           model: Oferta,
@@ -286,7 +287,11 @@ class ReporteService {
         },
         {
           model: Producto,
-          attributes: ['id', 'nombre']
+          attributes: ['id', 'nombre', 'sku']
+        },
+        {
+          model: Variante,
+          attributes: ['id', 'nombre', 'sku']
         }
       ],
       order: [['id', 'DESC']]
