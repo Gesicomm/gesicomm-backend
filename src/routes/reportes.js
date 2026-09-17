@@ -98,4 +98,53 @@ router.post('/confirmadores', verificarToken, async (req, res) => {
   }
 });
 
+// POST /api/reportes/composicion
+router.post('/composicion', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteComposicion(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de composicion:', error);
+    res.status(500).json({ error: 'Error al generar reporte de composicion' });
+  }
+});
+
+
+// POST /api/reportes/clientes
+router.post('/clientes', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteClientes(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de clientes:', error);
+    res.status(500).json({ error: 'Error al generar reporte de clientes' });
+  }
+});
+
+// POST /api/reportes/metodos-pago
+router.post('/metodos-pago', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteMetodosPago(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de metodos de pago:', error);
+    res.status(500).json({ error: 'Error al generar reporte de metodos de pago' });
+  }
+});
+
+// POST /api/reportes/fallos
+router.post('/fallos', verificarToken, async (req, res) => {
+  try {
+    const { pagina = 1, limite = 50, ...filtros } = req.body;
+    const datos = await ReporteService.obtenerReporteFallos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener reporte de fallos:', error);
+    res.status(500).json({ error: 'Error al generar reporte de fallos' });
+  }
+});
+
 module.exports = router;

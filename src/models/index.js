@@ -131,6 +131,7 @@ CuponProducto.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' })
 Envio.hasMany(EnvioItem, { as: 'items', foreignKey: 'envio_id', onDelete: 'CASCADE' });
 EnvioItem.belongsTo(Envio, { foreignKey: 'envio_id' });
 EnvioItem.belongsTo(Producto, { foreignKey: 'producto_id' });
+EnvioItem.belongsTo(ProductoVariante, { as: 'Variante', foreignKey: 'variante_id' });
 EnvioItem.belongsTo(Oferta, { foreignKey: 'oferta_id' });
 
 EnvioItem.hasMany(EnvioItemComponente, { as: 'componentes_vendidos', foreignKey: 'envio_item_id', onDelete: 'CASCADE' });

@@ -1,5 +1,5 @@
 const { Op, fn, col, literal } = require('sequelize');
-const { Envio, EnvioItem, EnvioItemComponente, Producto, Oferta, Usuario } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Producto, Oferta, Usuario, ProductoVariante, MetodoPago } = require('../models');
 const { ESTADOS_ANALITICA } = require('../utils/analyticsConstants');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
@@ -465,173 +465,188 @@ class ReporteService {
 
   static async obtenerReporteProductos(usuario_id, pagina = 1, limite = 50, filtros = {}) {
     const offset = (pagina - 1) * limite;
-    const { buscador, confirmador, courierId, courier_id } = filtros;
-    const finalCourierId = courierId || courier_id;
-    const { desde, hasta } = resolverRangoFechas(filtros);
-
-    const whereEnvio = { usuario_id };
-    
-    if (desde && hasta) {
-      whereEnvio.fecha = { [Op.between]: [desde, hasta] };
-    }
-
-    if (confirmador && confirmador !== 'TODOS') whereEnvio.confirmador = confirmador;
-    if (finalCourierId && finalCourierId !== 'TODOS') whereEnvio.courier_id = finalCourierId;
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
 
     const includeArray = [
       {
         model: Envio,
         where: whereEnvio,
-        attributes: ['estado']
+        attributes: ['id', 'estado']
       },
       {
         model: Producto,
-        attributes: ['precio_costo', 'precio_base']
+        attributes: ['id', 'nombre', 'sku']
       },
       {
-        // Costo REAL del comerciante, congelado al confirmarse el pedido.
-        // Sin esto el reporte caía al catálogo y mostraba el costo del ADMIN.
-        model: EnvioItemComponente,
-        as: 'componentes_vendidos',
-        attributes: ['cantidad', 'costo_unitario'],
-        required: false
+        model: ProductoVariante,
+        as: 'Variante',
+        attributes: ['id', 'nombre', 'sku_variante']
       }
     ];
 
-    if (buscador) {
-      includeArray[0].where[Op.or] = [
-        { cliente: { [Op.iLike]: `%${buscador}%` } },
-        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` })
-      ];
-    }
-
-    const items = await EnvioItem.findAll({
-      include: includeArray
-    });
+    const items = await EnvioItem.findAll({ include: includeArray });
 
     const mapa = {};
+    const sumatoriaVentasNetas = { total: 0 };
+    const pedidosPorProducto = {};
+
     items.forEach(item => {
       const p_id = item.producto_id || ('SIN_ID_' + item.nombre_producto);
+      const v_id = item.variante_id || 'SIN_VAR';
+      
       if (!mapa[p_id]) {
         mapa[p_id] = {
           id: p_id,
-          nombre: item.nombre_producto,
-          vendidos: 0,
-          venta_total: 0,
-          ingresos: 0,
-          costo_total: 0,
-          devoluciones: 0,
-          cancelados: 0,
-          total_procesados: 0,
-          // Los unitarios se calculan al final sobre lo que REALMENTE pasó
-          // (ver el map de abajo). El precio del catálogo queda solo como
-          // respaldo para un producto del que todavía no se entregó nada.
-          precio_costo_unitario: 0,
-          precio_venta_unitario: 0,
-          _costo_catalogo: item.Producto ? (Number(item.Producto.precio_base) || 0) : 0,
-          _ultimo_precio_venta: 0
+          nombre: item.Producto?.nombre || item.nombre_producto,
+          sku: item.Producto?.sku || '-',
+          unidades_vendidas: 0,
+          ventas_netas: 0,
+          pedidos_unicos: 0,
+          variantes: {}
+        };
+        pedidosPorProducto[p_id] = new Set();
+      }
+
+      const pObj = mapa[p_id];
+      if (!pObj.variantes[v_id]) {
+        pObj.variantes[v_id] = {
+          id: v_id,
+          nombre: item.Variante?.nombre || 'Única / Base',
+          sku: item.Variante?.sku_variante || '-',
+          unidades_vendidas: 0,
+          ventas_netas: 0,
+          pedidos_unicos: 0
         };
       }
       
-      const st = (item.Envio.estado || '').toLowerCase();
+      const vObj = pObj.variantes[v_id];
+      const st = (item.Envio.estado || '');
       const cant = Number(item.cantidad) || 0;
+      const subt = Number(item.subtotal) || 0;
       
-      mapa[p_id].total_procesados += cant;
-      
-      // Último precio al que se vendió de verdad — respaldo cuando todavía no
-      // hay ninguna unidad entregada de ese producto.
-      const precioUnit = Number(item.precio_unitario) || 0;
-      if (precioUnit > 0) mapa[p_id]._ultimo_precio_venta = precioUnit;
+      if (ESTADOS_ANALITICA.EXITOSOS.includes(st)) {
+        pObj.unidades_vendidas += cant;
+        pObj.ventas_netas += subt;
+        vObj.unidades_vendidas += cant;
+        vObj.ventas_netas += subt;
+        
+        sumatoriaVentasNetas.total += subt;
 
-      if (st === 'entregado') {
-        mapa[p_id].vendidos += cant;
-        mapa[p_id].venta_total += Number(item.subtotal) || 0;
-
-        // Costo del COMERCIANTE, no del admin. Se prefiere el snapshot que
-        // dejó la confirmación del pedido (EnvioItemComponente.costo_unitario):
-        // ya contempla el multiplicador de una oferta y el costo vigente
-        // cuando se vendió. Sin snapshot (pedido viejo) se usa `precio_base`,
-        // el precio de lista al que el comerciante le compra al admin.
-        //
-        // `precio_costo` es lo que le costó AL ADMIN y el comerciante nunca lo
-        // paga: usarlo acá inflaba el margen. Misma regla que costoDeItem() en
-        // pedidosAnalyticsService y costoParaComerciante() en envioController
-        // — si cambia una, tienen que cambiar las tres.
-        const comps = item.componentes_vendidos || [];
-        if (comps.length > 0) {
-          mapa[p_id].costo_total += comps.reduce(
-            (acc, c) => acc + (Number(c.costo_unitario) || 0) * (c.cantidad || 0), 0);
-        } else {
-          const costoUnitario = item.Producto ? (Number(item.Producto.precio_base) || 0) : 0;
-          mapa[p_id].costo_total += costoUnitario * cant;
-        }
-      } else if (st === 'rechazado' || st === 'devuelto') {
-        mapa[p_id].devoluciones += cant;
-      } else if (st === 'cancelado') {
-        mapa[p_id].cancelados += cant;
+        pedidosPorProducto[p_id].add(item.Envio.id);
+        vObj._pedidos = vObj._pedidos || new Set();
+        vObj._pedidos.add(item.Envio.id);
       }
     });
 
-    // Unitarios derivados de lo que pasó, para que la fila cierre sola:
-    // costo unitario x unidades entregadas = costo total, e igual con la venta.
     let arrayData = Object.values(mapa).map(p => {
-      const ingresos = p.venta_total - p.costo_total;
-      const fila = {
-        ...p,
-        ingresos,
-        precio_costo_unitario: p.vendidos > 0 ? Math.round(p.costo_total / p.vendidos) : p._costo_catalogo,
-        precio_venta_unitario: p.vendidos > 0 ? Math.round(p.venta_total / p.vendidos) : p._ultimo_precio_venta,
-      };
-      delete fila._costo_catalogo;
-      delete fila._ultimo_precio_venta;
-      return fila;
+      p.pedidos_unicos = pedidosPorProducto[p.id].size;
+      p.precio_promedio = p.unidades_vendidas > 0 ? Math.round(p.ventas_netas / p.unidades_vendidas) : 0;
+      p.participacion = sumatoriaVentasNetas.total > 0 ? (p.ventas_netas / sumatoriaVentasNetas.total) * 100 : 0;
+      
+      p.variantes = Object.values(p.variantes).map(v => {
+        v.pedidos_unicos = (v._pedidos || new Set()).size;
+        v.precio_promedio = v.unidades_vendidas > 0 ? Math.round(v.ventas_netas / v.unidades_vendidas) : 0;
+        v.participacion = sumatoriaVentasNetas.total > 0 ? (v.ventas_netas / sumatoriaVentasNetas.total) * 100 : 0;
+        delete v._pedidos;
+        return v;
+      }).sort((a, b) => b.ventas_netas - a.ventas_netas);
+
+      return p;
     });
 
-    // Filtrar adicionales si hubo un buscador por nombre de producto (que no entra en Envio)
-    if (buscador) {
-      const b = buscador.toLowerCase();
-      arrayData = arrayData.filter(p => p.nombre.toLowerCase().includes(b));
+    if (filtros.buscador) {
+      const b = filtros.buscador.toLowerCase();
+      arrayData = arrayData.filter(p => p.nombre.toLowerCase().includes(b) || p.sku.toLowerCase().includes(b));
     }
 
-    // Ordenar por ingresos DESC
-    arrayData.sort((a, b) => b.ingresos - a.ingresos);
+    arrayData.sort((a, b) => b.ventas_netas - a.ventas_netas);
 
     const totalCount = arrayData.length;
     const paginated = arrayData.slice(offset, offset + limite);
 
-    // Calcular KPIs globales
-    const totalUnidades = arrayData.reduce((acc, curr) => acc + curr.vendidos, 0);
-    const totalIngresos = arrayData.reduce((acc, curr) => acc + curr.ingresos, 0);
-    const topProducto = arrayData[0] && arrayData[0].vendidos > 0 ? arrayData[0].nombre : 'Ninguno';
-
-    // Generar Top 5 para gráficos
-    const topVendidos = [...arrayData]
-      .sort((a, b) => b.vendidos - a.vendidos)
-      .slice(0, 5)
-      .filter(p => p.vendidos > 0);
-
-    const topDevoluciones = [...arrayData]
-      .map(p => {
-        const tasa = p.total_procesados > 0 ? (p.devoluciones / p.total_procesados) * 100 : 0;
-        return { ...p, tasa_devolucion: tasa };
-      })
-      .filter(p => p.tasa_devolucion >= 15 && p.total_procesados > 5) // Omitir cosas raras como 1 de 1
-      .sort((a, b) => b.tasa_devolucion - a.tasa_devolucion)
-      .slice(0, 5);
+    const totalUnidades = arrayData.reduce((acc, curr) => acc + curr.unidades_vendidas, 0);
+    const totalVentasNetas = arrayData.reduce((acc, curr) => acc + curr.ventas_netas, 0);
 
     return {
       total: totalCount,
-      paginas: Math.ceil(totalCount / limite),
+      paginas: Math.ceil(totalCount / limite) || 1,
       actual: pagina,
       data: paginated,
       kpis: {
-        total_unidades: totalUnidades,
-        total_ingresos: totalIngresos,
-        producto_estrella: topProducto
+        unidades_vendidas: totalUnidades,
+        ventas_netas: totalVentasNetas,
+        producto_estrella: arrayData[0] && arrayData[0].unidades_vendidas > 0 ? arrayData[0].nombre : 'Ninguno'
+      }
+    };
+  }
+
+  static async obtenerReporteComposicion(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
+    
+    const includeArray = [
+      {
+        model: Envio,
+        where: whereEnvio,
+        attributes: ['id', 'estado']
       },
-      top5: {
-        vendidos: topVendidos,
-        devoluciones: topDevoluciones
+      {
+        model: Oferta,
+        attributes: ['estrategia']
+      }
+    ];
+
+    const items = await EnvioItem.findAll({ include: includeArray });
+
+    const mapa = {
+      'BASE': { id: 'BASE', nombre: 'Base (Orgánico)', unidades_vendidas: 0, ventas_netas: 0, pedidos_unicos: 0 },
+      'ORDER_BUMP': { id: 'ORDER_BUMP', nombre: 'Order Bump', unidades_vendidas: 0, ventas_netas: 0, pedidos_unicos: 0 },
+      'UPSELL': { id: 'UPSELL', nombre: 'Upsell', unidades_vendidas: 0, ventas_netas: 0, pedidos_unicos: 0 }
+    };
+    const pedidosPorRol = { 'BASE': new Set(), 'ORDER_BUMP': new Set(), 'UPSELL': new Set() };
+    const pedidosTotalesSet = new Set();
+    const pedidosConEstrategiaSet = new Set();
+
+    items.forEach(item => {
+      const st = (item.Envio.estado || '');
+      if (!ESTADOS_ANALITICA.EXITOSOS.includes(st)) return;
+
+      const oferta = item.Ofertum || item.Oferta;
+      const rol = !oferta ? 'BASE' : (oferta.estrategia === 'order_bump' ? 'ORDER_BUMP' : (oferta.estrategia === 'upsell' ? 'UPSELL' : 'BASE'));
+      
+      const cant = Number(item.cantidad) || 0;
+      const subt = Number(item.subtotal) || 0;
+
+      mapa[rol].unidades_vendidas += cant;
+      mapa[rol].ventas_netas += subt;
+      pedidosPorRol[rol].add(item.Envio.id);
+      
+      pedidosTotalesSet.add(item.Envio.id);
+      if (rol === 'ORDER_BUMP' || rol === 'UPSELL') {
+        pedidosConEstrategiaSet.add(item.Envio.id);
+      }
+    });
+
+    const totalVentasNetas = Object.values(mapa).reduce((sum, r) => sum + r.ventas_netas, 0);
+
+    const arrayData = Object.values(mapa).map(r => {
+      r.pedidos_unicos = pedidosPorRol[r.id].size;
+      r.participacion = totalVentasNetas > 0 ? (r.ventas_netas / totalVentasNetas) * 100 : 0;
+      r.precio_promedio = r.unidades_vendidas > 0 ? Math.round(r.ventas_netas / r.unidades_vendidas) : 0;
+      return r;
+    }).sort((a, b) => b.ventas_netas - a.ventas_netas);
+
+    const pedidosExitosos = pedidosTotalesSet.size;
+    const rendimientoCarrito = pedidosExitosos > 0 ? (pedidosConEstrategiaSet.size / pedidosExitosos) * 100 : 0;
+
+    return {
+      data: arrayData,
+      kpis: {
+        rendimiento_carrito: rendimientoCarrito,
+        ventas_estrategicas: mapa['ORDER_BUMP'].ventas_netas + mapa['UPSELL'].ventas_netas,
+        ventas_netas: totalVentasNetas
       }
     };
   }
@@ -782,6 +797,284 @@ class ReporteService {
       pedidos_totales: mapaTotales[r.fecha] || 0
     }));
   }
+  // --- FASE 3: Deep-Dives ---
+
+  static getClienteKeySql() {
+    return `
+      CASE 
+        WHEN "Envio"."telefono" IS NOT NULL AND TRIM("Envio"."telefono") != '' 
+        THEN 'TEL:' || REGEXP_REPLACE("Envio"."telefono", '[^0-9]', '', 'g')
+        ELSE 'PEDIDO:' || "Envio"."id"::text
+      END
+    `;
+  }
+
+  static async obtenerReporteClientes(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
+
+    const clienteKeyLiteral = literal(this.getClienteKeySql());
+
+    // 1. Actividad del período
+    const enviosPeriodo = await Envio.findAll({
+      where: whereEnvio,
+      attributes: [
+        [clienteKeyLiteral, 'cliente_key'],
+        'estado'
+      ],
+      raw: true
+    });
+
+    const clientesConPedido = new Set();
+    const clientesCompradores = new Set();
+    const mapNombres = {};
+
+    enviosPeriodo.forEach(e => {
+      clientesConPedido.add(e.cliente_key);
+      if (ESTADOS_ANALITICA.EXITOSOS.includes(e.estado)) {
+        clientesCompradores.add(e.cliente_key);
+      }
+    });
+
+    if (clientesCompradores.size === 0) {
+      return {
+        total: 0, paginas: 1, actual: pagina, data: [],
+        kpis: {
+          clientes_con_pedido: clientesConPedido.size,
+          clientes_compradores: 0,
+          tasa_conversion_pedido: 0,
+          clientes_recurrentes: 0
+        }
+      };
+    }
+
+    // Nombres recientes de los compradores del periodo
+    const enviosNombres = await Envio.findAll({
+      where: { ...whereEnvio, estado: ESTADOS_ANALITICA.EXITOSOS },
+      attributes: [[clienteKeyLiteral, 'cliente_key'], 'cliente', 'telefono'],
+      raw: true,
+      order: [['fecha', 'DESC']]
+    });
+    enviosNombres.forEach(e => {
+      if (!mapNombres[e.cliente_key]) {
+        mapNombres[e.cliente_key] = { nombre: e.cliente, telefono: e.telefono };
+      }
+    });
+
+    // 2. Historial hasta fecha_hasta de esos clientes
+    let whereHistorial = { usuario_id, estado: ESTADOS_ANALITICA.EXITOSOS };
+    if (filtros.fecha_hasta) {
+      whereHistorial.fecha = { [Op.lte]: filtros.fecha_hasta };
+    }
+
+    // Traemos todo el historial de exitosos para esos cliente_keys
+    // Como SQL IN no es fácil con un REGEXP_REPLACE sobre miles de keys, 
+    // calculamos los totales por cliente_key en la BD y luego filtramos en JS.
+    const historicosAgrupados = await Envio.findAll({
+      where: whereHistorial,
+      attributes: [
+        [clienteKeyLiteral, 'cliente_key'],
+        [fn('COUNT', col('id')), 'pedidos_exitosos'],
+        [fn('SUM', col('monto')), 'total_comprado'],
+        [fn('MAX', col('fecha')), 'ultima_compra']
+      ],
+      group: [clienteKeyLiteral],
+      raw: true
+    });
+
+    let clientes_recurrentes = 0;
+    const arrayData = [];
+
+    historicosAgrupados.forEach(h => {
+      if (clientesCompradores.has(h.cliente_key)) {
+        const pedExit = parseInt(h.pedidos_exitosos) || 0;
+        const totComp = parseInt(h.total_comprado) || 0;
+        if (pedExit >= 2) clientes_recurrentes++;
+        
+        arrayData.push({
+          cliente_key: h.cliente_key,
+          nombre: mapNombres[h.cliente_key]?.nombre || 'Desconocido',
+          telefono: mapNombres[h.cliente_key]?.telefono || '-',
+          pedidos_exitosos: pedExit,
+          total_comprado: totComp,
+          ticket_promedio: pedExit > 0 ? Math.round(totComp / pedExit) : 0,
+          ultima_compra: h.ultima_compra
+        });
+      }
+    });
+
+    arrayData.sort((a, b) => b.total_comprado - a.total_comprado);
+    const paginated = arrayData.slice(offset, offset + limite);
+
+    return {
+      total: arrayData.length,
+      paginas: Math.ceil(arrayData.length / limite) || 1,
+      actual: pagina,
+      data: paginated,
+      kpis: {
+        clientes_con_pedido: clientesConPedido.size,
+        clientes_compradores: clientesCompradores.size,
+        tasa_conversion_pedido: clientesConPedido.size > 0 ? (clientesCompradores.size / clientesConPedido.size) * 100 : 0,
+        clientes_recurrentes
+      }
+    };
+  }
+
+  static async obtenerReporteMetodosPago(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
+
+    const includeArray = [
+      {
+        model: MetodoPago,
+        attributes: ['id', 'nombre'],
+        required: false
+      }
+    ];
+
+    const envios = await Envio.findAll({
+      where: whereEnvio,
+      include: includeArray,
+      attributes: ['id', 'estado', 'monto', 'metodo_pago_id']
+    });
+
+    const mapa = {};
+    let totalPedidos = 0;
+    let totalExitosos = 0;
+    let totalFallidos = 0;
+    let totalAbiertos = 0;
+    let totalVentasNetas = 0;
+
+    envios.forEach(e => {
+      const isExitoso = ESTADOS_ANALITICA.EXITOSOS.includes(e.estado);
+      const isFallido = ESTADOS_ANALITICA.FALLIDOS.includes(e.estado);
+      const isAbierto = !isExitoso && !isFallido;
+
+      const metodoKey = e.metodo_pago_id ? `M_${e.metodo_pago_id}` : 'SIN_METODO';
+      const metodoNombre = e.MetodoPago ? e.MetodoPago.nombre : (e.metodo_pago_id ? 'Método Desconocido' : 'Sin método informado');
+
+      if (!mapa[metodoKey]) {
+        mapa[metodoKey] = {
+          id: metodoKey,
+          nombre: metodoNombre,
+          pedidos_totales: 0,
+          pedidos_exitosos: 0,
+          pedidos_fallidos: 0,
+          pedidos_abiertos: 0,
+          pedidos_cerrados: 0,
+          ventas_netas: 0
+        };
+      }
+
+      totalPedidos++;
+      mapa[metodoKey].pedidos_totales++;
+
+      if (isExitoso) {
+        mapa[metodoKey].pedidos_exitosos++;
+        mapa[metodoKey].pedidos_cerrados++;
+        mapa[metodoKey].ventas_netas += e.monto;
+        totalExitosos++;
+        totalVentasNetas += e.monto;
+      } else if (isFallido) {
+        mapa[metodoKey].pedidos_fallidos++;
+        mapa[metodoKey].pedidos_cerrados++;
+        totalFallidos++;
+      } else {
+        mapa[metodoKey].pedidos_abiertos++;
+        totalAbiertos++;
+      }
+    });
+
+    const arrayData = Object.values(mapa).map(m => {
+      m.tasa_exito = m.pedidos_cerrados > 0 ? (m.pedidos_exitosos / m.pedidos_cerrados) * 100 : null;
+      m.tasa_fallo = m.pedidos_cerrados > 0 ? (m.pedidos_fallidos / m.pedidos_cerrados) * 100 : null;
+      m.participacion = totalVentasNetas > 0 ? (m.ventas_netas / totalVentasNetas) * 100 : 0;
+      m.ticket_promedio = m.pedidos_exitosos > 0 ? Math.round(m.ventas_netas / m.pedidos_exitosos) : 0;
+      return m;
+    }).sort((a, b) => b.ventas_netas - a.ventas_netas);
+
+    return {
+      total: arrayData.length,
+      paginas: Math.ceil(arrayData.length / limite) || 1,
+      actual: pagina,
+      data: arrayData.slice(offset, offset + limite),
+      kpis: {
+        total_pedidos: totalPedidos,
+        total_exitosos: totalExitosos,
+        total_fallidos: totalFallidos,
+        total_abiertos: totalAbiertos,
+        pedidos_cerrados: totalExitosos + totalFallidos,
+        total_ventas_netas: totalVentasNetas
+      }
+    };
+  }
+
+  static async obtenerReporteFallos(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
+
+    const envios = await Envio.findAll({
+      where: whereEnvio,
+      attributes: ['id', 'estado', 'monto', 'costo_envio']
+    });
+
+    let pedidosTotales = envios.length;
+    let pedidosCerrados = 0;
+    let pedidosFallidos = 0;
+    let ventaPotencial = 0;
+    let costoOperativoAsociado = 0;
+
+    const mapaMotivos = {};
+
+    envios.forEach(e => {
+      const isExitoso = ESTADOS_ANALITICA.EXITOSOS.includes(e.estado);
+      const isFallido = ESTADOS_ANALITICA.FALLIDOS.includes(e.estado);
+
+      if (isExitoso || isFallido) pedidosCerrados++;
+
+      if (isFallido) {
+        pedidosFallidos++;
+        ventaPotencial += e.monto; // Venta potencial no realizada canónica (monto final del pedido)
+        costoOperativoAsociado += (Number(e.costo_envio) || 0);
+
+        // Como no tenemos tabla de motivos aun, agruparemos por Estado como fallback/primer paso
+        const motivo = e.estado || 'Desconocido';
+        if (!mapaMotivos[motivo]) {
+          mapaMotivos[motivo] = {
+            motivo: motivo,
+            pedidos: 0,
+            venta_potencial: 0,
+            costo_operativo: 0
+          };
+        }
+        mapaMotivos[motivo].pedidos++;
+        mapaMotivos[motivo].venta_potencial += e.monto;
+        mapaMotivos[motivo].costo_operativo += (Number(e.costo_envio) || 0);
+      }
+    });
+
+    const arrayData = Object.values(mapaMotivos).map(m => {
+      m.participacion = pedidosFallidos > 0 ? (m.pedidos / pedidosFallidos) * 100 : 0;
+      return m;
+    }).sort((a, b) => b.pedidos - a.pedidos);
+
+    return {
+      total: arrayData.length,
+      paginas: Math.ceil(arrayData.length / limite) || 1,
+      actual: pagina,
+      data: arrayData.slice(offset, offset + limite),
+      kpis: {
+        pedidos_fallidos: pedidosFallidos,
+        tasa_fallo: pedidosCerrados > 0 ? (pedidosFallidos / pedidosCerrados) * 100 : 0,
+        venta_potencial_no_realizada: ventaPotencial,
+        costo_operativo_asociado: costoOperativoAsociado
+      }
+    };
+  }
+
 }
 
 module.exports = ReporteService;
