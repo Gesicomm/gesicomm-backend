@@ -1,10 +1,11 @@
-const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Rol, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Rol, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const PedidoNumeracion = require('../services/pedidoNumeracion.service');
+const ProductoService = require('../services/producto.service');
 const {
   iniciarCheckoutAbastecimiento,
   acreditarPagoAbastecimiento,
@@ -25,13 +26,38 @@ async function resolverReceta(item, t) {
       transaction: t,
     });
     if (oferta && oferta.componentes && oferta.componentes.length > 0) {
-      return oferta.componentes.map(c => ({ producto_id: c.producto_id, cantidad: cantidadItem * c.cantidad }));
+      return oferta.componentes.map(c => ({
+        producto_id: c.producto_id,
+        // El componente "elegible" usa la variante que el cliente eligió en
+        // el checkout (persistida en EnvioItem.componente_variante_id); si
+        // no eligió nada (carrito viejo, o ese componente no era elegible),
+        // cae a la variante fija que haya dejado el admin al configurar la
+        // oferta. Ninguno de los dos aplica → producto sin variantes, null.
+        variante_id: (c.permite_elegir_variante ? item.componente_variante_id : null) || c.variante_id || null,
+        cantidad: cantidadItem * c.cantidad,
+      }));
     }
   }
   if (item.producto_id) {
-    return [{ producto_id: item.producto_id, cantidad: cantidadItem }];
+    // Fix de fondo: antes se ignoraba item.variante_id acá y el stock
+    // siempre se descontaba del Producto, nunca de la variante real que se
+    // vendió — ver EnvioItem.variante_id.
+    return [{ producto_id: item.producto_id, variante_id: item.variante_id || null, cantidad: cantidadItem }];
   }
   return [];
+}
+
+/**
+ * Reparto salón-primero: se vende del mostrador antes que del depósito, pero
+ * el total vendible siempre es la suma de ambos. Misma regla para
+ * Producto.stock_salon/stock_deposito y ProductoVariante.stock_salon/
+ * stock_deposito — factorizada acá para no reescribirla en las dos ramas de
+ * descontarStockYSnapshot.
+ */
+function repartoSalonDeposito(salonActual, depositoActual, cantidadTotal) {
+  const desdeSalon = Math.min(salonActual, cantidadTotal);
+  const desdeDeposito = Math.min(depositoActual, cantidadTotal - desdeSalon);
+  return { desdeSalon, desdeDeposito };
 }
 
 /**
@@ -85,18 +111,54 @@ function costoParaComerciante(prod, usuario_id) {
 // cambio de estado manual, en vez de duplicar la lógica.
 async function descontarStockYSnapshot(items, t, usuario_id) {
   const recetaPorItem = new Map();
-  const totalPorProducto = new Map();
+  // Agrupado por producto_id:variante_id — un mismo producto puede aparecer
+  // dos veces en el mismo pedido con variantes distintas (ej. un bump de
+  // "Rojo" y el ancla en "Azul"), y cada una descuenta su propio stock.
+  const totalPorClave = new Map();
 
   for (const item of items) {
     const receta = await resolverReceta(item, t);
     recetaPorItem.set(item.id, receta);
-    for (const { producto_id, cantidad } of receta) {
-      totalPorProducto.set(producto_id, (totalPorProducto.get(producto_id) || 0) + cantidad);
+    for (const { producto_id, variante_id, cantidad } of receta) {
+      const clave = `${producto_id}:${variante_id || ''}`;
+      const actual = totalPorClave.get(clave) || { producto_id, variante_id, cantidad: 0 };
+      actual.cantidad += cantidad;
+      totalPorClave.set(clave, actual);
     }
   }
 
   const productosPorId = new Map();
-  for (const [producto_id, cantidadTotal] of totalPorProducto) {
+  const productosConDescuentoDeVariante = new Set();
+
+  for (const { producto_id, variante_id, cantidad: cantidadTotal } of totalPorClave.values()) {
+    if (variante_id) {
+      const variante = await ProductoVariante.findByPk(variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+      if (!variante) continue;
+
+      const salonActual = parseInt(variante.stock_salon) || 0;
+      const depositoActual = parseInt(variante.stock_deposito) || 0;
+      const { desdeSalon, desdeDeposito } = repartoSalonDeposito(salonActual, depositoActual, cantidadTotal);
+      const nuevoSalon = salonActual - desdeSalon;
+      const nuevoDeposito = depositoActual - desdeDeposito;
+      await variante.update({
+        stock_salon: nuevoSalon,
+        stock_deposito: nuevoDeposito,
+        stock: nuevoSalon + nuevoDeposito,
+      }, { transaction: t });
+
+      // La reserva sigue viviendo a nivel Producto (no existe ese campo en
+      // ProductoVariante) — se acumula igual que el camino sin variante.
+      const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+      if (prod) {
+        productosPorId.set(producto_id, prod);
+        await prod.update({
+          cantidad_reservada: (parseInt(prod.cantidad_reservada) || 0) + cantidadTotal,
+        }, { transaction: t });
+      }
+      productosConDescuentoDeVariante.add(producto_id);
+      continue;
+    }
+
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (!prod) continue;
     productosPorId.set(producto_id, prod);
@@ -112,8 +174,7 @@ async function descontarStockYSnapshot(items, t, usuario_id) {
     // para decidir cuándo reponer.
     const salonActual = parseInt(prod.stock_salon) || 0;
     const depositoActual = parseInt(prod.stock_deposito) || 0;
-    const desdeSalon = Math.min(salonActual, cantidadTotal);
-    const desdeDeposito = Math.min(depositoActual, cantidadTotal - desdeSalon);
+    const { desdeSalon, desdeDeposito } = repartoSalonDeposito(salonActual, depositoActual, cantidadTotal);
 
     const actualizacion = {
       cantidad_disponible: nuevoStock,
@@ -127,13 +188,28 @@ async function descontarStockYSnapshot(items, t, usuario_id) {
     await prod.update(actualizacion, { transaction: t });
   }
 
+  // Los productos que perdieron stock a nivel variante necesitan resincronizar
+  // Producto.cantidad_disponible/stock_salon/stock_deposito como la suma de
+  // sus variantes activas — se reusa recalcularStockPadre (misma función que
+  // ya usa el admin al guardar variantes) en vez de reescribir esa regla acá.
+  for (const producto_id of productosConDescuentoDeVariante) {
+    const total = await ProductoService.recalcularStockPadre(producto_id, t);
+    if (total === 0) {
+      const prod = productosPorId.get(producto_id);
+      if (prod && prod.estado_venta === 'en_venta') {
+        await prod.update({ estado_venta: 'fuera_de_stock' }, { transaction: t });
+      }
+    }
+  }
+
   for (const item of items) {
     const receta = recetaPorItem.get(item.id) || [];
-    for (const { producto_id, cantidad } of receta) {
+    for (const { producto_id, variante_id, cantidad } of receta) {
       const prod = productosPorId.get(producto_id);
       await EnvioItemComponente.create({
         envio_item_id: item.id,
         producto_id,
+        variante_id,
         cantidad,
         costo_unitario: costoParaComerciante(prod, usuario_id),
       }, { transaction: t });

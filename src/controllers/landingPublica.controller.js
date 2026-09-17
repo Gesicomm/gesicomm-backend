@@ -295,6 +295,11 @@ async function crearCheckout(req, res) {
         content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
         variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
         oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
+        // Variante elegida por el cliente para el componente "elegible" del
+        // bump/upsell de esta línea (ver Oferta/OfertaComponente
+        // .permite_elegir_variante) — se re-valida contra esa oferta y ese
+        // producto en LandingService.resolverCarrito, acá solo se sanea el tipo.
+        componente_variante_id: Number.isFinite(Number(i?.componente_variante_id)) ? Number(i.componente_variante_id) : undefined,
         cantidad: i?.cantidad,
       })) : [],
     };
@@ -409,6 +414,7 @@ async function recalcularCarrito(req, res) {
       content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
       variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
       oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
+      componente_variante_id: Number.isFinite(Number(i?.componente_variante_id)) ? Number(i.componente_variante_id) : undefined,
       cantidad: i?.cantidad,
     })) : [];
 
@@ -442,6 +448,7 @@ async function validarCupon(req, res) {
       content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
       variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
       oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
+      componente_variante_id: Number.isFinite(Number(i?.componente_variante_id)) ? Number(i.componente_variante_id) : undefined,
       cantidad: i?.cantidad,
     })) : [];
 

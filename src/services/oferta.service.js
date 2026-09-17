@@ -10,7 +10,7 @@
  * a partir del catálogo real (precio_costo) al listar.
  */
 
-const { Oferta, OfertaComponente, Producto, ProductoImagen } = require('../models');
+const { Oferta, OfertaComponente, Producto, ProductoImagen, ProductoVariante } = require('../models');
 
 const TIPOS_CONTENIDO = ['pack', 'combo'];
 // 'combo' sigue aceptado por compatibilidad con una fila legacy (ya
@@ -35,25 +35,53 @@ const ESTRATEGIAS_CHECKOUT = ['order_bump'];
 class OfertaService {
 
   /**
-   * Normaliza y fusiona componentes por producto_id (si el payload trae el
-   * mismo producto dos veces, se suman las cantidades en vez de rechazar o
-   * duplicar), valida cantidad >= 1 y exige al menos un componente.
+   * Normaliza y fusiona componentes por producto_id + variante_id (si el
+   * payload trae la misma combinación dos veces, se suman las cantidades en
+   * vez de rechazar o duplicar), valida cantidad >= 1 y exige al menos un
+   * componente.
+   *
+   * Las variantes NUNCA se definen acá — si el componente trae `variante_id`
+   * tiene que pertenecer de verdad a `producto_id` (se verifica contra
+   * producto_variantes). Un producto con variantes activas exige elegir una
+   * fija o marcar `permite_elegir_variante`: dejarlo sin definir sería
+   * ambiguo al momento de agregarlo al carrito.
    */
-  static normalizarComponentes(componentesPayload = []) {
+  static async normalizarComponentes(componentesPayload = []) {
     const mapa = new Map();
     for (const c of componentesPayload) {
       const productoId = Number(c.producto_id);
       const cantidad = parseInt(c.cantidad, 10) || 0;
       const descuentoPorcentaje = Math.min(100, Math.max(0, parseFloat(c.descuento_porcentaje) || 0));
+      const permiteElegirVariante = !!c.permite_elegir_variante;
+      const varianteId = c.variante_id ? Number(c.variante_id) : null;
       if (!productoId) throw new Error('Cada componente necesita un producto válido.');
       if (cantidad < 1) throw new Error('La cantidad de cada componente debe ser al menos 1.');
-      // Fusionar por producto_id (regla existente) suma cantidades; el
-      // descuento se queda con el último valor recibido para ese producto.
-      const existente = mapa.get(productoId);
-      mapa.set(productoId, { cantidad: (existente?.cantidad || 0) + cantidad, descuento_porcentaje: descuentoPorcentaje });
+
+      if (varianteId) {
+        const variante = await ProductoVariante.findOne({ where: { id: varianteId, producto_id: productoId, activo: true } });
+        if (!variante) throw new Error('La variante elegida no pertenece a ese producto.');
+      } else if (!permiteElegirVariante) {
+        const tieneVariantes = await ProductoVariante.count({ where: { producto_id: productoId, activo: true } });
+        if (tieneVariantes > 0) {
+          throw new Error('Ese producto tiene variantes: elegí una fija o permití que el cliente la elija.');
+        }
+      }
+
+      // Fusionar por producto_id+variante_id (regla existente, extendida)
+      // suma cantidades; el descuento y la config de variante se quedan con
+      // el último valor recibido para esa combinación.
+      const clave = `${productoId}:${varianteId || ''}`;
+      const existente = mapa.get(clave);
+      mapa.set(clave, {
+        producto_id: productoId,
+        variante_id: varianteId,
+        permite_elegir_variante: permiteElegirVariante,
+        cantidad: (existente?.cantidad || 0) + cantidad,
+        descuento_porcentaje: descuentoPorcentaje,
+      });
     }
     if (mapa.size === 0) throw new Error('La oferta necesita al menos un componente de stock.');
-    return Array.from(mapa.entries()).map(([producto_id, v]) => ({ producto_id, cantidad: v.cantidad, descuento_porcentaje: v.descuento_porcentaje }));
+    return Array.from(mapa.values());
   }
 
   /**
@@ -74,6 +102,31 @@ class OfertaService {
     if (!soloAncla) {
       throw new Error('Un "pack" solo puede tener el producto ancla como componente (en la cantidad que corresponda). Para combinar varios productos, usá "combo".');
     }
+  }
+
+  /**
+   * Un order bump/upsell se vende SIEMPRE como una línea aparte de la del
+   * producto ancla (ver CartDrawer/FunnelCheckout — el ancla ya es su
+   * propia línea de carrito con su propio precio y su propio descuento de
+   * stock). Si su receta de componentes incluyera también al ancla, al
+   * confirmarse el pedido se le descontaría stock DOS veces (una por su
+   * línea propia, otra por la receta del bump) y `precio_normal` quedaría
+   * ambiguo entre "el extra" y "el bundle completo". Por eso acá se saca
+   * al ancla de la receta pase lo que pase: la única receta válida para
+   * estas dos estrategias es "lo que se agrega de más".
+   *
+   * Un combo de estrategia='normal' es distinto: ahí SÍ existe una sola
+   * línea que reemplaza la compra entera (se elige en la ficha del
+   * producto, como otra forma de comprarlo), así que su receta necesita
+   * incluir el ancla — a esa estrategia esta función no le toca nada.
+   */
+  static excluirAnclaDeBumpOUpsell(componentes, estrategia, productoAnclaId) {
+    if (estrategia !== 'order_bump' && estrategia !== 'upsell') return componentes;
+    const sinAncla = componentes.filter(c => Number(c.producto_id) !== Number(productoAnclaId));
+    if (sinAncla.length === 0) {
+      throw new Error('Un order bump/upsell necesita al menos un producto distinto al principal — no tiene sentido que se ofrezca a sí mismo.');
+    }
+    return sinAncla;
   }
 
   static validarPayload(payload) {
@@ -214,11 +267,14 @@ class OfertaService {
       include: [{
         model: OfertaComponente,
         as: 'componentes',
-        include: [{ 
-          model: Producto, 
-          as: 'producto', 
+        include: [{
+          model: Producto,
+          as: 'producto',
           attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
           include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
+        }, {
+          model: ProductoVariante,
+          as: 'variante',
         }],
       }],
       order: [['orden', 'ASC'], ['created_at', 'ASC']],
@@ -268,7 +324,8 @@ class OfertaService {
     this.validarPayload({ ...payload, ...precios });
     const estrategia = payload.estrategia || 'normal';
     const tipoContenido = this.resolverTipoContenido(estrategia, payload.tipo_contenido);
-    const componentes = this.normalizarComponentes(payload.componentes);
+    let componentes = await this.normalizarComponentes(payload.componentes);
+    componentes = this.excluirAnclaDeBumpOUpsell(componentes, estrategia, producto_ancla_id);
     this.validarComponentesParaTipo(tipoContenido, producto_ancla_id, componentes);
 
     const oferta = await Oferta.create({
@@ -334,7 +391,11 @@ class OfertaService {
     // combo existente a "pack" sin reenviar componentes no debe dejar
     // guardado un pack con productos que no son el ancla).
     const tipoContenidoEfectivo = updates.tipo_contenido;
-    const componentesNuevos = payload.componentes !== undefined ? this.normalizarComponentes(payload.componentes) : null;
+    const estrategiaEfectiva = payload.estrategia ?? oferta.estrategia;
+    let componentesNuevos = payload.componentes !== undefined ? await this.normalizarComponentes(payload.componentes) : null;
+    if (componentesNuevos !== null) {
+      componentesNuevos = this.excluirAnclaDeBumpOUpsell(componentesNuevos, estrategiaEfectiva, oferta.producto_ancla_id);
+    }
     const componentesParaValidar = componentesNuevos !== null
       ? componentesNuevos
       : (await OfertaComponente.findAll({ where: { oferta_id: oferta.id }, attributes: ['producto_id', 'cantidad'], transaction, raw: true }));

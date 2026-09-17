@@ -151,6 +151,12 @@ class PricingService {
     cantidad,
     ofertaId = null,
     varianteId = null,
+    // Variante que el cliente eligió para el componente "elegible" del
+    // bump/upsell (OfertaComponente.permite_elegir_variante=true), si la
+    // oferta resuelta tiene uno. No afecta el precio (el precio de la
+    // oferta es fijo) — solo qué variante puntual queda registrada para el
+    // chequeo/descuento de stock de ESE componente.
+    componenteVarianteId = null,
     precioUsuario,
     ofertasDelProducto = [],
     variantesDelProducto = [],
@@ -196,6 +202,22 @@ class PricingService {
       } else {
         ofertaResuelta = this.mejorOfertaParaCantidad(entidad.id, cantidadFinal, vigentes);
         ofertaEsAutoMatch = !!ofertaResuelta;
+      }
+    }
+
+    // El componente "elegible" de la oferta usa lo que el cliente eligió en
+    // vez de la variante sugerida por el admin — sin mutar la instancia de
+    // Oferta cacheada (se comparte entre resoluciones de distintos items de
+    // este mismo carrito).
+    if (ofertaResuelta && componenteVarianteId) {
+      const componentesPlanos = (ofertaResuelta.componentes || []).map(c => (c.toJSON ? c.toJSON() : c));
+      if (componentesPlanos.some(c => c.permite_elegir_variante)) {
+        ofertaResuelta = {
+          ...(ofertaResuelta.toJSON ? ofertaResuelta.toJSON() : ofertaResuelta),
+          componentes: componentesPlanos.map(c =>
+            c.permite_elegir_variante ? { ...c, variante_id: Number(componenteVarianteId) } : c
+          ),
+        };
       }
     }
 
@@ -254,12 +276,20 @@ class PricingService {
    * necesita saber "alcanza sí/no" para avisar en la UI sin interrumpir al
    * usuario. Cada caller decide qué hacer con el resultado.
    */
-  static validarStock(resuelto, { mapaProducto } = new Map()) {
+  static validarStock(resuelto, { mapaProducto, mapaVariante } = {}) {
     if (resuelto.oferta_aplicada) {
       const faltantes = [];
       for (const comp of resuelto.oferta_aplicada.componentes || []) {
-        const esAncla = comp.producto_id === resuelto.entidad_id;
-        const stockComp = esAncla ? resuelto.stock_producto_ancla : mapaProducto?.get(comp.producto_id)?.cantidad_disponible;
+        // Con variante (fija del admin o elegida por el cliente — ver
+        // resolverPrecioItem#componenteVarianteId), el stock que importa es
+        // el de esa variante puntual, nunca el agregado del producto.
+        let stockComp;
+        if (comp.variante_id) {
+          stockComp = mapaVariante?.get(comp.variante_id)?.stock;
+        } else {
+          const esAncla = comp.producto_id === resuelto.entidad_id;
+          stockComp = esAncla ? resuelto.stock_producto_ancla : mapaProducto?.get(comp.producto_id)?.cantidad_disponible;
+        }
         // Auto-match: resuelto.cantidad ya son las unidades físicas reales
         // (matcheó porque comp.cantidad === cantidad), no se multiplica de
         // nuevo. Selección explícita: cantidad = cuántos bultos.

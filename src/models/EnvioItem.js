@@ -15,6 +15,16 @@ const EnvioItem = sequelize.define('EnvioItem', {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
+  variante_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Variante del producto ancla elegida por el cliente para esta línea (null = sin variante, o combo). Se usa al confirmar el pedido para descontar stock de la variante real en vez del total del producto.',
+  },
+  componente_variante_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Variante que el cliente eligió para el componente "elegible" del bump/upsell de esta línea (OfertaComponente.permite_elegir_variante=true), si la oferta tiene uno.',
+  },
   oferta_id: {
     type: DataTypes.INTEGER,
     allowNull: true,

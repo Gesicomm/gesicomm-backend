@@ -19,6 +19,7 @@ class ReporteService {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
         Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.numero_pedido'), 'varchar'), { [Op.like]: `%${buscador}%` }),
         { telefono: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
@@ -265,6 +266,7 @@ class ReporteService {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
         Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.numero_pedido'), 'varchar'), { [Op.like]: `%${buscador}%` }),
         { telefono: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
@@ -317,6 +319,7 @@ class ReporteService {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
         Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.numero_pedido'), 'varchar'), { [Op.like]: `%${buscador}%` }),
         { telefono: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
@@ -401,6 +404,7 @@ class ReporteService {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
         Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.numero_pedido'), 'varchar'), { [Op.like]: `%${buscador}%` }),
         { telefono: { [Op.iLike]: `%${buscador}%` } },
         { ruc: { [Op.iLike]: `%${buscador}%` } },
         { razon_social: { [Op.iLike]: `%${buscador}%` } }

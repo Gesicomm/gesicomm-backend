@@ -1549,15 +1549,18 @@ class LandingService {
       idsProducto.length
         ? Oferta.findAll({
           where: { producto_ancla_id: { [Op.in]: idsProducto }, activo: true },
-          include: [{ 
-            model: OfertaComponente, 
-            as: 'componentes', 
-            attributes: ['producto_id', 'cantidad'],
+          include: [{
+            model: OfertaComponente,
+            as: 'componentes',
+            attributes: ['producto_id', 'cantidad', 'variante_id', 'permite_elegir_variante'],
             include: [{
               model: Producto,
               as: 'producto',
               attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
               include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
+            }, {
+              model: ProductoVariante,
+              as: 'variante',
             }]
           }],
           order: [['orden', 'ASC']],
@@ -1723,7 +1726,12 @@ class LandingService {
     ])].filter(id => !mapaProducto.has(id));
 
     if (idsComponentesAjenos.length) {
-      const [productosAjenos, imagenesAjenas, preciosAjenos] = await Promise.all([
+      // Se traen también variantes/opciones (no solo nombre/imagen/precio):
+      // un componente ajeno con `permite_elegir_variante` necesita exponer
+      // su selector real en el DTO público, y ese producto puede no ser
+      // del catálogo propio de esta landing (por eso no está ya en
+      // mapaVariantes/mapaOpciones, que solo cubren idsProducto).
+      const [productosAjenos, imagenesAjenas, preciosAjenos, variantesAjenas, opcionesAjenas] = await Promise.all([
         Producto.findAll({
           where: { id: { [Op.in]: idsComponentesAjenos } },
           attributes: [
@@ -1732,8 +1740,11 @@ class LandingService {
             'beneficios',
           ],
         }),
+        // Ya no se filtra `variante_id: null`: si el componente permite
+        // elegir variante, hacen falta también las fotos propias de cada
+        // variante para armar su galería en el selector.
         ProductoImagen.findAll({
-          where: { producto_id: { [Op.in]: idsComponentesAjenos }, variante_id: null },
+          where: { producto_id: { [Op.in]: idsComponentesAjenos } },
           attributes: ['producto_id', 'variante_id', 'url', 'es_principal'],
           order: [['es_principal', 'DESC'], ['orden', 'ASC']],
         }),
@@ -1744,6 +1755,21 @@ class LandingService {
             referencia_id: { [Op.in]: idsComponentesAjenos },
           },
         }),
+        ProductoVariante.findAll({
+          where: { producto_id: { [Op.in]: idsComponentesAjenos }, activo: true },
+          include: [{
+            model: ProductoOpcionValor,
+            as: 'valoresOpcion',
+            through: { attributes: [] },
+            include: [{ model: ProductoOpcion, as: 'opcion', attributes: ['id', 'nombre', 'orden'] }],
+          }],
+          order: [['id', 'ASC']],
+        }),
+        ProductoOpcion.findAll({
+          where: { producto_id: { [Op.in]: idsComponentesAjenos } },
+          include: [{ model: ProductoOpcionValor, as: 'valores' }],
+          order: [['orden', 'ASC']],
+        }),
       ]);
       preciosAjenos.forEach(p => mapaPrecios.set(`producto:${p.referencia_id}`, parseFloat(p.precio)));
       productosAjenos.forEach(p => mapaProducto.set(p.id, p));
@@ -1751,6 +1777,16 @@ class LandingService {
         const lista = mapaImagenes.get(img.producto_id) || [];
         lista.push({ url: img.url, variante_id: img.variante_id, es_principal: img.es_principal });
         mapaImagenes.set(img.producto_id, lista);
+      });
+      variantesAjenas.forEach(v => {
+        const lista = mapaVariantes.get(v.producto_id) || [];
+        lista.push(v);
+        mapaVariantes.set(v.producto_id, lista);
+      });
+      opcionesAjenas.forEach(o => {
+        const lista = mapaOpciones.get(o.producto_id) || [];
+        lista.push(o);
+        mapaOpciones.set(o.producto_id, lista);
       });
     }
 
@@ -1846,12 +1882,36 @@ class LandingService {
         let productoComplementario = null;
         let productosIncluidos = [];
         if (esOrderBump || esUpsell || o.estrategia === 'combo') {
-          const resolverProducto = (productoId) => {
-            const prod = mapaProducto.get(productoId);
+          const resolverProducto = (componente) => {
+            const prod = mapaProducto.get(componente.producto_id);
             if (!prod) return null;
             const imgs = mapaImagenes.get(prod.id) || [];
             const principal = imgs.find(i => i.es_principal) || imgs[0];
-            return { nombre: prod.nombre, imagen: principal?.url || null };
+            const dto = { nombre: prod.nombre, imagen: principal?.url || null };
+            // Solo si el admin activó "que el cliente elija" para ESTE
+            // componente se manda el selector real (opciones/variantes) del
+            // producto — nunca se inventan variantes nuevas acá, se reusa
+            // tal cual la misma construcción que ya arma variantesDto/
+            // opcionesDto para el producto principal de la ficha.
+            if (componente.permite_elegir_variante) {
+              const precioMinimoProd = prod.precio_minimo !== null && prod.precio_minimo !== undefined ? parseFloat(prod.precio_minimo) : null;
+              const precioEfectivoProd = precioVentaProducto(prod);
+              dto.permite_elegir_variante = true;
+              dto.opciones = (mapaOpciones.get(prod.id) || []).map(op => ({
+                nombre: op.nombre,
+                orden: op.orden,
+                valores: (op.valores || []).map(val => val.valor),
+              }));
+              dto.variantes = (mapaVariantes.get(prod.id) || []).map(v => ({
+                id: v.id,
+                nombre: v.nombre,
+                stock: v.stock,
+                precio_efectivo: PricingService.calcularPrecioVariante(precioEfectivoProd, v.precio_diferencial, precioMinimoProd),
+                imagenes: imgs.filter(i => i.variante_id === v.id).map(i => i.url),
+                valoresOpcion: (v.valoresOpcion || []).map(vo => ({ opcion: vo.opcion.nombre, valor: vo.valor })),
+              }));
+            }
+            return dto;
           };
           // Un combo se muestra como paquete completo ("3 productos x
           // 120.000"), así que lista TODOS sus productos — el ancla incluido.
@@ -1860,7 +1920,7 @@ class LandingService {
           const componentes = o.estrategia === 'combo'
             ? (o.componentes || [])
             : (o.componentes || []).filter(c => c.producto_id !== entidad.id);
-          productosIncluidos = componentes.map(c => resolverProducto(c.producto_id)).filter(Boolean);
+          productosIncluidos = componentes.map(c => resolverProducto(c)).filter(Boolean);
           productoComplementario = productosIncluidos[0] || null;
           // Cuántas unidades del complemento entran al aceptar el bump. No es
           // filtrar la receta: es lo que el comprador va a recibir, y sin
@@ -2463,15 +2523,18 @@ class LandingService {
       idsProducto.length
         ? Oferta.findAll({
           where: { producto_ancla_id: { [Op.in]: idsProducto }, activo: true },
-          include: [{ 
-            model: OfertaComponente, 
+          include: [{
+            model: OfertaComponente,
             as: 'componentes',
-            include: [{
-              model: Producto,
-              as: 'producto',
-              attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
-              include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
-            }]
+            include: [
+              {
+                model: Producto,
+                as: 'producto',
+                attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+                include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
+              },
+              { model: ProductoVariante, as: 'variante' },
+            ]
           }],
         })
         : Promise.resolve([]),
@@ -2518,6 +2581,15 @@ class LandingService {
       if (c.producto && !mapaStock.has(c.producto.id)) mapaStock.set(c.producto.id, c.producto);
     }));
 
+    // Mismo criterio que mapaStock pero indexado por variante_id — un
+    // componente de oferta puede apuntar a una variante puntual (fija o
+    // elegida por el cliente) de un producto que ni siquiera es de esta
+    // landing, así que hace falta este mapa aparte para validar su stock.
+    const mapaVariantePorId = new Map(variantes.map(v => [v.id, v]));
+    ofertasDisponibles.forEach(o => (o.componentes || []).forEach(c => {
+      if (c.variante && !mapaVariantePorId.has(c.variante.id)) mapaVariantePorId.set(c.variante.id, c.variante);
+    }));
+
     // content_id público (slug || "<tipo>-<id>") → item real de ESTA
     // landing — mismo identificador que le entrega obtenerPublica() al
     // navegador, así el carrito arma sus items con el mismo id que acá.
@@ -2545,12 +2617,29 @@ class LandingService {
       const ofertasDelProducto = esCombo ? [] : ofertasDisponibles.filter(o => o.producto_ancla_id === entidad.id);
       const variantesDelProducto = esCombo ? [] : (mapaVariantes.get(entidad.id) || []);
 
+      // La variante que el cliente eligió para el componente "elegible" del
+      // bump/upsell de esta línea (a lo sumo uno por oferta) nunca se
+      // confía tal cual — tiene que ser una variante real del MISMO
+      // producto que ese componente ofrece. Si no matchea (id inventado,
+      // producto equivocado, oferta sin componente elegible), se ignora en
+      // silencio y la oferta cae a la variante sugerida por el admin.
+      let componenteVarianteId = null;
+      if (!esCombo && pedido.oferta_id && pedido.componente_variante_id) {
+        const ofertaCruda = ofertasDelProducto.find(o => o.id === Number(pedido.oferta_id));
+        const elegible = (ofertaCruda?.componentes || []).find(c => c.permite_elegir_variante);
+        const varianteElegida = mapaVariantePorId.get(Number(pedido.componente_variante_id));
+        if (elegible && varianteElegida && varianteElegida.producto_id === elegible.producto_id) {
+          componenteVarianteId = Number(pedido.componente_variante_id);
+        }
+      }
+
       const resuelto = PricingService.resolverPrecioItem({
         entidad,
         esCombo,
         cantidad: pedido.cantidad,
         ofertaId: !esCombo ? pedido.oferta_id : null,
         varianteId: !esCombo ? pedido.variante_id : null,
+        componenteVarianteId,
         precioUsuario,
         ofertasDelProducto,
         variantesDelProducto,
@@ -2559,7 +2648,7 @@ class LandingService {
       // La "oferta" tiene una receta completa de componentes (puede tocar
       // más de un producto), por eso usa su propio chequeo en vez del
       // genérico de cantidad simple.
-      const { suficiente, faltantes } = PricingService.validarStock(resuelto, { mapaProducto: mapaStock });
+      const { suficiente, faltantes } = PricingService.validarStock(resuelto, { mapaProducto: mapaStock, mapaVariante: mapaVariantePorId });
       if (!suficiente && throwOnStockInsuficiente) {
         const primero = faltantes[0];
         const err = new Error(`"${resuelto.nombre_final}" no tiene stock suficiente (disponible: ${primero.disponible}).`);
@@ -2575,6 +2664,13 @@ class LandingService {
         // con distinta variante (ver claveCarrito en LandingPublica.jsx).
         variante_id_solicitada: !esCombo && pedido.variante_id ? Number(pedido.variante_id) : null,
         oferta_id_solicitada: !esCombo && pedido.oferta_id ? Number(pedido.oferta_id) : null,
+        // Fix de fondo: la variante REALMENTE resuelta para el producto
+        // ancla de esta línea (no el eco de arriba) — es la que
+        // envioController.js va a descontar de stock al confirmar.
+        variante_id: resuelto.variante_aplicada ? resuelto.variante_aplicada.id : null,
+        // Variante elegida por el cliente para el componente "elegible"
+        // del bump/upsell que trajo esta línea (ya validada arriba).
+        componente_variante_id: componenteVarianteId,
         // Los combos no tienen fila propia en Producto — igual que ya pasa
         // con los pedidos cargados a mano (ver envioController.js), un
         // EnvioItem sin producto_id no participa del descuento de stock al
@@ -2731,8 +2827,8 @@ class LandingService {
     // itemsResueltos trae content_id/stock_suficiente además de los campos
     // de EnvioItem — se filtran acá para que el nested-create no dependa
     // de que Sequelize ignore claves extra en silencio.
-    const itemsParaEnvio = itemsResueltos.map(({ producto_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, precio_normal, origen_venta, subtotal }) => ({
-      producto_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, precio_normal, origen_venta, subtotal,
+    const itemsParaEnvio = itemsResueltos.map(({ producto_id, variante_id, componente_variante_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, precio_normal, origen_venta, subtotal }) => ({
+      producto_id, variante_id, componente_variante_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, precio_normal, origen_venta, subtotal,
     }));
 
     const nuevoEnvio = await sequelize.transaction(async (t) => {

@@ -27,6 +27,11 @@ const EnvioItemComponente = sequelize.define('EnvioItemComponente', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  variante_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Variante puntual de la que realmente se descontó stock (null = producto sin variante). Snapshot inmutable, igual que el resto de esta tabla.',
+  },
   cantidad: {
     type: DataTypes.INTEGER,
     allowNull: false,

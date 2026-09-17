@@ -268,6 +268,8 @@ OfertaComponente.belongsTo(Oferta, { foreignKey: 'oferta_id' });
 Producto.hasMany(OfertaComponente, { as: 'como_componente_de_oferta', foreignKey: 'producto_id' });
 OfertaComponente.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });
 
+OfertaComponente.belongsTo(ProductoVariante, { as: 'variante', foreignKey: 'variante_id' });
+
 // Productos relacionados (relación muchos-a-muchos auto-referencial)
 Producto.hasMany(ProductoRelacionado, { as: 'relaciones', foreignKey: 'producto_id', onDelete: 'CASCADE' });
 ProductoRelacionado.belongsTo(Producto, { as: 'ProductoBase', foreignKey: 'producto_id' });

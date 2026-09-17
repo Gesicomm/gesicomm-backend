@@ -32,6 +32,17 @@ const OfertaComponente = sequelize.define('OfertaComponente', {
     validate: { min: 1 },
     comment: 'Unidades de stock del producto que consume cada unidad vendida de la oferta.',
   },
+  variante_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Variante fija que se agrega (si permite_elegir_variante=false) o sugerida por defecto (si true). Nunca se define acá cuáles son las variantes — siempre salen de producto_variantes.',
+  },
+  permite_elegir_variante: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    comment: 'Si el producto tiene variantes, decide si el cliente elige cuál en la landing (true) o siempre se agrega variante_id (false).',
+  },
   descuento_porcentaje: {
     type: DataTypes.DECIMAL(5, 2),
     allowNull: false,
@@ -47,7 +58,7 @@ const OfertaComponente = sequelize.define('OfertaComponente', {
   indexes: [
     { fields: ['oferta_id'] },
     { fields: ['producto_id'] },
-    { unique: true, fields: ['oferta_id', 'producto_id'] },
+    { unique: true, fields: ['oferta_id', 'producto_id', 'variante_id'] },
   ],
 });
 
