@@ -35,7 +35,7 @@ const SLUG_POR_ORIGEN = {
  * cuenta el multiplicador de stock de una oferta (ej. x3 = 3 unidades
  * físicas) y el costo vigente al momento de la venta, no el actual.
  */
-function costoDeItem(item) {
+function costoDeItem(item, e.usuario_id) {
   if (item.componentes_vendidos && item.componentes_vendidos.length > 0) {
     return item.componentes_vendidos.reduce((acc, comp) => acc + (Number(comp.costo_unitario) || 0) * (comp.cantidad || 0), 0);
   }
@@ -240,7 +240,7 @@ function getKpisFinancieros(envios) {
 
       if (e.items && e.items.length > 0) {
         for (const item of e.items) {
-          costoMercaderiaEntregada += costoDeItem(item);
+          costoMercaderiaEntregada += costoDeItem(item, e.usuario_id);
         }
       }
     } else if (isConfirmado) {
@@ -805,7 +805,7 @@ function getProductosAnalytics(envios) {
           p.costo_iva += ivaPorItem ? ivaPorItem[idxItem] : 0;
           p.costo_envio += envioPorItem ? envioPorItem[idxItem] : 0;
           p.venta_producto_total += ventaProductoPorItem ? ventaProductoPorItem[idxItem] : 0;
-          p.costo_total += costoDeItem(item);
+          p.costo_total += costoDeItem(item, e.usuario_id);
         }
         if (isDevuelto) p.devueltos += 1;
 
@@ -1173,7 +1173,7 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
       const iva = e.quiere_factura ? monto * 0.10 : 0;
       let costoMercaderia = 0;
       if (e.items && e.items.length > 0) {
-        for (const item of e.items) costoMercaderia += costoDeItem(item);
+        for (const item of e.items) costoMercaderia += costoDeItem(item, e.usuario_id);
       }
       // MISMA fórmula que getKpisFinancieros: la venta del día es el `monto`
       // tal cual, y el costo resta el flete COMPLETO siempre — sin abrir
@@ -1380,7 +1380,7 @@ async function getRankingLandings(whereRanking, desde, hasta, landingsTienda, li
     f.costo += Number(e.costo_envio || 0);
     f.costo += monto * (Number(e.comision_pct_aplicada || 0) / 100);
     if (e.quiere_factura) f.costo += monto * 0.10;
-    for (const item of e.items || []) f.costo += costoDeItem(item);
+    for (const item of e.items || []) f.costo += costoDeItem(item, e.usuario_id);
   }
 
   for (const v of visitas) fila(v.landing_id).visitas = Number(v.visitas) || 0;
