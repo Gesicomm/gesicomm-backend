@@ -2627,9 +2627,23 @@ class LandingService {
       if (!esCombo && pedido.oferta_id && pedido.componente_variante_id) {
         const ofertaCruda = ofertasDelProducto.find(o => o.id === Number(pedido.oferta_id));
         const elegible = (ofertaCruda?.componentes || []).find(c => c.permite_elegir_variante);
-        const varianteElegida = mapaVariantePorId.get(Number(pedido.componente_variante_id));
-        if (elegible && varianteElegida && varianteElegida.producto_id === elegible.producto_id) {
-          componenteVarianteId = Number(pedido.componente_variante_id);
+        if (elegible) {
+          let varianteElegida = mapaVariantePorId.get(Number(pedido.componente_variante_id));
+          if (!varianteElegida) {
+            // El componente "elegible" de un bump puede ofrecer cualquier
+            // producto del catálogo, no solo los de esta landing — sin esto,
+            // una variante de un producto ajeno a la landing nunca aparecía
+            // en mapaVariantePorId y quedaba descartada en silencio (ni se
+            // registraba en el pedido ni se validaba su stock). Se resuelve
+            // con una consulta puntual, solo cuando de verdad hace falta.
+            varianteElegida = await ProductoVariante.findOne({
+              where: { id: Number(pedido.componente_variante_id), producto_id: elegible.producto_id, activo: true },
+            });
+            if (varianteElegida) mapaVariantePorId.set(varianteElegida.id, varianteElegida);
+          }
+          if (varianteElegida && varianteElegida.producto_id === elegible.producto_id) {
+            componenteVarianteId = Number(pedido.componente_variante_id);
+          }
         }
       }
 
