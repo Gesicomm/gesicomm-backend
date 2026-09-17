@@ -17,9 +17,9 @@ class ReporteService {
     if (canal_venta_id && canal_venta_id !== 'TODOS') whereEnvio.canal_venta_id = canal_venta_id;
     if (buscador) {
       whereEnvio[Op.or] = [
-        { cliente: { [Op.like]: `%${buscador}%` } },
-        { id: { [Op.like]: `%${buscador}%` } },
-        { telefono: { [Op.like]: `%${buscador}%` } }
+        { cliente: { [Op.iLike]: `%${buscador}%` } },
+        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        { telefono: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
     return whereEnvio;
@@ -263,9 +263,9 @@ class ReporteService {
 
     if (buscador) {
       whereEnvio[Op.or] = [
-        { cliente: { [Op.like]: `%${buscador}%` } },
-        { id: { [Op.like]: `%${buscador}%` } },
-        { telefono: { [Op.like]: `%${buscador}%` } }
+        { cliente: { [Op.iLike]: `%${buscador}%` } },
+        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        { telefono: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
 
@@ -315,9 +315,9 @@ class ReporteService {
 
     if (buscador) {
       whereEnvio[Op.or] = [
-        { cliente: { [Op.like]: `%${buscador}%` } },
-        { id: { [Op.like]: `%${buscador}%` } },
-        { telefono: { [Op.like]: `%${buscador}%` } }
+        { cliente: { [Op.iLike]: `%${buscador}%` } },
+        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        { telefono: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
     
@@ -399,11 +399,11 @@ class ReporteService {
 
     if (buscador) {
       whereEnvio[Op.or] = [
-        { cliente: { [Op.like]: `%${buscador}%` } },
-        { id: { [Op.like]: `%${buscador}%` } },
-        { telefono: { [Op.like]: `%${buscador}%` } },
-        { ruc: { [Op.like]: `%${buscador}%` } },
-        { razon_social: { [Op.like]: `%${buscador}%` } }
+        { cliente: { [Op.iLike]: `%${buscador}%` } },
+        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        { telefono: { [Op.iLike]: `%${buscador}%` } },
+        { ruc: { [Op.iLike]: `%${buscador}%` } },
+        { razon_social: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
     
@@ -490,8 +490,8 @@ class ReporteService {
 
     if (buscador) {
       includeArray[0].where[Op.or] = [
-        { cliente: { [Op.like]: `%${buscador}%` } },
-        { id: { [Op.like]: `%${buscador}%` } }
+        { cliente: { [Op.iLike]: `%${buscador}%` } },
+        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` })
       ];
     }
 
