@@ -103,14 +103,14 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     // Confirmación Comercial — catálogo operativo nuevo (9 valores, ver
     // envioController.ESTADOS_OPERATIVOS): cualquier estado posterior a
     // Pendiente implica que el pedido llegó a confirmarse en algún momento.
-    const isConfirmado = stCom === 'confirmado' || ['confirmado', 'preparado', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st);
-    const isCancelado = stCom === 'cancelado' || stCom === 'rechazado' || st === 'cancelado';
+    const isConfirmado = stCom === 'confirmado' || ['confirmado', 'empacado', 'preparado', 'en tránsito', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st);
+    const isCancelado = stCom === 'cancelado' || stCom === 'rechazado' || st === 'cancelado' || st === 'rechazado';
 
     // Logística
-    const isDespachado = Boolean(e.courier_id) || ['despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st) || ['asignado', 'despachado', 'entregado', 'devuelto', 'perdido'].includes(stLog);
+    const isDespachado = ['en tránsito', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st) || ['asignado', 'despachado', 'en tránsito', 'entregado', 'devuelto', 'perdido'].includes(stLog);
     const isEntregado = st === 'entregado' || stLog === 'entregado';
     const isDevuelto = ['devuelto', 'no entregado', 'fallido'].includes(st) || stLog === 'devuelto';
-    const isTransito = st === 'despachado' || stLog === 'despachado';
+    const isTransito = st === 'en tránsito' || st === 'despachado' || stLog === 'despachado' || stLog === 'en tránsito';
     const isPerdido = st === 'perdido' || stLog === 'perdido';
     const isReprogramado = st === 'reprogramado' || stLog === 'reprogramado';
 
