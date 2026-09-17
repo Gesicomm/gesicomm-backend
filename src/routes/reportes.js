@@ -15,6 +15,17 @@ router.post('/kpis', verificarToken, async (req, res) => {
   }
 });
 
+// POST /api/reportes/evolucion-ventas
+router.post('/evolucion-ventas', verificarToken, async (req, res) => {
+  try {
+    const data = await ReporteService.obtenerEvolucionVentas(req.usuario.id, req.body);
+    res.json(data);
+  } catch (error) {
+    console.error('Error al obtener evolucion ventas:', error);
+    res.status(500).json({ message: 'Error interno' });
+  }
+});
+
 // POST /api/reportes/pedidos
 router.post('/pedidos', verificarToken, async (req, res) => {
   try {

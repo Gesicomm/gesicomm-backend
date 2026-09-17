@@ -7,103 +7,14 @@ class ReporteService {
    * Asegura el scope del tenant filtrando envíos por los usuarios que pertenecen al inquilino,
    * o si se pasa usuario_id, filtra por ese usuario directamente.
    */
-  static async obtenerKPIs(usuario_id, filtros = {}) {
-    const { fecha_desde, fecha_hasta, buscador } = filtros;
-    
-    // Asumimos que los reportes de ventas se consultan por el usuario dueño de la tienda.
-    const whereEnvio = { 
-      estado: 'Entregado',
-      usuario_id: usuario_id 
-    };
-    
-    if (fecha_desde && fecha_hasta) {
-      // Formato fecha: YYYY-MM-DD
-      whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
-    }
-
-    // Calcular KPIs
-    const totalVentas = await Envio.sum('monto', { where: whereEnvio }) || 0;
-    const totalPedidos = await Envio.count({ where: whereEnvio });
-    const ticketPromedio = totalPedidos > 0 ? Math.round(totalVentas / totalPedidos) : 0;
-
-    // Conteo por canal de venta. Sale de envio_items.origen_venta — un
-    // snapshot escrito al vender — y no de un JOIN contra ofertas_producto:
-    // esa oferta puede editarse, cambiar de estrategia o darse de baja
-    // después, y entonces las ventas históricas se reclasificaban solas.
-    //
-    // Además separa importe de precio normal e importe realmente cobrado:
-    // la diferencia es el descuento que costaron los order bumps, que es lo
-    // que hace falta para saber si el bump conviene o no.
-    const sequelize = Envio.sequelize;
-    const itemsCount = await sequelize.query(`
-      SELECT
-        ei.origen_venta,
-        COUNT(ei.id)                                          AS lineas,
-        COALESCE(SUM(ei.cantidad), 0)                         AS unidades,
-        COALESCE(SUM(ei.subtotal), 0)                         AS importe_cobrado,
-        COALESCE(SUM(COALESCE(ei.precio_normal, ei.precio_unitario) * ei.cantidad), 0) AS importe_normal
-      FROM envio_items ei
-      INNER JOIN envios e ON ei.envio_id = e.id
-      WHERE e.estado = 'Entregado'
-        AND e.usuario_id = :usuario_id
-      GROUP BY ei.origen_venta
-    `, {
-      replacements: { usuario_id },
-      type: sequelize.QueryTypes.SELECT
-    });
-
-    const porOrigen = {};
-    let importeOrderBump = 0;
-    let descuentoOrderBump = 0;
-
-    (itemsCount || []).filter(Boolean).forEach(row => {
-      const origen = row.origen_venta || 'normal';
-      const unidades = parseInt(row.unidades, 10) || 0;
-      const cobrado = parseInt(row.importe_cobrado, 10) || 0;
-      const normal = parseInt(row.importe_normal, 10) || 0;
-      porOrigen[origen] = {
-        lineas: parseInt(row.lineas, 10) || 0,
-        unidades,
-        importe_cobrado: cobrado,
-        importe_normal: normal,
-        descuento_concedido: normal - cobrado,
-      };
-      if (origen === 'order_bump' || origen === 'combo') {
-        importeOrderBump += cobrado;
-        descuentoOrderBump += normal - cobrado;
-      }
-    });
-
-    return {
-      ventas_totales: totalVentas,
-      pedidos: totalPedidos,
-      ticket_promedio: ticketPromedio,
-      order_bumps: porOrigen.order_bump?.unidades || 0,
-      upsells: porOrigen.upsell?.unidades || 0,
-      // "bundles" = combos vendidos dentro del checkout.
-      bundles: porOrigen.combo?.unidades || 0,
-      ventas_normales: porOrigen.normal?.unidades || 0,
-      // Cuánto facturaron las ofertas de checkout y cuánto costó el
-      // descuento promocional con el que se consiguió esa facturación.
-      importe_incremental: importeOrderBump,
-      descuento_incremental: descuentoOrderBump,
-      por_origen: porOrigen,
-    };
-  }
-
-  static async obtenerPedidos(usuario_id, pagina = 1, limite = 50, filtros = {}) {
-    const offset = (pagina - 1) * limite;
-    const { fecha_desde, fecha_hasta, buscador } = filtros;
-
-    const whereEnvio = { 
-      estado: 'Entregado',
-      usuario_id: usuario_id
-    };
-    
+  static _aplicarFiltrosGlobales(whereEnvio, filtros) {
+    const { estado, metodo_pago, canal_venta_id, producto_id, fecha_desde, fecha_hasta, buscador } = filtros;
     if (fecha_desde && fecha_hasta) {
       whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
     }
-
+    if (estado && estado !== 'TODOS') whereEnvio.estado = estado;
+    if (metodo_pago && metodo_pago !== 'TODOS') whereEnvio.metodo_pago = metodo_pago;
+    if (canal_venta_id && canal_venta_id !== 'TODOS') whereEnvio.canal_venta_id = canal_venta_id;
     if (buscador) {
       whereEnvio[Op.or] = [
         { cliente: { [Op.like]: `%${buscador}%` } },
@@ -111,12 +22,206 @@ class ReporteService {
         { telefono: { [Op.like]: `%${buscador}%` } }
       ];
     }
+    return whereEnvio;
+  }
+
+  static async _calcularMetricasBase(usuario_id, filtros = {}) {
+    const sequelize = Envio.sequelize;
+
+    // 1. Where base (Todos los pedidos del periodo/filtros)
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      whereEnvio['$items.producto_id$'] = filtros.producto_id;
+    }
+
+    const includeQuery = (filtros.producto_id && filtros.producto_id !== 'TODOS') ? [{
+      model: EnvioItem, as: 'items', attributes: []
+    }] : [];
+
+    const totalPedidos = await Envio.count({
+      where: whereEnvio,
+      include: includeQuery,
+      distinct: true
+    });
+
+    // 2. Where Concretados (Entregados)
+    let whereConcretados = { usuario_id, estado: 'Entregado' };
+    whereConcretados = this._aplicarFiltrosGlobales(whereConcretados, filtros);
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      whereConcretados['$items.producto_id$'] = filtros.producto_id;
+    }
+
+    const ventasNetas = await Envio.sum('monto', { 
+      where: whereConcretados,
+      include: includeQuery
+    }) || 0;
+
+    const pedidosConcretados = await Envio.count({ 
+      where: whereConcretados,
+      include: includeQuery,
+      distinct: true
+    });
+
+    const ticketPromedio = pedidosConcretados > 0 ? Math.round(ventasNetas / pedidosConcretados) : 0;
+
+    // 3. Unidades vendidas (de concretados)
+    let queryUnidades = `
+      SELECT COALESCE(SUM(ei.cantidad), 0) as unidades
+      FROM envio_items ei
+      INNER JOIN envios e ON ei.envio_id = e.id
+      WHERE e.estado = 'Entregado' AND e.usuario_id = :usuario_id
+    `;
+    const repUnidades = { usuario_id };
+    if (filtros.fecha_desde && filtros.fecha_hasta) {
+      queryUnidades += ' AND e.fecha BETWEEN :desde AND :hasta';
+      repUnidades.desde = filtros.fecha_desde;
+      repUnidades.hasta = filtros.fecha_hasta;
+    }
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      queryUnidades += ' AND ei.producto_id = :producto_id';
+      repUnidades.producto_id = filtros.producto_id;
+    }
+    if (filtros.estado && filtros.estado !== 'TODOS') {
+      queryUnidades += ' AND e.estado = :estado';
+      repUnidades.estado = filtros.estado;
+    }
+    if (filtros.metodo_pago && filtros.metodo_pago !== 'TODOS') {
+      queryUnidades += ' AND e.metodo_pago = :metodo_pago';
+      repUnidades.metodo_pago = filtros.metodo_pago;
+    }
+    if (filtros.canal_venta_id && filtros.canal_venta_id !== 'TODOS') {
+      queryUnidades += ' AND e.canal_venta_id = :canal_venta_id';
+      repUnidades.canal_venta_id = filtros.canal_venta_id;
+    }
+    
+    const [unidadesResult] = await sequelize.query(queryUnidades, { replacements: repUnidades });
+    const unidadesVendidas = parseInt(unidadesResult[0]?.unidades || 0, 10);
+
+    // 4. Clientes únicos (de concretados)
+    // sequelize count con col y distinct
+    const clientesUnicos = await Envio.count({
+      where: whereConcretados,
+      include: includeQuery,
+      col: 'telefono',
+      distinct: true
+    });
+
+    // 5. Cancelados/Devueltos (sobre todos, no importa concretados)
+    let whereCancelados = { usuario_id, estado: { [Op.in]: ['Cancelado', 'Devuelto', 'Rechazado'] } };
+    whereCancelados = this._aplicarFiltrosGlobales(whereCancelados, filtros);
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      whereCancelados['$items.producto_id$'] = filtros.producto_id;
+    }
+    const canceladosDevueltos = await Envio.count({ 
+      where: whereCancelados,
+      include: includeQuery,
+      distinct: true
+    });
+
+    let tasaCancelacion = 0;
+    if (totalPedidos > 0) {
+      tasaCancelacion = (canceladosDevueltos / totalPedidos) * 100;
+    }
+
+    // Desglose del total de pedidos
+    let pend = 0, canc = 0, ent = 0;
+    let whereDesglose = { usuario_id };
+    whereDesglose = this._aplicarFiltrosGlobales(whereDesglose, filtros);
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      whereDesglose['$items.producto_id$'] = filtros.producto_id;
+    }
+    const desglose = await Envio.findAll({
+      attributes: ['estado', [sequelize.fn('COUNT', sequelize.fn('DISTINCT', sequelize.col('Envio.id'))), 'total']],
+      where: whereDesglose,
+      include: includeQuery,
+      group: ['estado'],
+      raw: true
+    });
+    
+    desglose.forEach(d => {
+      if (['Entregado'].includes(d.estado)) ent += parseInt(d.total);
+      else if (['Cancelado', 'Devuelto', 'Rechazado'].includes(d.estado)) canc += parseInt(d.total);
+      else pend += parseInt(d.total);
+    });
+
+    return {
+      ventas_netas: ventasNetas,
+      pedidos: totalPedidos,
+      ticket_promedio: ticketPromedio,
+      unidades_vendidas: unidadesVendidas,
+      clientes: clientesUnicos,
+      cancelados_devueltos: canceladosDevueltos,
+      tasa_cancelacion: tasaCancelacion,
+      desglose_pedidos: { entregados: ent, pendientes: pend, cancelados: canc }
+    };
+  }
+
+  static async obtenerKPIs(usuario_id, filtros = {}) {
+    const actual = await this._calcularMetricasBase(usuario_id, filtros);
+    let anterior = null;
+    let variaciones = null;
+
+    if (filtros.fecha_desde && filtros.fecha_hasta) {
+      const fDesde = new Date(filtros.fecha_desde);
+      const fHasta = new Date(filtros.fecha_hasta);
+      const dias = Math.floor((fHasta - fDesde) / (1000 * 60 * 60 * 24));
+      
+      const prevHasta = new Date(fDesde);
+      prevHasta.setDate(prevHasta.getDate() - 1);
+      const prevDesde = new Date(prevHasta);
+      prevDesde.setDate(prevDesde.getDate() - dias);
+
+      const fPrevDesdeStr = prevDesde.toISOString().split('T')[0];
+      const fPrevHastaStr = prevHasta.toISOString().split('T')[0];
+
+      const filtrosAnterior = { ...filtros, fecha_desde: fPrevDesdeStr, fecha_hasta: fPrevHastaStr };
+      anterior = await this._calcularMetricasBase(usuario_id, filtrosAnterior);
+
+      variaciones = {};
+      const keys = ['ventas_netas', 'pedidos', 'ticket_promedio', 'unidades_vendidas', 'clientes', 'cancelados_devueltos'];
+      
+      keys.forEach(k => {
+        const valActual = actual[k];
+        const valAnterior = anterior[k];
+        if (valAnterior === 0) {
+          variaciones[k] = { valor: valActual, variacion: null, sin_base_comparacion: true };
+        } else {
+          const varPct = ((valActual - valAnterior) / valAnterior) * 100;
+          variaciones[k] = { valor: valActual, variacion: varPct, sin_base_comparacion: false };
+        }
+      });
+      
+      if (anterior.pedidos === 0) {
+        variaciones['tasa_cancelacion'] = { valor: actual.tasa_cancelacion, variacion: null, sin_base_comparacion: true, es_pp: true };
+      } else {
+        const varPp = actual.tasa_cancelacion - anterior.tasa_cancelacion;
+        variaciones['tasa_cancelacion'] = { valor: actual.tasa_cancelacion, variacion: varPp, sin_base_comparacion: false, es_pp: true };
+      }
+    }
+
+    return {
+      actual,
+      anterior,
+      variaciones
+    };
+  }
+
+  static async obtenerPedidos(usuario_id, pagina = 1, limite = 50, filtros = {}) {
+    const offset = (pagina - 1) * limite;
+    
+    let whereEnvio = { usuario_id };
+    whereEnvio = this._aplicarFiltrosGlobales(whereEnvio, filtros);
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      whereEnvio['$items.producto_id$'] = filtros.producto_id;
+    }
 
     const { count, rows } = await Envio.findAndCountAll({
       where: whereEnvio,
       limit: limite,
       offset: offset,
       order: [['id', 'DESC']],
+      distinct: true,
       include: [
         {
           model: EnvioItem,
@@ -599,6 +704,65 @@ class ReporteService {
         tasa_cierre_promedio: tasaCierrePromedio
       }
     };
+  }
+  static async obtenerEvolucionVentas(usuario_id, filtros = {}) {
+    const { Op } = require('sequelize');
+    const { Envio, EnvioItem } = require('../models');
+    
+    // Solo ventas concretadas
+    let whereConcretados = { usuario_id, estado: 'Entregado' };
+    whereConcretados = this._aplicarFiltrosGlobales(whereConcretados, filtros);
+    
+    const includeQuery = (filtros.producto_id && filtros.producto_id !== 'TODOS') ? [{
+      model: EnvioItem, as: 'items', attributes: []
+    }] : [];
+
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      whereConcretados['$items.producto_id$'] = filtros.producto_id;
+    }
+
+    const ventasPorFecha = await Envio.findAll({
+      attributes: [
+        'fecha',
+        [Envio.sequelize.fn('SUM', Envio.sequelize.col('monto')), 'monto_total'],
+        [Envio.sequelize.fn('COUNT', Envio.sequelize.fn('DISTINCT', Envio.sequelize.col('Envio.id'))), 'cantidad_pedidos']
+      ],
+      where: whereConcretados,
+      include: includeQuery,
+      group: ['fecha'],
+      order: [['fecha', 'ASC']],
+      raw: true
+    });
+
+    // Total pedidos creados (independiente del estado)
+    let whereTodos = { usuario_id };
+    whereTodos = this._aplicarFiltrosGlobales(whereTodos, filtros);
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      whereTodos['$items.producto_id$'] = filtros.producto_id;
+    }
+
+    const pedidosTotalesPorFecha = await Envio.findAll({
+      attributes: [
+        'fecha',
+        [Envio.sequelize.fn('COUNT', Envio.sequelize.fn('DISTINCT', Envio.sequelize.col('Envio.id'))), 'cantidad_pedidos_totales']
+      ],
+      where: whereTodos,
+      include: includeQuery,
+      group: ['fecha'],
+      raw: true
+    });
+
+    const mapaTotales = {};
+    pedidosTotalesPorFecha.forEach(r => {
+      mapaTotales[r.fecha] = parseInt(r.cantidad_pedidos_totales) || 0;
+    });
+
+    return ventasPorFecha.map(r => ({
+      fecha: r.fecha,
+      ventas: parseInt(r.monto_total) || 0,
+      pedidos_concretados: parseInt(r.cantidad_pedidos) || 0,
+      pedidos_totales: mapaTotales[r.fecha] || 0
+    }));
   }
 }
 
