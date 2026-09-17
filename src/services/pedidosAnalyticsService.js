@@ -35,7 +35,7 @@ const SLUG_POR_ORIGEN = {
  * cuenta el multiplicador de stock de una oferta (ej. x3 = 3 unidades
  * físicas) y el costo vigente al momento de la venta, no el actual.
  */
-function costoDeItem(item, e.usuario_id) {
+function costoDeItem(item, usuario_id = null) {
   if (item.componentes_vendidos && item.componentes_vendidos.length > 0) {
     return item.componentes_vendidos.reduce((acc, comp) => acc + (Number(comp.costo_unitario) || 0) * (comp.cantidad || 0), 0);
   }
