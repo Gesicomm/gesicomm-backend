@@ -15,6 +15,7 @@ const { sequelize, HistorialPrecio, Producto } = require('../models');
 const { rollbackSeguro } = require('../utils/transaction');
 const ProductoService = require('../services/producto.service');
 const ProductoVarianteService = require('../services/productoVariante.service');
+const ProductoOpcionService = require('../services/productoOpcion.service');
 const ImagenService = require('../services/imagen.service');
 
 async function buscar(req, res) {
@@ -45,7 +46,7 @@ async function crear(req, res) {
     const producto = await ProductoService.crear(req.body, inquilino_id, usuario_id, esAdmin, t);
 
     if (variantes.length > 0) {
-      await ProductoVarianteService.crearMultiples(producto.id, inquilino_id, variantes, t);
+      await ProductoVarianteService.crearMultiples(producto.id, inquilino_id, variantes, t, req.body.opciones);
       await ProductoService.recalcularStockPadre(producto.id, t);
     }
 
@@ -117,6 +118,17 @@ async function variantes(req, res) {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: 'Error al obtener variantes.' });
+  }
+}
+
+async function opciones(req, res) {
+  try {
+    const inquilino_id = req.usuario.tenantId;
+    const opcs = await ProductoOpcionService.listarPorProducto(req.params.id, inquilino_id);
+    return res.json(opcs);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Error al obtener las opciones del producto.' });
   }
 }
 
@@ -198,7 +210,7 @@ async function actualizar(req, res) {
     const producto = await ProductoService.actualizar(req.params.id, req.body, inquilino_id, usuario_id, esAdmin, t);
 
     if (req.body.variantes !== undefined) {
-      await ProductoVarianteService.sincronizar(req.params.id, inquilino_id, req.body.variantes, t);
+      await ProductoVarianteService.sincronizar(req.params.id, inquilino_id, req.body.variantes, t, req.body.opciones);
       await ProductoService.recalcularStockPadre(req.params.id, t);
     }
 
@@ -248,6 +260,7 @@ module.exports = {
   detalle,
   simularPrecio,
   variantes,
+  opciones,
   imagenes,
   faq,
   relacionados,

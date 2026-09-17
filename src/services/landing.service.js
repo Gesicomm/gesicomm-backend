@@ -21,7 +21,7 @@ const { Op } = require('sequelize');
 const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
-  ProductoComboImagen, ProductoImagen, ProductoVariante, ProductoFaq, LandingSeccion, LandingEvento, Testimonio, Faq, LandingBeneficio, Envio, EnvioItem,
+  ProductoComboImagen, ProductoImagen, ProductoVariante, ProductoOpcion, ProductoOpcionValor, ProductoFaq, LandingSeccion, LandingEvento, Testimonio, Faq, LandingBeneficio, Envio, EnvioItem,
   Oferta, OfertaComponente, Tienda, LandingTemplate, Courier, CourierTarifa, DeliveryZonaTarifa, sequelize
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
@@ -1597,7 +1597,7 @@ class LandingService {
 
     // precios, imagenes y variantes solo dependen de los IDs ya resueltos
     // arriba, no entre sí — en paralelo en vez de uno atrás del otro.
-    const [precios, imagenes, variantes, preguntas] = await Promise.all([
+    const [precios, imagenes, variantes, preguntas, opcionesProductos] = await Promise.all([
       PrecioUsuario.findAll({
         where: {
           usuario_id: tienda.usuario_id,
@@ -1622,6 +1622,12 @@ class LandingService {
       idsProducto.length
         ? ProductoVariante.findAll({
           where: { producto_id: { [Op.in]: idsProducto }, activo: true },
+          include: [{
+            model: ProductoOpcionValor,
+            as: 'valoresOpcion',
+            through: { attributes: [] },
+            include: [{ model: ProductoOpcion, as: 'opcion', attributes: ['id', 'nombre', 'orden'] }],
+          }],
           order: [['id', 'ASC']],
         })
         : Promise.resolve([]),
@@ -1630,6 +1636,17 @@ class LandingService {
       idsProducto.length
         ? ProductoFaq.findAll({
           where: { producto_id: { [Op.in]: idsProducto } },
+          order: [['orden', 'ASC']],
+        })
+        : Promise.resolve([]),
+      // Opciones (tipo Shopify: Color, RAM...) con sus valores posibles, para
+      // que el selector público sepa qué grupos de botones dibujar. Productos
+      // legacy (sin Opciones) devuelven lista vacía — el frontend arma un
+      // grupo sintético a partir de los nombres de variante en ese caso.
+      idsProducto.length
+        ? ProductoOpcion.findAll({
+          where: { producto_id: { [Op.in]: idsProducto } },
+          include: [{ model: ProductoOpcionValor, as: 'valores' }],
           order: [['orden', 'ASC']],
         })
         : Promise.resolve([]),
@@ -1675,6 +1692,13 @@ class LandingService {
       const lista = mapaVariantes.get(v.producto_id) || [];
       lista.push(v);
       mapaVariantes.set(v.producto_id, lista);
+    });
+
+    const mapaOpciones = new Map(); // producto_id -> ProductoOpcion[] (con .valores)
+    opcionesProductos.forEach(o => {
+      const lista = mapaOpciones.get(o.producto_id) || [];
+      lista.push(o);
+      mapaOpciones.set(o.producto_id, lista);
     });
 
     const mapaProducto = new Map(productos.map(p => [p.id, p]));
@@ -1777,8 +1801,18 @@ class LandingService {
           stock: v.stock,
           precio_efectivo: precioVariante,
           imagenes: galeriaFuente.filter(i => i.variante_id === v.id).map(i => i.url),
+          valoresOpcion: (v.valoresOpcion || []).map(vo => ({ opcion: vo.opcion.nombre, valor: vo.valor })),
         };
       }) : [];
+
+      // Grupos de Opciones (Color, RAM...) con sus valores posibles, para que
+      // el selector público dibuje un bloque de botones por opción. Productos
+      // legacy (sin Opciones) mandan lista vacía.
+      const opcionesDto = !esCombo ? (mapaOpciones.get(entidad.id) || []).map(o => ({
+        nombre: o.nombre,
+        orden: o.orden,
+        valores: (o.valores || []).map(val => val.valor),
+      })) : [];
 
       // Ofertas comerciales del producto (individual siempre es precioEfectivo;
       // acá van las adicionales: pack x2/x3, order bump, upsell, combo). No se
@@ -1905,6 +1939,7 @@ class LandingService {
         imagenes: imagenesDto,
         stock: esCombo ? (productoParaFiltros?.cantidad_disponible ?? null) : entidad.cantidad_disponible,
         variantes: variantesDto,
+        opciones: opcionesDto,
         ofertas: ofertasDto,
         ficha: !esCombo ? (override?.ficha || null) : null,
         // Ídem para la ficha de Electrónica & Tecnología: solo lo que este

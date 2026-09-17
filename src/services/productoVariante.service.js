@@ -1,15 +1,73 @@
 'use strict';
 
 const { Op } = require('sequelize');
-const { ProductoVariante } = require('../models');
+const { ProductoVariante, ProductoVarianteValor, ProductoOpcionValor, ProductoOpcion } = require('../models');
+const ProductoOpcionService = require('./productoOpcion.service');
 
 class ProductoVarianteService {
 
   static async listarPorProducto(producto_id, inquilino_id) {
     return await ProductoVariante.findAll({
       where: { producto_id, inquilino_id, activo: true },
+      include: [{
+        model: ProductoOpcionValor,
+        as: 'valoresOpcion',
+        through: { attributes: [] },
+        include: [{ model: ProductoOpcion, as: 'opcion', attributes: ['id', 'nombre', 'orden'] }],
+      }],
       order: [['id', 'ASC']]
     });
+  }
+
+  /**
+   * Resuelve el `nombre` y los `opcion_valor_id` de una variante entrante.
+   *
+   * Con Opciones (mapaValores presente y `v.valores` no vacío): el nombre se
+   * IGNORA si lo manda el cliente — se deriva de los valores elegidos,
+   * ordenados según el orden de las Opciones ya sincronizadas, y cada
+   * `{opcion, valor}` se resuelve contra el mapa por texto normalizado
+   * (trim+lowercase), no por id — así el cliente no necesita conocer ids
+   * temporales de valores recién creados en el mismo submit.
+   *
+   * Sin Opciones (modo legacy, como hoy): el nombre es el texto libre que
+   * manda el cliente, sin valores asociados.
+   */
+  static _resolverNombreYValores(v, mapaValores, opcionesOrdenadas) {
+    if (mapaValores && Array.isArray(v.valores) && v.valores.length > 0) {
+      const valorPorOpcion = new Map(
+        v.valores.map(x => [ProductoOpcionService.normalizar(x.opcion), x.valor])
+      );
+      const valorIds = [];
+      const partesNombre = [];
+      for (const opcion of opcionesOrdenadas) {
+        const valorTexto = valorPorOpcion.get(ProductoOpcionService.normalizar(opcion.nombre));
+        if (valorTexto === undefined) continue;
+        const clave = `${ProductoOpcionService.normalizar(opcion.nombre)}::${ProductoOpcionService.normalizar(valorTexto)}`;
+        const opcionValorId = mapaValores.get(clave);
+        if (!opcionValorId) continue;
+        valorIds.push(opcionValorId);
+        partesNombre.push(valorTexto);
+      }
+      const nombre = partesNombre.join(' / ');
+      if (!nombre) return null;
+      return { nombre, valorIds };
+    }
+
+    const nombre = (v.nombre || '').trim();
+    if (!nombre) return null;
+    return { nombre, valorIds: [] };
+  }
+
+  static async _sincronizarBridgeValores(variantesConValores, transaction) {
+    const ids = variantesConValores.map(x => x.id);
+    if (ids.length === 0) return;
+    await ProductoVarianteValor.destroy({ where: { variante_id: { [Op.in]: ids } }, transaction });
+    const filas = variantesConValores.flatMap(({ id, valorIds }) =>
+      valorIds.map(opcion_valor_id => ({ variante_id: id, opcion_valor_id }))
+    );
+    if (filas.length > 0) {
+      await ProductoVarianteValor.bulkCreate(filas, { transaction });
+    }
   }
 
   /**
@@ -17,9 +75,22 @@ class ProductoVarianteService {
    * masivo), no una consulta por variante — con varias variantes, el
    * for-loop anterior encadenaba N ida-y-vueltas a la base de forma
    * secuencial dentro de la misma transacción.
+   *
+   * `opcionesPayload` es opcional: si no viene (o viene vacío), el producto
+   * queda en modo legacy — nombre de texto libre, sin tocar Opciones/Valores
+   * ni producto_variante_valores. Productos existentes sin Opciones no se
+   * migran solos.
    */
-  static async sincronizar(producto_id, inquilino_id, variantesPayload, transaction) {
+  static async sincronizar(producto_id, inquilino_id, variantesPayload, transaction, opcionesPayload) {
     if (!variantesPayload) return;
+
+    let mapaValores = null;
+    let opcionesOrdenadas = [];
+    if (opcionesPayload && opcionesPayload.length > 0) {
+      const resultado = await ProductoOpcionService.sincronizarOpciones(producto_id, inquilino_id, opcionesPayload, transaction);
+      mapaValores = resultado.mapaValores;
+      opcionesOrdenadas = resultado.opcionesOrdenadas;
+    }
 
     const actuales = await ProductoVariante.findAll({
       where: { producto_id, activo: true },
@@ -29,20 +100,24 @@ class ProductoVarianteService {
 
     const paraActualizar = [];
     const paraCrear = [];
+    const valoresParaActualizar = [];
+    const valoresParaCrear = [];
     const idsConservados = new Set();
 
     for (const v of variantesPayload) {
-      const nombre = (v.nombre || '').trim();
-      if (!nombre) continue;
+      const resolucion = this._resolverNombreYValores(v, mapaValores, opcionesOrdenadas);
+      if (!resolucion) continue;
 
-      const datos = { nombre, ...this.normalizarStock(v) };
+      const datos = { nombre: resolucion.nombre, ...this.normalizarStock(v) };
 
       const idExistente = v.id ? Number(v.id) : null;
       if (idExistente && idsActuales.has(idExistente)) {
         idsConservados.add(idExistente);
         paraActualizar.push({ id: idExistente, inquilino_id, producto_id, ...datos });
+        valoresParaActualizar.push({ id: idExistente, valorIds: resolucion.valorIds });
       } else {
         paraCrear.push({ inquilino_id, producto_id, ...datos });
+        valoresParaCrear.push(resolucion.valorIds);
       }
     }
 
@@ -60,8 +135,9 @@ class ProductoVarianteService {
       });
     }
 
+    let creadas = [];
     if (paraCrear.length > 0) {
-      await ProductoVariante.bulkCreate(paraCrear, { transaction });
+      creadas = await ProductoVariante.bulkCreate(paraCrear, { transaction });
     }
 
     const idsABorrar = actuales.filter(a => !idsConservados.has(a.id)).map(a => a.id);
@@ -71,22 +147,47 @@ class ProductoVarianteService {
         { where: { id: { [Op.in]: idsABorrar } }, transaction },
       );
     }
+
+    if (mapaValores) {
+      const variantesConValores = [
+        ...valoresParaActualizar,
+        ...creadas.map((instancia, i) => ({ id: instancia.id, valorIds: valoresParaCrear[i] })),
+      ];
+      await this._sincronizarBridgeValores(variantesConValores, transaction);
+    }
   }
 
-  static async crearMultiples(producto_id, inquilino_id, variantesPayload, transaction) {
+  static async crearMultiples(producto_id, inquilino_id, variantesPayload, transaction, opcionesPayload) {
     if (!variantesPayload || variantesPayload.length === 0) return;
 
-    await ProductoVariante.bulkCreate(
-      variantesPayload
-        .filter(v => (v.nombre || '').trim())
-        .map(v => ({
-          inquilino_id,
-          producto_id,
-          nombre: v.nombre.trim(),
-          ...this.normalizarStock(v),
-        })),
-      { transaction }
-    );
+    let mapaValores = null;
+    let opcionesOrdenadas = [];
+    if (opcionesPayload && opcionesPayload.length > 0) {
+      const resultado = await ProductoOpcionService.sincronizarOpciones(producto_id, inquilino_id, opcionesPayload, transaction);
+      mapaValores = resultado.mapaValores;
+      opcionesOrdenadas = resultado.opcionesOrdenadas;
+    }
+
+    const filas = [];
+    const valoresPorIndice = [];
+    for (const v of variantesPayload) {
+      const resolucion = this._resolverNombreYValores(v, mapaValores, opcionesOrdenadas);
+      if (!resolucion) continue;
+      filas.push({ inquilino_id, producto_id, nombre: resolucion.nombre, ...this.normalizarStock(v) });
+      valoresPorIndice.push(resolucion.valorIds);
+    }
+    if (filas.length === 0) return;
+
+    const creadas = await ProductoVariante.bulkCreate(filas, { transaction });
+
+    if (mapaValores) {
+      const filasBridge = creadas.flatMap((variante, i) =>
+        valoresPorIndice[i].map(opcion_valor_id => ({ variante_id: variante.id, opcion_valor_id }))
+      );
+      if (filasBridge.length > 0) {
+        await ProductoVarianteValor.bulkCreate(filasBridge, { transaction });
+      }
+    }
   }
 
   /**

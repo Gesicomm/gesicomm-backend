@@ -232,17 +232,26 @@ class ReporteService {
 
     const kpisRaw = await Envio.findAll({
       where: whereEnvio,
-      attributes: ['monto', 'comision_pct_aplicada']
+      attributes: ['monto', 'comision_pct_aplicada', 'metodo_pago']
     });
     
     let totalFacturado = 0;
     let totalComisiones = 0;
+    const metodos = {};
     
     kpisRaw.forEach(e => {
       const monto = Number(e.monto) || 0;
       const comision = Number(e.comision_pct_aplicada) || 0;
+      const costo = Math.round(monto * (comision / 100));
+      const mPago = e.metodo_pago || 'No especificado';
+      
       totalFacturado += monto;
-      totalComisiones += Math.round(monto * (comision / 100));
+      totalComisiones += costo;
+      
+      if (!metodos[mPago]) metodos[mPago] = { monto: 0, comision: 0, count: 0 };
+      metodos[mPago].monto += monto;
+      metodos[mPago].comision += costo;
+      metodos[mPago].count += 1;
     });
 
     return {
@@ -254,7 +263,8 @@ class ReporteService {
         total_facturado: totalFacturado,
         total_comisiones: totalComisiones,
         total_neto: totalFacturado - totalComisiones
-      }
+      },
+      distribucion_metodos: metodos
     };
   }
 
@@ -471,6 +481,21 @@ class ReporteService {
     const totalIngresos = arrayData.reduce((acc, curr) => acc + curr.ingresos, 0);
     const topProducto = arrayData[0] && arrayData[0].vendidos > 0 ? arrayData[0].nombre : 'Ninguno';
 
+    // Generar Top 5 para gráficos
+    const topVendidos = [...arrayData]
+      .sort((a, b) => b.vendidos - a.vendidos)
+      .slice(0, 5)
+      .filter(p => p.vendidos > 0);
+
+    const topDevoluciones = [...arrayData]
+      .map(p => {
+        const tasa = p.total_procesados > 0 ? (p.devoluciones / p.total_procesados) * 100 : 0;
+        return { ...p, tasa_devolucion: tasa };
+      })
+      .filter(p => p.tasa_devolucion >= 15 && p.total_procesados > 5) // Omitir cosas raras como 1 de 1
+      .sort((a, b) => b.tasa_devolucion - a.tasa_devolucion)
+      .slice(0, 5);
+
     return {
       total: totalCount,
       paginas: Math.ceil(totalCount / limite),
@@ -480,6 +505,10 @@ class ReporteService {
         total_unidades: totalUnidades,
         total_ingresos: totalIngresos,
         producto_estrella: topProducto
+      },
+      top5: {
+        vendidos: topVendidos,
+        devoluciones: topDevoluciones
       }
     };
   }

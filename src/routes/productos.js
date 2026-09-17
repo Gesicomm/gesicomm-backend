@@ -19,6 +19,7 @@ router.post('/', verificarPermiso('crear_productos'), ctrl.crear);
 router.get('/:id', verificarPermiso('ver_productos'), ctrl.detalle);
 router.get('/:id/historial-precios', verificarPermiso('ver_productos'), ctrl.historialPrecios);
 router.get('/:id/variantes', verificarPermiso('ver_productos'), ctrl.variantes);
+router.get('/:id/opciones', verificarPermiso('ver_productos'), ctrl.opciones);
 router.get('/:id/imagenes', verificarPermiso('ver_productos'), ctrl.imagenes);
 router.get('/:id/faq', verificarPermiso('ver_productos'), ctrl.faq);
 router.get('/:id/relacionados', verificarPermiso('ver_productos'), ctrl.relacionados);

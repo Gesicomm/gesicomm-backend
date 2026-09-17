@@ -72,6 +72,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
   let devueltos = 0;
   let enTransito = 0;
   let perdidos = 0;
+  let reprogramados = 0;
 
   // Contadores por canal — 'landing' es su propio bucket (checkout propio con
   // formulario, ver landing.service.js crearCheckout) en vez de diluirse en
@@ -111,6 +112,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     const isDevuelto = ['devuelto', 'no entregado', 'fallido'].includes(st) || stLog === 'devuelto';
     const isTransito = st === 'despachado' || stLog === 'despachado';
     const isPerdido = st === 'perdido' || stLog === 'perdido';
+    const isReprogramado = st === 'reprogramado' || stLog === 'reprogramado';
 
     if (isConfirmado) confirmados++;
     if (isCancelado) cancelados++;
@@ -119,6 +121,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     if (isDevuelto) devueltos++;
     if (isTransito) enTransito++;
     if (isPerdido) perdidos++;
+    if (isReprogramado) reprogramados++;
 
     // Primero el canal asignado; si el pedido todavía no fue migrado, se
     // intenta ubicar por el `origen` de texto. El guion bajo se normaliza a
@@ -138,6 +141,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
   const pctDevolucion = totalCreados > 0 ? Number(((devueltos / totalCreados) * 100).toFixed(1)) : 0;
   const pctPerdida = totalCreados > 0 ? Number(((perdidos / totalCreados) * 100).toFixed(1)) : 0;
   const pctCancelacion = totalCreados > 0 ? Number(((cancelados / totalCreados) * 100).toFixed(1)) : 0;
+  const pctReprogramacion = totalCreados > 0 ? Number(((reprogramados / totalCreados) * 100).toFixed(1)) : 0;
 
   // tasa por canal = confirmados/total, para no romper nada que ya la consuma;
   // efectividad (entregados/total) queda como campo aparte para el Embudo
@@ -149,19 +153,14 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
 
   return {
     total_creados: totalCreados,
-    confirmados,
-    cancelados,
-    despachados,
+    confirmados, tasa_confirmacion: pctConfirmacion,
+    cancelados, tasa_cancelacion: pctCancelacion,
+    despachados, tasa_despacho: pctDespachados,
+    entregados, tasa_entrega: pctEntrega,
+    devueltos, tasa_devolucion: pctDevolucion,
+    perdidos, tasa_perdida: pctPerdida,
+    reprogramados, tasa_reprogramacion: pctReprogramacion,
     en_transito: enTransito,
-    entregados,
-    devueltos,
-    perdidos,
-    tasa_confirmacion: pctConfirmacion,
-    tasa_cancelacion: pctCancelacion,
-    tasa_despacho: pctDespachados,
-    tasa_entrega: pctEntrega,
-    tasa_devolucion: pctDevolucion,
-    tasa_perdida: pctPerdida,
     canales,
   };
 }

@@ -9,6 +9,9 @@ const Categoria = require('./Categoria');
 const Marca = require('./Marca');
 const Producto = require('./Producto');
 const ProductoVariante = require('./ProductoVariante');
+const ProductoOpcion = require('./ProductoOpcion');
+const ProductoOpcionValor = require('./ProductoOpcionValor');
+const ProductoVarianteValor = require('./ProductoVarianteValor');
 const ProductoImagen = require('./ProductoImagen');
 const ProductoFaq = require('./ProductoFaq');
 const ProductoCombo = require('./ProductoCombo');
@@ -206,6 +209,21 @@ Producto.belongsTo(Usuario, { as: 'Modificador', foreignKey: 'modificado_por' })
 // Variantes
 Producto.hasMany(ProductoVariante, { as: 'variantes', foreignKey: 'producto_id', onDelete: 'CASCADE' });
 ProductoVariante.belongsTo(Producto, { foreignKey: 'producto_id' });
+
+// Opciones/Valores (tipo Shopify) — generan la combinatoria de variantes.
+// producto_variantes no cambia: sigue siendo la entidad comercial real.
+Producto.hasMany(ProductoOpcion, { as: 'opciones', foreignKey: 'producto_id', onDelete: 'CASCADE' });
+ProductoOpcion.belongsTo(Producto, { foreignKey: 'producto_id' });
+
+ProductoOpcion.hasMany(ProductoOpcionValor, { as: 'valores', foreignKey: 'opcion_id', onDelete: 'CASCADE' });
+ProductoOpcionValor.belongsTo(ProductoOpcion, { as: 'opcion', foreignKey: 'opcion_id' });
+
+ProductoVariante.belongsToMany(ProductoOpcionValor, {
+  through: ProductoVarianteValor, as: 'valoresOpcion', foreignKey: 'variante_id', otherKey: 'opcion_valor_id',
+});
+ProductoOpcionValor.belongsToMany(ProductoVariante, {
+  through: ProductoVarianteValor, as: 'variantes', foreignKey: 'opcion_valor_id', otherKey: 'variante_id',
+});
 
 // Imágenes (pueden asociarse a producto o a variante específica)
 Producto.hasMany(ProductoImagen, { as: 'imagenes', foreignKey: 'producto_id', onDelete: 'CASCADE' });
@@ -558,6 +576,9 @@ module.exports = {
   Marca,
   Producto,
   ProductoVariante,
+  ProductoOpcion,
+  ProductoOpcionValor,
+  ProductoVarianteValor,
   ProductoImagen,
   ProductoFaq,
   ProductoCombo,
