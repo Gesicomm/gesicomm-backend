@@ -261,6 +261,14 @@ class ReporteService {
       whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
     }
 
+    if (buscador) {
+      whereEnvio[Op.or] = [
+        { cliente: { [Op.like]: `%${buscador}%` } },
+        { id: { [Op.like]: `%${buscador}%` } },
+        { telefono: { [Op.like]: `%${buscador}%` } }
+      ];
+    }
+
     const { count, rows } = await EnvioItem.findAndCountAll({
       limit: limite,
       offset: offset,
