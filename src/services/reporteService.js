@@ -1,5 +1,6 @@
 const { Op, fn, col, literal } = require('sequelize');
 const { Envio, EnvioItem, EnvioItemComponente, Producto, Oferta, Usuario } = require('../models');
+const { ESTADOS_ANALITICA } = require('../utils/analyticsConstants');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 class ReporteService {
@@ -48,7 +49,7 @@ class ReporteService {
     });
 
     // 2. Where Concretados (Entregados)
-    let whereConcretados = { usuario_id, estado: 'Entregado' };
+    let whereConcretados = { usuario_id, estado: ESTADOS_ANALITICA.EXITOSOS };
     whereConcretados = this._aplicarFiltrosGlobales(whereConcretados, filtros);
     if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
       whereConcretados['$items.producto_id$'] = filtros.producto_id;
@@ -110,7 +111,7 @@ class ReporteService {
     });
 
     // 5. Cancelados/Devueltos (sobre todos, no importa concretados)
-    let whereCancelados = { usuario_id, estado: { [Op.in]: ['Cancelado', 'Devuelto', 'Rechazado'] } };
+    let whereCancelados = { usuario_id, estado: ESTADOS_ANALITICA.FALLIDOS };
     whereCancelados = this._aplicarFiltrosGlobales(whereCancelados, filtros);
     if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
       whereCancelados['$items.producto_id$'] = filtros.producto_id;
@@ -142,8 +143,8 @@ class ReporteService {
     });
     
     desglose.forEach(d => {
-      if (['Entregado'].includes(d.estado)) ent += parseInt(d.total);
-      else if (['Cancelado', 'Devuelto', 'Rechazado'].includes(d.estado)) canc += parseInt(d.total);
+      if (ESTADOS_ANALITICA.EXITOSOS.includes(d.estado)) ent += parseInt(d.total);
+      else if (ESTADOS_ANALITICA.FALLIDOS.includes(d.estado)) canc += parseInt(d.total);
       else pend += parseInt(d.total);
     });
 
@@ -255,7 +256,7 @@ class ReporteService {
     const { fecha_desde, fecha_hasta, buscador } = filtros;
 
     const whereEnvio = { 
-      estado: 'Entregado',
+      estado: ESTADOS_ANALITICA.EXITOSOS,
       usuario_id: usuario_id 
     };
     
@@ -313,7 +314,7 @@ class ReporteService {
 
     const whereEnvio = { 
       usuario_id: usuario_id,
-      estado: 'Entregado'
+      estado: ESTADOS_ANALITICA.EXITOSOS
     };
     
     if (desde && hasta) {
@@ -398,7 +399,7 @@ class ReporteService {
     const whereEnvio = { 
       usuario_id: usuario_id,
       quiere_factura: true,
-      estado: 'Entregado'
+      estado: ESTADOS_ANALITICA.EXITOSOS
     };
     
     if (desde && hasta) {
@@ -727,7 +728,7 @@ class ReporteService {
     const { Envio, EnvioItem } = require('../models');
     
     // Solo ventas concretadas
-    let whereConcretados = { usuario_id, estado: 'Entregado' };
+    let whereConcretados = { usuario_id, estado: ESTADOS_ANALITICA.EXITOSOS };
     whereConcretados = this._aplicarFiltrosGlobales(whereConcretados, filtros);
     
     const includeQuery = (filtros.producto_id && filtros.producto_id !== 'TODOS') ? [{
