@@ -57,6 +57,7 @@ async function procesarRecordatorioVencido(recordatorioId, versionEsperada) {
         tipo: 'SEGUIMIENTO_PEDIDO_VENCIDO',
         entidad_tipo: 'seguimiento_recordatorio',
         entidad_id: recordatorio.id,
+        envio_id: envio.id,
         titulo: 'Seguimiento pendiente',
         mensaje: `El pedido #${envio.numero_pedido || envio.id} requiere un nuevo contacto.`,
       }, { transaction: t });

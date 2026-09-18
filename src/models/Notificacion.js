@@ -32,6 +32,11 @@ const Notificacion = sequelize.define('Notificacion', {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
+  envio_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Pedido al que navegar desde la notificación (ej. desde la campanita), cuando aplica. No todo tipo de notificación futuro tiene por qué estar atado a un pedido, por eso es independiente de entidad_tipo/entidad_id.',
+  },
   titulo: {
     type: DataTypes.STRING(255),
     allowNull: false,

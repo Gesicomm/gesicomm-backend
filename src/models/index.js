@@ -213,6 +213,8 @@ SeguimientoRecordatorio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
 Usuario.hasMany(Notificacion, { foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 Notificacion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+Envio.hasMany(Notificacion, { foreignKey: 'envio_id', onDelete: 'SET NULL' });
+Notificacion.belongsTo(Envio, { foreignKey: 'envio_id' });
 
 Usuario.hasOne(SeguimientoConfiguracion, { foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 SeguimientoConfiguracion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
