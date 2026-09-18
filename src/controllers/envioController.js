@@ -3,6 +3,7 @@ const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
+const { cancelarSiEstadoTerminal } = require('../services/seguimiento/seguimientoRecordatorio.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const PedidoNumeracion = require('../services/pedidoNumeracion.service');
 const ProductoService = require('../services/producto.service');
@@ -786,6 +787,14 @@ exports.listEnviosPaginados = async (req, res) => {
       producto_busqueda,
       solo_abastecimiento,
       abastecimiento_estado,
+      // --- Filtros de seguimiento WhatsApp (BE-10) ---
+      etiqueta_id,             // pedidos con esa etiqueta activa
+      plantilla_id,            // pedidos donde se usó esa plantilla al menos una vez
+      seguimiento_responsable_id, // usuario_id del recordatorio (no confundir con "confirmador", que es texto libre)
+      seguimiento_pendiente,   // true = tiene un recordatorio PENDIENTE (no vencido)
+      seguimiento_vencido,     // true = tiene un recordatorio PENDIENTE cuyo ejecutar_en ya pasó
+      seguimiento_fecha_desde, // rango sobre ejecutar_en del próximo recordatorio PENDIENTE
+      seguimiento_fecha_hasta,
     } = req.body;
 
     asegurarAdminParaBandejaAbastecimiento(req, { solo_abastecimiento, abastecimiento_estado });
@@ -867,6 +876,49 @@ exports.listEnviosPaginados = async (req, res) => {
             )
         )`),
       ];
+    }
+
+    // --- Filtros de seguimiento WhatsApp (BE-10) ---
+    const filtrosAnd = [];
+    if (etiqueta_id) {
+      filtrosAnd.push(Sequelize.literal(`EXISTS (
+        SELECT 1 FROM envio_etiquetas ee
+        WHERE ee.envio_id = "Envio"."id" AND ee.activa = true AND ee.etiqueta_id = ${Number(etiqueta_id) || 0}
+      )`));
+    }
+    if (plantilla_id) {
+      filtrosAnd.push(Sequelize.literal(`EXISTS (
+        SELECT 1 FROM seguimiento_contactos sc
+        WHERE sc.envio_id = "Envio"."id" AND sc.plantilla_id = ${Number(plantilla_id) || 0}
+      )`));
+    }
+    if (seguimiento_responsable_id) {
+      filtrosAnd.push(Sequelize.literal(`EXISTS (
+        SELECT 1 FROM seguimiento_recordatorios sr
+        WHERE sr.envio_id = "Envio"."id" AND sr.estado = 'PENDIENTE' AND sr.usuario_id = ${Number(seguimiento_responsable_id) || 0}
+      )`));
+    }
+    if (seguimiento_vencido) {
+      filtrosAnd.push(Sequelize.literal(`EXISTS (
+        SELECT 1 FROM seguimiento_recordatorios sr
+        WHERE sr.envio_id = "Envio"."id" AND sr.estado IN ('PENDIENTE', 'VENCIDO') AND sr.ejecutar_en <= NOW()
+      )`));
+    } else if (seguimiento_pendiente) {
+      filtrosAnd.push(Sequelize.literal(`EXISTS (
+        SELECT 1 FROM seguimiento_recordatorios sr
+        WHERE sr.envio_id = "Envio"."id" AND sr.estado = 'PENDIENTE'
+      )`));
+    }
+    if (seguimiento_fecha_desde || seguimiento_fecha_hasta) {
+      const desde = seguimiento_fecha_desde ? new Date(seguimiento_fecha_desde) : null;
+      const hasta = seguimiento_fecha_hasta ? new Date(seguimiento_fecha_hasta) : null;
+      const condiciones = ["sr.envio_id = \"Envio\".\"id\"", "sr.estado = 'PENDIENTE'"];
+      if (desde && !isNaN(desde.getTime())) condiciones.push(`sr.ejecutar_en >= '${desde.toISOString()}'`);
+      if (hasta && !isNaN(hasta.getTime())) condiciones.push(`sr.ejecutar_en <= '${hasta.toISOString()}'`);
+      filtrosAnd.push(Sequelize.literal(`EXISTS (SELECT 1 FROM seguimiento_recordatorios sr WHERE ${condiciones.join(' AND ')})`));
+    }
+    if (filtrosAnd.length > 0) {
+      where[Op.and] = [...(where[Op.and] || []), ...filtrosAnd];
     }
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
@@ -1109,14 +1161,18 @@ exports.createEnvio = async (req, res) => {
 // valores válidos (ver migrar-gestion-pedidos.js para la conversión de
 // filas legacy). El estado financiero (pendiente_liquidacion/liquidado)
 // vive aparte, en Envio.estado_financiero, y nunca lo toca esta función.
-const ESTADOS_OPERATIVOS = ['Pendiente', 'Confirmado', 'Preparado', 'Despachado', 'Reprogramado', 'Entregado', 'Cancelado', 'Devuelto', 'Perdido'];
+// "EnSeguimiento" (RF Seguimiento WhatsApp) se intercala entre Pendiente y
+// Confirmado: lo asigna automáticamente seguimientoController al registrar
+// el primer contacto de WhatsApp (ver BE-07), nunca updateEstado a mano.
+const ESTADOS_OPERATIVOS = ['Pendiente', 'EnSeguimiento', 'Confirmado', 'Preparado', 'Despachado', 'Reprogramado', 'Entregado', 'Cancelado', 'Devuelto', 'Perdido'];
 
 // Transiciones permitidas desde cada estado actual. "Devuelto" y "Perdido"
 // deliberadamente NO aparecen como destino acá: se gestionan por
 // producto/cantidad vía POST /:id/devolucion y POST /:id/perdida (abajo),
 // que validan su propia transición y aplican su propio movimiento de stock.
 const TRANSICIONES_VALIDAS = {
-  Pendiente: ['Confirmado', 'Cancelado'],
+  Pendiente: ['Confirmado', 'Cancelado', 'EnSeguimiento'],
+  EnSeguimiento: ['Confirmado', 'Reprogramado', 'Cancelado'],
   Confirmado: ['Preparado', 'Cancelado'],
   Preparado: ['Despachado', 'Cancelado'],
   Despachado: ['Entregado', 'Reprogramado'],
@@ -1451,6 +1507,10 @@ exports.updateEstado = async (req, res) => {
     await envio.update(updateData, { transaction: t });
     await t.commit();
 
+    if (updateData.estado) {
+      cancelarSiEstadoTerminal(envio.id, updateData.estado);
+    }
+
     const result = await Envio.findByPk(envio.id, {
       include: [
         { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
@@ -1680,6 +1740,10 @@ exports.registrarDevolucion = async (req, res) => {
     await envio.update(updateData, { transaction: t });
     await t.commit();
 
+    if (updateData.estado) {
+      cancelarSiEstadoTerminal(envio.id, updateData.estado);
+    }
+
     const result = await Envio.findByPk(envio.id, {
       include: [
         { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
@@ -1759,6 +1823,10 @@ exports.registrarPerdida = async (req, res) => {
     }
     await envio.update(updateData, { transaction: t });
     await t.commit();
+
+    if (updateData.estado) {
+      cancelarSiEstadoTerminal(envio.id, updateData.estado);
+    }
 
     const result = await Envio.findByPk(envio.id, {
       include: [

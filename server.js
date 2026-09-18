@@ -20,6 +20,7 @@ const combosAdminRoutes = require('./src/routes/combos-admin');
 const ofertasAdminRoutes = require('./src/routes/ofertas-admin');
 const courierRoutes = require('./src/routes/courierRoutes');
 const envioRoutes = require('./src/routes/envioRoutes');
+const seguimientoRoutes = require('./src/routes/seguimientoRoutes');
 const metodoPagoRoutes = require('./src/routes/metodoPagoRoutes');
 const liquidacionRoutes = require('./src/routes/liquidacionRoutes');
 const vitrinaRoutes = require('./src/routes/vitrina');
@@ -199,6 +200,7 @@ app.use('/api/combos', combosAdminRoutes);
 app.use('/api/ofertas', ofertasAdminRoutes);
 app.use('/api/couriers', courierRoutes);
 app.use('/api/envios', envioRoutes);
+app.use('/api/seguimiento', seguimientoRoutes);
 app.use('/api/metodos-pago', metodoPagoRoutes);
 app.use('/api/liquidaciones', liquidacionRoutes);
 app.use('/api/vitrina', vitrinaRoutes);
@@ -285,6 +287,7 @@ const CategoriaCostoGastoService = require('./src/services/categoriaCostoGasto.s
 const CanalVentaService = require('./src/services/canalVenta.service');
 const { iniciarJobCostosRecurrentes } = require('./src/services/cron/costosRecurrentes.job');
 const { iniciarJobReconciliacionSuscripciones } = require('./src/services/cron/reconciliacionSuscripciones.job');
+const { iniciarJobReconciliacionRecordatorios } = require('./src/services/cron/reconciliacionRecordatorios.job');
 
 sequelize.authenticate().then(async () => {
   try {
@@ -320,6 +323,7 @@ sequelize.authenticate().then(async () => {
 
   iniciarJobCostosRecurrentes();
   iniciarJobReconciliacionSuscripciones();
+  iniciarJobReconciliacionRecordatorios();
   app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });

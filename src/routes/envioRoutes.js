@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const envioController = require('../controllers/envioController');
+const seguimientoController = require('../controllers/envioSeguimientoController');
 const { verificarToken } = require('../middleware/autenticacion');
 
 router.use(verificarToken);
@@ -48,5 +49,16 @@ router.get('/:id/historial', envioController.obtenerHistorial);
 
 // Eliminar un pedido (solo admin)
 router.delete('/:id', envioController.deleteEnvio);
+
+// --- Seguimiento de pedidos por WhatsApp (RF Seguimiento WhatsApp) ---
+router.post('/:id/seguimiento/contactos', seguimientoController.registrarContacto);
+router.get('/:id/seguimiento/contactos', seguimientoController.listarContactos);
+router.get('/:id/seguimiento/etiquetas', seguimientoController.listarEtiquetasDelPedido);
+router.post('/:id/seguimiento/etiquetas', seguimientoController.asociarEtiqueta);
+router.delete('/:id/seguimiento/etiquetas/:etiquetaId', seguimientoController.quitarEtiqueta);
+router.post('/:id/seguimiento/recordatorio', seguimientoController.programarRecordatorio);
+router.patch('/:id/seguimiento/recordatorio/:recordatorioId/completar', seguimientoController.completarRecordatorio);
+router.patch('/:id/seguimiento/recordatorio/:recordatorioId/cancelar', seguimientoController.cancelarRecordatorio);
+router.get('/:id/seguimiento/historial', seguimientoController.historialSeguimiento);
 
 module.exports = router;

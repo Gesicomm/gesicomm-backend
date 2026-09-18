@@ -79,6 +79,13 @@ const AuthEvent = require('./AuthEvent');
 const UserSession = require('./UserSession');
 const AuthNotification = require('./AuthNotification');
 const NotificationEvent = require('./NotificationEvent');
+const WhatsappPlantilla = require('./WhatsappPlantilla');
+const SeguimientoEtiqueta = require('./SeguimientoEtiqueta');
+const EnvioEtiqueta = require('./EnvioEtiqueta');
+const SeguimientoContacto = require('./SeguimientoContacto');
+const SeguimientoRecordatorio = require('./SeguimientoRecordatorio');
+const Notificacion = require('./Notificacion');
+const SeguimientoConfiguracion = require('./SeguimientoConfiguracion');
 
 // ============================================================
 // Relaciones existentes
@@ -168,6 +175,47 @@ Envio.hasMany(EnvioHistorial, { as: 'historial', foreignKey: 'envio_id', onDelet
 EnvioHistorial.belongsTo(Envio, { foreignKey: 'envio_id' });
 Usuario.hasMany(EnvioHistorial, { foreignKey: 'usuario_id' });
 EnvioHistorial.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+// ============================================================
+// Seguimiento de pedidos por WhatsApp (RF Seguimiento WhatsApp)
+// ============================================================
+Usuario.hasMany(WhatsappPlantilla, { as: 'plantillas_whatsapp', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+WhatsappPlantilla.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Usuario.hasMany(SeguimientoEtiqueta, { as: 'etiquetas_seguimiento', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+SeguimientoEtiqueta.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+// SET NULL: borrar una etiqueta no puede tumbar la plantilla que la usaba,
+// simplemente queda sin auto-etiquetado.
+SeguimientoEtiqueta.hasMany(WhatsappPlantilla, { foreignKey: 'etiqueta_id', onDelete: 'SET NULL' });
+WhatsappPlantilla.belongsTo(SeguimientoEtiqueta, { as: 'etiqueta', foreignKey: 'etiqueta_id' });
+
+Envio.hasMany(EnvioEtiqueta, { as: 'etiquetas', foreignKey: 'envio_id', onDelete: 'CASCADE' });
+EnvioEtiqueta.belongsTo(Envio, { foreignKey: 'envio_id' });
+SeguimientoEtiqueta.hasMany(EnvioEtiqueta, { foreignKey: 'etiqueta_id', onDelete: 'CASCADE' });
+EnvioEtiqueta.belongsTo(SeguimientoEtiqueta, { as: 'etiqueta', foreignKey: 'etiqueta_id' });
+Usuario.hasMany(EnvioEtiqueta, { foreignKey: 'usuario_id' });
+EnvioEtiqueta.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Envio.hasMany(SeguimientoContacto, { as: 'contactos_seguimiento', foreignKey: 'envio_id', onDelete: 'CASCADE' });
+SeguimientoContacto.belongsTo(Envio, { foreignKey: 'envio_id' });
+WhatsappPlantilla.hasMany(SeguimientoContacto, { foreignKey: 'plantilla_id', onDelete: 'SET NULL' });
+SeguimientoContacto.belongsTo(WhatsappPlantilla, { as: 'plantilla', foreignKey: 'plantilla_id' });
+SeguimientoEtiqueta.hasMany(SeguimientoContacto, { foreignKey: 'etiqueta_id', onDelete: 'SET NULL' });
+SeguimientoContacto.belongsTo(SeguimientoEtiqueta, { as: 'etiqueta', foreignKey: 'etiqueta_id' });
+Usuario.hasMany(SeguimientoContacto, { foreignKey: 'usuario_id' });
+SeguimientoContacto.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Envio.hasMany(SeguimientoRecordatorio, { as: 'recordatorios', foreignKey: 'envio_id', onDelete: 'CASCADE' });
+SeguimientoRecordatorio.belongsTo(Envio, { foreignKey: 'envio_id' });
+Usuario.hasMany(SeguimientoRecordatorio, { foreignKey: 'usuario_id' });
+SeguimientoRecordatorio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Usuario.hasMany(Notificacion, { foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+Notificacion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Usuario.hasOne(SeguimientoConfiguracion, { foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+SeguimientoConfiguracion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
 // ============================================================
 // Relaciones de Categoría
@@ -653,4 +701,11 @@ module.exports = {
   UserSession,
   AuthNotification,
   NotificationEvent,
+  WhatsappPlantilla,
+  SeguimientoEtiqueta,
+  EnvioEtiqueta,
+  SeguimientoContacto,
+  SeguimientoRecordatorio,
+  Notificacion,
+  SeguimientoConfiguracion,
 };
