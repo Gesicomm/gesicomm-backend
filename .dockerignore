@@ -10,3 +10,5 @@ npm-debug.log
 logs
 .DS_Store
 Thumbs.db
+actions-runner-backend
+actions-runner-backend-test
