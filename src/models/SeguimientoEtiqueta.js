@@ -24,6 +24,11 @@ const SeguimientoEtiqueta = sequelize.define('SeguimientoEtiqueta', {
     type: DataTypes.STRING(50),
     allowNull: false,
   },
+  color: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    defaultValue: '#3b82f6'
+  },
   activo: {
     type: DataTypes.BOOLEAN,
     allowNull: false,

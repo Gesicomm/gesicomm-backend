@@ -25,9 +25,32 @@ function filtroEnvio(req, id) {
   return esAdministrador(req) ? { id } : { id, usuario_id: req.usuario.id };
 }
 
+function normalizarTelefono(telefono) {
+  // Remove everything except digits and leading +
+  let t = String(telefono || '').trim();
+  // If already has country code (starts with + or 595...), strip non-digits and use as-is
+  if (t.startsWith('+')) {
+    return t.replace(/\D/g, '');
+  }
+  const soloDigitos = t.replace(/\D/g, '');
+  // Paraguay numbers: local format starts with 09xxxxxxxx (10 digits) or 9xxxxxxxx (9 digits)
+  if (soloDigitos.startsWith('0') && soloDigitos.length >= 9) {
+    return '595' + soloDigitos.slice(1);
+  }
+  // If already has 595 prefix
+  if (soloDigitos.startsWith('595')) {
+    return soloDigitos;
+  }
+  // Default: assume Paraguay, prepend 595
+  if (soloDigitos.length <= 9) {
+    return '595' + soloDigitos;
+  }
+  return soloDigitos;
+}
+
 function whatsappUrl(telefono, mensaje) {
-  const soloDigitos = String(telefono || '').replace(/\D/g, '');
-  return `https://wa.me/${soloDigitos}?text=${encodeURIComponent(mensaje)}`;
+  const numero = normalizarTelefono(telefono);
+  return `https://wa.me/${numero}?text=${encodeURIComponent(mensaje)}`;
 }
 
 async function cargarEnvioODevolver404(req, res, { conItems = false } = {}) {
@@ -339,4 +362,21 @@ exports.historialSeguimiento = async (req, res) => {
   ].sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
 
   res.json(eventos);
+};
+
+/** POST /api/envios/:id/seguimiento/nota - Guarda una nota libre en el historial del pedido sin agendar recordatorio. */
+exports.guardarNota = async (req, res) => {
+  const usuario_id = req.usuario.id;
+  const { nota } = req.body;
+  if (!nota || !String(nota).trim()) {
+    return res.status(400).json({ error: 'La nota no puede estar vacia' });
+  }
+  const envio = await cargarEnvioODevolver404(req, res);
+  if (!envio) return;
+  try {
+    await registrarHistorial(envio.id, usuario_id, `Nota: ${nota.trim()}`);
+    res.status(201).json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Error al guardar nota' });
+  }
 };

@@ -43,9 +43,14 @@ exports.obtenerPlantilla = async (req, res) => {
 
 exports.crearPlantilla = async (req, res) => {
   const usuario_id = req.usuario.id;
-  const { nombre, codigo, mensaje, etiqueta_id, activo } = req.body;
-  if (!nombre || !codigo || !mensaje) {
-    return res.status(400).json({ error: 'nombre, codigo y mensaje son obligatorios' });
+  const { nombre, etiqueta_id, activo } = req.body;
+  const mensaje = req.body.mensaje || req.body.mensaje_template;
+  let codigo = req.body.codigo;
+  if (!nombre || !mensaje) {
+    return res.status(400).json({ error: 'nombre y mensaje son obligatorios' });
+  }
+  if (!codigo) {
+    codigo = nombre.toLowerCase().replace(/[^a-z0-9]/g, '_') + '_' + Math.floor(Math.random()*1000);
   }
   try {
     const plantilla = await WhatsappPlantilla.create({
@@ -54,7 +59,7 @@ exports.crearPlantilla = async (req, res) => {
     res.status(201).json(plantilla);
   } catch (error) {
     if (error.name === 'SequelizeUniqueConstraintError') {
-      return res.status(409).json({ error: `Ya existe una plantilla con el código "${codigo}"` });
+      return res.status(409).json({ error: `Ya existe una plantilla con el cdigo "${codigo}"` });
     }
     res.status(500).json({ error: 'Error al crear la plantilla' });
   }
@@ -62,7 +67,8 @@ exports.crearPlantilla = async (req, res) => {
 
 exports.editarPlantilla = async (req, res) => {
   const usuario_id = req.usuario.id;
-  const { nombre, codigo, mensaje, etiqueta_id, activo } = req.body;
+  const { nombre, codigo, etiqueta_id, activo } = req.body;
+  const mensaje = req.body.mensaje || req.body.mensaje_template;
   const plantilla = await WhatsappPlantilla.findOne({
     where: esAdministrador(req) ? { id: req.params.id } : { id: req.params.id, usuario_id },
   });
@@ -79,7 +85,7 @@ exports.editarPlantilla = async (req, res) => {
     res.json(plantilla);
   } catch (error) {
     if (error.name === 'SequelizeUniqueConstraintError') {
-      return res.status(409).json({ error: `Ya existe una plantilla con el código "${codigo}"` });
+      return res.status(409).json({ error: `Ya existe una plantilla con el cdigo "${codigo}"` });
     }
     res.status(500).json({ error: 'Error al editar la plantilla' });
   }
@@ -115,38 +121,44 @@ exports.listarEtiquetas = async (req, res) => {
 
 exports.crearEtiqueta = async (req, res) => {
   const usuario_id = req.usuario.id;
-  const { nombre, codigo, activo } = req.body;
-  if (!nombre || !codigo) return res.status(400).json({ error: 'nombre y codigo son obligatorios' });
+  const { nombre, activo, color } = req.body;
+  if (!nombre) return res.status(400).json({ error: 'nombre es obligatorio' });
+  let codigo = req.body.codigo;
+  if (!codigo) {
+    codigo = nombre.toLowerCase().replace(/[^a-z0-9]/g, '_') + '_' + Math.floor(Math.random()*1000);
+  }
   try {
-    const etiqueta = await SeguimientoEtiqueta.create({ usuario_id, nombre, codigo, activo: activo !== undefined ? activo : true });
+    const etiqueta = await SeguimientoEtiqueta.create({ usuario_id, nombre, codigo, color, activo: activo !== undefined ? activo : true });
     res.status(201).json(etiqueta);
   } catch (error) {
     if (error.name === 'SequelizeUniqueConstraintError') {
-      return res.status(409).json({ error: `Ya existe una etiqueta con el código "${codigo}"` });
+      return res.status(409).json({ error: `Ya existe una etiqueta con el cdigo "${codigo}"` });
     }
-    res.status(500).json({ error: 'Error al crear la etiqueta' });
+    console.error('Error en crearEtiqueta:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
 exports.editarEtiqueta = async (req, res) => {
-  const usuario_id = req.usuario.id;
-  const { nombre, codigo, activo } = req.body;
-  const etiqueta = await SeguimientoEtiqueta.findOne({
-    where: esAdministrador(req) ? { id: req.params.id } : { id: req.params.id, usuario_id },
-  });
-  if (!etiqueta) return res.status(404).json({ error: 'Etiqueta no encontrada' });
+  const { id } = req.params;
+  const { nombre, codigo, activo, color } = req.body;
   try {
-    await etiqueta.update({
-      nombre: nombre ?? etiqueta.nombre,
-      codigo: codigo ?? etiqueta.codigo,
-      activo: activo !== undefined ? activo : etiqueta.activo,
-    });
+    const etiqueta = await SeguimientoEtiqueta.findOne({ where: { id, usuario_id: req.usuario.id } });
+    if (!etiqueta) return res.status(404).json({ error: 'Etiqueta no encontrada' });
+    
+    if (nombre) etiqueta.nombre = nombre;
+    if (codigo) etiqueta.codigo = codigo;
+    if (activo !== undefined) etiqueta.activo = activo;
+    if (color) etiqueta.color = color;
+    
+    await etiqueta.save();
     res.json(etiqueta);
   } catch (error) {
     if (error.name === 'SequelizeUniqueConstraintError') {
-      return res.status(409).json({ error: `Ya existe una etiqueta con el código "${codigo}"` });
+      return res.status(409).json({ error: `Ya existe una etiqueta con el cdigo "${codigo}"` });
     }
-    res.status(500).json({ error: 'Error al editar la etiqueta' });
+    console.error('Error en editarEtiqueta:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 

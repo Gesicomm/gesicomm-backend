@@ -60,5 +60,6 @@ router.post('/:id/seguimiento/recordatorio', seguimientoController.programarReco
 router.patch('/:id/seguimiento/recordatorio/:recordatorioId/completar', seguimientoController.completarRecordatorio);
 router.patch('/:id/seguimiento/recordatorio/:recordatorioId/cancelar', seguimientoController.cancelarRecordatorio);
 router.get('/:id/seguimiento/historial', seguimientoController.historialSeguimiento);
+router.post('/:id/seguimiento/nota', seguimientoController.guardarNota);
 
 module.exports = router;
