@@ -806,13 +806,98 @@ class SuscripcionService {
     return suscripcion;
   }
 
-  /** Ata la suscripción al Usuario recién creado y quema el token. */
-  static async vincularUsuario(suscripcion, usuarioId, transaction) {
-    await suscripcion.update({
+  /**
+   * Ata la suscripción al Usuario recién creado y quema el token.
+   *
+   * Atómico a propósito: el `WHERE` (mismo token, usuario_id todavía null)
+   * es la sección crítica, no una lectura previa. Si dos registros llegan
+   * con el mismo token (doble clic, reintento de red tras un timeout), como
+   * mucho uno de los dos UPDATE afecta una fila — el otro afecta 0 y su
+   * transacción se revierte entera, sin dejar un Usuario sin su plan.
+   *
+   * @returns {{ reclamada: boolean }}
+   */
+  static async vincularUsuario(suscripcion, usuarioId, token, transaction) {
+    const [filas] = await Suscripcion.update({
       usuario_id: usuarioId,
       token_registro: null,
       token_registro_expira: null,
-    }, { transaction });
+    }, {
+      where: { id: suscripcion.id, token_registro: token, usuario_id: null },
+      transaction,
+    });
+    return { reclamada: filas === 1 };
+  }
+
+  /**
+   * Recovery Path: busca una compra pagada sin cuenta para un correo YA
+   * verificado por OTP (ver POST /api/auth/verify-email) y la reclama.
+   *
+   * Se llama recién después de que la persona demostró que controla ese
+   * correo — conocer el email nunca alcanza por sí solo para reclamar un
+   * pago (ver auditoría, punto 7).
+   *
+   * Ambigüedad = plata: si hay más de una compra reclamable para el mismo
+   * correo, no se vincula ninguna automáticamente. Nunca se elige "la más
+   * reciente" en silencio — queda para revisión manual (ver notificación en
+   * authTracking.service.js: 'subscription_claim_ambiguous').
+   *
+   * Si es ambigua, además trae las referencias de pago de cada candidata
+   * (`pagos`) — lo mínimo que soporte necesita para desambiguar a mano sin
+   * exponer nada sensible: referencia, hash_pedido, monto y cuándo se pagó.
+   * Nunca claves ni tokens.
+   *
+   * @returns {{ resultado: 'ninguna'|'reclamada'|'ambigua', suscripcion?: object, candidatas?: object[], pagos?: object[] }}
+   */
+  static async reclamarPorEmailVerificado({ usuarioId, email, transaction }) {
+    const correo = String(email || '').trim().toLowerCase();
+
+    // OJO: `lock` a secas con un `include` rompe contra Postgres real
+    // ("FOR UPDATE cannot be applied to the nullable side of an outer
+    // join") porque el include de Plan es un LEFT JOIN — esto no lo agarra
+    // ningún test con modelos mockeados, porque el mock nunca genera SQL
+    // de verdad. `of: Suscripcion` acota el FOR UPDATE a esa tabla sola.
+    const candidatas = await Suscripcion.findAll({
+      where: { email: correo, estado: 'activa', usuario_id: null },
+      include: [Plan],
+      lock: { level: transaction.LOCK.UPDATE, of: Suscripcion },
+      transaction,
+    });
+
+    if (candidatas.length === 0) {
+      return { resultado: 'ninguna' };
+    }
+
+    if (candidatas.length > 1) {
+      const pagos = await PagoSuscripcion.findAll({
+        where: { suscripcion_id: candidatas.map(s => s.id), estado: 'PAID' },
+        attributes: ['id', 'suscripcion_id', 'referencia', 'hash_pedido', 'monto', 'pagado_en'],
+        transaction,
+      });
+      return { resultado: 'ambigua', candidatas, pagos };
+    }
+
+    const [susc] = candidatas;
+    const [filas] = await Suscripcion.update({
+      usuario_id: usuarioId,
+    }, {
+      where: { id: susc.id, usuario_id: null },
+      transaction,
+    });
+
+    if (filas !== 1) {
+      // Alguien la reclamó en el mismo instante por otro camino (ej: el
+      // happy path con token, corriendo en paralelo). No es un error: esta
+      // llamada simplemente no tenía nada para reclamar.
+      return { resultado: 'ninguna' };
+    }
+
+    await Usuario.update({ plan: susc.Plan?.equivale_plan || 'pago' }, {
+      where: { id: usuarioId },
+      transaction,
+    });
+
+    return { resultado: 'reclamada', suscripcion: susc };
   }
 
   static async suscripcionActivaDeUsuario(usuarioId) {

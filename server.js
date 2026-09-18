@@ -284,6 +284,7 @@ const { migrarComboImagenes } = require('./scripts/migrar-combo-imagenes');
 const CategoriaCostoGastoService = require('./src/services/categoriaCostoGasto.service');
 const CanalVentaService = require('./src/services/canalVenta.service');
 const { iniciarJobCostosRecurrentes } = require('./src/services/cron/costosRecurrentes.job');
+const { iniciarJobReconciliacionSuscripciones } = require('./src/services/cron/reconciliacionSuscripciones.job');
 
 sequelize.authenticate().then(async () => {
   try {
@@ -318,6 +319,7 @@ sequelize.authenticate().then(async () => {
   }
 
   iniciarJobCostosRecurrentes();
+  iniciarJobReconciliacionSuscripciones();
   app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });

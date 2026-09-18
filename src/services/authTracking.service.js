@@ -58,6 +58,13 @@ const EVENTOS_NOTIFICABLES = {
       return `${nombre || email || 'Un usuario'} pagó ${plan}${monto}.`;
     },
   },
+  subscription_claim_ambiguous: {
+    titulo: 'Compra pendiente ambigua',
+    mensaje: ({ nombre, email, metadata }) => {
+      const cantidad = metadata?.cantidad || 'varias';
+      return `${nombre || email || 'Un usuario'} verificó su correo y hay ${cantidad} compras pagadas sin cuenta con ese email. Revisar y vincular manualmente.`;
+    },
+  },
   store_order_payment_paid: {
     titulo: 'Pedido pagado online',
     mensaje: ({ nombre, email, metadata }) => {

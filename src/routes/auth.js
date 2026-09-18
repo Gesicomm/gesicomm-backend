@@ -275,19 +275,27 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
 
     // Alta con suscripcion paga: el flujo es elegir plan -> pagar -> recien
     // ahi registrarse, asi que el token acredita que ese correo ya pago.
-    // Sin token el alta sigue funcionando igual que siempre (los usuarios
-    // que ya existen no se ven afectados: el control esta en el alta, no en
-    // el login).
+    // Sin token (o con uno invalido/vencido) el alta sigue funcionando igual
+    // que siempre: no se bloquea el registro por eso. Si el pago es real, el
+    // Recovery Path lo encuentra por correo al verificar el OTP (ver POST
+    // /verify-email) — no hace falta el token para recuperarlo, es solo el
+    // atajo del happy path.
+    //
+    // Token válido pero de OTRO correo es un caso distinto: no es "el atajo
+    // no sirvió", es alguien completando el alta con un correo que no es el
+    // que pagó (mistype propio, o un link ajeno). No se bloquea el registro
+    // por eso tampoco — pero no debe sentirse como un alta free exitosa
+    // cualquiera, y queda anotado como anómalo para trazabilidad.
     let suscripcion = null;
+    let tokenCorreoNoCoincide = false;
     if (token_suscripcion) {
-      suscripcion = await SuscripcionService.suscripcionPorToken(token_suscripcion);
-      if (!suscripcion) {
-        await rollbackSeguro(t);
-        return res.status(400).json({ message: 'Ese enlace de registro no es válido, ya se usó o venció.' });
-      }
-      if (suscripcion.email !== String(email || '').trim().toLowerCase()) {
-        await rollbackSeguro(t);
-        return res.status(400).json({ message: 'El correo no coincide con el del pago.' });
+      const candidata = await SuscripcionService.suscripcionPorToken(token_suscripcion);
+      if (candidata) {
+        if (candidata.email === String(email || '').trim().toLowerCase()) {
+          suscripcion = candidata;
+        } else {
+          tokenCorreoNoCoincide = true;
+        }
       }
     }
 
@@ -330,9 +338,20 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
       affiliate_id: suscripcion?.afiliado_id || null,
     }, { transaction: t });
 
-    // Ata la suscripcion al usuario y quema el token (un solo uso).
+    // Ata la suscripcion al usuario y quema el token (un solo uso). Si
+    // perdió la carrera contra otro registro con el mismo token (ver
+    // vincularUsuario), no se aborta el registro: se sigue como alta
+    // normal y el Recovery Path la resuelve por correo al verificar el OTP.
     if (suscripcion) {
-      await SuscripcionService.vincularUsuario(suscripcion, usuarioCreado.id, t);
+      const { reclamada } = await SuscripcionService.vincularUsuario(suscripcion, usuarioCreado.id, token_suscripcion, t);
+      if (!reclamada) {
+        // El plan/afiliado ya quedaron seteados en el create de arriba
+        // asumiendo que la reclamación iba a funcionar. No fue así: se
+        // revierte para no dejar un usuario con plan 'pago' sin suscripción
+        // real detrás.
+        await usuarioCreado.update({ plan: null, affiliate_ref: null, affiliate_id: null }, { transaction: t });
+        suscripcion = null;
+      }
     }
 
     await t.commit();
@@ -349,17 +368,41 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
       },
     });
 
+    if (tokenCorreoNoCoincide) {
+      // Sin notificación push (sería ruido si es solo un mistype propio),
+      // pero SÍ queda un AuthEvent persistente — es lo que soporte necesita
+      // para reconstruir "alguien intentó este token con otro correo".
+      await AuthTracking.registrarEventoConNotificacion({
+        tipo: 'subscription_token_email_mismatch',
+        req,
+        usuario: usuarioCreado,
+        email,
+        resultado: 'fallo',
+        metadata: { token_suscripcion_prefijo: String(token_suscripcion).slice(0, 8) },
+      });
+    }
+
     // Enviar OTP por correo (no bloqueante — la cuenta ya está creada)
     EmailService.enviarCodigoVerificacionEmail({ email, nombre, codigo: otp })
       .catch(err => console.error('[register] Error enviando OTP:', err.message));
 
     return res.status(201).json({
-      message: 'Cuenta creada. Te enviamos un código de 6 dígitos a tu correo para activarla.',
+      message: tokenCorreoNoCoincide
+        ? 'Cuenta creada. Ojo: el enlace de pago que usaste corresponde a otro correo, así que no activamos ningún plan en esta cuenta. Si la compra es tuya, registrate con el mismo correo con el que pagaste.'
+        : 'Cuenta creada. Te enviamos un código de 6 dígitos a tu correo para activarla.',
       requiere_verificacion: true,
       email,
+      token_correo_no_coincide: tokenCorreoNoCoincide,
     });
   } catch (err) {
     await rollbackSeguro(t);
+    // Doble submit / reintento de red con el mismo correo: el chequeo
+    // "existe" de arriba no es atómico con el create, así que dos requests
+    // casi simultáneas pueden pasarlo las dos. El UNIQUE de la BD ataja la
+    // segunda igual — acá solo se le da un mensaje decente en vez de 500.
+    if (err.name === 'SequelizeUniqueConstraintError') {
+      return res.status(400).json({ message: 'El correo ya está registrado.' });
+    }
     console.error(err);
     return res.status(500).json({ message: 'Error interno del servidor al crear cuenta.' });
   }
@@ -369,28 +412,34 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
 // POST /api/auth/verify-email
 // ============================================================
 router.post('/verify-email', limiteAuth, async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     const { email, codigo } = req.body;
 
     if (!email || !codigo) {
+      await rollbackSeguro(t);
       return res.status(400).json({ message: 'El correo y el código son obligatorios.' });
     }
 
     const usuario = await Usuario.findOne({
       where: { correo_electronico: String(email).trim().toLowerCase() },
       include: [{ model: Rol, include: [{ model: Permiso }] }],
+      transaction: t,
     });
 
     if (!usuario) {
+      await rollbackSeguro(t);
       return res.status(404).json({ message: 'No encontramos una cuenta con ese correo.' });
     }
 
     if (usuario.email_verificado) {
+      await rollbackSeguro(t);
       return res.status(400).json({ message: 'Este correo ya fue verificado anteriormente. Podés iniciar sesión.' });
     }
 
     // Validar que el código no expiró
     if (!usuario.codigo_verificacion_expira || new Date() > new Date(usuario.codigo_verificacion_expira)) {
+      await rollbackSeguro(t);
       return res.status(410).json({
         message: 'El código expiró. Solicitá uno nuevo.',
         codigo_expirado: true,
@@ -399,6 +448,7 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
 
     // Validar el código (comparación en string, ambos de 6 dígitos)
     if (String(usuario.codigo_verificacion) !== String(codigo).trim()) {
+      await rollbackSeguro(t);
       return res.status(400).json({ message: 'Código incorrecto. Revisá el correo e intentá de nuevo.' });
     }
 
@@ -407,7 +457,19 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
       email_verificado: true,
       codigo_verificacion: null,
       codigo_verificacion_expira: null,
+    }, { transaction: t });
+
+    // Recovery Path: recién ahora que demostró que controla el correo (OTP
+    // correcto), se busca si hay una compra pagada sin cuenta para
+    // vincularla. Misma transacción que activa el email: si algo falla acá,
+    // no queda ni la cuenta verificada ni la compra a medio reclamar.
+    const reclamo = await SuscripcionService.reclamarPorEmailVerificado({
+      usuarioId: usuario.id,
+      email: usuario.correo_electronico,
+      transaction: t,
     });
+
+    await t.commit();
 
     auditoria('EMAIL_VERIFICADO', { usuarioId: usuario.id, email: usuario.correo_electronico, ip: req.ip });
     await AuthTracking.registrarEventoConNotificacion({
@@ -416,6 +478,42 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
       usuario,
       email: usuario.correo_electronico,
     });
+
+    if (reclamo.resultado === 'reclamada') {
+      await AuthTracking.registrarEventoConNotificacion({
+        tipo: 'subscription_payment_paid',
+        req,
+        usuario,
+        email: usuario.correo_electronico,
+        metadata: {
+          origen: 'Recovery Path (verify-email)',
+          suscripcion_id: reclamo.suscripcion.id,
+          plan_codigo: reclamo.suscripcion.Plan?.codigo || null,
+          plan_nombre: reclamo.suscripcion.Plan?.nombre || null,
+        },
+      });
+    } else if (reclamo.resultado === 'ambigua') {
+      // Trazabilidad para soporte: no solo "hay ambigüedad", sino con qué
+      // referencias de pago exactas — sin datos sensibles (nunca claves ni
+      // tokens), solo lo que hace falta para desambiguar a mano.
+      await AuthTracking.registrarEventoConNotificacion({
+        tipo: 'subscription_claim_ambiguous',
+        req,
+        usuario,
+        email: usuario.correo_electronico,
+        metadata: {
+          suscripcion_ids: reclamo.candidatas.map(s => s.id),
+          cantidad: reclamo.candidatas.length,
+          pagos: (reclamo.pagos || []).map(p => ({
+            suscripcion_id: p.suscripcion_id,
+            referencia: p.referencia,
+            hash_pedido: p.hash_pedido,
+            monto: p.monto,
+            pagado_en: p.pagado_en,
+          })),
+        },
+      });
+    }
 
     // Iniciar sesión automáticamente
     const payload = {
@@ -441,7 +539,9 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
     enviarCookieSesion(req, res, sesion);
 
     return res.json({
-      message: '¡Correo verificado! Tu cuenta está activa.',
+      message: reclamo.resultado === 'ambigua'
+        ? '¡Correo verificado! Tu cuenta está activa. Encontramos más de un pago pendiente con este correo: te vamos a contactar para activar el plan correcto.'
+        : '¡Correo verificado! Tu cuenta está activa.',
       usuario: {
         id: usuario.id,
         nombre: usuario.nombre,
@@ -449,8 +549,11 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
         rol: payload.rol,
         permisos: payload.permisos,
       },
+      suscripcion_vinculada: reclamo.resultado === 'reclamada',
+      pago_pendiente_revision: reclamo.resultado === 'ambigua',
     });
   } catch (err) {
+    await rollbackSeguro(t);
     console.error(err);
     return res.status(500).json({ message: 'Error interno del servidor.' });
   }

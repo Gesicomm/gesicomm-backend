@@ -16,7 +16,7 @@ jest.mock('../../services/parametros.service', () => ({
 }));
 jest.mock('../../models', () => {
   const mkModel = () => ({
-    findOne: jest.fn(), findByPk: jest.fn(), create: jest.fn(), findAll: jest.fn(),
+    findOne: jest.fn(), findByPk: jest.fn(), create: jest.fn(), findAll: jest.fn(), update: jest.fn(),
   });
   return {
     sequelize: { transaction: jest.fn(fn => fn('TRX')) },
@@ -206,13 +206,106 @@ describe('Token de registro', () => {
     expect(await SuscripcionService.suscripcionPorToken('t'.repeat(64))).toBeNull();
   });
 
-  it('lo quema al vincular el usuario', async () => {
-    const susc = { update: jest.fn() };
-    await SuscripcionService.vincularUsuario(susc, 42, 'TRX');
-    expect(susc.update).toHaveBeenCalledWith(
+  it('lo quema al vincular el usuario con un UPDATE condicional atómico', async () => {
+    Suscripcion.update.mockResolvedValue([1]);
+    const r = await SuscripcionService.vincularUsuario({ id: 55 }, 42, 'TOKEN123', 'TRX');
+    expect(Suscripcion.update).toHaveBeenCalledWith(
       { usuario_id: 42, token_registro: null, token_registro_expira: null },
-      { transaction: 'TRX' },
+      { where: { id: 55, token_registro: 'TOKEN123', usuario_id: null }, transaction: 'TRX' },
     );
+    expect(r).toEqual({ reclamada: true });
+  });
+
+  it('Concurrent Claim: si el UPDATE afecta 0 filas (otro registro ganó la carrera), no reclama', async () => {
+    // La fila la reclamó otro request entre que se validó el token y que se
+    // corrió este UPDATE — el WHERE (token + usuario_id IS NULL) ya no matchea.
+    Suscripcion.update.mockResolvedValue([0]);
+    const r = await SuscripcionService.vincularUsuario({ id: 55 }, 42, 'TOKEN123', 'TRX');
+    expect(r).toEqual({ reclamada: false });
+  });
+});
+
+describe('Recovery Path — reclamar por email verificado', () => {
+  const planFounders = { id: 1, codigo: 'founders', nombre: 'Fundadores', equivale_plan: 'pago' };
+
+  it('0 candidatas: no hay nada para reclamar', async () => {
+    Suscripcion.findAll.mockResolvedValue([]);
+    const r = await SuscripcionService.reclamarPorEmailVerificado({
+      usuarioId: 9, email: 'nadie@x.com', transaction: { LOCK: { UPDATE: 'UPDATE' } },
+    });
+    expect(r).toEqual({ resultado: 'ninguna' });
+    expect(Suscripcion.update).not.toHaveBeenCalled();
+  });
+
+  it('1 candidata: la reclama atómicamente y activa el plan', async () => {
+    const susc = { id: 55, Plan: planFounders };
+    Suscripcion.findAll.mockResolvedValue([susc]);
+    Suscripcion.update.mockResolvedValue([1]);
+    Usuario.update.mockResolvedValue([1]);
+
+    const r = await SuscripcionService.reclamarPorEmailVerificado({
+      usuarioId: 9, email: 'una@x.com', transaction: { LOCK: { UPDATE: 'UPDATE' } },
+    });
+
+    expect(Suscripcion.update).toHaveBeenCalledWith(
+      { usuario_id: 9 },
+      expect.objectContaining({ where: { id: 55, usuario_id: null } }),
+    );
+    expect(Usuario.update).toHaveBeenCalledWith(
+      { plan: 'pago' },
+      expect.objectContaining({ where: { id: 9 } }),
+    );
+    expect(r.resultado).toBe('reclamada');
+    expect(r.suscripcion).toBe(susc);
+  });
+
+  it('1 candidata pero la pierde en la carrera (0 filas afectadas): no reclama, no rompe', async () => {
+    Suscripcion.findAll.mockResolvedValue([{ id: 55, Plan: planFounders }]);
+    Suscripcion.update.mockResolvedValue([0]);
+
+    const r = await SuscripcionService.reclamarPorEmailVerificado({
+      usuarioId: 9, email: 'una@x.com', transaction: { LOCK: { UPDATE: 'UPDATE' } },
+    });
+
+    expect(r).toEqual({ resultado: 'ninguna' });
+    expect(Usuario.update).not.toHaveBeenCalled();
+  });
+
+  it('N candidatas (>1): ambigüedad financiera, NO elige "la más reciente" — no vincula ninguna, y trae las referencias de pago', async () => {
+    const candidatas = [
+      { id: 55, Plan: planFounders },
+      { id: 56, Plan: planFounders },
+    ];
+    const pagos = [
+      { id: 1, suscripcion_id: 55, referencia: 'SUS55', hash_pedido: 'h55', monto: 47, pagado_en: new Date() },
+      { id: 2, suscripcion_id: 56, referencia: 'SUS56', hash_pedido: 'h56', monto: 47, pagado_en: new Date() },
+    ];
+    Suscripcion.findAll.mockResolvedValue(candidatas);
+    PagoSuscripcion.findAll.mockResolvedValue(pagos);
+
+    const r = await SuscripcionService.reclamarPorEmailVerificado({
+      usuarioId: 9, email: 'dos@x.com', transaction: { LOCK: { UPDATE: 'UPDATE' } },
+    });
+
+    expect(r.resultado).toBe('ambigua');
+    expect(r.pagos).toEqual(pagos);
+    expect(PagoSuscripcion.findAll).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ suscripcion_id: [55, 56], estado: 'PAID' }),
+    }));
+    expect(r.candidatas).toEqual(candidatas);
+    expect(Suscripcion.update).not.toHaveBeenCalled();
+    expect(Usuario.update).not.toHaveBeenCalled();
+  });
+
+  it('bloquea las candidatas con FOR UPDATE OF Suscripcion (no a secas: rompe contra Postgres real con el include de Plan)', async () => {
+    Suscripcion.findAll.mockResolvedValue([]);
+    await SuscripcionService.reclamarPorEmailVerificado({
+      usuarioId: 9, email: 'x@x.com', transaction: { LOCK: { UPDATE: 'UPDATE' } },
+    });
+    expect(Suscripcion.findAll).toHaveBeenCalledWith(expect.objectContaining({
+      where: { email: 'x@x.com', estado: 'activa', usuario_id: null },
+      lock: { level: 'UPDATE', of: Suscripcion },
+    }));
   });
 });
 
