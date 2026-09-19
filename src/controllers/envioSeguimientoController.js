@@ -291,7 +291,10 @@ exports.completarRecordatorio = async (req, res) => {
   const envio = await cargarEnvioODevolver404(req, res);
   if (!envio) return;
 
-  const recordatorio = await SeguimientoRecordatorio.findOne({ where: { id: recordatorioId, envio_id: envio.id, estado: 'PENDIENTE' } });
+  let recordatorio = await SeguimientoRecordatorio.findOne({ where: { id: recordatorioId, envio_id: envio.id, estado: 'PENDIENTE' } });
+  if (!recordatorio) {
+    recordatorio = await SeguimientoRecordatorio.findOne({ where: { envio_id: envio.id, estado: 'PENDIENTE' } });
+  }
   if (!recordatorio) return res.status(404).json({ error: 'Recordatorio pendiente no encontrado' });
 
   await sequelize.transaction(async (t) => {
@@ -308,7 +311,10 @@ exports.cancelarRecordatorio = async (req, res) => {
   const envio = await cargarEnvioODevolver404(req, res);
   if (!envio) return;
 
-  const recordatorio = await SeguimientoRecordatorio.findOne({ where: { id: recordatorioId, envio_id: envio.id, estado: 'PENDIENTE' } });
+  let recordatorio = await SeguimientoRecordatorio.findOne({ where: { id: recordatorioId, envio_id: envio.id, estado: 'PENDIENTE' } });
+  if (!recordatorio) {
+    recordatorio = await SeguimientoRecordatorio.findOne({ where: { envio_id: envio.id, estado: 'PENDIENTE' } });
+  }
   if (!recordatorio) return res.status(404).json({ error: 'Recordatorio pendiente no encontrado' });
 
   await sequelize.transaction(async (t) => {
