@@ -1,4 +1,4 @@
-const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Deposito, Rol, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Deposito, Rol, SeguimientoRecordatorio, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
@@ -692,8 +692,22 @@ function accionSiguientePedido(envioLike) {
 
 function decorarEnvio(envio) {
   const plano = typeof envio.toJSON === 'function' ? envio.toJSON() : envio;
+  const ultimoRecordatorio = (plano.recordatorios && plano.recordatorios.length > 0)
+    ? plano.recordatorios.find(r => r.estado === 'PENDIENTE' || r.estado === 'VENCIDO') || plano.recordatorios[plano.recordatorios.length - 1]
+    : null;
+  const ahora = new Date();
+  const estaVencido = ultimoRecordatorio && (
+    ultimoRecordatorio.estado === 'VENCIDO' ||
+    (ultimoRecordatorio.estado === 'PENDIENTE' && new Date(ultimoRecordatorio.ejecutar_en) <= ahora)
+  );
+
   return {
     ...plano,
+    recordatorio_id: ultimoRecordatorio?.id || null,
+    recordatorio_estado: estaVencido ? 'VENCIDO' : (ultimoRecordatorio?.estado || null),
+    recordatorio_ejecutar_en: ultimoRecordatorio?.ejecutar_en || null,
+    recordatorio_nota: ultimoRecordatorio?.nota || null,
+    recordatorio_vencido: Boolean(estaVencido),
     accion_siguiente: accionSiguientePedido(plano),
   };
 }
@@ -934,6 +948,12 @@ exports.listEnviosPaginados = async (req, res) => {
       where,
       include: [
         { model: Courier, attributes: ['id', 'nombre'] },
+        {
+          model: SeguimientoRecordatorio,
+          as: 'recordatorios',
+          required: false,
+          attributes: ['id', 'ejecutar_en', 'estado', 'nota', 'version'],
+        },
         {
           model: EnvioItem, as: 'items', attributes: ['id', 'producto_id', 'nombre_producto', 'cantidad', 'precio_unitario', 'subtotal', 'oferta_nombre'],
           include: [{
@@ -1980,6 +2000,25 @@ exports.conteoPorEstado = async (req, res) => {
     for (const e of ESTADOS_OPERATIVOS) conteos[e] = 0;
     for (const fila of filas) {
       conteos[fila.estado] = parseInt(fila.cantidad, 10) || 0;
+    }
+
+    try {
+      const tenantId = req.usuario.id;
+      const [vencidosFila] = await sequelize.query(`
+        SELECT COUNT(DISTINCT e.id) AS cantidad
+        FROM envios e
+        INNER JOIN seguimiento_recordatorios sr ON sr.envio_id = e.id
+        WHERE e.usuario_id = :tenantId
+          AND e.estado NOT IN ('Entregado', 'Cancelado', 'Devuelto', 'Perdido')
+          AND (sr.estado = 'VENCIDO' OR (sr.estado = 'PENDIENTE' AND sr.ejecutar_en <= NOW()))
+      `, {
+        replacements: { tenantId },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+      conteos.seguimiento_vencidos = parseInt(vencidosFila?.cantidad || 0, 10);
+    } catch (errVencidos) {
+      console.error('Error calculando seguimiento_vencidos en conteoPorEstado:', errVencidos);
+      conteos.seguimiento_vencidos = 0;
     }
 
     res.json(conteos);

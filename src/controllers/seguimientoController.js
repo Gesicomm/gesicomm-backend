@@ -208,7 +208,14 @@ exports.listarNotificaciones = async (req, res) => {
     limit: Math.min(200, Math.max(1, parseInt(limit, 10) || 50)),
   });
   const noLeidas = await Notificacion.count({ where: { usuario_id, leida: false } });
-  res.json({ data: notificaciones, no_leidas: noLeidas });
+  
+  // Incluir conteo de seguimientos vencidos para el badge de la sidebar
+  const { SeguimientoRecordatorio } = require('../models');
+  const seguimientosVencidos = await SeguimientoRecordatorio.count({
+    where: { usuario_id, estado: 'VENCIDO' }
+  });
+  
+  res.json({ data: notificaciones, no_leidas: noLeidas, seguimientos_vencidos: seguimientosVencidos });
 };
 
 exports.marcarNotificacionLeida = async (req, res) => {

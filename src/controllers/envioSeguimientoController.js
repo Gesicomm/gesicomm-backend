@@ -272,6 +272,11 @@ exports.programarRecordatorio = async (req, res) => {
         }, { transaction: t });
         await registrarHistorial(envio.id, usuario_id, `Seguimiento programado para ${fechaEjecucion.toLocaleString('es-PY')}`, t);
       }
+
+      if (envio.estado === 'Pendiente') {
+        await envio.update({ estado: 'EnSeguimiento' }, { transaction: t });
+        await registrarHistorial(envio.id, usuario_id, 'Pendiente → EnSeguimiento (recordatorio programado)', t);
+      }
       return fila;
     });
 

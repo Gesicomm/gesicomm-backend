@@ -173,7 +173,7 @@ app.use(cookieParser()); // Necesario para leer cookies HttpOnly
 // ============================================================
 const limiteGlobal = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: process.env.NODE_ENV === 'production' ? 300 : 3000, // hasta 3000 requests en desarrollo / testing
+  max: 3000, // aumentado a 3000 en todos los entornos para evitar 429 en dashboard admin
   message: { message: 'Demasiadas solicitudes. Por favor intenta más tarde.' },
   standardHeaders: true,
   legacyHeaders: false,
