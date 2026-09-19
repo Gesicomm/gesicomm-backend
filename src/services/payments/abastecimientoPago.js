@@ -26,6 +26,9 @@ async function iniciarCheckoutAbastecimiento(envio) {
   if (envio.abastecimiento_estado !== 'pendiente_pago') {
     throw errorHttp('Este pedido no tiene un abastecimiento pendiente de pago.');
   }
+  if (!envio.tipo_logistica_abastecimiento) {
+    throw errorHttp('Definí quién prepara y despacha el abastecimiento (Gesicomm o depósito propio) antes de pagar.');
+  }
 
   const amount = montoAbastecimiento(envio);
   if (amount <= 0) {
@@ -99,6 +102,9 @@ async function acreditarPagoAbastecimiento(envio, transaction, {
   if (!envio) throw errorHttp('Pedido no encontrado.', 404);
   if (envio.abastecimiento_estado === 'no_requiere') {
     throw errorHttp('Este pedido no requiere abastecimiento Gesicom.');
+  }
+  if (envio.abastecimiento_estado === 'pendiente_pago' && !envio.tipo_logistica_abastecimiento) {
+    throw errorHttp('Definí quién prepara y despacha el abastecimiento (Gesicomm o depósito propio) antes de acreditar el pago.');
   }
 
   let resultado = 'sin_cambios';

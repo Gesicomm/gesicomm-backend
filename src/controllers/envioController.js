@@ -1,4 +1,4 @@
-const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Rol, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Deposito, Rol, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
@@ -1606,6 +1606,77 @@ exports.actualizarPrecioItem = async (req, res) => {
   } catch (error) {
     if (!t.finished) await t.rollback();
     console.error('Error actualizando precio de item:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/**
+ * POST /api/envios/:id/abastecimiento/logistica — define quién prepara y
+ * despacha el abastecimiento antes de confirmar el pago (RF Gestión de
+ * Depósitos, sección 4-6). GESICOMM no requiere depositoId; PROPIA exige un
+ * depósito activo del usuario dueño del pedido. Guarda un snapshot del
+ * destino para que una edición posterior del depósito no altere el
+ * histórico del pedido.
+ */
+exports.definirLogisticaAbastecimiento = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { id } = req.params;
+    const { tipoLogistica, depositoId } = req.body || {};
+
+    if (!['GESICOMM', 'PROPIA'].includes(tipoLogistica)) {
+      return res.status(400).json({ error: 'tipoLogistica debe ser GESICOMM o PROPIA.' });
+    }
+
+    const envio = await Envio.findOne({
+      where: esAdministrador(req) ? { id } : { id, usuario_id },
+    });
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+
+    if (envio.abastecimiento_estado !== 'pendiente_pago') {
+      return res.status(400).json({ error: 'La logística solo puede definirse mientras el abastecimiento está pendiente de pago.' });
+    }
+
+    const datosLogistica = { tipo_logistica_abastecimiento: tipoLogistica };
+
+    if (tipoLogistica === 'PROPIA') {
+      const deposito = await Deposito.findOne({ where: { id: depositoId, usuario_id: envio.usuario_id, activo: true } });
+      if (!deposito) {
+        return res.status(400).json({ error: 'El depósito indicado no existe, está inactivo o no pertenece a este comercio.' });
+      }
+      Object.assign(datosLogistica, {
+        deposito_destino_id: deposito.id,
+        deposito_destino_nombre: deposito.nombre,
+        destino_departamento: deposito.departamento,
+        destino_ciudad: deposito.ciudad,
+        destino_direccion: deposito.direccion,
+        destino_referencia: deposito.referencia,
+        destino_persona_contacto: deposito.persona_contacto,
+        destino_telefono: deposito.telefono_contacto,
+        destino_google_maps_url: deposito.google_maps_url,
+      });
+    } else {
+      // GESICOMM resuelve su propio depósito logístico internamente; el
+      // frontend nunca envía ni conoce ese ID. Todavía no existe un
+      // depósito central de Gesicomm modelado en el sistema (ver sección 9
+      // del RF), así que por ahora solo se registra la modalidad.
+      Object.assign(datosLogistica, {
+        deposito_destino_id: null,
+        deposito_destino_nombre: null,
+        destino_departamento: null,
+        destino_ciudad: null,
+        destino_direccion: null,
+        destino_referencia: null,
+        destino_persona_contacto: null,
+        destino_telefono: null,
+        destino_google_maps_url: null,
+      });
+    }
+
+    await envio.update(datosLogistica);
+    res.json(decorarEnvio(envio));
+  } catch (error) {
+    console.error('Error definiendo logistica de abastecimiento:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };

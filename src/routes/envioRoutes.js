@@ -24,7 +24,8 @@ router.put('/:id/estado', envioController.updateEstado);
 // Editar el precio de un item puntual (ej. descuento por seguimiento comercial)
 router.patch('/:id/items/:itemId/precio', envioController.actualizarPrecioItem);
 
-// Abastecimiento Gesicom: pago real por PagoPar o acreditación manual admin
+// Abastecimiento Gesicom: definir logística/destino antes de pagar, luego pago real por PagoPar o acreditación manual admin
+router.put('/:id/abastecimiento/logistica', envioController.definirLogisticaAbastecimiento);
 router.post('/:id/abastecimiento/pagopar', envioController.iniciarPagoAbastecimiento);
 router.post('/:id/abastecimiento/manual', envioController.actualizarAbastecimientoManual);
 

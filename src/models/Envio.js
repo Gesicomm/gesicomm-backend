@@ -307,6 +307,48 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.DATE,
     allowNull: true,
   },
+  tipo_logistica_abastecimiento: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    validate: { isIn: [['GESICOMM', 'PROPIA']] },
+    comment: 'Quién prepara/despacha el abastecimiento. Se define antes de confirmar el pago.',
+  },
+  deposito_destino_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  deposito_destino_nombre: {
+    type: DataTypes.STRING(150),
+    allowNull: true,
+  },
+  destino_departamento: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
+  destino_ciudad: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+  },
+  destino_direccion: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  destino_referencia: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  destino_persona_contacto: {
+    type: DataTypes.STRING(150),
+    allowNull: true,
+  },
+  destino_telefono: {
+    type: DataTypes.STRING(50),
+    allowNull: true,
+  },
+  destino_google_maps_url: {
+    type: DataTypes.STRING(500),
+    allowNull: true,
+  },
 }, {
   tableName: 'envios',
   timestamps: true,

@@ -25,6 +25,7 @@ const OfertaComponente = require('./OfertaComponente');
 const Courier = require('./Courier');
 const CourierTarifa = require('./CourierTarifa');
 const DeliveryZonaTarifa = require('./DeliveryZonaTarifa');
+const Deposito = require('./Deposito');
 const Envio = require('./Envio');
 const EnvioItem = require('./EnvioItem');
 const EnvioItemComponente = require('./EnvioItemComponente');
@@ -116,8 +117,17 @@ DeliveryZonaTarifa.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 Courier.hasMany(DeliveryZonaTarifa, { as: 'zonas_delivery', foreignKey: 'courier_id', onDelete: 'SET NULL' });
 DeliveryZonaTarifa.belongsTo(Courier, { as: 'courier', foreignKey: 'courier_id' });
 
+// Depósitos propios del comercio (RF Gestión de Depósitos)
+Usuario.hasMany(Deposito, { as: 'depositos', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+Deposito.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
 Usuario.hasMany(Envio, { foreignKey: 'usuario_id' });
 Envio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+// Destino de abastecimiento cuando la logística es PROPIA. SET NULL porque
+// el snapshot destino_* del Envio sobrevive aunque el depósito se elimine.
+Deposito.hasMany(Envio, { as: 'abastecimientos_destino', foreignKey: 'deposito_destino_id', onDelete: 'SET NULL' });
+Envio.belongsTo(Deposito, { as: 'deposito_destino', foreignKey: 'deposito_destino_id' });
 
 Courier.hasMany(Envio, { foreignKey: 'courier_id' });
 Envio.belongsTo(Courier, { foreignKey: 'courier_id' });
@@ -645,6 +655,7 @@ module.exports = {
   Courier,
   CourierTarifa,
   DeliveryZonaTarifa,
+  Deposito,
   Envio,
   EnvioItem,
   EnvioItemComponente,
