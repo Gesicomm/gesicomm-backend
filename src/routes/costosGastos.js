@@ -1,5 +1,5 @@
 /**
- * Rutas de Costos y Gastos (Finanzas → Costos y Gastos).
+ * Rutas de movimientos financieros (Finanzas → Control financiero).
  */
 const express = require('express');
 const router = express.Router();
@@ -12,6 +12,7 @@ router.use(verificarToken);
 router.post('/buscar', verificarPermiso('ver_costos_gastos'), ctrl.buscar);
 router.get('/resumen', verificarPermiso('ver_costos_gastos'), ctrl.resumen);
 router.post('/reporte-desglose', verificarPermiso('ver_costos_gastos'), ctrl.reporteDesglose);
+router.get('/reporte-flujo-caja', verificarPermiso('ver_costos_gastos'), ctrl.reporteFlujoCaja);
 router.get('/exportar/excel', verificarPermiso('ver_costos_gastos'), ctrl.exportarExcel);
 router.get('/exportar/pdf', verificarPermiso('ver_costos_gastos'), ctrl.exportarPdf);
 router.post('/', verificarPermiso('gestionar_costos_gastos'), ctrl.crear);

@@ -8,6 +8,18 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const { logger } = require('./src/utils/logger');
 const { validarEsquema } = require('./src/utils/validarEsquema');
+const { instalarManejadoresDeProceso } = require('./src/utils/erroresProceso');
+
+// Referencia al server HTTP, que recién existe cuando arranca el listen de
+// más abajo. La necesita el manejador de uncaughtException para drenar las
+// requests en vuelo antes de salir.
+let servidorHttp = null;
+
+// Se instala ANTES de cualquier otra cosa: si algo explota durante el boot
+// (migraciones, validarEsquema, conexión a la base), queremos el log con
+// contexto y no un stack pelado en la consola. Qué mata al proceso y qué no
+// está decidido y explicado en src/utils/erroresProceso.js.
+instalarManejadoresDeProceso({ obtenerServidor: () => servidorHttp });
 
 // Rutas
 const path = require('path');
@@ -20,7 +32,9 @@ const combosAdminRoutes = require('./src/routes/combos-admin');
 const ofertasAdminRoutes = require('./src/routes/ofertas-admin');
 const courierRoutes = require('./src/routes/courierRoutes');
 const depositoRoutes = require('./src/routes/depositoRoutes');
+const redFulfillmentRoutes = require('./src/routes/redFulfillment');
 const envioRoutes = require('./src/routes/envioRoutes');
+const inventarioRoutes = require('./src/routes/inventarioRoutes');
 const seguimientoRoutes = require('./src/routes/seguimientoRoutes');
 const metodoPagoRoutes = require('./src/routes/metodoPagoRoutes');
 const liquidacionRoutes = require('./src/routes/liquidacionRoutes');
@@ -201,7 +215,9 @@ app.use('/api/combos', combosAdminRoutes);
 app.use('/api/ofertas', ofertasAdminRoutes);
 app.use('/api/couriers', courierRoutes);
 app.use('/api/depositos', depositoRoutes);
+app.use('/api/fulfillment', redFulfillmentRoutes);
 app.use('/api/envios', envioRoutes);
+app.use('/api/inventario', inventarioRoutes);
 app.use('/api/seguimiento', seguimientoRoutes);
 app.use('/api/metodos-pago', metodoPagoRoutes);
 app.use('/api/liquidaciones', liquidacionRoutes);
@@ -251,12 +267,23 @@ app.get('/api/status', (req, res) => {
 // ============================================================
 app.use((err, req, res, next) => {
   logger.error({
+    evento: 'ERROR_NO_MANEJADO_EN_REQUEST',
     mensaje: err.message,
+    codigo: err.code,
     stack: err.stack,
     ruta: req.path,
     metodo: req.method,
     ip: req.ip,
+    usuarioId: req.usuario?.id ?? null,
   });
+
+  // Si el handler ya respondió y falló DESPUÉS (típico: un await que se
+  // rechaza detrás de un res.json), escribir de nuevo tira
+  // ERR_HTTP_HEADERS_SENT y el error de verdad se pierde. Se lo dejamos a
+  // Express, que en ese caso corta la conexión. El log de arriba ya quedó.
+  if (res.headersSent) {
+    return next(err);
+  }
 
   // 413 del body parser: decirle "error interno" al cliente manda a
   // buscar el problema al lugar equivocado — es el request que no entra.
@@ -266,10 +293,10 @@ app.use((err, req, res, next) => {
     });
   }
 
-  // Solo enviamos un mensaje genérico al cliente
-  res.status(err.status || 500).json({
-    message: 'Error interno del servidor.',
-  });
+  const statusCode = err.status || 500;
+  const message = (statusCode >= 400 && statusCode < 500) ? err.message : 'Error interno del servidor.';
+
+  res.status(statusCode).json({ message, error: message });
 });
 
 // ============================================================
@@ -326,7 +353,7 @@ sequelize.authenticate().then(async () => {
   iniciarJobCostosRecurrentes();
   iniciarJobReconciliacionSuscripciones();
   iniciarJobReconciliacionRecordatorios();
-  app.listen(PORT, () => {
+  servidorHttp = app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });
 }).catch(err => {

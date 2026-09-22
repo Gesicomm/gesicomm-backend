@@ -1,5 +1,5 @@
 /**
- * Controller de Costos y Gastos.
+ * Controller de movimientos financieros.
  *
  * POST /api/costos-gastos/buscar
  * POST /api/costos-gastos
@@ -57,7 +57,7 @@ async function buscar(req, res) {
     return res.json(result);
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ message: 'Error al obtener costos y gastos.' });
+    return res.status(500).json({ message: 'Error al obtener movimientos financieros.' });
   }
 }
 
@@ -81,9 +81,20 @@ async function reporteDesglose(req, res) {
   }
 }
 
+async function reporteFlujoCaja(req, res) {
+  try {
+    const result = await CostoGastoService.reporteVisualFlujoCaja(req.query, req.usuario.id, req.usuario.tenantId);
+    return res.json(result);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Error al calcular el reporte visual de flujo de caja.' });
+  }
+}
+
 async function exportarExcel(req, res) {
   try {
     const datos = await CostoGastoService.datosReporteFinanciero(req.query, req.usuario.id);
+    datos.reporte_visual = await CostoGastoService.reporteVisualFlujoCaja(req.query, req.usuario.id, req.usuario.tenantId);
     const buffer = await generarExcelReporteFinanciero(datos, req.query);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="reporte-financiero_${req.query.fecha_desde || 'inicio'}_${req.query.fecha_hasta || 'hoy'}.xlsx"`);
@@ -97,6 +108,7 @@ async function exportarExcel(req, res) {
 async function exportarPdf(req, res) {
   try {
     const datos = await CostoGastoService.datosReporteFinanciero(req.query, req.usuario.id);
+    datos.reporte_visual = await CostoGastoService.reporteVisualFlujoCaja(req.query, req.usuario.id, req.usuario.tenantId);
     const buffer = await generarPdfReporteFinanciero(datos, req.query);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="reporte-financiero_${req.query.fecha_desde || 'inicio'}_${req.query.fecha_hasta || 'hoy'}.pdf"`);
@@ -143,7 +155,7 @@ async function actualizar(req, res) {
 async function eliminar(req, res) {
   try {
     await CostoGastoService.eliminar(req.params.id, req.usuario.id);
-    return res.json({ message: 'Costo/gasto eliminado correctamente.' });
+    return res.json({ message: 'Movimiento financiero eliminado correctamente.' });
   } catch (err) {
     console.error(err);
     const status = err.message.includes('no encontrado') ? 404 : 500;
@@ -169,7 +181,7 @@ async function marcarPagado(req, res) {
   } catch (err) {
     console.error(err);
     const status = err.message.includes('no encontrado') ? 404 : 500;
-    return res.status(status).json({ message: err.message || 'Error al marcar como pagado.' });
+    return res.status(status).json({ message: err.message || 'Error al actualizar el estado.' });
   }
 }
 
@@ -183,7 +195,7 @@ async function subirComprobante(req, res) {
       await CostoGastoService.detalle(req.params.id, req.usuario.id);
     } catch (e) {
       await ImagenService.borrarArchivoSeguro(req.file.path);
-      return res.status(404).json({ message: 'Costo/gasto no encontrado.' });
+      return res.status(404).json({ message: 'Movimiento financiero no encontrado.' });
     }
 
     const imagenData = await ComprobanteService.procesarComprobanteParaR2(req.file, req.params.id);
@@ -199,6 +211,6 @@ async function subirComprobante(req, res) {
 }
 
 module.exports = {
-  buscar, resumen, reporteDesglose, exportarExcel, exportarPdf, crear, detalle, actualizar, eliminar, duplicar, marcarPagado,
+  buscar, resumen, reporteDesglose, reporteFlujoCaja, exportarExcel, exportarPdf, crear, detalle, actualizar, eliminar, duplicar, marcarPagado,
   subirComprobanteMiddleware, subirComprobante,
 };

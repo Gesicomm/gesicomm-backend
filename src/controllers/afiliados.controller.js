@@ -1,4 +1,5 @@
 const AfiliadosService = require('../services/afiliados.service');
+const { envolverControlador } = require('../utils/asyncHandler');
 
 function baseUrl(req) {
   const origen = req.get('origin');
@@ -89,3 +90,7 @@ exports.actualizarComision = async (req, res) => {
     res.status(error.status || 500).json({ message: error.message || 'No se pudo actualizar la comisión.' });
   }
 };
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+envolverControlador(module.exports);

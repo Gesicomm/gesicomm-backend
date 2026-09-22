@@ -131,6 +131,12 @@ class MetaReportesService {
       var existe = await MetaCampanaInterna.findOne({ where: { codigo }, transaction });
     } while (existe);
 
+    // Si el nombre sigue la nueva nomenclatura, NO le agregamos el prefijo [GSC-]
+    // El codigo interno se genera igual para cumplir el esquema de la BD, pero no se usa para matchear
+    if (/^P\d{4}\s*\|/.test(nombreDisplay)) {
+      return { codigo, nombreInterno: nombreDisplay.slice(0, 255) };
+    }
+
     const nombreInterno = `[${PREFIJO}-${codigo}] ${nombreDisplay}`.slice(0, 255);
     return { codigo, nombreInterno };
   }
@@ -146,6 +152,17 @@ class MetaReportesService {
     }
     if (tipo !== undefined && !['whatsapp', 'web'].includes(tipo)) {
       throw new Error('El tipo de campaña debe ser "whatsapp" o "web".');
+    }
+
+    const nombre_display_limpio = nombre_display.trim();
+
+    // Si es la nueva nomenclatura, validamos si ya existe la campaña exacta (idempotencia)
+    // para no violar el unique constraint de nombre_interno
+    if (/^P\d{4}\s*\|/.test(nombre_display_limpio)) {
+      const existente = await MetaCampanaInterna.findOne({
+        where: { nombre_interno: nombre_display_limpio, inquilino_id, usuario_id }
+      });
+      if (existente) return existente.toJSON();
     }
 
     // Validar que los productos sean del tenant (evita mezclar IDs ajenos)
@@ -168,7 +185,7 @@ class MetaReportesService {
     }
 
     return sequelize.transaction(async (t) => {
-      const { codigo, nombreInterno } = await this.generarNombreInterno(nombre_display.trim(), t);
+      const { codigo, nombreInterno } = await this.generarNombreInterno(nombre_display_limpio, t);
 
       const campana = await MetaCampanaInterna.create({
         inquilino_id,
@@ -179,7 +196,7 @@ class MetaReportesService {
         tipo: tipo || 'web',
         codigo,
         nombre_interno: nombreInterno,
-        nombre_display: nombre_display.trim(),
+        nombre_display: nombre_display_limpio,
         estado: 'borrador',
         notas: notas || null,
       }, { transaction: t });
@@ -357,10 +374,11 @@ class MetaReportesService {
     // filtrando su nombre/productos a través del listado de filas.
     const campanas = await MetaCampanaInterna.findAll({
       where: { inquilino_id, usuario_id },
-      attributes: ['id', 'codigo', 'nombre_display'],
+      attributes: ['id', 'codigo', 'nombre_display', 'nombre_interno'],
     });
     const mapaCodigo = new Map(campanas.map(c => [c.codigo.toUpperCase(), c.id]));
     const mapaNombre = new Map(campanas.map(c => [c.id, c.nombre_display]));
+    const mapaNombreInterno = new Map(campanas.map(c => [(c.nombre_interno || '').trim().toLowerCase(), c.id]));
 
     // Solo se aceptan ids de campaña del propio tenant: `relaciones` viene
     // del cliente y no se confía en él.
@@ -386,7 +404,19 @@ class MetaReportesService {
 
       const match = nombreCampanaMeta.match(REGEX_CODIGO);
       const codigoMatcheado = match ? match[1].toUpperCase() : null;
-      const idPorCodigo = codigoMatcheado ? (mapaCodigo.get(codigoMatcheado) || null) : null;
+      let idPorCodigo = codigoMatcheado ? (mapaCodigo.get(codigoMatcheado) || null) : null;
+      let origenMatch = idPorCodigo ? 'codigo' : null;
+
+      // Si no encontró por [GSC-XXXX], intentar por coincidencia exacta del nombre
+      // (para la nueva nomenclatura que no lleva prefijo, el nombre completo es el identificador)
+      if (!idPorCodigo) {
+        const idExacto = mapaNombreInterno.get(nombreCampanaMeta.toLowerCase());
+        if (idExacto) {
+          idPorCodigo = idExacto;
+          origenMatch = 'exacto';
+        }
+      }
+
       const idManual = idPorCodigo ? null : (relacionesValidas.get(nombreCampanaMeta) || null);
       const campanaInternaId = idPorCodigo || idManual;
 
@@ -404,7 +434,7 @@ class MetaReportesService {
           gasto: 0,
           compras: 0,
           codigo: codigoMatcheado,
-          origen: idPorCodigo ? 'codigo' : (idManual ? 'manual' : null),
+          origen: idPorCodigo ? origenMatch : (idManual ? 'manual' : null),
           campana_id: campanaInternaId,
           campana_nombre: campanaInternaId ? (mapaNombre.get(campanaInternaId) || null) : null,
           fecha_inicio: mapeada.fecha_inicio || null,

@@ -1,47 +1,61 @@
 /**
- * courierController — alta, listado y edición de couriers con sus tarifas.
+ * courierController — alta, listado y edición de couriers.
  *
- * Antes esto abría una conexión real a Postgres, creaba couriers
- * "TEST_JEST_COURIER_*" y los borraba en cada beforeEach/afterEach. Esa
- * base es la de PRODUCCIÓN detrás de un túnel (ver src/config/database):
- * con el túnel abajo la suite fallaba entera, y con el túnel arriba
- * escribía y borraba filas reales.
+ * Los modelos se simulan con un almacén en memoria que se comporta como
+ * Sequelize en lo que el controller usa. La base real es la de PRODUCCIÓN
+ * detrás de un túnel (ver src/config/database), así que la suite no puede
+ * tocarla.
  *
- * Ahora los modelos se simulan con un almacén en memoria que se comporta
- * como Sequelize en lo que el controller usa. Lo que se verifica sigue
- * siendo la lógica del controller —normalización de tarifas, el
- * "borrar y recrear" al editar, el 404 y el ámbito por usuario—, no si
- * Postgres persiste.
+ * Nota de la consolidación de tarifas (Fase 1): este controller ya NO
+ * administra tarifas. Viven en `delivery_zona_tarifas` y se guardan por
+ * `replaceZonasDelivery`, junto con el courier, desde el asistente del panel
+ * Delivery. La tabla `courier_tarifas` quedó legacy: acá se verifica
+ * justamente que un `tarifas` en el body se ignore y no genere escrituras.
  */
 
 jest.mock('../models', () => {
-  const almacen = { couriers: [], tarifas: [], siguienteId: 1 };
-
-  const tarifasDe = (courier_id) => almacen.tarifas.filter((t) => t.courier_id === courier_id);
-
-  // Sequelize devuelve las tarifas incluidas cuando se pide `include`.
-  const conTarifas = (c) => (c ? { ...c, tarifas: tarifasDe(c.id) } : null);
+  const { Op } = require('sequelize');
+  const almacen = { couriers: [], zonas: [], siguienteId: 1 };
 
   // Instancia con .update(), que es lo que el controller llama. Igual que
-  // Sequelize, un campo `undefined` no pisa el valor guardado.
-  const comoInstancia = (registro) => (registro ? {
-    ...registro,
-    update: async (cambios) => {
-      for (const [clave, valor] of Object.entries(cambios)) {
-        if (valor !== undefined) registro[clave] = valor;
-      }
-      return registro;
-    },
-  } : null);
+  // Sequelize: un campo `undefined` no pisa el valor guardado, y el update
+  // muta la propia instancia (por eso el controller puede devolverla sin
+  // volver a leer de la base).
+  const comoInstancia = (registro) => {
+    if (!registro) return null;
+    const instancia = {
+      ...registro,
+      update: async (cambios) => {
+        for (const [clave, valor] of Object.entries(cambios)) {
+          if (valor === undefined) continue;
+          registro[clave] = valor;
+          instancia[clave] = valor;
+        }
+        return instancia;
+      },
+    };
+    return instancia;
+  };
 
-  const coincide = (registro, where = {}) => Object.entries(where).every(([clave, valor]) => {
-    if (valor === undefined) return true;
-    if (clave === 'id') return registro.id === Number(valor);
-    return registro[clave] === valor;
-  });
+  // Soporta lo que usa el controller: igualdad simple, Op.in y Op.or.
+  const coincide = (registro, where = {}) => {
+    const orCond = where[Op.or];
+    if (orCond && !orCond.some((alt) => coincide(registro, alt))) return false;
+
+    return Object.entries(where).every(([clave, valor]) => {
+      if (valor === undefined) return true;
+      if (valor && typeof valor === 'object' && valor[Op.in]) return valor[Op.in].includes(registro[clave]);
+      if (clave === 'id') return registro.id === Number(valor);
+      return registro[clave] === valor;
+    });
+  };
 
   return {
     __almacen: almacen,
+
+    // El guardado de tarifas corre en una transacción; acá alcanza con
+    // ejecutar el callback.
+    sequelize: { transaction: async (fn) => fn({}) },
 
     Courier: {
       create: async (datos) => {
@@ -49,10 +63,8 @@ jest.mock('../models', () => {
         almacen.couriers.push(registro);
         return comoInstancia(registro);
       },
-      findAll: async ({ where } = {}) => almacen.couriers
-        .filter((c) => coincide(c, where))
-        .map(conTarifas),
-      findByPk: async (id) => conTarifas(almacen.couriers.find((c) => c.id === Number(id))),
+      findAll: async ({ where } = {}) => almacen.couriers.filter((c) => coincide(c, where)),
+      findByPk: async (id) => almacen.couriers.find((c) => c.id === Number(id)) || null,
       findOne: async ({ where } = {}) => comoInstancia(almacen.couriers.find((c) => coincide(c, where))),
       destroy: async ({ where } = {}) => {
         const antes = almacen.couriers.length;
@@ -61,34 +73,24 @@ jest.mock('../models', () => {
       },
     },
 
-    CourierTarifa: {
-      create: async (datos) => {
-        const registro = { id: almacen.siguienteId++, ...datos };
-        almacen.tarifas.push(registro);
-        return registro;
-      },
+    DeliveryZonaTarifa: {
+      findAll: async ({ where } = {}) => almacen.zonas.filter((z) => coincide(z, where)),
       bulkCreate: async (filas) => {
         const creadas = filas.map((f) => ({ id: almacen.siguienteId++, ...f }));
-        almacen.tarifas.push(...creadas);
+        almacen.zonas.push(...creadas);
         return creadas;
       },
       destroy: async ({ where } = {}) => {
-        const antes = almacen.tarifas.length;
-        almacen.tarifas = almacen.tarifas.filter((t) => !coincide(t, where));
-        return antes - almacen.tarifas.length;
+        const antes = almacen.zonas.length;
+        almacen.zonas = almacen.zonas.filter((z) => !coincide(z, where));
+        return antes - almacen.zonas.length;
       },
-    },
-
-    DeliveryZonaTarifa: {
-      findAll: async () => [],
-      bulkCreate: async () => [],
-      destroy: async () => 0,
     },
   };
 });
 
 const courierController = require('../controllers/courierController');
-const { Courier, CourierTarifa, __almacen } = require('../models');
+const { Courier, __almacen } = require('../models');
 
 const USUARIO = 1;
 const OTRO_USUARIO = 2;
@@ -103,30 +105,15 @@ const respuesta = () => ({
 
 beforeEach(() => {
   __almacen.couriers = [];
-  __almacen.tarifas = [];
+  __almacen.zonas = [];
   __almacen.siguienteId = 1;
 });
 
 describe('createCourier', () => {
-  it('crea el courier con todos sus campos y tarifas', async () => {
+  it('crea el courier con todos sus campos', async () => {
     const req = {
       usuario: { id: USUARIO },
-      body: {
-        nombre: 'TEST_JEST_COURIER_A',
-        telefono: '0981999888',
-        vehiculo: 'Moto',
-        activo: true,
-        tarifas: [
-          {
-            ciudad_zona: 'Asunción', departamento: 'Capital', tipo_pago: 'Anticipado',
-            rango_min: 0, rango_max: 5, costo: 12000, tiempo_entrega_hs: '24hs',
-          },
-          {
-            ciudad_zona: 'San Lorenzo', departamento: 'Central', tipo_pago: 'Al Recibir',
-            rango_min: 1, rango_max: 20, costo: 18000, tiempo_entrega_hs: 'En el día',
-          },
-        ],
-      },
+      body: { nombre: 'TEST_JEST_COURIER', telefono: '0981123456', vehiculo: 'Moto', activo: true },
     };
     const res = respuesta();
 
@@ -134,57 +121,72 @@ describe('createCourier', () => {
 
     expect(res.statusCode).toBe(201);
     expect(res.responseData).toMatchObject({
-      nombre: 'TEST_JEST_COURIER_A',
-      telefono: '0981999888',
-      vehiculo: 'Moto',
-      activo: true,
-      usuario_id: USUARIO,
+      usuario_id: USUARIO, nombre: 'TEST_JEST_COURIER', telefono: '0981123456', vehiculo: 'Moto', activo: true,
     });
-    expect(res.responseData.tarifas).toHaveLength(2);
-    expect(res.responseData.tarifas[0]).toMatchObject({
-      ciudad_zona: 'Asunción', departamento: 'Capital', costo: 12000,
-    });
+    expect(__almacen.couriers).toHaveLength(1);
   });
 
-  it('normaliza los valores vacíos de una tarifa', async () => {
-    const req = {
+  it('ignora un `tarifas` legacy en el body', async () => {
+    // Las tarifas ya no se administran acá. Si el body todavía las trae
+    // (cliente viejo), el courier se crea igual y no se escribe nada más.
+    const res = respuesta();
+    await courierController.createCourier({
       usuario: { id: USUARIO },
-      body: {
-        nombre: 'TEST_JEST_COURIER_VACIOS',
-        tarifas: [{ ciudad_zona: '  Luque  ', rango_min: '', rango_max: '', costo: '' }],
-      },
-    };
-    await courierController.createCourier(req, respuesta());
+      body: { nombre: 'TEST_JEST_COURIER', tarifas: [{ ciudad_zona: 'Luque', costo: 10000 }] },
+    }, res);
 
-    // Un string vacío no puede terminar como NaN en la base.
-    expect(__almacen.tarifas[0]).toMatchObject({
-      ciudad_zona: 'Luque', tipo_pago: 'Ambos', rango_min: 0, rango_max: null, costo: 0,
-      departamento: null, tiempo_entrega_hs: null,
-    });
+    expect(res.statusCode).toBe(201);
+    expect(res.responseData.tarifas).toBeUndefined();
+    expect(__almacen.zonas).toHaveLength(0);
+  });
+});
+
+describe('el courier es siempre del comercio', () => {
+  // Acá había un bloque entero sobre `alcance`: un courier podía marcarse
+  // GESICOMM y quedaba utilizable por cualquier comercio. Esa era la forma
+  // provisoria de representar la red logística y ya no existe — los
+  // operadores de la red son proveedores logísticos, con su propia entidad.
+  const ADMIN = { id: USUARIO, rol: 'administrador' };
+  const COMERCIO = { id: USUARIO, rol: 'usuario' };
+
+  it('nace asociado a quien lo crea', async () => {
+    const res = respuesta();
+    await courierController.createCourier({ usuario: COMERCIO, body: { nombre: 'X' } }, res);
+
+    expect(res.statusCode).toBe(201);
+    expect(res.responseData.usuario_id).toBe(USUARIO);
   });
 
-  it('descarta las tarifas sin ciudad', async () => {
-    // Una fila vacía del formulario no debería crear una tarifa fantasma.
-    const req = {
-      usuario: { id: USUARIO },
-      body: {
-        nombre: 'TEST_JEST_COURIER_FILTRO',
-        tarifas: [{ ciudad_zona: 'Capiatá', costo: 9000 }, { ciudad_zona: '   ', costo: 5000 }, {}],
-      },
-    };
-    await courierController.createCourier(req, respuesta());
+  it('un alcance en el payload se ignora, venga de quien venga', async () => {
+    // Ni siquiera un admin puede publicar un courier a toda la plataforma:
+    // para eso existe el proveedor logístico.
+    const res = respuesta();
+    await courierController.createCourier(
+      { usuario: ADMIN, body: { nombre: 'Fast Delivery', alcance: 'GESICOMM' } },
+      res,
+    );
 
-    expect(__almacen.tarifas).toHaveLength(1);
-    expect(__almacen.tarifas[0].ciudad_zona).toBe('Capiatá');
+    expect(res.statusCode).toBe(201);
+    expect(res.responseData.alcance).toBeUndefined();
+  });
+
+  it('editar mandando alcance tampoco lo escribe', async () => {
+    const courier = await Courier.create({ usuario_id: USUARIO, nombre: 'Mío' });
+
+    await courierController.updateCourier(
+      { usuario: COMERCIO, params: { id: courier.id }, body: { alcance: 'GESICOMM' } },
+      respuesta(),
+    );
+
+    expect(__almacen.couriers.find((c) => c.id === courier.id).alcance).toBeUndefined();
   });
 });
 
 describe('listCouriers', () => {
-  it('lista solo los couriers del usuario, con sus tarifas', async () => {
+  it('lista solo los couriers del usuario', async () => {
     const propio = await Courier.create({
       usuario_id: USUARIO, nombre: 'TEST_JEST_COURIER_LIST', telefono: '0981123456', vehiculo: 'Auto', activo: true,
     });
-    await CourierTarifa.create({ courier_id: propio.id, ciudad_zona: 'Luque', costo: 10000 });
     await Courier.create({ usuario_id: OTRO_USUARIO, nombre: 'TEST_JEST_COURIER_AJENO' });
 
     const res = respuesta();
@@ -192,98 +194,56 @@ describe('listCouriers', () => {
 
     expect(res.responseData).toHaveLength(1);
     expect(res.responseData[0]).toMatchObject({ id: propio.id, nombre: 'TEST_JEST_COURIER_LIST' });
-    expect(res.responseData[0].tarifas).toHaveLength(1);
   });
 });
 
 describe('updateCourier', () => {
-  const conTarifaInicial = async () => {
-    const courier = await Courier.create({
-      usuario_id: USUARIO, nombre: 'TEST_JEST_COURIER_OLD', telefono: '0981000000', vehiculo: 'Moto', activo: false,
-    });
-    await CourierTarifa.create({
-      courier_id: courier.id, ciudad_zona: 'Luque', departamento: 'Central', tipo_pago: 'Ambos',
-      rango_min: 0, rango_max: 10, costo: 10000, tiempo_entrega_hs: '48hs',
-    });
-    return courier;
-  };
-
-  it('actualiza todos los campos y reemplaza las tarifas', async () => {
-    const courier = await conTarifaInicial();
-
-    const req = {
-      usuario: { id: USUARIO },
-      params: { id: courier.id },
-      body: {
-        nombre: 'TEST_JEST_COURIER_UPDATED',
-        telefono: '0981999999',
-        vehiculo: 'Camioneta',
-        activo: true,
-        tarifas: [
-          {
-            ciudad_zona: 'Luque Centrico', departamento: 'Central', tipo_pago: 'Al Recibir',
-            rango_min: 5, rango_max: 15, costo: 15000, tiempo_entrega_hs: '12hs',
-          },
-          {
-            ciudad_zona: 'Lambaré', departamento: 'Central', tipo_pago: 'Anticipado',
-            rango_min: 0, rango_max: 100, costo: 25000, tiempo_entrega_hs: '24hs',
-          },
-        ],
-      },
-    };
-    const res = respuesta();
-
-    await courierController.updateCourier(req, res);
-
-    expect(res.responseData).toMatchObject({
-      nombre: 'TEST_JEST_COURIER_UPDATED',
-      telefono: '0981999999',
-      vehiculo: 'Camioneta',
-      activo: true,
-    });
-    expect(res.responseData.tarifas).toHaveLength(2);
-
-    const luque = res.responseData.tarifas.find((t) => t.ciudad_zona === 'Luque Centrico');
-    expect(luque).toMatchObject({
-      departamento: 'Central', tipo_pago: 'Al Recibir',
-      rango_min: 5, rango_max: 15, costo: 15000, tiempo_entrega_hs: '12hs',
-    });
-
-    const lambare = res.responseData.tarifas.find((t) => t.ciudad_zona === 'Lambaré');
-    expect(lambare).toMatchObject({ costo: 25000, rango_max: 100 });
-
-    // La tarifa vieja se borró: el controller reemplaza, no acumula.
-    expect(__almacen.tarifas.some((t) => t.ciudad_zona === 'Luque')).toBe(false);
+  const courierExistente = () => Courier.create({
+    usuario_id: USUARIO, nombre: 'TEST_JEST_COURIER_OLD', telefono: '0981000000', vehiculo: 'Moto', activo: false,
   });
 
-  it('sin la clave `tarifas` deja las existentes intactas', async () => {
-    // Editar solo el teléfono no puede borrarle las tarifas al courier.
-    const courier = await conTarifaInicial();
+  it('actualiza todos los campos', async () => {
+    const courier = await courierExistente();
+    const res = respuesta();
+
+    await courierController.updateCourier({
+      usuario: { id: USUARIO },
+      params: { id: courier.id },
+      body: { nombre: 'TEST_JEST_COURIER_UPDATED', telefono: '0981999999', vehiculo: 'Camioneta', activo: true },
+    }, res);
+
+    expect(res.responseData).toMatchObject({
+      nombre: 'TEST_JEST_COURIER_UPDATED', telefono: '0981999999', vehiculo: 'Camioneta', activo: true,
+    });
+  });
+
+  it('editar solo un campo no toca los demás', async () => {
+    const courier = await courierExistente();
 
     await courierController.updateCourier(
       { usuario: { id: USUARIO }, params: { id: courier.id }, body: { telefono: '0982111111' } },
       respuesta(),
     );
 
-    expect(__almacen.tarifas).toHaveLength(1);
-    expect(__almacen.tarifas[0].ciudad_zona).toBe('Luque');
+    const guardado = __almacen.couriers.find((c) => c.id === courier.id);
+    expect(guardado).toMatchObject({ telefono: '0982111111', nombre: 'TEST_JEST_COURIER_OLD', vehiculo: 'Moto' });
   });
 
-  it('con `tarifas: []` las borra todas', async () => {
-    const courier = await conTarifaInicial();
+  it('ignora un `tarifas` legacy en el body', async () => {
+    const courier = await courierExistente();
 
     await courierController.updateCourier(
       { usuario: { id: USUARIO }, params: { id: courier.id }, body: { tarifas: [] } },
       respuesta(),
     );
 
-    expect(__almacen.tarifas).toHaveLength(0);
+    expect(__almacen.zonas).toHaveLength(0);
   });
 
   it('devuelve 404 si el courier no existe', async () => {
     const res = respuesta();
     await courierController.updateCourier(
-      { usuario: { id: USUARIO }, params: { id: 999999 }, body: { nombre: 'X', tarifas: [] } },
+      { usuario: { id: USUARIO }, params: { id: 999999 }, body: { nombre: 'X' } },
       res,
     );
 
@@ -297,11 +257,147 @@ describe('updateCourier', () => {
 
     const res = respuesta();
     await courierController.updateCourier(
-      { usuario: { id: USUARIO }, params: { id: ajeno.id }, body: { nombre: 'Robado', tarifas: [] } },
+      { usuario: { id: USUARIO }, params: { id: ajeno.id }, body: { nombre: 'Robado' } },
       res,
     );
 
     expect(res.statusCode).toBe(404);
     expect(__almacen.couriers.find((c) => c.id === ajeno.id).nombre).toBe('TEST_JEST_COURIER_AJENO');
+  });
+});
+
+describe('replaceZonasDelivery', () => {
+  it('rechaza el guardado entero si viene un courier ajeno', async () => {
+    // Antes la regla se guardaba sin courier. Ahora eso no existe: una tarifa
+    // sin courier da un precio que nadie está asignado a cumplir, y la
+    // invariante de la tabla lo prohíbe. Mejor fallar que guardar a medias.
+    const propio = await Courier.create({ usuario_id: USUARIO, nombre: 'PROPIO' });
+    const ajeno = await Courier.create({ usuario_id: OTRO_USUARIO, nombre: 'AJENO' });
+
+    const res = respuesta();
+    await courierController.replaceZonasDelivery({
+      usuario: { id: USUARIO },
+      body: {
+        zonas: [
+          { courier_id: propio.id, ciudad: 'Luque', costo: 20000 },
+          { courier_id: ajeno.id, ciudad: 'Encarnación', costo: 40000 },
+        ],
+      },
+    }, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(__almacen.zonas).toHaveLength(0);
+  });
+
+  it('rechaza una regla sin courier', async () => {
+    const res = respuesta();
+    await courierController.replaceZonasDelivery({
+      usuario: { id: USUARIO },
+      body: { zonas: [{ ciudad: 'Luque', costo: 20000 }] },
+    }, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(__almacen.zonas).toHaveLength(0);
+  });
+
+  it('descarta las reglas sin ciudad', async () => {
+    const courier = await Courier.create({ usuario_id: USUARIO, nombre: 'PROPIO' });
+
+    await courierController.replaceZonasDelivery({
+      usuario: { id: USUARIO },
+      body: {
+        zonas: [
+          { courier_id: courier.id, ciudad: '   ', costo: 10000 },
+          { courier_id: courier.id, ciudad: 'Luque', costo: 20000 },
+        ],
+      },
+    }, respuesta());
+
+    expect(__almacen.zonas).toHaveLength(1);
+    expect(__almacen.zonas[0].ciudad).toBe('Luque');
+  });
+
+  it('normaliza los valores vacíos de una regla', async () => {
+    const courier = await Courier.create({ usuario_id: USUARIO, nombre: 'PROPIO' });
+
+    await courierController.replaceZonasDelivery({
+      usuario: { id: USUARIO },
+      body: { zonas: [{ courier_id: courier.id, ciudad: '  Luque  ', rango_min: '', rango_max: '', costo: '' }] },
+    }, respuesta());
+
+    expect(__almacen.zonas[0]).toMatchObject({
+      ciudad: 'Luque', rango_min: 0, rango_max: null, costo: 0, tipo_pago: 'Ambos', activo: true,
+    });
+  });
+});
+
+describe('replaceZonasDelivery — alcance del reemplazo', () => {
+  // Sin alcance el endpoint borra TODO y reescribe: ese es el comportamiento
+  // histórico y sigue siendo válido cuando el cliente manda el set completo.
+  // Con alcance sólo puede tocar los couriers que declaró, que es lo que evita
+  // que un guardado parcial se lleve puestas las tarifas de otro.
+  const zonasDe = (courierId) => __almacen.zonas.filter((z) => z.courier_id === courierId);
+
+  const conDosCouriers = async () => {
+    const a = await Courier.create({ usuario_id: USUARIO, nombre: 'A' });
+    const b = await Courier.create({ usuario_id: USUARIO, nombre: 'B' });
+    __almacen.zonas = [
+      { id: 100, usuario_id: USUARIO, courier_id: a.id, ciudad: 'Luque', costo: 10000 },
+      { id: 101, usuario_id: USUARIO, courier_id: b.id, ciudad: 'Encarnación', costo: 40000 },
+    ];
+    return { a, b };
+  };
+
+  it('con alcance no toca las tarifas de otro courier', async () => {
+    const { a, b } = await conDosCouriers();
+
+    await courierController.replaceZonasDelivery({
+      usuario: { id: USUARIO },
+      body: { zonas: [{ courier_id: a.id, ciudad: 'Luque', costo: 22000 }], courierIds: [a.id] },
+    }, respuesta());
+
+    expect(zonasDe(a.id)).toHaveLength(1);
+    expect(zonasDe(a.id)[0].costo).toBe(22000);
+    // Las de B y la genérica siguen intactas.
+    expect(zonasDe(b.id)).toHaveLength(1);
+    expect(zonasDe(b.id)[0].ciudad).toBe('Encarnación');
+  });
+
+  it('con alcance y sin reglas borra sólo las de ese courier', async () => {
+    const { a, b } = await conDosCouriers();
+
+    await courierController.replaceZonasDelivery(
+      { usuario: { id: USUARIO }, body: { zonas: [], courierIds: [a.id] } },
+      respuesta(),
+    );
+
+    expect(zonasDe(a.id)).toHaveLength(0);
+    expect(zonasDe(b.id)).toHaveLength(1);
+  });
+
+  it('rechaza reglas de un courier fuera del alcance declarado', async () => {
+    const { a, b } = await conDosCouriers();
+
+    const res = respuesta();
+    await courierController.replaceZonasDelivery({
+      usuario: { id: USUARIO },
+      body: { zonas: [{ courier_id: b.id, ciudad: 'Otra', costo: 1 }], courierIds: [a.id] },
+    }, res);
+
+    expect(res.statusCode).toBe(400);
+    // No se tocó nada.
+    expect(__almacen.zonas).toHaveLength(2);
+  });
+
+  it('sin alcance mantiene el reemplazo total de siempre', async () => {
+    const { a } = await conDosCouriers();
+
+    await courierController.replaceZonasDelivery({
+      usuario: { id: USUARIO },
+      body: { zonas: [{ courier_id: a.id, ciudad: 'Luque', costo: 22000 }] },
+    }, respuesta());
+
+    expect(__almacen.zonas).toHaveLength(1);
+    expect(__almacen.zonas[0].ciudad).toBe('Luque');
   });
 });

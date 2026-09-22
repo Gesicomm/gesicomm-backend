@@ -16,6 +16,7 @@ const { registrarHistorial } = require('../utils/historial');
 const { resolverMensaje } = require('../services/seguimiento/plantillaResolver.service');
 const { encolarRecordatorio } = require('../services/queue/seguimientoQueue');
 const { logger } = require('../utils/logger');
+const { envolverControlador } = require('../utils/asyncHandler');
 
 function esAdministrador(req) {
   return req.usuario?.rol === 'administrador';
@@ -387,3 +388,7 @@ exports.guardarNota = async (req, res) => {
     res.status(500).json({ error: 'Error al guardar nota' });
   }
 };
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+envolverControlador(module.exports);

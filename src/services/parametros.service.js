@@ -22,6 +22,12 @@ const DEFINICIONES = [
   { clave: 'AFILIADOS_REGLAS_JSON', grupo: 'afiliados', secreto: false, descripcion: 'Reglas comerciales visibles del Programa de Afiliados.' },
   { clave: 'ADMIN_TELEFONO_CONTACTO', grupo: 'contacto', secreto: false, descripcion: 'Número al que escriben los comercios ante un problema de cobro o de plan. Con código de país, sin espacios (ej: 595981234567).' },
   { clave: 'ABASTECIMIENTO_NOTIFICACION_EMAIL', grupo: 'notificaciones', secreto: false, descripcion: 'Correo interno de Gesicom que recibe avisos de pedidos con abastecimiento pendiente.' },
+  { clave: 'ABASTECIMIENTO_BANCO_NOMBRE', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Banco de la cuenta a la que las tiendas transfieren el costo de abastecimiento.' },
+  { clave: 'ABASTECIMIENTO_BANCO_TITULAR', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Titular de la cuenta.' },
+  { clave: 'ABASTECIMIENTO_BANCO_CI_RUC', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'CI o RUC del titular de la cuenta.' },
+  { clave: 'ABASTECIMIENTO_BANCO_NUMERO_CUENTA', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Número de cuenta al que transferir.' },
+  { clave: 'ABASTECIMIENTO_ALIAS_TIPO', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Tipo de alias para transferir (CEDULA, TELEFONO o EMAIL).' },
+  { clave: 'ABASTECIMIENTO_ALIAS_VALOR', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Número o correo del alias, según el tipo elegido.' },
 ];
 
 async function cargar() {

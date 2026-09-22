@@ -1,5 +1,7 @@
 const { Op } = require('sequelize');
 const { Deposito, Envio } = require('../models');
+const DepositoCourierService = require('../services/depositoCourier.service');
+const { envolverControlador } = require('../utils/asyncHandler');
 
 function normalizarPayload(body = {}) {
   return {
@@ -178,3 +180,36 @@ exports.eliminar = async (req, res) => {
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
+
+/**
+ * GET /api/depositos/:id/couriers — couriers que este comercio puede vincular
+ * al depósito (los suyos + los de Gesicomm), marcando cuáles están
+ * habilitados y cuánta cobertura tiene cada uno.
+ */
+exports.listarCouriers = async (req, res) => {
+  try {
+    const resultado = await DepositoCourierService.listarPorDeposito(req.params.id, req.usuario.id);
+    res.json(resultado);
+  } catch (error) {
+    const status = error.status || 500;
+    if (status >= 500) console.error('Error listando couriers del deposito:', error);
+    res.status(status).json({ error: status === 500 ? 'Error interno del servidor' : error.message });
+  }
+};
+
+/** PUT /api/depositos/:id/couriers — reemplaza los couriers habilitados. */
+exports.reemplazarCouriers = async (req, res) => {
+  try {
+    const courierIds = Array.isArray(req.body?.courierIds) ? req.body.courierIds : [];
+    const resultado = await DepositoCourierService.reemplazar(req.params.id, req.usuario.id, courierIds);
+    res.json(resultado);
+  } catch (error) {
+    const status = error.status || 500;
+    if (status >= 500) console.error('Error reemplazando couriers del deposito:', error);
+    res.status(status).json({ error: status === 500 ? 'Error interno del servidor' : error.message });
+  }
+};
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+envolverControlador(module.exports);

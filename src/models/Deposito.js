@@ -48,6 +48,17 @@ const Deposito = sequelize.define('Deposito', {
     defaultValue: true,
     allowNull: false,
   },
+  // `usuario_id` responde "¿quién es el dueño?"; `alcance` responde "¿para
+  // qué red logística existe?". Son preguntas distintas: hay administradores
+  // que además operan su propio comercio, así que "pertenece a un admin" no
+  // identifica infraestructura de Gesicomm.
+  alcance: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'PROPIO',
+    validate: { isIn: [['GESICOMM', 'PROPIO']] },
+    comment: 'PROPIO = depósito privado del comercio. GESICOMM = centro de fulfillment de la red, designado por un administrador.',
+  },
 }, {
   tableName: 'depositos',
   timestamps: true,

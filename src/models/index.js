@@ -23,9 +23,14 @@ const ComboConfiguracion = require('./ComboConfiguracion');
 const Oferta = require('./Oferta');
 const OfertaComponente = require('./OfertaComponente');
 const Courier = require('./Courier');
-const CourierTarifa = require('./CourierTarifa');
 const DeliveryZonaTarifa = require('./DeliveryZonaTarifa');
+const Pais = require('./Pais');
+const Departamento = require('./Departamento');
+const Ciudad = require('./Ciudad');
 const Deposito = require('./Deposito');
+const DepositoCourier = require('./DepositoCourier');
+const ProveedorLogistico = require('./ProveedorLogistico');
+const CentroProveedorLogistico = require('./CentroProveedorLogistico');
 const Envio = require('./Envio');
 const EnvioItem = require('./EnvioItem');
 const EnvioItemComponente = require('./EnvioItemComponente');
@@ -87,7 +92,10 @@ const SeguimientoContacto = require('./SeguimientoContacto');
 const SeguimientoRecordatorio = require('./SeguimientoRecordatorio');
 const Notificacion = require('./Notificacion');
 const SeguimientoConfiguracion = require('./SeguimientoConfiguracion');
-
+const InventarioUbicacion = require('./InventarioUbicacion');
+const IngresoInventario = require('./IngresoInventario');
+const IngresoInventarioItem = require('./IngresoInventarioItem');
+const HistorialIngresoInventario = require('./HistorialIngresoInventario');
 // ============================================================
 // Relaciones existentes
 // ============================================================
@@ -109,17 +117,65 @@ Permiso.belongsToMany(Rol, { through: RolPermiso, foreignKey: 'permiso_id' });
 Usuario.hasMany(Courier, { foreignKey: 'usuario_id' });
 Courier.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
-Courier.hasMany(CourierTarifa, { as: 'tarifas', foreignKey: 'courier_id', onDelete: 'CASCADE' });
-CourierTarifa.belongsTo(Courier, { foreignKey: 'courier_id' });
-
 Usuario.hasMany(DeliveryZonaTarifa, { as: 'delivery_zonas', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 DeliveryZonaTarifa.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 Courier.hasMany(DeliveryZonaTarifa, { as: 'zonas_delivery', foreignKey: 'courier_id', onDelete: 'SET NULL' });
 DeliveryZonaTarifa.belongsTo(Courier, { as: 'courier', foreignKey: 'courier_id' });
 
+// Catálogo geográfico: país -> departamento -> ciudad.
+Pais.hasMany(Departamento, { as: 'departamentos', foreignKey: 'pais_id', onDelete: 'CASCADE' });
+Departamento.belongsTo(Pais, { as: 'pais', foreignKey: 'pais_id' });
+Departamento.hasMany(Ciudad, { as: 'ciudades', foreignKey: 'departamento_id', onDelete: 'CASCADE' });
+Ciudad.belongsTo(Departamento, { as: 'departamento', foreignKey: 'departamento_id' });
+
+// Una tarifa apunta al catálogo según su tipo_cobertura (ver migración
+// 20260920110000): ciudad concreta, resto de un departamento o resto del país.
+Ciudad.hasMany(DeliveryZonaTarifa, { as: 'tarifas', foreignKey: 'ciudad_id', onDelete: 'SET NULL' });
+DeliveryZonaTarifa.belongsTo(Ciudad, { as: 'ciudad_catalogo', foreignKey: 'ciudad_id' });
+DeliveryZonaTarifa.belongsTo(Departamento, { as: 'departamento_catalogo', foreignKey: 'departamento_id' });
+DeliveryZonaTarifa.belongsTo(Pais, { as: 'pais_catalogo', foreignKey: 'pais_id' });
+
 // Depósitos propios del comercio (RF Gestión de Depósitos)
 Usuario.hasMany(Deposito, { as: 'depositos', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 Deposito.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+// Desde qué depósito puede despachar cada courier (motor de fulfillment,
+// Fase 2). La tarifa no vive en esta relación: pertenece al courier y su
+// cobertura en delivery_zona_tarifas.
+Deposito.belongsToMany(Courier, {
+  as: 'couriers', through: DepositoCourier, foreignKey: 'deposito_id', otherKey: 'courier_id',
+});
+Courier.belongsToMany(Deposito, {
+  as: 'depositos', through: DepositoCourier, foreignKey: 'courier_id', otherKey: 'deposito_id',
+});
+Deposito.hasMany(DepositoCourier, { as: 'vinculos_courier', foreignKey: 'deposito_id', onDelete: 'CASCADE' });
+DepositoCourier.belongsTo(Deposito, { foreignKey: 'deposito_id' });
+Courier.hasMany(DepositoCourier, { as: 'vinculos_deposito', foreignKey: 'courier_id', onDelete: 'CASCADE' });
+DepositoCourier.belongsTo(Courier, { as: 'courier', foreignKey: 'courier_id' });
+
+// ── Red logística de Gesicomm ────────────────────────────────────────────
+// Deliberadamente en paralelo a lo de arriba y no reutilizándolo: el
+// proveedor logístico no es un courier de nadie, y el centro es un depósito
+// con alcance GESICOMM. Mezclar las dos relaciones fue exactamente lo que
+// hizo que la red se configurara desde el panel de couriers del comercio.
+Deposito.belongsToMany(ProveedorLogistico, {
+  as: 'proveedores_logisticos', through: CentroProveedorLogistico,
+  foreignKey: 'centro_id', otherKey: 'proveedor_logistico_id',
+});
+ProveedorLogistico.belongsToMany(Deposito, {
+  as: 'centros', through: CentroProveedorLogistico,
+  foreignKey: 'proveedor_logistico_id', otherKey: 'centro_id',
+});
+Deposito.hasMany(CentroProveedorLogistico, { as: 'vinculos_proveedor', foreignKey: 'centro_id', onDelete: 'CASCADE' });
+CentroProveedorLogistico.belongsTo(Deposito, { as: 'centro', foreignKey: 'centro_id' });
+ProveedorLogistico.hasMany(CentroProveedorLogistico, { as: 'vinculos_centro', foreignKey: 'proveedor_logistico_id', onDelete: 'CASCADE' });
+CentroProveedorLogistico.belongsTo(ProveedorLogistico, { as: 'proveedor', foreignKey: 'proveedor_logistico_id' });
+
+// Las tarifas de red cuelgan del proveedor Y del centro: el mismo proveedor
+// puede cobrar distinto a la misma ciudad según desde dónde sale.
+ProveedorLogistico.hasMany(DeliveryZonaTarifa, { as: 'zonas', foreignKey: 'proveedor_logistico_id', onDelete: 'CASCADE' });
+DeliveryZonaTarifa.belongsTo(ProveedorLogistico, { as: 'proveedor', foreignKey: 'proveedor_logistico_id' });
+DeliveryZonaTarifa.belongsTo(Deposito, { as: 'centro', foreignKey: 'centro_id' });
 
 Usuario.hasMany(Envio, { foreignKey: 'usuario_id' });
 Envio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
@@ -452,7 +508,7 @@ MetaCampanaInterna.hasMany(MetaReporteFila, { as: 'filas_reporte', foreignKey: '
 MetaReporteFila.belongsTo(MetaCampanaInterna, { foreignKey: 'meta_campana_interna_id', as: 'campana' });
 
 // ============================================================
-// Relaciones de Costos y Gastos (Finanzas)
+// Relaciones de Control financiero (Finanzas)
 // ============================================================
 Usuario.hasMany(Proveedor, { foreignKey: 'usuario_id' });
 Proveedor.belongsTo(Usuario, { foreignKey: 'usuario_id' });
@@ -627,6 +683,47 @@ NotificationEvent.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' }
 Envio.hasMany(NotificationEvent, { as: 'notification_events', foreignKey: 'envio_id', onDelete: 'SET NULL' });
 NotificationEvent.belongsTo(Envio, { as: 'envio', foreignKey: 'envio_id' });
 
+// ============================================================
+// Relaciones de Inventario y Fulfillment (CP-06)
+// ============================================================
+
+// InventarioUbicacion
+Usuario.hasMany(InventarioUbicacion, { foreignKey: 'usuario_id' });
+InventarioUbicacion.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Producto.hasMany(InventarioUbicacion, { foreignKey: 'producto_id' });
+InventarioUbicacion.belongsTo(Producto, { foreignKey: 'producto_id' });
+
+ProductoVariante.hasMany(InventarioUbicacion, { foreignKey: 'variante_id' });
+InventarioUbicacion.belongsTo(ProductoVariante, { foreignKey: 'variante_id' });
+
+Deposito.hasMany(InventarioUbicacion, { foreignKey: 'deposito_id' });
+InventarioUbicacion.belongsTo(Deposito, { foreignKey: 'deposito_id' });
+
+// IngresoInventario
+Usuario.hasMany(IngresoInventario, { foreignKey: 'usuario_id' });
+IngresoInventario.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+Deposito.hasMany(IngresoInventario, { foreignKey: 'centro_gesicomm_id' });
+IngresoInventario.belongsTo(Deposito, { as: 'centro', foreignKey: 'centro_gesicomm_id' });
+
+// IngresoInventarioItem
+IngresoInventario.hasMany(IngresoInventarioItem, { as: 'items', foreignKey: 'ingreso_id', onDelete: 'CASCADE' });
+IngresoInventarioItem.belongsTo(IngresoInventario, { foreignKey: 'ingreso_id' });
+
+Producto.hasMany(IngresoInventarioItem, { foreignKey: 'producto_id' });
+IngresoInventarioItem.belongsTo(Producto, { foreignKey: 'producto_id' });
+
+ProductoVariante.hasMany(IngresoInventarioItem, { foreignKey: 'variante_id' });
+IngresoInventarioItem.belongsTo(ProductoVariante, { foreignKey: 'variante_id' });
+
+// HistorialIngresoInventario
+IngresoInventario.hasMany(HistorialIngresoInventario, { as: 'historial', foreignKey: 'ingreso_id', onDelete: 'CASCADE' });
+HistorialIngresoInventario.belongsTo(IngresoInventario, { foreignKey: 'ingreso_id' });
+
+Usuario.hasMany(HistorialIngresoInventario, { foreignKey: 'usuario_id' });
+HistorialIngresoInventario.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
 module.exports = {
   sequelize,
   Inquilino,
@@ -653,9 +750,14 @@ module.exports = {
   Oferta,
   OfertaComponente,
   Courier,
-  CourierTarifa,
   DeliveryZonaTarifa,
+  Pais,
+  Departamento,
+  Ciudad,
   Deposito,
+  DepositoCourier,
+  ProveedorLogistico,
+  CentroProveedorLogistico,
   Envio,
   EnvioItem,
   EnvioItemComponente,
@@ -721,4 +823,8 @@ module.exports = {
   SeguimientoRecordatorio,
   Notificacion,
   SeguimientoConfiguracion,
+  InventarioUbicacion,
+  IngresoInventario,
+  IngresoInventarioItem,
+  HistorialIngresoInventario,
 };

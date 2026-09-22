@@ -28,6 +28,13 @@ const Courier = sequelize.define('Courier', {
     defaultValue: true,
     allowNull: false,
   },
+  alcance: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'PROPIO',
+    validate: { isIn: [['GESICOMM', 'PROPIO']] },
+    comment: 'PROPIO = courier privado del comercio. GESICOMM = proveedor logístico ofrecido por Gesicomm, configurado por el admin y utilizable por los comercios.',
+  },
 }, {
   tableName: 'couriers',
   timestamps: true,

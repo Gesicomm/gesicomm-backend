@@ -4,6 +4,7 @@ const { Envio, EnvioItem, PaymentGateway, PaymentTransaction, Tienda } = require
 const PagoParService = require('../services/payments/pagoParService');
 const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago');
 const { BASE_DOMAIN } = require('../middleware/resolverTienda');
+const { envolverControlador } = require('../utils/asyncHandler');
 
 /**
  * Saca el motivo legible de una respuesta de rechazo de PagoPar.
@@ -272,3 +273,7 @@ exports.consultarPedidoPagopar = async (req, res) => {
     });
   }
 };
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+envolverControlador(module.exports);

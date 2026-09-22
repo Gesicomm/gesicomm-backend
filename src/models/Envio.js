@@ -78,6 +78,13 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.INTEGER,
     allowNull: false,
     defaultValue: 0,
+    comment: 'Costo logístico de última milla o transporte hasta el cliente final.',
+  },
+  costo_fulfillment: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    comment: 'Costo operativo cobrado al comercio por el servicio de almacenamiento, picking, packing, etc. Separado del envío.',
   },
   delivery_a_cargo: {
     // STRING y no ENUM: en Postgres, DataTypes.ENUM crea un tipo nativo,
@@ -286,8 +293,23 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.STRING(30),
     allowNull: false,
     defaultValue: 'no_requiere',
-    validate: { isIn: [['no_requiere', 'pendiente_pago', 'en_proceso', 'recibido']] },
-    comment: 'Estado interno de abastecimiento Gesicom: no_requiere, pendiente_pago, en_proceso o recibido.',
+    validate: { isIn: [[
+      'no_requiere',
+      'pendiente_pago',
+      'pago_enviado',
+      'pago_rechazado',
+      'pago_validado',
+      'proveedor_contactado',
+      'enviado_por_proveedor',
+      'en_transito_a_gesicomm',
+      'recibido_en_gesicomm',
+      'preparando_envio_a_deposito_cliente',
+      'despachado_a_deposito_cliente',
+      'en_transito_a_deposito_cliente',
+      'recibido_en_deposito_cliente',
+      'disponible_en_gesicomm',
+    ]] },
+    comment: 'Pipeline de seguimiento de abastecimiento Gesicom. Ver services/abastecimiento/estadoMachine.js para las transiciones válidas por actor.',
   },
   abastecimiento_costo: {
     type: DataTypes.INTEGER,
@@ -298,20 +320,47 @@ const Envio = sequelize.define('Envio', {
   abastecimiento_pagado_at: {
     type: DataTypes.DATE,
     allowNull: true,
+    comment: 'Momento en que el pago se valida (abastecimiento_estado pasa a pago_validado).',
   },
   abastecimiento_recibido_at: {
     type: DataTypes.DATE,
     allowNull: true,
+    comment: 'Momento en que la mercadería llega a Gesicomm (abastecimiento_estado pasa a recibido_en_gesicomm).',
   },
   abastecimiento_notificado_at: {
     type: DataTypes.DATE,
     allowNull: true,
   },
+  abastecimiento_comprobante_url: {
+    type: DataTypes.STRING(500),
+    allowNull: true,
+    comment: 'URL pública (R2) del último comprobante de transferencia subido por la tienda.',
+  },
+  abastecimiento_comprobante_storage_key: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  abastecimiento_pago_enviado_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  abastecimiento_pago_rechazo_motivo: {
+    type: DataTypes.STRING(500),
+    allowNull: true,
+    comment: 'Motivo cargado por el admin al rechazar el comprobante. Se limpia al reenviar.',
+  },
   tipo_logistica_abastecimiento: {
     type: DataTypes.STRING(20),
     allowNull: true,
     validate: { isIn: [['GESICOMM', 'PROPIA']] },
-    comment: 'Quién prepara/despacha el abastecimiento. Se define antes de confirmar el pago.',
+    comment: 'Si el comercio vende stock prestado y necesita que se lo envíen a su propio depósito o si el fulfillment lo hace Gesicomm directo.',
+  },
+  ruta_abastecimiento: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    defaultValue: 'VIA_GESICOMM',
+    validate: { isIn: [['VIA_GESICOMM', 'DIRECTA']] },
+    comment: 'Ruta física del paquete desde el proveedor hasta el depósito destino.',
   },
   deposito_destino_id: {
     type: DataTypes.INTEGER,

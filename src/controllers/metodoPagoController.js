@@ -1,4 +1,5 @@
 const { MetodoPago, Envio } = require('../models');
+const { envolverControlador } = require('../utils/asyncHandler');
 
 const DEFAULTS = [
   { nombre: 'Efectivo contra entrega', comision_porcentaje: 0, es_anticipado: false, custodia_cobro: 'courier', orden: 1 },
@@ -107,3 +108,7 @@ exports.deleteMetodoPago = async (req, res) => {
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+envolverControlador(module.exports);

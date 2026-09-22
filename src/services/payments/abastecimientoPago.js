@@ -1,9 +1,8 @@
-const { sequelize, Envio, PaymentTransaction, Tienda, Usuario } = require('../../models');
-const PagoParService = require('./pagoParService');
-const SuscripcionService = require('../suscripcion.service');
+const { sequelize, Envio, Usuario } = require('../../models');
 const PedidosNotificaciones = require('../notificaciones/pedidosNotificaciones.service');
 const { registrarHistorial } = require('../../utils/historial');
 const AuthTracking = require('../authTracking.service');
+const { ACTORES } = require('../abastecimiento/estadoMachine');
 
 const TIPO_PAGO_ABASTECIMIENTO = 'abastecimiento_gesicom';
 
@@ -15,83 +14,17 @@ function montoAbastecimiento(envio) {
   return Math.max(0, Math.round(Number(envio?.abastecimiento_costo) || 0));
 }
 
-function nombreCliente(envio) {
-  return [envio?.nombre_cliente, envio?.apellido_cliente].filter(Boolean).join(' ')
-    || envio?.cliente
-    || 'Cliente Gesicom';
-}
-
-async function iniciarCheckoutAbastecimiento(envio) {
-  if (!envio) throw errorHttp('Pedido no encontrado.', 404);
-  if (envio.abastecimiento_estado !== 'pendiente_pago') {
-    throw errorHttp('Este pedido no tiene un abastecimiento pendiente de pago.');
-  }
-  if (!envio.tipo_logistica_abastecimiento) {
-    throw errorHttp('Definí quién prepara y despacha el abastecimiento (Gesicomm o depósito propio) antes de pagar.');
-  }
-
-  const amount = montoAbastecimiento(envio);
-  if (amount <= 0) {
-    throw errorHttp('El costo de abastecimiento no es válido.');
-  }
-
-  const gateway = await SuscripcionService.gatewayDeSistema();
-
-  // Quien paga el abastecimiento es EL COMERCIO, no el comprador final. Por
-  // eso el documento sale de la Tienda y no de Envio.ruc (que es del cliente
-  // que hizo el pedido). El comercio del sistema exige `comprador.documento`
-  // y rechaza con "El documento debe estar presente." si va vacio.
-  const tienda = await Tienda.findOne({ where: { usuario_id: envio.usuario_id } });
-  if (!tienda?.documento) {
-    throw errorHttp(
-      'Cargá tu número de cédula en Mi tienda → Identidad antes de pagar el abastecimiento: PagoPar lo exige para emitir el cobro.',
-    );
-  }
-
-  const referencia = `ABAST-${envio.id}-${Date.now()}`;
-  const numeroPedido = envio.numero_pedido || envio.id;
-  const pedidoFicticio = {
-    id: referencia,
-    monto: amount,
-    costo_envio: 0,
-    cliente: tienda.nombre || nombreCliente(envio),
-    telefono: envio.telefono || '',
-    direccion: envio.direccion || '',
-    ciudad: envio.ciudad || '',
-    // documento = cedula (obligatorio), ruc = fiscal (vacio si no tiene).
-    documento: tienda.documento,
-    ruc: tienda.ruc || '',
-    descripcion_resumen: `Abastecimiento Gesicom pedido #${numeroPedido}`,
-    items: [{
-      nombre_producto: `Abastecimiento Gesicom pedido #${numeroPedido}`,
-      cantidad: 1,
-      subtotal: amount,
-    }],
-  };
-
-  const resultado = await PagoParService.createTransaction(gateway, pedidoFicticio, null);
-
-  await PaymentTransaction.create({
-    envio_id: envio.id,
-    provider: 'pagopar',
-    payment_reference: referencia,
-    payment_hash: resultado.hash_pedido,
-    status: 'PENDING',
-    amount,
-    metadata: {
-      tipo: TIPO_PAGO_ABASTECIMIENTO,
-      envio_id: envio.id,
-    },
-  });
-
-  return {
-    payment_url: resultado.payment_url,
-    hash_pedido: resultado.hash_pedido,
-    referencia,
-    amount,
-  };
-}
-
+/**
+ * Acredita un pago de abastecimiento confirmado por el webhook de PagoPar.
+ *
+ * Este es el único remanente del checkout viejo (ver historial de este
+ * archivo): ya no se generan pagos nuevos por PagoPar para abastecimiento
+ * (reemplazado por transferencia + comprobante, ver
+ * services/abastecimiento/abastecimientoFlujo.service.js), pero pagos ya
+ * iniciados antes del cambio siguen llegando por este webhook y hay que
+ * poder cerrarlos. Salta directo a pago_validado (no pasa por pago_enviado)
+ * porque PagoPar ya confirmó el pago fehacientemente.
+ */
 async function acreditarPagoAbastecimiento(envio, transaction, {
   origen = 'PagoPar',
   req = null,
@@ -102,9 +35,6 @@ async function acreditarPagoAbastecimiento(envio, transaction, {
   if (!envio) throw errorHttp('Pedido no encontrado.', 404);
   if (envio.abastecimiento_estado === 'no_requiere') {
     throw errorHttp('Este pedido no requiere abastecimiento Gesicom.');
-  }
-  if (envio.abastecimiento_estado === 'pendiente_pago' && !envio.tipo_logistica_abastecimiento) {
-    throw errorHttp('Definí quién prepara y despacha el abastecimiento (Gesicomm o depósito propio) antes de acreditar el pago.');
   }
 
   let resultado = 'sin_cambios';
@@ -125,13 +55,14 @@ async function acreditarPagoAbastecimiento(envio, transaction, {
       await transaction.save({ transaction: t });
     }
 
-    if (envioActual.abastecimiento_estado !== 'pendiente_pago') {
+    if (!['pendiente_pago', 'pago_enviado'].includes(envioActual.abastecimiento_estado)) {
       resultado = 'ya_acreditado';
       return;
     }
 
+    const estadoAnterior = envioActual.abastecimiento_estado;
     await envioActual.update({
-      abastecimiento_estado: 'en_proceso',
+      abastecimiento_estado: 'pago_validado',
       abastecimiento_pagado_at: new Date(),
     }, { transaction: t });
 
@@ -139,8 +70,9 @@ async function acreditarPagoAbastecimiento(envio, transaction, {
     await registrarHistorial(
       envioActual.id,
       usuarioId,
-      `Abastecimiento Gesicom acreditado por ${origen}${sufijo}. En proceso.`,
+      `Abastecimiento Gesicom acreditado por ${origen}${sufijo}. Pago validado.`,
       t,
+      { estadoAnterior, estadoNuevo: 'pago_validado', actorTipo: ACTORES.SISTEMA },
     );
     resultado = 'acreditado';
   });
@@ -169,43 +101,7 @@ async function acreditarPagoAbastecimiento(envio, transaction, {
   return resultado;
 }
 
-async function marcarAbastecimientoRecibido(envio, {
-  usuarioId = null,
-  detalle = null,
-} = {}) {
-  if (!envio) throw errorHttp('Pedido no encontrado.', 404);
-  if (envio.abastecimiento_estado === 'no_requiere') {
-    throw errorHttp('Este pedido no requiere abastecimiento Gesicom.');
-  }
-  if (envio.abastecimiento_estado === 'pendiente_pago') {
-    throw errorHttp('No se puede recibir mercadería antes de acreditar el pago.');
-  }
-
-  let resultado = 'sin_cambios';
-  await sequelize.transaction(async (t) => {
-    const envioActual = await Envio.findByPk(envio.id, { transaction: t });
-    if (!envioActual) throw errorHttp('Pedido no encontrado.', 404);
-    if (envioActual.abastecimiento_estado === 'recibido') {
-      resultado = 'ya_recibido';
-      return;
-    }
-
-    await envioActual.update({
-      abastecimiento_estado: 'recibido',
-      abastecimiento_recibido_at: new Date(),
-    }, { transaction: t });
-
-    const sufijo = detalle ? `: ${detalle}` : '';
-    await registrarHistorial(envioActual.id, usuarioId, `Abastecimiento Gesicom recibido en deposito${sufijo}.`, t);
-    resultado = 'recibido';
-  });
-
-  return resultado;
-}
-
 module.exports = {
   TIPO_PAGO_ABASTECIMIENTO,
-  iniciarCheckoutAbastecimiento,
   acreditarPagoAbastecimiento,
-  marcarAbastecimientoRecibido,
 };

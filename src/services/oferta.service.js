@@ -30,7 +30,7 @@ const ESTRATEGIAS = ['normal', 'order_bump', 'upsell', 'combo'];
  * especial / 3 x precio especial"). Por eso se vende siempre a su
  * precio_normal y no tiene precio promocional de checkout.
  */
-const ESTRATEGIAS_CHECKOUT = ['order_bump'];
+const ESTRATEGIAS_CHECKOUT = ['order_bump', 'upsell'];
 
 class OfertaService {
 
@@ -143,8 +143,16 @@ class OfertaService {
     // regalar el producto — y casi siempre viene de un campo que quedó vacío
     // (pasó de verdad: se guardaron ofertas en 0 y se mostraban sin precio).
     if (!(parseFloat(precio_normal) > 0)) throw new Error('El precio de la oferta tiene que ser mayor a 0.');
-    if (precio_order_bump !== null && precio_order_bump !== undefined && !(parseFloat(precio_order_bump) > 0)) {
-      throw new Error('El precio de order bump tiene que ser mayor a 0.');
+    if (ESTRATEGIAS_CHECKOUT.includes(estrategia)) {
+      const tienePrecioCheckout = precio_order_bump !== null && precio_order_bump !== undefined && precio_order_bump !== '';
+      if (tienePrecioCheckout && !(parseFloat(precio_order_bump) > 0)) {
+        throw new Error('El precio promocional de checkout tiene que ser mayor a 0.');
+      }
+      if (tienePrecioCheckout && parseFloat(precio_order_bump) >= parseFloat(precio_normal)) {
+        throw new Error('El precio promocional de checkout tiene que ser menor al precio normal.');
+      }
+    } else if (precio_order_bump !== null && precio_order_bump !== undefined && !(parseFloat(precio_order_bump) > 0)) {
+      throw new Error('El precio promocional de checkout tiene que ser mayor a 0.');
     }
     if (payload.fecha_inicio && payload.fecha_fin && String(payload.fecha_fin) < String(payload.fecha_inicio)) {
       throw new Error('La fecha de fin no puede ser anterior a la de inicio.');
@@ -174,14 +182,18 @@ class OfertaService {
       const bumpCrudo = payload.precio_order_bump !== undefined
         ? payload.precio_order_bump
         : actual?.precio_order_bump;
-      // Sin precio de bump propio se cobra el normal — nunca 0, que sería
-      // regalar el producto por un campo que el usuario dejó vacío.
       precioOrderBump = (bumpCrudo === null || bumpCrudo === undefined || bumpCrudo === '')
         ? null
         : Math.max(0, Math.round(parseFloat(bumpCrudo) || 0));
     }
 
     return { precio_normal: precioNormal, precio_order_bump: precioOrderBump, precio: precioNormal };
+  }
+
+  static normalizarBeneficios(payload, actual = null) {
+    if (payload.beneficios === undefined) return actual?.beneficios ?? [];
+    if (!Array.isArray(payload.beneficios)) return [];
+    return payload.beneficios.map(b => String(b || '').trim()).filter(Boolean).slice(0, 6);
   }
 
   /**
@@ -338,6 +350,7 @@ class OfertaService {
       ...precios,
       ...this.normalizarExtras(payload),
       descripcion: payload.descripcion?.trim() || null,
+      beneficios: this.normalizarBeneficios(payload),
       activo: payload.activo === undefined ? true : !!payload.activo,
       orden: payload.orden || 0,
     }, { transaction });
@@ -382,6 +395,7 @@ class OfertaService {
     // checkout es parte de lo que tiene que pasar.
     Object.assign(updates, precios, this.normalizarExtras(payload));
     if (payload.descripcion !== undefined) updates.descripcion = payload.descripcion?.trim() || null;
+    if (payload.beneficios !== undefined) updates.beneficios = this.normalizarBeneficios(payload, oferta);
     if (payload.activo !== undefined) updates.activo = !!payload.activo;
     if (payload.orden !== undefined) updates.orden = payload.orden;
 

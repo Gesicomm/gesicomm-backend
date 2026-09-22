@@ -61,7 +61,10 @@ const Notificacion = sequelize.define('Notificacion', {
   updatedAt: false,
   indexes: [
     { fields: ['usuario_id', 'leida'] },
-    { unique: true, fields: ['tipo', 'entidad_tipo', 'entidad_id'] },
+    // usuario_id va en la unique para poder avisarle del MISMO evento a
+    // varios destinatarios (ej. todos los administradores). Sin él, solo
+    // entraba la fila del primero.
+    { unique: true, fields: ['usuario_id', 'tipo', 'entidad_tipo', 'entidad_id'] },
   ],
 });
 

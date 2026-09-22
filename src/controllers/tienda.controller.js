@@ -15,6 +15,8 @@
 
 const TiendaService = require('../services/tienda.service');
 const AuthTracking = require('../services/authTracking.service');
+const FulfillmentService = require('../services/fulfillment.service');
+const RedFulfillment = require('../services/redFulfillment.service');
 
 function manejarError(res, err, defaultMsg) {
   console.error('[tienda]', err.message);
@@ -136,8 +138,51 @@ async function whoisDominio(req, res) {
   }
 }
 
+/** GET /api/mi-tienda/fulfillment — modalidad actual + contexto para decidir. */
+async function obtenerFulfillment(req, res) {
+  try {
+    return res.json(await FulfillmentService.obtenerConfiguracion(req.usuario.id));
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('[tienda] obtenerFulfillment:', err);
+    return res.status(status).json({ message: status === 500 ? 'Error al obtener la configuración de entregas.' : err.message });
+  }
+}
+
+/** PUT /api/mi-tienda/fulfillment — { modalidad, depositoId }. */
+async function guardarFulfillment(req, res) {
+  try {
+    const resultado = await FulfillmentService.guardarConfiguracion(req.usuario.id, {
+      modalidad: req.body?.modalidad,
+      depositoId: req.body?.depositoId,
+    });
+    return res.json(resultado);
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('[tienda] guardarFulfillment:', err);
+    return res.status(status).json({ message: status === 500 ? 'Error al guardar la configuración de entregas.' : err.message });
+  }
+}
+
+/**
+ * GET /api/mi-tienda/fulfillment/cobertura — qué cubre Gesicomm y a qué
+ * precio, consolidado por ciudad. Es SOLO LECTURA y a propósito no dice qué
+ * proveedor entrega: eso es operación interna de Gesicomm, no algo que el
+ * comercio contrate ni pueda modificar.
+ */
+async function coberturaGesicomm(req, res) {
+  try {
+    return res.json(await RedFulfillment.coberturaComercial());
+  } catch (err) {
+    console.error('[tienda] coberturaGesicomm:', err);
+    return res.status(500).json({ message: 'Error al obtener la cobertura de Gesicomm.' });
+  }
+}
+
 module.exports = {
   obtener, crear, actualizar, disponibilidadSubdominio,
+  coberturaGesicomm,
   guardarDominioPropio, estadoDominioPropio, habilitacionDominioPropio,
-  eliminarDominioPropio, whoisDominio
+  eliminarDominioPropio, whoisDominio,
+  obtenerFulfillment, guardarFulfillment
 };

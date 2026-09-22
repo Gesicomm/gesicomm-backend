@@ -24,10 +24,22 @@ router.put('/:id/estado', envioController.updateEstado);
 // Editar el precio de un item puntual (ej. descuento por seguimiento comercial)
 router.patch('/:id/items/:itemId/precio', envioController.actualizarPrecioItem);
 
-// Abastecimiento Gesicom: definir logística/destino antes de pagar, luego pago real por PagoPar o acreditación manual admin
+// Abastecimiento Gesicom: definir logística/destino antes de pagar, luego
+// transferencia + comprobante y seguimiento operativo por máquina de
+// estados (ver services/abastecimiento/estadoMachine.js).
+router.post('/:id/abastecimiento/cotizar-logistica', envioController.cotizarLogisticaAbastecimiento);
 router.put('/:id/abastecimiento/logistica', envioController.definirLogisticaAbastecimiento);
-router.post('/:id/abastecimiento/pagopar', envioController.iniciarPagoAbastecimiento);
-router.post('/:id/abastecimiento/manual', envioController.actualizarAbastecimientoManual);
+router.get('/:id/abastecimiento/datos-transferencia', envioController.obtenerDatosTransferenciaAbastecimiento);
+router.post(
+  '/:id/abastecimiento/comprobante',
+  envioController.subirComprobanteAbastecimientoMiddleware,
+  envioController.subirComprobanteAbastecimiento,
+);
+router.post('/:id/abastecimiento/pago/validar', envioController.validarPagoAbastecimiento);
+router.post('/:id/abastecimiento/pago/rechazar', envioController.rechazarPagoAbastecimiento);
+router.post('/:id/abastecimiento/avanzar', envioController.avanzarAbastecimiento);
+router.post('/:id/abastecimiento/confirmar-recepcion', envioController.confirmarRecepcionAbastecimiento);
+router.get('/:id/abastecimiento/timeline', envioController.timelineAbastecimiento);
 
 // Devolución y pérdida, gestionadas por producto/cantidad (ver plan Gestión de Pedidos)
 router.post('/:id/devolucion', envioController.registrarDevolucion);

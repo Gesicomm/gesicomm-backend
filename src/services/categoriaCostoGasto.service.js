@@ -30,6 +30,7 @@ const CATEGORIAS_DEFAULT = [
   { grupo: 'financiero', nombre: 'Comisiones bancarias' },
   { grupo: 'financiero', nombre: 'Intereses' },
   { grupo: 'financiero', nombre: 'Costos financieros' },
+  { grupo: 'otros', nombre: 'Otros ingresos' },
   { grupo: 'otros', nombre: 'Otros costos' },
   { grupo: 'otros', nombre: 'Otros gastos' },
 ];

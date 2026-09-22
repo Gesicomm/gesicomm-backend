@@ -9,6 +9,7 @@
 const { Op } = require('sequelize');
 const { WhatsappPlantilla, SeguimientoEtiqueta, SeguimientoConfiguracion, Notificacion } = require('../models');
 const { listarVariablesDisponibles } = require('../services/seguimiento/plantillaResolver.service');
+const { envolverControlador } = require('../utils/asyncHandler');
 
 function esAdministrador(req) {
   return req.usuario?.rol === 'administrador';
@@ -231,3 +232,7 @@ exports.marcarTodasLeidas = async (req, res) => {
   await Notificacion.update({ leida: true, leida_en: new Date() }, { where: { usuario_id, leida: false } });
   res.status(204).send();
 };
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+envolverControlador(module.exports);

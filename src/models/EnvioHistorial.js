@@ -28,6 +28,24 @@ const EnvioHistorial = sequelize.define('EnvioHistorial', {
     allowNull: true,
     comment: 'Null cuando el evento lo generó el sistema automáticamente (ej. checkout público).',
   },
+  estado_anterior: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+    comment: 'Solo en transiciones de abastecimiento_estado; null en el resto de eventos de historial.',
+  },
+  estado_nuevo: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+  },
+  actor_tipo: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    comment: 'ADMIN, USUARIO o SISTEMA — quién ejecutó la transición.',
+  },
+  metadata: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+  },
 }, {
   tableName: 'envio_historial',
   timestamps: true,

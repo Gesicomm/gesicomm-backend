@@ -3,6 +3,7 @@ const SuscripcionService = require('../services/suscripcion.service');
 const PagoParService = require('../services/payments/pagoParService');
 const parametros = require('../services/parametros.service');
 const { logger } = require('../utils/logger');
+const { envolverControlador } = require('../utils/asyncHandler');
 
 const AFILIADOS_DEFAULT = {
   activo: true,
@@ -331,3 +332,7 @@ exports.guardarAfiliadosConfig = async (req, res) => {
 };
 
 module.exports = exports;
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+envolverControlador(module.exports);

@@ -6,6 +6,7 @@ const {
   TIPO_PAGO_ABASTECIMIENTO,
   acreditarPagoAbastecimiento,
 } = require('../services/payments/abastecimientoPago');
+const { envolverControlador } = require('../utils/asyncHandler');
 
 /**
  * Normaliza el cuerpo del callback de PagoPar.
@@ -248,3 +249,7 @@ exports.pagoparWebhook = async (req, res) => {
     res.status(500).json({ error: 'Error interno al procesar el webhook.' });
   }
 };
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+envolverControlador(module.exports);

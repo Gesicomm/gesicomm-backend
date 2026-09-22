@@ -166,6 +166,20 @@ const Tienda = sequelize.define('Tienda', {
     type: DataTypes.STRING(20),
     allowNull: true,
   },
+  // --- Fulfillment: cuando este comercio vende, ¿quién prepara y entrega?
+  // Es una decisión distinta de Envio.tipo_logistica_abastecimiento, que
+  // define dónde se RECIBE el stock comprado. ---
+  modalidad_fulfillment: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'PROPIA',
+    validate: { isIn: [['GESICOMM', 'PROPIA']] },
+  },
+  deposito_fulfillment_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Depósito desde el que se despacha con modalidad PROPIA.',
+  },
 }, {
   tableName: 'tiendas',
   timestamps: true,

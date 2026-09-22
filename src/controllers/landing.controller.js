@@ -28,13 +28,11 @@ const { Tienda } = require('../models');
 const LandingService = require('../services/landing.service');
 const ImagenService = require('../services/imagen.service');
 
-// Mismo límite y filtro que imagen.controller.js (subida de fotos de
-// producto) — instancia propia porque el destino (Landing) es un modelo
-// distinto. Se reutiliza tanto para el banner como para la imagen OG: es
-// el mismo tipo de subida (una sola imagen, mismo límite), solo cambia a
-// qué columna de Landing termina escribiendo.
+// Mismo filtro que imagen.controller.js (subida de fotos de producto) —
+// instancia propia porque el destino (Landing) es un modelo distinto. Se
+// reutiliza tanto para el banner como para la imagen OG: es el mismo tipo
+// de subida, solo cambia a qué columna de Landing termina escribiendo.
 const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
-const MAX_IMAGEN_BYTES = 1 * 1024 * 1024; // 1MB
 
 const uploadImagenLanding = multer({
   storage: multer.diskStorage({
@@ -44,7 +42,6 @@ const uploadImagenLanding = multer({
       cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
     },
   }),
-  limits: { fileSize: MAX_IMAGEN_BYTES },
   fileFilter: (req, file, cb) => {
     const permitidos = ['image/jpeg', 'image/png', 'image/webp'];
     if (!permitidos.includes(file.mimetype)) {
@@ -57,9 +54,6 @@ const uploadImagenLanding = multer({
 function subirImagenLandingMiddleware(req, res, next) {
   uploadImagenLanding.single('imagen')(req, res, (err) => {
     if (!err) return next();
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ message: 'La imagen supera el máximo permitido de 1MB.' });
-    }
     return res.status(400).json({ message: err.message || 'Error al subir la imagen.' });
   });
 }

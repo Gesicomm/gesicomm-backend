@@ -16,7 +16,8 @@ const { auditoria } = require('../utils/logger');
  * Adjunta la identidad autenticada a req.usuario.
  */
 function verificarToken(req, res, next) {
-  const token = req.cookies?.accessToken;
+  const authHeader = req.headers.authorization || req.headers.Authorization;
+  const token = (authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (authHeader || req.cookies?.accessToken));
 
   if (!token) {
     return res.status(401).json({ message: 'No autenticado.' });

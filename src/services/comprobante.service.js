@@ -13,11 +13,11 @@ const ImagenService = require('./imagen.service');
  * las imágenes se procesan con sharp a WebP, el PDF se sube tal cual.
  */
 class ComprobanteService {
-  static async procesarComprobanteParaR2(fileData, costo_gasto_id) {
+  static async procesarComprobanteParaR2(fileData, costo_gasto_id, prefijo = 'receipts') {
     const tmpPath = fileData.path;
     try {
       const esImagen = fileData.mimetype.startsWith('image/');
-      const storageKey = `receipts/${costo_gasto_id}/${crypto.randomUUID()}.${esImagen ? 'webp' : 'pdf'}`;
+      const storageKey = `${prefijo}/${costo_gasto_id}/${crypto.randomUUID()}.${esImagen ? 'webp' : 'pdf'}`;
 
       let body, contentType, size;
       if (esImagen) {

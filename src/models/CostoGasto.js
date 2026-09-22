@@ -2,7 +2,7 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
 /**
- * Registro de costo o gasto del negocio (módulo Finanzas → Costos y Gastos).
+ * Registro financiero del negocio (módulo Finanzas → Control financiero).
  *
  * Escopado por usuario_id (no inquilino_id): es un registro financiero
  * operativo, igual que Envio/MetodoPago/Liquidacion, no catálogo compartido
@@ -26,7 +26,7 @@ const CostoGasto = sequelize.define('CostoGasto', {
     allowNull: false,
   },
   tipo: {
-    type: DataTypes.ENUM('costo', 'gasto'),
+    type: DataTypes.ENUM('ingreso', 'costo', 'gasto'),
     allowNull: false,
   },
   categoria_id: {
@@ -80,7 +80,7 @@ const CostoGasto = sequelize.define('CostoGasto', {
   proxima_fecha: {
     type: DataTypes.DATEONLY,
     allowNull: true,
-    comment: 'Solo se usa en la fila plantilla (parent_recurring_id null) de un gasto recurrente.',
+    comment: 'Solo se usa en la fila plantilla (parent_recurring_id null) de un movimiento recurrente.',
   },
   parent_recurring_id: {
     type: DataTypes.INTEGER,
@@ -123,7 +123,7 @@ const CostoGasto = sequelize.define('CostoGasto', {
     type: DataTypes.BOOLEAN,
     defaultValue: true,
     allowNull: false,
-    comment: 'Soft-delete: nunca se borra físicamente un costo/gasto para no perder trazabilidad de reportes.',
+    comment: 'Soft-delete: nunca se borra físicamente un movimiento financiero para no perder trazabilidad de reportes.',
   },
 }, {
   tableName: 'costos_gastos',

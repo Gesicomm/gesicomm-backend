@@ -5,13 +5,45 @@ const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
 const { cancelarSiEstadoTerminal } = require('../services/seguimiento/seguimientoRecordatorio.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
+const { envolverControlador } = require('../utils/asyncHandler');
 const PedidoNumeracion = require('../services/pedidoNumeracion.service');
 const ProductoService = require('../services/producto.service');
-const {
-  iniciarCheckoutAbastecimiento,
-  acreditarPagoAbastecimiento,
-  marcarAbastecimientoRecibido,
-} = require('../services/payments/abastecimientoPago');
+const path = require('path');
+const multer = require('multer');
+const AbastecimientoFlujo = require('../services/abastecimiento/abastecimientoFlujo.service');
+const TarifaDelivery = require('../services/tarifaDelivery.service');
+const ProveedorLogisticoService = require('../services/proveedorLogistico.service');
+
+const UPLOADS_TMP_ABASTECIMIENTO = path.join(process.cwd(), 'tmp', 'uploads');
+const MAX_COMPROBANTE_ABASTECIMIENTO_BYTES = 5 * 1024 * 1024; // 5MB
+
+const uploadComprobanteAbastecimiento = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOADS_TMP_ABASTECIMIENTO),
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+    },
+  }),
+  limits: { fileSize: MAX_COMPROBANTE_ABASTECIMIENTO_BYTES },
+  fileFilter: (req, file, cb) => {
+    const permitidos = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (!permitidos.includes(file.mimetype)) {
+      return cb(new Error('Solo se permiten imágenes (JPG, PNG, WebP) o PDF.'));
+    }
+    cb(null, true);
+  },
+});
+
+function subirComprobanteAbastecimientoMulter(req, res, next) {
+  uploadComprobanteAbastecimiento.single('comprobante')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'El comprobante supera el máximo permitido de 5MB.' });
+    }
+    return res.status(400).json({ error: err.message || 'Error al subir el comprobante.' });
+  });
+}
 
 /**
  * Resuelve qué producto(s) y cuántas unidades físicas hay que descontar del
@@ -161,11 +193,20 @@ async function descontarStockYSnapshot(items, t, usuario_id) {
     }
 
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
-    if (!prod) continue;
+    if (!prod) {
+      const err = new Error(`Producto #${producto_id} no encontrado.`);
+      err.status = 404;
+      throw err;
+    }
     productosPorId.set(producto_id, prod);
 
     const stockActual = parseInt(prod.cantidad_disponible) || 0;
-    const nuevoStock = Math.max(0, stockActual - cantidadTotal);
+    if (stockActual < cantidadTotal) {
+      const err = new Error(`Stock insuficiente para "${prod.nombre}". Disponible: ${stockActual}, solicitado: ${cantidadTotal}.`);
+      err.status = 400;
+      throw err;
+    }
+    const nuevoStock = stockActual - cantidadTotal;
     const nuevaReservada = (parseInt(prod.cantidad_reservada) || 0) + cantidadTotal;
 
     // De dónde sale físicamente: primero el mostrador, y recién cuando se
@@ -464,7 +505,68 @@ async function registrarViaje(envio, { numero, resultado, costo, motivo = null, 
   }, { transaction: t });
 }
 
-const ABASTECIMIENTO_ESTADOS = ['no_requiere', 'pendiente_pago', 'en_proceso', 'recibido'];
+const { ESTADOS_FINALES: ABASTECIMIENTO_ESTADOS_FINALES } = require('../services/abastecimiento/estadoMachine');
+
+const ABASTECIMIENTO_ESTADOS = [
+  'no_requiere',
+  'pendiente_pago',
+  'pago_enviado',
+  'pago_rechazado',
+  'pago_validado',
+  'proveedor_contactado',
+  'enviado_por_proveedor',
+  'en_transito_a_gesicomm',
+  'recibido_en_gesicomm',
+  'preparando_envio_a_deposito_cliente',
+  'despachado_a_deposito_cliente',
+  'en_transito_a_deposito_cliente',
+  'recibido_en_deposito_cliente',
+  'disponible_en_gesicomm',
+];
+
+/**
+ * Agrupaciones para las pestañas de la bandeja de abastecimiento del admin.
+ * "pago_enviado" queda separado de "en_seguimiento" porque requiere una
+ * acción urgente distinta (validar/rechazar) en vez de simplemente avanzar.
+ */
+const ABASTECIMIENTO_GRUPOS = {
+  pendiente_pago: ['pendiente_pago', 'pago_rechazado'],
+  pago_enviado: ['pago_enviado'],
+  en_seguimiento: [
+    'pago_validado', 'proveedor_contactado', 'enviado_por_proveedor',
+    'en_transito_a_gesicomm', 'recibido_en_gesicomm', 'preparando_envio_a_deposito_cliente',
+    'despachado_a_deposito_cliente', 'en_transito_a_deposito_cliente',
+  ],
+  recibido: ['recibido_en_deposito_cliente', 'disponible_en_gesicomm'],
+  // Todo lo que ya arrancó el pago (comprobante enviado en adelante), para
+  // la pestaña "En seguimiento de abastecimiento" que ve la propia tienda
+  // dentro de su tablero general de pedidos (no solo en la bandeja del
+  // admin). Incluye también los estados finales: mientras el pedido siga
+  // en `estado` Confirmado (sin pasar a Preparado a mano), sigue siendo
+  // relevante mostrarlo acá.
+  pagado: [
+    'pago_enviado', 'pago_validado', 'proveedor_contactado', 'enviado_por_proveedor',
+    'en_transito_a_gesicomm', 'recibido_en_gesicomm', 'preparando_envio_a_deposito_cliente',
+    'despachado_a_deposito_cliente', 'en_transito_a_deposito_cliente',
+    'recibido_en_deposito_cliente', 'disponible_en_gesicomm',
+  ],
+};
+
+/**
+ * Texto de la acción "Avanzar" que ve el admin en cada estado operativo
+ * intermedio (punto 12 del RF de seguimiento de abastecimiento). El backend
+ * resuelve el siguiente estado real (ver estadoMachine.resolverSiguienteEstadoUnico);
+ * esto es solo lo que se muestra en el botón.
+ */
+const ACCIONES_ABASTECIMIENTO_AVANZAR = {
+  pago_validado: { cta: 'Contactar proveedor', descripcion: 'Pago validado. Iniciá la gestión con el proveedor.' },
+  proveedor_contactado: { cta: 'Marcar enviado por proveedor', descripcion: 'Proveedor contactado. Marcá cuando despache la mercadería.' },
+  enviado_por_proveedor: { cta: 'Marcar en tránsito a Gesicomm', descripcion: 'El proveedor ya despachó. Marcá cuando esté viajando hacia Gesicomm.' },
+  en_transito_a_gesicomm: { cta: 'Marcar recibido en Gesicomm', descripcion: 'En tránsito hacia Gesicomm. Marcá cuando llegue.' },
+  // recibido_en_gesicomm se resuelve distinto según tipo_logistica_abastecimiento (ver más abajo).
+  preparando_envio_a_deposito_cliente: { cta: 'Marcar despachado', descripcion: 'Gesicomm está preparando el envío al depósito del comercio.' },
+  despachado_a_deposito_cliente: { cta: 'Marcar en tránsito', descripcion: 'Despachado hacia el depósito del comercio.' },
+};
 
 function esAdministrador(req) {
   return req.usuario?.rol === 'administrador';
@@ -510,6 +612,11 @@ function aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id } = {}) {
 
 function aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado } = {}) {
   if (abastecimiento_estado && abastecimiento_estado !== 'TODOS') {
+    const grupo = ABASTECIMIENTO_GRUPOS[abastecimiento_estado];
+    if (grupo) {
+      where.abastecimiento_estado = { [Op.in]: grupo };
+      return;
+    }
     if (!ABASTECIMIENTO_ESTADOS.includes(abastecimiento_estado)) {
       const err = new Error(`Estado de abastecimiento inválido: "${abastecimiento_estado}".`);
       err.status = 400;
@@ -520,20 +627,14 @@ function aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimient
   }
 
   if (solo_abastecimiento) {
-    where.abastecimiento_estado = { [Op.in]: ['pendiente_pago', 'en_proceso', 'recibido'] };
+    where.abastecimiento_estado = { [Op.in]: Object.values(ABASTECIMIENTO_GRUPOS).flat() };
   }
 }
 
-function requiereBandejaAbastecimiento({ solo_abastecimiento, abastecimiento_estado } = {}) {
-  return Boolean(solo_abastecimiento || (abastecimiento_estado && abastecimiento_estado !== 'TODOS'));
-}
-
-function asegurarAdminParaBandejaAbastecimiento(req, filtros = {}) {
-  if (!requiereBandejaAbastecimiento(filtros) || esAdministrador(req)) return;
-  const err = new Error('La bandeja de abastecimiento es exclusiva para administradores.');
-  err.status = 403;
-  throw err;
-}
+// Filtrar por abastecimiento_estado/solo_abastecimiento ya no es exclusivo
+// de admin: whereEnviosDeUsuario() sigue acotando a sus propios pedidos, así
+// que una tienda puede ver su propia pestaña "En seguimiento de
+// abastecimiento" sin exponer datos de otros comercios.
 
 function formatGsPlano(valor) {
   const n = Math.max(0, Math.round(Number(valor) || 0));
@@ -607,24 +708,65 @@ function accionSiguientePedido(envioLike) {
       return {
         tipo: 'pagar_abastecimiento',
         titulo: `Pagar ${formatGsPlano(costo)} para iniciar abastecimiento`,
-        descripcion: 'Tenes 24 horas para pagar el abastecimiento. Gesicom procesa el pedido recien cuando el pago este acreditado.',
+        descripcion: 'Transferí el monto a la cuenta de Gesicom y subí el comprobante. Gesicom procesa el pedido recién cuando el pago esté validado.',
         cta: 'Pagar abastecimiento',
         tono: 'danger',
         requiere_pago: true,
         prioridad: 20,
       };
     }
-    if (abastecimiento === 'en_proceso') {
+    if (abastecimiento === 'pago_enviado') {
       return {
-        tipo: 'abastecimiento_en_proceso',
-        titulo: 'Abastecimiento en proceso',
-        descripcion: 'Gesicom esta preparando la mercaderia para la tienda.',
-        cta: null,
+        tipo: 'pago_enviado',
+        titulo: 'Comprobante subido, validando pago',
+        descripcion: 'El comercio envió el comprobante de transferencia. Un administrador debe validarlo o rechazarlo.',
+        cta: 'Validar pago',
+        tono: 'warning',
+        prioridad: 25,
+      };
+    }
+    if (abastecimiento === 'pago_rechazado') {
+      return {
+        tipo: 'pago_rechazado',
+        titulo: 'Comprobante rechazado',
+        descripcion: envio.abastecimiento_pago_rechazo_motivo || 'El administrador rechazó el comprobante. Subí uno nuevo para reintentar.',
+        cta: 'Reemplazar comprobante',
+        tono: 'danger',
+        prioridad: 22,
+      };
+    }
+    if (abastecimiento === 'recibido_en_gesicomm') {
+      const esPropia = envio.tipo_logistica_abastecimiento === 'PROPIA';
+      return {
+        tipo: 'abastecimiento_avanzar',
+        titulo: 'En seguimiento abastecimiento',
+        descripcion: 'La mercadería llegó a Gesicomm.',
+        cta: esPropia ? 'Iniciar preparación para envío' : 'Marcar disponible en Gesicomm',
         tono: 'info',
         prioridad: 30,
       };
     }
-    if (abastecimiento === 'recibido') {
+    if (ACCIONES_ABASTECIMIENTO_AVANZAR[abastecimiento]) {
+      return {
+        tipo: 'abastecimiento_avanzar',
+        titulo: 'En seguimiento abastecimiento',
+        descripcion: ACCIONES_ABASTECIMIENTO_AVANZAR[abastecimiento].descripcion,
+        cta: ACCIONES_ABASTECIMIENTO_AVANZAR[abastecimiento].cta,
+        tono: 'info',
+        prioridad: 30,
+      };
+    }
+    if (abastecimiento === 'en_transito_a_deposito_cliente') {
+      return {
+        tipo: 'confirmar_recepcion_deposito',
+        titulo: 'En tránsito hacia tu depósito',
+        descripcion: 'Cuando recibas la mercadería, confirmá la recepción.',
+        cta: 'Confirmar recepción',
+        tono: 'info',
+        prioridad: 35,
+      };
+    }
+    if (abastecimiento === 'recibido_en_deposito_cliente' || abastecimiento === 'disponible_en_gesicomm') {
       return {
         tipo: 'listo_para_despacho',
         titulo: 'Listo para despacho',
@@ -811,7 +953,6 @@ exports.listEnviosPaginados = async (req, res) => {
       seguimiento_fecha_hasta,
     } = req.body;
 
-    asegurarAdminParaBandejaAbastecimiento(req, { solo_abastecimiento, abastecimiento_estado });
 
     const where = whereEnviosDeUsuario(req);
 
@@ -938,7 +1079,7 @@ exports.listEnviosPaginados = async (req, res) => {
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
     const offset = (pageNum - 1) * limitNum;
-    const order = abastecimiento_estado === 'en_proceso'
+    const order = abastecimiento_estado === 'en_seguimiento'
       ? [['abastecimiento_pagado_at', 'DESC'], ['id', 'DESC']]
       : abastecimiento_estado === 'recibido'
       ? [['abastecimiento_recibido_at', 'DESC'], ['id', 'DESC']]
@@ -1012,6 +1153,7 @@ exports.createEnvio = async (req, res) => {
       link_maps,
       monto,
       costo_envio,
+      costo_fulfillment,
       delivery_a_cargo,
       pago_anticipado,
       metodo_pago,
@@ -1089,6 +1231,7 @@ exports.createEnvio = async (req, res) => {
         link_maps,
         monto: monto || 0,
         costo_envio: costo_envio || 0,
+        costo_fulfillment: costo_fulfillment || 0,
         // Quién paga el flete. Sin dato explícito se asume 'cliente', que es
         // la regla normal del negocio y el default de la columna.
         delivery_a_cargo: delivery_a_cargo === 'negocio' ? 'negocio' : 'cliente',
@@ -1100,11 +1243,9 @@ exports.createEnvio = async (req, res) => {
         metodo_pago_id: metodo_pago_id || null,
         comision_pct_aplicada: comision_pct_aplicada || 0,
         observaciones,
-        // Pedido manual (esta pantalla la usa el staff autenticado, nunca
-        // el checkout público — ver landing.service.js/crearCheckout para
-        // ese flujo aparte): ya fue confirmado por definición, no pasa por
-        // "Pendiente" (ver plan Gestión de Pedidos, sección 5).
-        estado: 'Confirmado',
+        // Pedido manual: si se pasa estado explícito (ej. "Pendiente"), se respeta;
+        // por defecto nace en "Confirmado" (ver plan Gestión de Pedidos, sección 5).
+        estado: req.body.estado || 'Confirmado',
         dispatchedAt: hoy,
         origen: origen || 'WEB',
         canal_venta_id: canal_venta_id || null,
@@ -1141,21 +1282,22 @@ exports.createEnvio = async (req, res) => {
       }
     );
 
-    // El pedido manual nace en "Confirmado" (ver arriba), así que reserva
-    // stock real desde la creación — mismo mecanismo que usa updateEstado
-    // al confirmar un pedido que sí pasó por "Pendiente" (checkout público,
-    // ver landing.service.js/crearCheckout).
-    const abastecimiento = await aplicarAbastecimientoCalculado(nuevoEnvio, nuevoEnvio.items || [], usuario_id, t);
-    await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id);
-    await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
-    await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
-    if (abastecimiento.requiere) {
-      await registrarHistorial(
-        nuevoEnvio.id,
-        usuario_id,
-        `Abastecimiento Gesicom pendiente de pago: ${formatGsPlano(abastecimiento.costo)}`,
-        t
-      );
+    // Si nace en "Confirmado", reserva stock real desde la creación.
+    if (nuevoEnvio.estado === 'Confirmado') {
+      const abastecimiento = await aplicarAbastecimientoCalculado(nuevoEnvio, nuevoEnvio.items || [], usuario_id, t);
+      await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id);
+      await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
+      await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
+      if (abastecimiento.requiere) {
+        await registrarHistorial(
+          nuevoEnvio.id,
+          usuario_id,
+          `Abastecimiento Gesicom pendiente de pago: ${formatGsPlano(abastecimiento.costo)}`,
+          t
+        );
+      }
+    } else {
+      await registrarHistorial(nuevoEnvio.id, usuario_id, `Pedido creado manualmente (${nuevoEnvio.estado})`, t);
     }
 
     await t.commit();
@@ -1206,11 +1348,10 @@ const TRANSICIONES_VALIDAS = {
 exports.updateEstado = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = req.usuario?.id || req.usuario?.tenantId || 0;
     const { id } = req.params;
     const {
       estado, courier_id, estado_comercial, estado_logistico,
-      abastecimiento_estado,
       // Campos que completa el modal único de Pedido (mismo componente de
       // alta, en modo "completar") al confirmar — el checkout público no
       // los pide (ruc es opcional ahí; courier/costo de envío los define
@@ -1227,12 +1368,13 @@ exports.updateEstado = async (req, res) => {
       costo_intento,
     } = req.body;
 
-    if (!estado && courier_id === undefined && !estado_comercial && !estado_logistico && abastecimiento_estado === undefined) {
+    if (!estado && courier_id === undefined && !estado_comercial && !estado_logistico) {
       await t.rollback();
       return res.status(400).json({ error: 'Se requiere al menos estado o courier_id' });
     }
 
-    const filtro = esAdministrador(req) ? { id } : { id, usuario_id };
+    const idNum = parseInt(id, 10) || 0;
+    const filtro = esAdministrador(req) ? { id: idNum } : { id: idNum, usuario_id };
 
     // Bloqueo de la fila ANTES de leerla con sus items. Sin esto, dos cambios
     // de estado simultáneos sobre el mismo pedido —un doble click en
@@ -1279,12 +1421,16 @@ exports.updateEstado = async (req, res) => {
         await t.rollback();
         return res.status(400).json({ error: `No se puede pasar de "${envio.estado}" a "${estado}".` });
       }
-      if (estado === 'Preparado' && ['pendiente_pago', 'en_proceso'].includes(envio.abastecimiento_estado)) {
+      if (estado === 'Preparado' && !ABASTECIMIENTO_ESTADOS_FINALES.includes(envio.abastecimiento_estado)) {
         await t.rollback();
+        const mensajesBloqueo = {
+          pendiente_pago: `Primero se debe pagar ${formatGsPlano(envio.abastecimiento_costo)} para iniciar el abastecimiento Gesicom.`,
+          pago_rechazado: 'El comprobante de pago del abastecimiento fue rechazado. Subí uno nuevo antes de preparar el pedido.',
+          en_transito_a_deposito_cliente: 'La mercadería está viajando a tu depósito. Confirmá la recepción antes de preparar el pedido.',
+        };
         return res.status(400).json({
-          error: envio.abastecimiento_estado === 'pendiente_pago'
-            ? `Primero se debe pagar ${formatGsPlano(envio.abastecimiento_costo)} para iniciar el abastecimiento Gesicom.`
-            : 'El pedido todavia esta en abastecimiento Gesicom. Marcalo como recibido antes de prepararlo.',
+          error: mensajesBloqueo[envio.abastecimiento_estado]
+            || 'El pedido todavía está en seguimiento de abastecimiento Gesicom. Esperá a que quede recibido antes de prepararlo.',
         });
       }
 
@@ -1422,29 +1568,10 @@ exports.updateEstado = async (req, res) => {
 
     if (estado_comercial !== undefined) updateData.estado_comercial = estado_comercial;
     if (estado_logistico !== undefined && updateData.estado_logistico === undefined) updateData.estado_logistico = estado_logistico;
-    if (abastecimiento_estado !== undefined) {
-      if (!esAdministrador(req)) {
-        await t.rollback();
-        return res.status(403).json({ error: 'Solo un administrador puede acreditar o recibir abastecimiento manualmente.' });
-      }
-      if (!ABASTECIMIENTO_ESTADOS.includes(abastecimiento_estado)) {
-        await t.rollback();
-        return res.status(400).json({ error: `Estado de abastecimiento invalido: "${abastecimiento_estado}".` });
-      }
-      if (envio.abastecimiento_estado === 'no_requiere' && abastecimiento_estado !== 'no_requiere') {
-        await t.rollback();
-        return res.status(400).json({ error: 'Este pedido no requiere abastecimiento Gesicom.' });
-      }
-      updateData.abastecimiento_estado = abastecimiento_estado;
-      if (abastecimiento_estado === 'en_proceso' && envio.abastecimiento_estado !== 'en_proceso') {
-        updateData.abastecimiento_pagado_at = new Date();
-        await registrarHistorial(envio.id, usuario_id, 'Abastecimiento Gesicom pagado. En proceso.', t);
-      }
-      if (abastecimiento_estado === 'recibido' && envio.abastecimiento_estado !== 'recibido') {
-        updateData.abastecimiento_recibido_at = new Date();
-        await registrarHistorial(envio.id, usuario_id, 'Abastecimiento Gesicom recibido en deposito.', t);
-      }
-    }
+    // El estado de abastecimiento ya NO se pasa por acá: solo se mueve a
+    // través de la máquina de estados en services/abastecimiento (ver
+    // envioRoutes.js /abastecimiento/*), que valida actor + transición en
+    // vez de aceptar cualquier valor que mande el cliente.
     if (courier_id !== undefined) updateData.courier_id = courier_id;
     if (ruc !== undefined) updateData.ruc = ruc;
     if (direccion !== undefined) updateData.direccion = direccion;
@@ -1542,7 +1669,9 @@ exports.updateEstado = async (req, res) => {
   } catch (error) {
     if (!t.finished) await t.rollback();
     console.error('Error updating estado:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    const status = error.status || 500;
+    const message = error.message || 'Error interno del servidor';
+    res.status(status).json({ error: message, message });
   }
 };
 
@@ -1638,6 +1767,65 @@ exports.actualizarPrecioItem = async (req, res) => {
  * destino para que una edición posterior del depósito no altere el
  * histórico del pedido.
  */
+exports.cotizarLogisticaAbastecimiento = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { tipoLogistica, depositoId } = req.body || {};
+
+    if (tipoLogistica === 'GESICOMM') {
+      return res.json({ costo: 0, tiempo: null, proveedor: 'Red Gesicomm', cubierto: true });
+    }
+
+    if (tipoLogistica === 'PROPIA') {
+      if (!depositoId) return res.status(400).json({ error: 'Falta enviar depositoId.' });
+      const deposito = await Deposito.findOne({ where: { id: depositoId, usuario_id: usuario_id, activo: true } });
+      if (!deposito) {
+        return res.status(400).json({ error: 'El depósito indicado no existe o está inactivo.' });
+      }
+
+      const centros = await ProveedorLogisticoService.centrosActivos();
+      if (!centros || centros.length === 0) {
+        return res.json({ cubierto: false, mensaje: 'Gesicomm aún no tiene centros activos.' });
+      }
+
+      const opciones = await TarifaDelivery.resolverOpcionesDeRed(
+        { centroIds: centros.map((c) => c.id) },
+        { paymentMethod: 'efectivo', items: [] }
+      );
+
+      const opcionesValidas = opciones.filter(o => 
+        (o.tipo_cobertura === 'CIUDAD' && o.ciudad_id === deposito.ciudad_id) ||
+        (o.tipo_cobertura === 'RESTO_DEPARTAMENTO' && o.departamento_id === deposito.departamento_id) ||
+        (o.tipo_cobertura === 'RESTO_PAIS')
+      );
+
+      if (opcionesValidas.length === 0) {
+        return res.json({ 
+          cubierto: false, 
+          mensaje: 'Actualmente Gesicomm no posee cobertura logística para este depósito.' 
+        });
+      }
+
+      opcionesValidas.sort((a, b) => Number(a.costo) - Number(b.costo));
+      const mejor = opcionesValidas[0];
+
+      return res.json({
+        cubierto: true,
+        costo: Number(mejor.costo),
+        tiempo: (mejor.tiempo_entrega_min_hs && mejor.tiempo_entrega_max_hs) 
+          ? `${mejor.tiempo_entrega_min_hs}–${mejor.tiempo_entrega_max_hs} h` 
+          : 'A coordinar',
+        proveedor: mejor.proveedor_nombre || 'Proveedor Gesicomm'
+      });
+    }
+
+    return res.status(400).json({ error: 'tipoLogistica inválido.' });
+  } catch (err) {
+    console.error('Error al cotizar abastecimiento:', err);
+    res.status(500).json({ error: 'Error al cotizar la logística de abastecimiento.' });
+  }
+};
+
 exports.definirLogisticaAbastecimiento = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
@@ -1701,66 +1889,121 @@ exports.definirLogisticaAbastecimiento = async (req, res) => {
   }
 };
 
-exports.iniciarPagoAbastecimiento = async (req, res) => {
-  try {
-    const usuario_id = req.usuario.id;
-    const { id } = req.params;
-    const envio = await Envio.findOne({
-      where: esAdministrador(req) ? { id } : { id, usuario_id },
-      include: [{ model: EnvioItem, as: 'items' }],
-    });
-    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+async function envioParaAbastecimiento(req) {
+  const usuario_id = req.usuario.id;
+  const { id } = req.params;
+  return Envio.findOne({
+    where: esAdministrador(req) ? { id } : { id, usuario_id },
+    include: [{ model: EnvioItem, as: 'items' }],
+  });
+}
 
-    const checkout = await iniciarCheckoutAbastecimiento(envio);
-    return res.json({ success: true, ...checkout });
+async function envioAbastecimientoDecorado(envioId) {
+  const result = await Envio.findByPk(envioId, {
+    include: [
+      { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
+      { model: EnvioItem, as: 'items' },
+    ],
+  });
+  return decorarEnvio(result);
+}
+
+function manejarErrorAbastecimiento(res, error, contexto) {
+  const status = error.status || 500;
+  if (status >= 500) console.error(`[Abastecimiento] ${contexto}:`, error);
+  return res.status(status).json({ error: status === 500 ? 'Error interno del servidor' : error.message });
+}
+
+exports.obtenerDatosTransferenciaAbastecimiento = async (req, res) => {
+  try {
+    const envio = await envioParaAbastecimiento(req);
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+    const datos = await AbastecimientoFlujo.obtenerDatosTransferencia(envio);
+    return res.json(datos);
   } catch (error) {
-    const status = error.status || 500;
-    if (status >= 500) console.error('[Abastecimiento] Error iniciando pago:', error);
-    return res.status(status).json({ error: error.message || 'No se pudo iniciar el pago de abastecimiento.' });
+    return manejarErrorAbastecimiento(res, error, 'Error obteniendo datos de transferencia');
   }
 };
 
-exports.actualizarAbastecimientoManual = async (req, res) => {
-  try {
-    if (!esAdministrador(req)) {
-      return res.status(403).json({ error: 'Solo un administrador puede acreditar o recibir abastecimiento manualmente.' });
-    }
+exports.subirComprobanteAbastecimientoMiddleware = subirComprobanteAbastecimientoMulter;
 
-    const { id } = req.params;
-    const { accion, metodo_acreditacion, nota } = req.body || {};
-    const envio = await Envio.findByPk(id, { include: [{ model: EnvioItem, as: 'items' }] });
+exports.subirComprobanteAbastecimiento = async (req, res) => {
+  try {
+    if (esAdministrador(req)) {
+      return res.status(403).json({ error: 'Solo el comercio puede subir el comprobante de transferencia.' });
+    }
+    const envio = await envioParaAbastecimiento(req);
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+    if (!req.file) return res.status(400).json({ error: 'El comprobante de transferencia es obligatorio.' });
+
+    await AbastecimientoFlujo.subirComprobantePago({ envio, usuarioId: req.usuario.id, fileData: req.file });
+    return res.json(await envioAbastecimientoDecorado(envio.id));
+  } catch (error) {
+    return manejarErrorAbastecimiento(res, error, 'Error subiendo comprobante');
+  }
+};
+
+exports.validarPagoAbastecimiento = async (req, res) => {
+  try {
+    if (!esAdministrador(req)) return res.status(403).json({ error: 'Solo un administrador puede validar el pago.' });
+    const envio = await envioParaAbastecimiento(req);
     if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
 
-    const metodo = String(metodo_acreditacion || 'manual').trim();
-    const detalle = [metodo, nota].filter(Boolean).join(' - ');
+    await AbastecimientoFlujo.validarPago({ envio, usuarioId: req.usuario.id });
+    return res.json(await envioAbastecimientoDecorado(envio.id));
+  } catch (error) {
+    return manejarErrorAbastecimiento(res, error, 'Error validando pago');
+  }
+};
 
-    if (accion === 'acreditar_pago') {
-      await acreditarPagoAbastecimiento(envio, null, {
-        origen: 'acreditacion manual',
-        req,
-        usuarioId: req.usuario.id,
-        detalle,
-      });
-    } else if (accion === 'recibir') {
-      await marcarAbastecimientoRecibido(envio, {
-        usuarioId: req.usuario.id,
-        detalle: nota || null,
-      });
-    } else {
-      return res.status(400).json({ error: 'Acción inválida. Usá acreditar_pago o recibir.' });
+exports.rechazarPagoAbastecimiento = async (req, res) => {
+  try {
+    if (!esAdministrador(req)) return res.status(403).json({ error: 'Solo un administrador puede rechazar el pago.' });
+    const envio = await envioParaAbastecimiento(req);
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+
+    await AbastecimientoFlujo.rechazarPago({ envio, usuarioId: req.usuario.id, motivo: req.body?.motivo });
+    return res.json(await envioAbastecimientoDecorado(envio.id));
+  } catch (error) {
+    return manejarErrorAbastecimiento(res, error, 'Error rechazando pago');
+  }
+};
+
+exports.avanzarAbastecimiento = async (req, res) => {
+  try {
+    if (!esAdministrador(req)) return res.status(403).json({ error: 'Solo un administrador puede avanzar el abastecimiento.' });
+    const envio = await envioParaAbastecimiento(req);
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+
+    await AbastecimientoFlujo.avanzar({ envio, usuarioId: req.usuario.id });
+    return res.json(await envioAbastecimientoDecorado(envio.id));
+  } catch (error) {
+    return manejarErrorAbastecimiento(res, error, 'Error avanzando abastecimiento');
+  }
+};
+
+exports.confirmarRecepcionAbastecimiento = async (req, res) => {
+  try {
+    const envio = await envioParaAbastecimiento(req);
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+    if (esAdministrador(req)) {
+      return res.status(403).json({ error: 'Solo el comercio puede confirmar la recepción en su depósito.' });
     }
 
-    const result = await Envio.findByPk(envio.id, {
-      include: [
-        { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
-        { model: EnvioItem, as: 'items' },
-      ],
-    });
-    return res.json(decorarEnvio(result));
+    await AbastecimientoFlujo.confirmarRecepcionDeposito({ envio, usuarioId: req.usuario.id });
+    return res.json(await envioAbastecimientoDecorado(envio.id));
   } catch (error) {
-    const status = error.status || 500;
-    if (status >= 500) console.error('[Abastecimiento] Error en actualización manual:', error);
-    return res.status(status).json({ error: error.message || 'No se pudo actualizar el abastecimiento.' });
+    return manejarErrorAbastecimiento(res, error, 'Error confirmando recepción');
+  }
+};
+
+exports.timelineAbastecimiento = async (req, res) => {
+  try {
+    const envio = await envioParaAbastecimiento(req);
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
+    return res.json(await AbastecimientoFlujo.obtenerTimeline(envio.id));
+  } catch (error) {
+    return manejarErrorAbastecimiento(res, error, 'Error obteniendo timeline');
   }
 };
 
@@ -1943,7 +2186,6 @@ exports.conteoPorEstado = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { pedido_id, envio_id, fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, producto_busqueda, metodo_pago_id, solo_abastecimiento, abastecimiento_estado } = req.body;
-    asegurarAdminParaBandejaAbastecimiento(req, { solo_abastecimiento, abastecimiento_estado });
 
     const where = whereEnviosDeUsuario(req);
     aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });
@@ -2021,6 +2263,24 @@ exports.conteoPorEstado = async (req, res) => {
       conteos.seguimiento_vencidos = 0;
     }
 
+    // Cuántos de MIS pedidos ya mandé/tengo en seguimiento de abastecimiento
+    // (comprobante enviado en adelante) — alimenta la pestaña "En
+    // seguimiento de abastecimiento" del tablero general, visible tanto
+    // para la tienda como para el admin sobre sus propios pedidos.
+    try {
+      conteos.abastecimiento_pagado = await Envio.count({
+        where: {
+          ...whereEnviosDeUsuario(req),
+          abastecimiento_estado: { [Op.in]: ABASTECIMIENTO_GRUPOS.pagado },
+        },
+        distinct: true,
+        col: 'id',
+      });
+    } catch (errAbastecimiento) {
+      console.error('Error calculando abastecimiento_pagado en conteoPorEstado:', errAbastecimiento);
+      conteos.abastecimiento_pagado = 0;
+    }
+
     res.json(conteos);
   } catch (error) {
     console.error('Error obteniendo conteo por estado:', error);
@@ -2051,7 +2311,7 @@ exports.conteoPorAbastecimiento = async (req, res) => {
 
     const where = whereEnviosDeUsuario(req);
     aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });
-    where.abastecimiento_estado = { [Op.in]: ['pendiente_pago', 'en_proceso', 'recibido'] };
+    where.abastecimiento_estado = { [Op.in]: Object.values(ABASTECIMIENTO_GRUPOS).flat() };
 
     if (fecha_desde && fecha_hasta) {
       where.dispatchedAt = { [Op.between]: [fecha_desde, fecha_hasta] };
@@ -2101,12 +2361,13 @@ exports.conteoPorAbastecimiento = async (req, res) => {
       raw: true,
     });
 
-    const conteos = { pendiente_pago: 0, en_proceso: 0, recibido: 0, TODOS: 0 };
+    const conteos = { pendiente_pago: 0, pago_enviado: 0, en_seguimiento: 0, recibido: 0, TODOS: 0 };
     for (const fila of filas) {
       const estado = fila.abastecimiento_estado;
       const cantidad = parseInt(fila.cantidad, 10) || 0;
-      if (estado in conteos) {
-        conteos[estado] = cantidad;
+      const grupo = Object.entries(ABASTECIMIENTO_GRUPOS).find(([, valores]) => valores.includes(estado))?.[0];
+      if (grupo) {
+        conteos[grupo] += cantidad;
         conteos.TODOS += cantidad;
       }
     }
@@ -2131,7 +2392,6 @@ exports.resumenEntregados = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { pedido_id, envio_id, fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, producto_busqueda, metodo_pago_id, solo_abastecimiento, abastecimiento_estado } = req.body;
-    asegurarAdminParaBandejaAbastecimiento(req, { solo_abastecimiento, abastecimiento_estado });
 
     const where = { ...whereEnviosDeUsuario(req), estado: 'Entregado' };
     aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });
@@ -2464,3 +2724,13 @@ exports.deleteEnvio = async (req, res) => {
 
 exports.descontarStockYSnapshot = descontarStockYSnapshot;
 exports.calcularAbastecimientoDesdeItems = calcularAbastecimientoDesdeItems;
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+//
+// Las dos funciones excluidas NO son handlers: las llaman otros módulos con
+// su propia firma (items, transacción, usuario_id), así que el tercer
+// argumento no es `next` y envolverlas se tragaría el error del llamador.
+envolverControlador(module.exports, {
+  excluir: ['descontarStockYSnapshot', 'calcularAbastecimientoDesdeItems'],
+});

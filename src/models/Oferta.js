@@ -94,6 +94,12 @@ const Oferta = sequelize.define('Oferta', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
+  beneficios: {
+    type: DataTypes.JSONB,
+    allowNull: false,
+    defaultValue: [],
+    comment: 'Checks/beneficios visibles en las ofertas de checkout.',
+  },
   imagen_url: {
     type: DataTypes.STRING(500),
     allowNull: true,

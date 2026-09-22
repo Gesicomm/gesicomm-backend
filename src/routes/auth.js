@@ -18,6 +18,7 @@ const rateLimit = require('express-rate-limit');
 const { validar, esquemaLogin, esquemaRegistro, esquemaRecuperarPassword, esquemaResetPassword } = require('../middleware/validacion');
 const { verificarToken } = require('../middleware/autenticacion');
 const { auditoria } = require('../utils/logger');
+const { asyncHandler } = require('../utils/asyncHandler');
 const { rollbackSeguro } = require('../utils/transaction');
 const EmailService = require('../services/email.service');
 const { Usuario, Inquilino, Rol, Permiso, sequelize } = require('../models');
@@ -46,6 +47,7 @@ const limiteAuth = rateLimit({
   message: { message: 'Demasiados intentos. Por favor espera 15 minutos.' },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => process.env.DISABLE_AUTH_RATE_LIMIT === 'true' || (process.env.NODE_ENV !== 'production' && (req.ip === '::1' || req.ip === '127.0.0.1' || req.ip === '::ffff:127.0.0.1')),
 });
 
 // Rate-limit específico para el reenvío de código: máximo 3 reenvíos por 15 min
@@ -55,6 +57,7 @@ const limiteReenvio = rateLimit({
   message: { message: 'Demasiados reenvíos. Por favor esperá 15 minutos antes de solicitar otro código.' },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => process.env.DISABLE_AUTH_RATE_LIMIT === 'true' || (process.env.NODE_ENV !== 'production' && (req.ip === '::1' || req.ip === '127.0.0.1' || req.ip === '::ffff:127.0.0.1')),
 });
 
 /** Genera un código OTP de 6 dígitos criptoseguro. */
@@ -248,6 +251,7 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
 
     return res.json({
       message: 'Sesión iniciada correctamente.',
+      token: accessToken,
       usuario: {
         id: usuario.id,
         nombre: usuario.nombre,
@@ -613,7 +617,7 @@ router.post('/resend-code', limiteReenvio, async (req, res) => {
 // toca "Cerrar sesión") llegaba con el token vencido, respondía 401 y se iba
 // sin borrar NADA — el refreshToken quedaba vivo 7 días. Cerrar sesión tiene
 // que borrar las cookies siempre, haya o no un token válido.
-router.post('/logout', async (req, res) => {
+router.post('/logout', asyncHandler(async (req, res) => {
   const token = req.cookies?.accessToken;
   const datos = token ? jwt.decode(token) : null; // decode, no verify: es solo para la auditoría
   await AuthTracking.cerrarSesion(req, datos?.id ?? null);
@@ -629,7 +633,7 @@ router.post('/logout', async (req, res) => {
   limpiarCookiesSesion(req, res);
 
   return res.json({ message: 'Sesión cerrada correctamente.' });
-});
+}));
 
 // ============================================================
 // POST /api/auth/refresh
@@ -687,7 +691,7 @@ router.post('/refresh', async (req, res) => {
 // ============================================================
 // GET /api/auth/me
 // ============================================================
-router.get('/me', verificarToken, async (req, res) => {
+router.get('/me', verificarToken, asyncHandler(async (req, res) => {
   await AuthTracking.marcarActividad(req, req.usuario.id);
   return res.json({
     id: req.usuario.id,
@@ -697,14 +701,14 @@ router.get('/me', verificarToken, async (req, res) => {
     permisos: req.usuario.permisos,
     tenantId: req.usuario.tenantId,
   });
-});
+}));
 
 // ============================================================
 // POST /api/auth/onboarding-event
 // Hitos livianos del onboarding que ocurren en frontend antes
 // de crear recursos persistentes.
 // ============================================================
-router.post('/onboarding-event', verificarToken, async (req, res) => {
+router.post('/onboarding-event', verificarToken, asyncHandler(async (req, res) => {
   const tipo = String(req.body?.tipo || '');
   if (!EVENTOS_ONBOARDING.has(tipo)) {
     return res.status(400).json({ message: 'Evento de onboarding no permitido.' });
@@ -718,7 +722,7 @@ router.post('/onboarding-event', verificarToken, async (req, res) => {
   });
 
   return res.status(202).json({ ok: true });
-});
+}));
 
 // ============================================================
 // GET /api/auth/service-token

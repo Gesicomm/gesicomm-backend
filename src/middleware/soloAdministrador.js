@@ -22,7 +22,9 @@
  * Va SIEMPRE después de verificarToken: sin req.usuario no hay rol que mirar.
  */
 function soloAdministrador(req, res, next) {
-  if (req.usuario?.rol === 'administrador') {
+  const r = req.usuario?.rol;
+  const nombre = typeof r === 'object' ? r?.nombre : r;
+  if (nombre === 'administrador' || nombre === 'Admin' || nombre === 'SuperAdmin') {
     return next();
   }
 

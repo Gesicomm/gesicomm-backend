@@ -1,6 +1,7 @@
 'use strict';
 
 const liquidacionService = require('../services/liquidacion.service');
+const { envolverControlador } = require('../utils/asyncHandler');
 
 function validarParametrosRango(body) {
   const { courier_id, fecha_desde, fecha_hasta } = body;
@@ -58,3 +59,7 @@ exports.listarPorCourier = async (req, res) => {
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
+
+// Todo lo que estos handlers no atrapen termina en el middleware de errores
+// de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
+envolverControlador(module.exports);

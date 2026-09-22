@@ -219,7 +219,7 @@ function getKpisFinancieros(envios) {
     const isPerdido = ['cancelado', 'devuelto', 'perdido'].includes(st);
 
     if (isEntregado) {
-      // Facturación Real = precio de venta del producto × unidades (nunca
+      // Ventas netas = precio de venta del producto × unidades (nunca
       // el flete, esté o no adentro del monto cobrado). "Envíos" abajo es
       // SIEMPRE el costo completo pagado al courier
       // (`costoLogisticoEntregados`), sin excepciones — las dos líneas son
@@ -286,7 +286,124 @@ function getKpisFinancieros(envios) {
   };
 }
 
-// 2b. Costos y Gastos operativos del módulo Finanzas (fuera de whereBase
+function getRentabilidadCanales(envios, gastosOperativos, canalesCatalogo = []) {
+  const canales = {};
+  const canalPorId = new Map();
+  const canalPorSlug = new Map();
+
+  for (const c of canalesCatalogo) {
+    const fila = {
+      canal_id: c.id,
+      slug: c.slug,
+      nombre: c.nombre,
+      ventas: 0,
+      costo_mercaderia: 0,
+      publicidad: 0,
+      comisiones: 0,
+      logistica: 0,
+      iva: 0,
+      operativos_atribuidos: 0,
+      costos_totales: 0,
+      utilidad_neta: 0,
+      margen_neto: 0,
+      roi_canal: null,
+    };
+    canales[c.slug] = fila;
+    canalPorId.set(c.id, fila);
+    canalPorSlug.set(c.slug, fila);
+  }
+
+  canales.sin_canal = {
+    canal_id: null,
+    slug: 'sin_canal',
+    nombre: 'Sin canal',
+    ventas: 0,
+    costo_mercaderia: 0,
+    publicidad: 0,
+    comisiones: 0,
+    logistica: 0,
+    iva: 0,
+    operativos_atribuidos: 0,
+    costos_totales: 0,
+    utilidad_neta: 0,
+    margen_neto: 0,
+    roi_canal: null,
+  };
+
+  const resolverCanal = (e) => {
+    const origen = (e.origen || 'WEB').toUpperCase();
+    return canalPorId.get(e.canal_venta_id)
+      || canalPorSlug.get(SLUG_POR_ORIGEN[origen] || '')
+      || canales.sin_canal;
+  };
+
+  for (const e of envios) {
+    const st = (e.estado || '').toLowerCase();
+    if (st !== 'entregado') continue;
+
+    const canal = resolverCanal(e);
+    const monto = Number(e.monto || 0);
+    const comisionPct = Number(e.comision_pct_aplicada || 0);
+
+    canal.ventas += Number(desgloseEnvio(e).venta_producto) || 0;
+    canal.comisiones += monto * (comisionPct / 100);
+    canal.logistica += Number(e.costo_envio || 0);
+    if (e.quiere_factura) canal.iva += monto * 0.10;
+
+    for (const item of e.items || []) {
+      canal.costo_mercaderia += costoDeItem(item, e.usuario_id);
+    }
+  }
+
+  // Meta Ads no es un canal de venta en Gesicom: alimenta la landing, o sea
+  // Web. Los demás gastos operativos sin canal propio se reparten por ventas,
+  // que es el denominador más estable para comparar eficiencia económica.
+  const gastoMeta = Number(gastosOperativos.meta_ads || 0);
+  const canalWeb = canales.web;
+  if (canalWeb) canalWeb.publicidad += gastoMeta;
+
+  const gastosSinMeta = Math.max(0, Number(gastosOperativos.total || 0) - gastoMeta);
+  const filasConVenta = Object.values(canales).filter(c => c.ventas > 0);
+  const ventasTotales = filasConVenta.reduce((acc, c) => acc + c.ventas, 0);
+
+  if (gastosSinMeta > 0 && ventasTotales > 0) {
+    let repartido = 0;
+    let idxMayor = 0;
+    filasConVenta.forEach((c, i) => {
+      c.operativos_atribuidos = Math.round((c.ventas / ventasTotales) * gastosSinMeta);
+      repartido += c.operativos_atribuidos;
+      if (c.ventas > filasConVenta[idxMayor].ventas) idxMayor = i;
+    });
+    filasConVenta[idxMayor].operativos_atribuidos += Math.round(gastosSinMeta) - repartido;
+  } else if (!canalWeb && gastoMeta > 0 && ventasTotales > 0) {
+    let repartido = 0;
+    let idxMayor = 0;
+    filasConVenta.forEach((c, i) => {
+      c.publicidad = Math.round((c.ventas / ventasTotales) * gastoMeta);
+      repartido += c.publicidad;
+      if (c.ventas > filasConVenta[idxMayor].ventas) idxMayor = i;
+    });
+    filasConVenta[idxMayor].publicidad += Math.round(gastoMeta) - repartido;
+  }
+
+  for (const c of Object.values(canales)) {
+    c.ventas = Math.round(c.ventas);
+    c.costo_mercaderia = Math.round(c.costo_mercaderia);
+    c.publicidad = Math.round(c.publicidad);
+    c.comisiones = Math.round(c.comisiones);
+    c.logistica = Math.round(c.logistica);
+    c.iva = Math.round(c.iva);
+    c.operativos_atribuidos = Math.round(c.operativos_atribuidos);
+    c.costos_totales = c.costo_mercaderia + c.publicidad + c.comisiones + c.logistica + c.iva + c.operativos_atribuidos;
+    c.utilidad_neta = c.ventas - c.costos_totales;
+    c.margen_neto = c.ventas > 0 ? Number(((c.utilidad_neta / c.ventas) * 100).toFixed(1)) : 0;
+    c.roi_canal = c.costos_totales > 0 ? Number(((c.utilidad_neta / c.costos_totales) * 100).toFixed(1)) : null;
+  }
+
+  return canales;
+}
+
+// 2b. Egresos operativos del módulo Control financiero (fuera de whereBase
 // porque CostoGasto no es un Envio: se filtra directo por usuario_id/fecha).
 // Se excluyen a propósito los registros con envio_id (costos "asociados a
 // una venta") para no duplicar lo que getKpisFinancieros ya resta a nivel
@@ -297,8 +414,8 @@ function getKpisFinancieros(envios) {
  * Gasto de publicidad que YA está cargado en Ads & Campañas (los CSV
  * importados de Meta Ads Manager), para el período del dashboard.
  *
- * Existe porque el gasto de Meta no se carga a mano en Costos y Gastos: se
- * importa en su propio módulo. Antes el dashboard solo miraba CostoGasto y
+ * Existe porque el gasto de Meta no se carga a mano en Control financiero:
+ * se importa en su propio módulo. Antes el dashboard solo miraba CostoGasto y
  * la línea "Meta (ads)" quedaba en cero (o en lo poco que se hubiera
  * cargado a mano) aunque hubiera millones importados.
  *
@@ -391,6 +508,8 @@ async function getGastosOperativos(usuario_id, desde, hasta, inquilino_id = null
   const whereGastos = {
     usuario_id,
     activo: true,
+    estado: { [Op.ne]: 'cancelado' },
+    tipo: { [Op.in]: ['costo', 'gasto'] },
     envio_id: null,
     fecha: { [Op.between]: [desde, hasta] },
   };
@@ -663,15 +782,15 @@ function getProductosAnalytics(envios) {
 
     // Reparto del monto REAL del pedido entre sus líneas.
     //
-    // `monto` manda sobre la suma de los subtotales: es lo que el cliente
-    // efectivamente pagó, y es lo que suma `facturacion_entregada`. Los dos
-    // números se despegan por dos motivos reales:
+    // La venta de producto manda sobre la suma de los subtotales: es lo que
+    // alimenta `facturacion_entregada`/ventas netas. Los dos números se
+    // despegan por dos motivos reales:
     //   - un cupón descuenta a nivel PEDIDO y no toca `EnvioItem.subtotal`;
     //   - al cerrar la venta se puede ajustar el monto (ej. cobrarle el
     //     envío al cliente), y eso tampoco baja a las líneas.
-    // Sumando subtotales, "Más Vendidos" facturaba Gs 1.183.000 mientras
-    // "Facturación Real" decía Gs 1.044.000 — el mismo período, dos cifras.
-    // Repartiendo el monto, la tabla de productos cierra siempre con el KPI.
+    // Sumando subtotales, "Más Vendidos" mostraba Gs 1.183.000 mientras
+    // "Ventas netas" decía Gs 1.044.000 — el mismo período, dos cifras.
+    // Repartiendo la base neta, la tabla de productos cierra siempre con el KPI.
     let facturacionPorItem = null;
     let ventaProductoPorItem = null;
     let costoDirectoPorItem = null;
@@ -1337,11 +1456,11 @@ async function getRankingLandings(whereRanking, desde, hasta, landingsTienda, li
       ? LandingEvento.findAll({
           where: {
             landing_id: { [Op.in]: idsTienda },
-            tipo_evento: 'visita',
+            tipo_evento: { [Op.in]: ['visita', 'PageView'] },
             created_at: { [Op.between]: [new Date(`${desde}T00:00:00`), new Date(`${hasta}T23:59:59.999`)] },
           },
-          attributes: ['landing_id', [fn('COUNT', col('id')), 'visitas']],
-          group: ['landing_id'],
+          attributes: ['landing_id', 'tipo_evento', [fn('COUNT', col('id')), 'visitas']],
+          group: ['landing_id', 'tipo_evento'],
           raw: true,
         })
       : Promise.resolve([]),
@@ -1383,7 +1502,16 @@ async function getRankingLandings(whereRanking, desde, hasta, landingsTienda, li
     for (const item of e.items || []) f.costo += costoDeItem(item, e.usuario_id);
   }
 
-  for (const v of visitas) fila(v.landing_id).visitas = Number(v.visitas) || 0;
+  const visitasPorLanding = new Map();
+  for (const v of visitas) {
+    const actual = visitasPorLanding.get(v.landing_id) || { legacy: 0, pageview: 0 };
+    if (v.tipo_evento === 'PageView') actual.pageview = Number(v.visitas) || 0;
+    else actual.legacy = Number(v.visitas) || 0;
+    visitasPorLanding.set(v.landing_id, actual);
+  }
+  for (const [landingId, conteo] of visitasPorLanding.entries()) {
+    fila(landingId).visitas = Math.max(conteo.legacy, conteo.pageview);
+  }
 
   if (porLanding.size === 0) {
     return { top: [], totales: { landings: 0, visitas: 0, pedidos: 0, entregados: 0, facturacion: 0, ganancia: 0, conversion: 0 }, total_landings: 0 };
@@ -1427,23 +1555,29 @@ async function getRankingLandings(whereRanking, desde, hasta, landingsTienda, li
 }
 
 /**
- * Tiendas (landings de tipo 'inicio') del inquilino, para el selector de
- * landing del dashboard. Mismo criterio que el resto de los filtros: la
- * lista sale de la base, el frontend solo la renderiza.
- *
- * Solo 'inicio': una landing de tipo catálogo/contacto es una página más de
- * la misma tienda, no una tienda aparte, y los funnels quedan fuera a
- * pedido del usuario (se van a retirar). El tráfico y las ventas de todas
- * ellas siguen sumando en la opción "Todas", que no filtra nada.
+ * Landings del inquilino para el selector del dashboard. Es un filtro de
+ * analytics, no un administrador de páginas: solo muestra landings reales
+ * con actividad histórica. Los borradores vacíos quedan fuera para no
+ * invitar a elegir una página que necesariamente devuelve ceros.
  */
 function getLandingsDisponibles(landingsTienda) {
-  return (landingsTienda || []).filter(l => l.tipo_pagina === 'inicio').map(l => ({
-    landing_id: l.id,
-    nombre: l.nombre,
-    slug: l.slug,
-    publicada: Boolean(l.activo),
-    es_home: Boolean(l.es_home),
-  }));
+  return (landingsTienda || [])
+    .filter(l => l.tipo_pagina !== 'funnel')
+    .filter(l => (Number(l.eventos_total || 0) + Number(l.pedidos_total || 0)) > 0)
+    .map(l => ({
+      landing_id: l.id,
+      nombre: l.nombre,
+      slug: l.slug,
+      publicada: Boolean(l.activo),
+      es_home: Boolean(l.es_home),
+      tipo_pagina: l.tipo_pagina || 'inicio',
+      eventos_total: Number(l.eventos_total || 0),
+      pedidos_total: Number(l.pedidos_total || 0),
+    }))
+    .sort((a, b) => Number(b.publicada) - Number(a.publicada)
+      || (b.eventos_total + b.pedidos_total) - (a.eventos_total + a.pedidos_total)
+      || Number(b.es_home) - Number(a.es_home)
+      || a.nombre.localeCompare(b.nombre));
 }
 
 // Años con al menos un pedido, para el <select> de año del filtro "Por mes".
@@ -1611,12 +1745,20 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
   // Antes cada uno hacía su propia consulta, encadenadas: tres viajes para
   // los mismos datos. La promesa arranca acá y se resuelve dentro de la ola
   // grande de abajo, sin agregar una ola propia.
-  const landingsTiendaPromise = catalogoCacheado(`landings:${usuario_id}`, () => Landing.findAll({
-    where: { tienda_id: { [Op.in]: literal(`(SELECT id FROM tiendas WHERE usuario_id = ${Number(usuario_id)})`) } },
-    attributes: ['id', 'nombre', 'slug', 'activo', 'es_home', 'tipo_pagina'],
-    order: [['created_at', 'ASC']],
-    raw: true,
-  }));
+  const landingsTiendaPromise = catalogoCacheado(`landings:${usuario_id}`, () => sequelize.query(
+    `SELECT l.id,
+            l.nombre,
+            l.slug,
+            l.activo,
+            l.es_home,
+            l.tipo_pagina,
+            (SELECT COUNT(*)::int FROM landing_eventos le WHERE le.landing_id = l.id) AS eventos_total,
+            (SELECT COUNT(*)::int FROM envios e WHERE e.landing_id = l.id) AS pedidos_total
+       FROM landings l
+      WHERE l.tienda_id IN (SELECT id FROM tiendas WHERE usuario_id = :usuario_id)
+      ORDER BY l.created_at ASC`,
+    { replacements: { usuario_id }, type: sequelize.QueryTypes.SELECT }
+  ));
 
   // Catálogo de canales del tenant y tienda del usuario: ninguno depende del
   // otro, así que van en la MISMA ida y vuelta. Encadenar dos `await` sueltos
@@ -1662,6 +1804,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     landingsDisponibles,
     rankingLandings,
     comparativo,
+    enviosConItems,
     universoUnidades,
   ] = await Promise.all([
     getResumenFunnel(whereBase, canalesCatalogo),
@@ -1679,8 +1822,11 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     landingsTiendaPromise.then(getLandingsDisponibles),
     landingsTiendaPromise.then(ls => getRankingLandings(whereRanking, desde, hasta, ls)),
     getComparativoPeriodo(whereBase, usuario_id, desde, hasta, filtros.producto_id, inquilino_id),
+    enviosConItemsPromise,
     getUnidadesUniversoPeriodo(whereUniverso),
   ]);
+
+  const rentabilidadCanales = getRentabilidadCanales(enviosConItems, gastosOperativos, canalesCatalogo);
 
   // Prorrateo por producto — por UNIDADES ENTREGADAS, igual que la planilla
   // del comercio (ej. Gs 2.500.000 repartidos entre 130/32/26 unidades
@@ -1950,6 +2096,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     ranking_landings: rankingLandings,
     comparativo,
     pagos_online: pagosOnline,
+    rentabilidad_canales: rentabilidadCanales,
     // El catálogo va en la respuesta para que el frontend arme la tabla de
     // canales desde la base, sin hardcodear nombres ni orden.
     canales_disponibles: canalesCatalogo,

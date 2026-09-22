@@ -18,11 +18,10 @@ const OfertaService = require('../services/oferta.service');
 const ImagenService = require('../services/imagen.service');
 const { rollbackSeguro } = require('../utils/transaction');
 
-// Mismo límite y filtro que imagen.controller.js y landing.controller.js.
+// Mismo filtro que imagen.controller.js y landing.controller.js.
 // Instancia propia porque el destino es otro modelo, no porque el criterio
-// cambie: si algún día cambia el límite, cambia en los tres.
+// cambie.
 const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
-const MAX_IMAGEN_BYTES = 1 * 1024 * 1024; // 1MB
 
 const uploadImagenOferta = multer({
   storage: multer.diskStorage({
@@ -32,7 +31,6 @@ const uploadImagenOferta = multer({
       cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
     },
   }),
-  limits: { fileSize: MAX_IMAGEN_BYTES },
   fileFilter: (req, file, cb) => {
     const permitidos = ['image/jpeg', 'image/png', 'image/webp'];
     if (!permitidos.includes(file.mimetype)) {
@@ -45,9 +43,6 @@ const uploadImagenOferta = multer({
 function subirImagenMiddleware(req, res, next) {
   uploadImagenOferta.single('imagen')(req, res, (err) => {
     if (!err) return next();
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ message: 'La imagen supera el máximo permitido de 1MB.' });
-    }
     return res.status(400).json({ message: err.message || 'Error al subir la imagen.' });
   });
 }

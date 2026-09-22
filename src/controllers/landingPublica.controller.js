@@ -21,7 +21,7 @@ const BuilderPublicPageService = require('../services/builderPublicPage.service'
 const PagoParService = require('../services/payments/pagoParService');
 const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago');
 
-const EVENTOS_PERMITIDOS = new Set(['Contact', 'AddToCart', 'InitiateCheckout', 'ViewContent', 'Lead']);
+const EVENTOS_PERMITIDOS = new Set(['PageView', 'Contact', 'AddToCart', 'InitiateCheckout', 'ViewContent', 'Lead']);
 const MAX_CONTENT_IDS = 40;
 
 async function resolverTiendaYLanding(req) {
@@ -104,7 +104,10 @@ async function obtenerPorSlug(req, res) {
       }
     }
 
-    const resultado = await LandingService.obtenerPublica(tienda, req.params.slug || null, preview);
+    const vista = String(req.query?.vista || '').toLowerCase();
+    const resultado = vista === 'catalogo'
+      ? await LandingService.obtenerCatalogoPublico(tienda, req.params.slug || null, preview)
+      : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview);
     if (resultado === null) {
       return res.status(404).json({ message: 'Landing no encontrada.' });
     }

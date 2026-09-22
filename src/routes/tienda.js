@@ -26,6 +26,11 @@ router.delete('/dominio-propio', ctrl.eliminarDominioPropio);
 
 router.post('/dominio/whois', ctrl.whoisDominio);
 
+// Cómo entrega el comercio lo que vende (motor de fulfillment, Fase 3).
+router.get('/fulfillment', ctrl.obtenerFulfillment);
+router.put('/fulfillment', ctrl.guardarFulfillment);
+router.get('/fulfillment/cobertura', ctrl.coberturaGesicomm);
+
 router.get('/', ctrl.obtener);
 router.post('/', ctrl.crear);
 router.put('/', ctrl.actualizar);
