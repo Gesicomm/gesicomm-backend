@@ -20,6 +20,13 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
+  proveedor_logistico_id: {
+    // Distinto de courier_id: un proveedor logistico es de la red propia
+    // de Gesicomm (sin usuario_id), no del comercio. Ver migracion
+    // 20260923140000.
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   fecha: {
     type: DataTypes.STRING(20),
     allowNull: true,
@@ -111,7 +118,7 @@ const Envio = sequelize.define('Envio', {
   metodo_pago: {
     type: DataTypes.STRING(50),
     allowNull: true,
-    defaultValue: 'Efectivo',
+    defaultValue: null,
   },
   observaciones: {
     type: DataTypes.TEXT,

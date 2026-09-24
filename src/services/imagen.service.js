@@ -10,6 +10,36 @@ const { buildPublicUrl, extractStorageKeyFromUrl } = require('./r2/r2.config');
 
 function esperar(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
+function normalizarExtension(nombre = '', mime = '') {
+  const ext = path.extname(nombre).toLowerCase();
+  if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) return ext;
+  if (mime === 'image/png') return '.png';
+  if (mime === 'image/webp') return '.webp';
+  return '.jpg';
+}
+
+function boolUpload(valor, fallback = false) {
+  if (valor === undefined || valor === null || valor === '') return fallback;
+  return valor === true || valor === 'true' || valor === '1' || valor === 1;
+}
+
+function numeroEnRango(valor, fallback, min, max) {
+  const n = Number(valor);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function modoVisual(valor) {
+  return valor === 'cover' ? 'cover' : 'contain';
+}
+
+// 1 = sin zoom, tope 3x (más que eso ya pixela la versión optimizada de
+// 1600px de ancho). Se guarda dentro de optimizacion_json en vez de sumar
+// una columna nueva — es metadata de encuadre, no del archivo en sí.
+function numeroZoom(valor, fallback = 1) {
+  return numeroEnRango(valor, fallback, 1, 3);
+}
+
 class ImagenService {
   
   static async borrarArchivoSeguro(filePath, intentos = 3) {
@@ -49,7 +79,98 @@ class ImagenService {
     if (data.storage_key) {
       data.url = buildPublicUrl(data.storage_key);
     }
+    if (data.visual_modo !== 'cover') data.visual_modo = 'contain';
+    if (data.focal_x != null) data.focal_x = Number(data.focal_x);
+    if (data.focal_y != null) data.focal_y = Number(data.focal_y);
+    // Vive en optimizacion_json (ver numeroZoom) pero el frontend lo lee
+    // como campo plano, igual que focal_x/focal_y.
+    data.zoom = numeroZoom(data.optimizacion_json?.zoom, 1);
     return data;
+  }
+
+  /**
+   * Núcleo del procesamiento (trim + resize + webp + subida), sin tocar
+   * disco ni el original — lo comparten procesarArchivoParaR2() (sube
+   * desde multer) y reprocesar() (relee el original ya guardado en R2).
+   * Separarlo es lo que permite reprocesar sin volver a pedir el archivo.
+   */
+  static async procesarBufferParaR2(buffer, keyPrefix, {
+    width = 1200,
+    quality = 82,
+    recorteAutomatico = false,
+    // 14 (default de sharp ~10) apenas toleraba ruido de compresión: fotos
+    // de producto con fondo blanco casi uniforme pero con un leve degradé
+    // de estudio o artefactos JPEG cerca del borde no se recortaban casi
+    // nada, y quedaba el margen vacío que se ve en la landing. Con el piso
+    // del 35% ya evitando comerse el producto, subir el umbral es seguro.
+    trimThreshold = 26,
+  } = {}) {
+    const originalMetadata = await sharp(buffer).metadata();
+    const uuid = crypto.randomUUID();
+
+    let bufferProcesable = buffer;
+    let recorte = { aplicado: false };
+    if (recorteAutomatico) {
+      try {
+        const trimmed = await sharp(buffer)
+          .rotate()
+          .trim({ threshold: trimThreshold })
+          .toBuffer({ resolveWithObject: true });
+        const minAncho = Math.max(40, Math.round((originalMetadata.width || 0) * 0.35));
+        const minAlto = Math.max(40, Math.round((originalMetadata.height || 0) * 0.35));
+        if (trimmed.info.width >= minAncho && trimmed.info.height >= minAlto) {
+          bufferProcesable = trimmed.data;
+          recorte = {
+            aplicado: trimmed.info.width !== originalMetadata.width || trimmed.info.height !== originalMetadata.height,
+            original_width: originalMetadata.width || null,
+            original_height: originalMetadata.height || null,
+            width: trimmed.info.width,
+            height: trimmed.info.height,
+          };
+        }
+      } catch (err) {
+        recorte = { aplicado: false, error: 'trim_failed' };
+      }
+    }
+
+    const outputBuffer = await sharp(bufferProcesable)
+      .rotate()
+      .resize({ width, withoutEnlargement: true })
+      .webp({ quality })
+      .toBuffer();
+    const metadata = await sharp(outputBuffer).metadata();
+    const storageKey = `${keyPrefix}/${uuid}.webp`;
+
+    const result = await R2Service.uploadObject({
+      key: storageKey,
+      body: outputBuffer,
+      contentType: 'image/webp',
+      cacheControl: IMMUTABLE_CACHE_CONTROL,
+      contentLength: outputBuffer.length,
+    });
+
+    return {
+      storage_key: storageKey,
+      url: result.url,
+      mime_type: 'image/webp',
+      size: outputBuffer.length,
+      width: metadata.width || null,
+      height: metadata.height || null,
+      optimizacion_json: {
+        recorte,
+        original: {
+          width: originalMetadata.width || null,
+          height: originalMetadata.height || null,
+          size: buffer.length,
+        },
+        optimizada: {
+          width: metadata.width || null,
+          height: metadata.height || null,
+          mime_type: 'image/webp',
+          size: outputBuffer.length,
+        },
+      },
+    };
   }
 
   /**
@@ -57,33 +178,40 @@ class ImagenService {
    * compartida por todos los módulos (productos, landings, ofertas,
    * testimonios) — cada uno solo decide su propio prefijo de key.
    */
-  static async procesarArchivoParaR2(fileData, keyPrefix, { width = 1200, quality = 82 } = {}) {
+  static async procesarArchivoParaR2(fileData, keyPrefix, {
+    conservarOriginal = false,
+    ...opts
+  } = {}) {
     const tmpPath = fileData.path;
     try {
       const buffer = await fs.promises.readFile(tmpPath);
-      const outputBuffer = await sharp(buffer)
-        .resize({ width, withoutEnlargement: true })
-        .webp({ quality })
-        .toBuffer();
-      const metadata = await sharp(outputBuffer).metadata();
-      const storageKey = `${keyPrefix}/${crypto.randomUUID()}.webp`;
+      const uuid = crypto.randomUUID();
+      let originalData = null;
 
-      const result = await R2Service.uploadObject({
-        key: storageKey,
-        body: outputBuffer,
-        contentType: 'image/webp',
-        cacheControl: IMMUTABLE_CACHE_CONTROL,
-        contentLength: outputBuffer.length,
-      });
+      if (conservarOriginal) {
+        const originalKey = `${keyPrefix}/originales/${uuid}${normalizarExtension(fileData.originalname, fileData.mimetype)}`;
+        const originalUpload = await R2Service.uploadObject({
+          key: originalKey,
+          body: buffer,
+          contentType: fileData.mimetype || 'application/octet-stream',
+          cacheControl: IMMUTABLE_CACHE_CONTROL,
+          contentLength: buffer.length,
+        });
+        originalData = {
+          original_storage_key: originalKey,
+          original_url: originalUpload.url,
+        };
+      }
 
+      const procesado = await this.procesarBufferParaR2(buffer, keyPrefix, opts);
       await this.borrarArchivoSeguro(tmpPath);
       return {
-        storage_key: storageKey,
-        url: result.url,
-        mime_type: 'image/webp',
-        size: outputBuffer.length,
-        width: metadata.width || null,
-        height: metadata.height || null,
+        ...originalData,
+        ...procesado,
+        optimizacion_json: {
+          ...procesado.optimizacion_json,
+          original: { ...procesado.optimizacion_json.original, mime_type: fileData.mimetype || null },
+        },
       };
     } catch (err) {
       await this.borrarArchivoSeguro(tmpPath);
@@ -91,8 +219,76 @@ class ImagenService {
     }
   }
 
+  /** Descarga un objeto de R2 completo a un Buffer (GetObjectCommand devuelve un stream). */
+  static async descargarObjetoStorage(storageKey) {
+    const objeto = await R2Service.getObject(storageKey);
+    const chunks = [];
+    for await (const chunk of objeto.Body) {
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+
+  /**
+   * Regenera la versión optimizada de una imagen ya subida, releyendo el
+   * ARCHIVO ORIGINAL conservado en R2 — nunca el derivado ya redimensionado
+   * (redimensionar dos veces perdería calidad) y nunca el original en sí
+   * (queda intacto, así se puede reprocesar cuantas veces haga falta).
+   * Sube el nuevo derivado bajo una key nueva y solo después borra el
+   * derivado viejo, para no perder la imagen si algo falla en el medio.
+   */
+  static async reprocesar(imagen_id, producto_id, inquilino_id, opts = {}) {
+    const imagen = await ProductoImagen.findOne({ where: { id: imagen_id, producto_id, inquilino_id } });
+    if (!imagen) throw new Error('Imagen no encontrada.');
+    if (!imagen.original_storage_key) {
+      throw new Error('Esta imagen no tiene un original conservado (es de antes de esta función) — volvé a subirla para poder reprocesarla.');
+    }
+
+    const buffer = await this.descargarObjetoStorage(imagen.original_storage_key);
+    const procesado = await this.procesarBufferParaR2(buffer, `products/${producto_id}`, {
+      width: 1600,
+      quality: 86,
+      recorteAutomatico: boolUpload(opts.auto_trim, true),
+    });
+
+    const derivadoAnterior = { storage_key: imagen.storage_key, url: imagen.url };
+    const anteriorParaComparar = {
+      url: imagen.url,
+      width: imagen.width,
+      height: imagen.height,
+      visual_modo: imagen.visual_modo,
+    };
+    // El zoom es encuadre manual del comercio, no algo que el reprocesamiento
+    // deba resetear — se conserva salvo que este mismo llamado traiga uno.
+    const zoomAConservar = opts.zoom !== undefined ? numeroZoom(opts.zoom) : (imagen.optimizacion_json?.zoom ?? 1);
+
+    imagen.storage_key = procesado.storage_key;
+    imagen.url = procesado.url;
+    imagen.mime_type = procesado.mime_type;
+    imagen.size = procesado.size;
+    imagen.width = procesado.width;
+    imagen.height = procesado.height;
+    if (opts.visual_modo !== undefined) imagen.visual_modo = modoVisual(opts.visual_modo);
+    if (opts.focal_x !== undefined) imagen.focal_x = numeroEnRango(opts.focal_x, imagen.focal_x, 0, 100);
+    if (opts.focal_y !== undefined) imagen.focal_y = numeroEnRango(opts.focal_y, imagen.focal_y, 0, 100);
+    imagen.optimizacion_json = { ...procesado.optimizacion_json, anterior: anteriorParaComparar, zoom: zoomAConservar };
+    await imagen.save();
+
+    // Recién ahora, con el nuevo derivado ya subido y la fila ya guardada,
+    // se puede borrar el derivado viejo sin riesgo de quedarse sin ninguno.
+    await this.eliminarObjetoStorage(derivadoAnterior).catch(() => {});
+
+    return { ...this.serializar(imagen), anterior_url: anteriorParaComparar.url };
+  }
+
   static async procesarProductoParaR2(fileData, producto_id, opts = {}) {
-    return this.procesarArchivoParaR2(fileData, `products/${producto_id}`, opts);
+    return this.procesarArchivoParaR2(fileData, `products/${producto_id}`, {
+      width: 1600,
+      quality: 86,
+      conservarOriginal: true,
+      recorteAutomatico: true,
+      ...opts,
+    });
   }
 
   static async procesarComboParaR2(fileData, combo_id, opts = {}) {
@@ -119,7 +315,9 @@ class ImagenService {
   static async subir(producto_id, inquilino_id, fileData, bodyData) {
     // procesarProductoParaR2() ya limpia el tmp (éxito o error) — subir() no
     // necesita su propio try/catch de limpieza de archivo acá.
-    const imagenProcesada = await this.procesarProductoParaR2(fileData, producto_id);
+    const imagenProcesada = await this.procesarProductoParaR2(fileData, producto_id, {
+      recorteAutomatico: boolUpload(bodyData.auto_trim, true),
+    });
 
     const maxOrden = await ProductoImagen.max('orden', { where: { producto_id } }) || 0;
     const esPrincipal = bodyData.es_principal === 'true' || bodyData.es_principal === true;
@@ -135,10 +333,18 @@ class ImagenService {
       variante_id,
       url: imagenProcesada.url,
       storage_key: imagenProcesada.storage_key,
+      original_url: imagenProcesada.original_url || null,
+      original_storage_key: imagenProcesada.original_storage_key || null,
       mime_type: imagenProcesada.mime_type,
       size: imagenProcesada.size,
       width: imagenProcesada.width,
       height: imagenProcesada.height,
+      visual_modo: modoVisual(bodyData.visual_modo),
+      focal_x: numeroEnRango(bodyData.focal_x, 50, 0, 100),
+      focal_y: numeroEnRango(bodyData.focal_y, 50, 0, 100),
+      optimizacion_json: bodyData.zoom !== undefined
+        ? { ...imagenProcesada.optimizacion_json, zoom: numeroZoom(bodyData.zoom) }
+        : imagenProcesada.optimizacion_json,
       es_principal: esPrincipal,
       orden: maxOrden + 1,
     });
@@ -157,6 +363,12 @@ class ImagenService {
 
     if (datos.orden !== undefined) imagen.orden = datos.orden;
     if (datos.variante_id !== undefined) imagen.variante_id = datos.variante_id || null;
+    if (datos.visual_modo !== undefined) imagen.visual_modo = modoVisual(datos.visual_modo);
+    if (datos.focal_x !== undefined) imagen.focal_x = numeroEnRango(datos.focal_x, 50, 0, 100);
+    if (datos.focal_y !== undefined) imagen.focal_y = numeroEnRango(datos.focal_y, 50, 0, 100);
+    if (datos.zoom !== undefined) {
+      imagen.optimizacion_json = { ...(imagen.optimizacion_json || {}), zoom: numeroZoom(datos.zoom) };
+    }
 
     await imagen.save();
     return this.serializar(imagen);
@@ -167,6 +379,7 @@ class ImagenService {
     if (!imagen) throw new Error('Imagen no encontrada.');
 
     await this.eliminarObjetoStorage(imagen);
+    await this.eliminarObjetoStorage({ url: imagen.original_url, storage_key: imagen.original_storage_key });
     await imagen.destroy();
     return true;
   }

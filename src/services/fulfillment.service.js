@@ -1,5 +1,6 @@
 'use strict';
 
+const { Op } = require('sequelize');
 const { Tienda, Deposito, ProveedorLogistico } = require('../models');
 const DepositoCourierService = require('./depositoCourier.service');
 const ProveedorLogisticoService = require('./proveedorLogistico.service');
@@ -70,6 +71,129 @@ class FulfillmentService {
     });
   }
 
+  static normalizarFiltroTexto(valor) {
+    const texto = String(valor || '').trim();
+    return texto || null;
+  }
+
+  static depositoConCouriers(d, couriersPorDeposito) {
+    const habilitados = couriersPorDeposito.get(d.id) || [];
+    return {
+      id: d.id,
+      nombre: d.nombre,
+      ciudad: d.ciudad,
+      departamento: d.departamento,
+      direccion: d.direccion,
+      couriers_habilitados: habilitados.length,
+      couriers: habilitados.map((c) => ({ id: c.id, nombre: c.nombre, alcance: c.alcance })),
+    };
+  }
+
+  static filtroCouriersSubquery(usuarioId, modo) {
+    const usuarioSeguro = Number(usuarioId) || 0;
+    const subquery = `
+      SELECT dc.deposito_id
+      FROM deposito_courier dc
+      INNER JOIN couriers c ON c.id = dc.courier_id
+      WHERE dc.activo = true
+        AND c.activo = true
+        AND c.usuario_id = ${usuarioSeguro}
+    `;
+
+    if (modo === 'con_couriers') return { [Op.in]: Deposito.sequelize.literal(`(${subquery})`) };
+    if (modo === 'sin_couriers') return { [Op.notIn]: Deposito.sequelize.literal(`(${subquery})`) };
+    return null;
+  }
+
+  static async opcionesFiltrosDepositos(usuarioId) {
+    const base = { usuario_id: usuarioId, activo: true };
+    const [ciudades, departamentos] = await Promise.all([
+      Deposito.findAll({
+        where: { ...base, ciudad: { [Op.ne]: null } },
+        attributes: ['ciudad'],
+        group: ['ciudad'],
+        order: [['ciudad', 'ASC']],
+        raw: true,
+      }),
+      Deposito.findAll({
+        where: { ...base, departamento: { [Op.ne]: null } },
+        attributes: ['departamento'],
+        group: ['departamento'],
+        order: [['departamento', 'ASC']],
+        raw: true,
+      }),
+    ]);
+
+    return {
+      ciudades: ciudades.map((r) => r.ciudad).filter(Boolean),
+      departamentos: departamentos.map((r) => r.departamento).filter(Boolean),
+    };
+  }
+
+  static async listarDepositosPropios(usuarioId, payload = {}) {
+    const filtros = payload.filtros || payload.filters || {};
+    const buscar = this.normalizarFiltroTexto(payload.buscar || filtros.buscar);
+    const ciudad = this.normalizarFiltroTexto(payload.ciudad || filtros.ciudad);
+    const departamento = this.normalizarFiltroTexto(payload.departamento || filtros.departamento);
+    const estadoCouriers = String(payload.estadoCouriers || filtros.estadoCouriers || 'todos').trim();
+    const depositoSeleccionadoId = Number(payload.depositoSeleccionadoId || payload.seleccionadoId || 0) || null;
+
+    const page = Math.max(1, parseInt(payload.page, 10) || 1);
+    const limit = Math.min(30, Math.max(1, parseInt(payload.limit, 10) || 6));
+    const offset = (page - 1) * limit;
+
+    const where = { usuario_id: usuarioId, activo: true };
+    if (ciudad) where.ciudad = ciudad;
+    if (departamento) where.departamento = departamento;
+    if (buscar) {
+      const term = `%${buscar}%`;
+      where[Op.or] = [
+        { nombre: { [Op.iLike]: term } },
+        { ciudad: { [Op.iLike]: term } },
+        { departamento: { [Op.iLike]: term } },
+        { direccion: { [Op.iLike]: term } },
+        { referencia: { [Op.iLike]: term } },
+      ];
+    }
+
+    const filtroCouriers = this.filtroCouriersSubquery(usuarioId, estadoCouriers);
+    if (filtroCouriers) where.id = filtroCouriers;
+
+    const [{ count, rows }, opcionesFiltros] = await Promise.all([
+      Deposito.findAndCountAll({
+        where,
+        order: [['nombre', 'ASC']],
+        limit,
+        offset,
+      }),
+      this.opcionesFiltrosDepositos(usuarioId),
+    ]);
+
+    const ids = rows.map((d) => d.id);
+    const couriersPorDeposito = await DepositoCourierService.couriersHabilitadosPorDeposito(ids);
+    let seleccionado = null;
+
+    if (depositoSeleccionadoId && !ids.includes(depositoSeleccionadoId)) {
+      const deposito = await Deposito.findOne({
+        where: { id: depositoSeleccionadoId, usuario_id: usuarioId, activo: true },
+      });
+      if (deposito) {
+        const couriersSeleccionado = await DepositoCourierService.couriersHabilitadosPorDeposito([deposito.id]);
+        seleccionado = this.depositoConCouriers(deposito, couriersSeleccionado);
+      }
+    }
+
+    return {
+      data: rows.map((d) => this.depositoConCouriers(d, couriersPorDeposito)),
+      seleccionado,
+      total: count,
+      page,
+      limit,
+      totalPages: Math.ceil(count / limit),
+      filtros: opcionesFiltros,
+    };
+  }
+
   /**
    * Todo lo que la pantalla de configuración necesita para que el comercio
    * elija con información: qué tiene hoy, qué depósitos puede usar y qué
@@ -79,23 +203,19 @@ class FulfillmentService {
     const tienda = await this.tiendaDe(usuarioId);
 
     const [depositos, proveedoresGesicomm] = await Promise.all([
-      Deposito.findAll({ where: { usuario_id: usuarioId, activo: true }, order: [['nombre', 'ASC']] }),
+      Deposito.findAll({
+        where: { usuario_id: usuarioId, activo: true },
+        attributes: ['id'],
+        order: [['nombre', 'ASC']],
+      }),
       this.proveedoresDeGesicomm(),
     ]);
 
     const couriersPorDeposito = await DepositoCourierService.couriersHabilitadosPorDeposito(
       depositos.map((d) => d.id),
     );
-    const depositosConCouriers = depositos.map((d) => {
-      const habilitados = couriersPorDeposito.get(d.id) || [];
-      return {
-        id: d.id,
-        nombre: d.nombre,
-        ciudad: d.ciudad,
-        couriers_habilitados: habilitados.length,
-        couriers: habilitados.map((c) => ({ id: c.id, nombre: c.nombre, alcance: c.alcance })),
-      };
-    });
+    const totalDepositos = depositos.length;
+    const depositosConCouriers = depositos.map((d) => ({ couriers_habilitados: (couriersPorDeposito.get(d.id) || []).length }));
 
     const costosGesicomm = proveedoresGesicomm.map((p) => p.costo_desde).filter((n) => n !== null);
 
@@ -103,7 +223,8 @@ class FulfillmentService {
       modalidad: tienda.modalidad_fulfillment,
       deposito_fulfillment_id: tienda.deposito_fulfillment_id,
       propia: {
-        depositos: depositosConCouriers,
+        depositos: [],
+        total_depositos: totalDepositos,
         // Sin depósito, o con un depósito sin couriers, la modalidad propia
         // no puede cotizar nada: conviene decirlo antes de que la elija.
         disponible: depositosConCouriers.some((d) => d.couriers_habilitados > 0),

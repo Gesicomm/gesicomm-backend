@@ -32,6 +32,7 @@ router.delete('/:id', verificarPermiso('eliminar_productos'), ctrl.eliminar);
 // Imágenes de un producto
 router.post('/:id/imagenes', verificarPermiso('editar_productos'), imgCtrl.subirImagenMiddleware, imgCtrl.subirImagen);
 router.put('/:id/imagenes/:imgId', verificarPermiso('editar_productos'), imgCtrl.actualizarImagen);
+router.post('/:id/imagenes/:imgId/reprocesar', verificarPermiso('editar_productos'), imgCtrl.reprocesarImagen);
 router.delete('/:id/imagenes/:imgId', verificarPermiso('eliminar_productos'), imgCtrl.eliminarImagen);
 
 // Combos

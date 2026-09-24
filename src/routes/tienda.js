@@ -28,6 +28,7 @@ router.post('/dominio/whois', ctrl.whoisDominio);
 
 // Cómo entrega el comercio lo que vende (motor de fulfillment, Fase 3).
 router.get('/fulfillment', ctrl.obtenerFulfillment);
+router.post('/fulfillment/depositos', ctrl.listarDepositosFulfillment);
 router.put('/fulfillment', ctrl.guardarFulfillment);
 router.get('/fulfillment/cobertura', ctrl.coberturaGesicomm);
 

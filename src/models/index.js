@@ -96,6 +96,8 @@ const InventarioUbicacion = require('./InventarioUbicacion');
 const IngresoInventario = require('./IngresoInventario');
 const IngresoInventarioItem = require('./IngresoInventarioItem');
 const HistorialIngresoInventario = require('./HistorialIngresoInventario');
+const SolicitudAbastecimiento = require('./SolicitudAbastecimiento');
+const HistorialSolicitudAbastecimiento = require('./HistorialSolicitudAbastecimiento');
 // ============================================================
 // Relaciones existentes
 // ============================================================
@@ -187,6 +189,7 @@ Envio.belongsTo(Deposito, { as: 'deposito_destino', foreignKey: 'deposito_destin
 
 Courier.hasMany(Envio, { foreignKey: 'courier_id' });
 Envio.belongsTo(Courier, { foreignKey: 'courier_id' });
+Envio.belongsTo(ProveedorLogistico, { as: 'proveedorLogistico', foreignKey: 'proveedor_logistico_id' });
 
 // SET NULL y no CASCADE: desactivar o borrar un canal no puede llevarse
 // puestos los pedidos que entraron por él (su `origen` histórico sigue ahí).
@@ -210,6 +213,16 @@ EnvioItem.belongsTo(Oferta, { foreignKey: 'oferta_id' });
 EnvioItem.hasMany(EnvioItemComponente, { as: 'componentes_vendidos', foreignKey: 'envio_item_id', onDelete: 'CASCADE' });
 EnvioItemComponente.belongsTo(EnvioItem, { foreignKey: 'envio_item_id' });
 EnvioItemComponente.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });
+EnvioItemComponente.belongsTo(Deposito, { as: 'centroOrigen', foreignKey: 'origen_centro_id' });
+
+SolicitudAbastecimiento.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+SolicitudAbastecimiento.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });
+SolicitudAbastecimiento.belongsTo(ProductoVariante, { as: 'variante', foreignKey: 'variante_id' });
+SolicitudAbastecimiento.belongsTo(Deposito, { as: 'depositoDestino', foreignKey: 'deposito_destino_id' });
+SolicitudAbastecimiento.belongsTo(Deposito, { as: 'centroGesicomm', foreignKey: 'centro_gesicomm_id' });
+SolicitudAbastecimiento.hasMany(HistorialSolicitudAbastecimiento, { as: 'historial', foreignKey: 'solicitud_id', onDelete: 'CASCADE' });
+HistorialSolicitudAbastecimiento.belongsTo(SolicitudAbastecimiento, { foreignKey: 'solicitud_id' });
+HistorialSolicitudAbastecimiento.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
 Usuario.hasMany(MetodoPago, { foreignKey: 'usuario_id' });
 MetodoPago.belongsTo(Usuario, { foreignKey: 'usuario_id' });
@@ -826,5 +839,7 @@ module.exports = {
   InventarioUbicacion,
   IngresoInventario,
   IngresoInventarioItem,
+  SolicitudAbastecimiento,
+  HistorialSolicitudAbastecimiento,
   HistorialIngresoInventario,
 };

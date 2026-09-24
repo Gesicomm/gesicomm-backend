@@ -18,8 +18,13 @@ router.post('/metricas-dashboard', envioController.getDashboardMetricas);
 // Crear un nuevo pedido/envío
 router.post('/', envioController.createEnvio);
 
+// Cola admin del Camino 2 (inbound propio -> Gesicomm): pedidos vendidos
+// desde stock que fisicamente esta en un Centro de Fulfillment de Gesicomm.
+router.get('/gesicomm/pendientes', envioController.listarPedidosParaPrepararGesicomm);
+
 // Actualizar estado o courier
 router.put('/:id/estado', envioController.updateEstado);
+router.get('/:id/proveedor-logistico-sugerido', envioController.sugerirProveedorLogisticoGesicomm);
 
 // Editar el precio de un item puntual (ej. descuento por seguimiento comercial)
 router.patch('/:id/items/:itemId/precio', envioController.actualizarPrecioItem);

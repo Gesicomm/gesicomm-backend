@@ -5,6 +5,8 @@ const inventarioController = require('../controllers/inventarioController');
 
 router.use(verificarToken);
 
+router.get('/centros-destino', inventarioController.listarCentrosDestino);
+
 // Rutas de Ingresos de Inventario (Inbound)
 router.post('/ingresos/listado', inventarioController.listarIngresos);
 router.post('/ingresos', inventarioController.crearBorrador);

@@ -23,14 +23,19 @@ const { calcularPrecioEfectivo } = require('../utils/precio');
 
 /**
  * Canales por los que puede venderse una línea. Los de checkout
- * ('order_bump', 'combo') son los únicos que pueden cobrar
+ * ('order_bump', 'upsell') son los únicos que pueden cobrar
  * Oferta.precio_order_bump en vez de Oferta.precio_normal.
  */
 const ORIGENES = ['normal', 'order_bump', 'upsell', 'combo'];
-// Solo el order bump se acepta dentro del checkout y cobra el precio
-// promocional. Un combo se elige en la ficha del producto (antes de
-// comprar) y se cobra a su precio_normal — ver Oferta.js.
-const ORIGENES_CHECKOUT = ['order_bump'];
+// Order bump Y upsell se aceptan dentro del checkout y cobran el precio
+// promocional (ver obtenerPublica#itemsDto.precio_efectivo, que ya arma el
+// DTO público tratando upsell igual que order_bump para lo que se MUESTRA
+// al cliente). Antes solo 'order_bump' estaba acá: un upsell aceptado se
+// mostraba con descuento (precio_order_bump) pero se cobraba al precio
+// normal, cobrándole de más al cliente respecto de lo que había aceptado.
+// Un combo se elige en la ficha del producto (antes de comprar) y se cobra
+// a su precio_normal — ver Oferta.js.
+const ORIGENES_CHECKOUT = ['order_bump', 'upsell'];
 
 class PricingService {
   /**

@@ -28,6 +28,7 @@ const DEFINICIONES = [
   { clave: 'ABASTECIMIENTO_BANCO_NUMERO_CUENTA', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Número de cuenta al que transferir.' },
   { clave: 'ABASTECIMIENTO_ALIAS_TIPO', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Tipo de alias para transferir (CEDULA, TELEFONO o EMAIL).' },
   { clave: 'ABASTECIMIENTO_ALIAS_VALOR', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Número o correo del alias, según el tipo elegido.' },
+  { clave: 'ABASTECIMIENTO_TRANSFERENCIA_NOTA', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Nota visible para la tienda al pagar abastecimiento por transferencia.' },
 ];
 
 async function cargar() {

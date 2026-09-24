@@ -149,6 +149,17 @@ async function obtenerFulfillment(req, res) {
   }
 }
 
+/** POST /api/mi-tienda/fulfillment/depositos — listado paginado para elegir depósito propio. */
+async function listarDepositosFulfillment(req, res) {
+  try {
+    return res.json(await FulfillmentService.listarDepositosPropios(req.usuario.id, req.body || {}));
+  } catch (err) {
+    const status = err.status || 500;
+    if (status >= 500) console.error('[tienda] listarDepositosFulfillment:', err);
+    return res.status(status).json({ message: status === 500 ? 'Error al listar depósitos para entregas.' : err.message });
+  }
+}
+
 /** PUT /api/mi-tienda/fulfillment — { modalidad, depositoId }. */
 async function guardarFulfillment(req, res) {
   try {
@@ -184,5 +195,5 @@ module.exports = {
   coberturaGesicomm,
   guardarDominioPropio, estadoDominioPropio, habilitacionDominioPropio,
   eliminarDominioPropio, whoisDominio,
-  obtenerFulfillment, guardarFulfillment
+  obtenerFulfillment, listarDepositosFulfillment, guardarFulfillment
 };

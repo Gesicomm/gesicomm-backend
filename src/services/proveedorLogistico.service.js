@@ -220,8 +220,24 @@ class ProveedorLogisticoService {
 
   /** Centros activos de la red. Base de la resolución cuando no se acota. */
   static async centrosActivos() {
-    return Deposito.findAll({
+    const centrosOficiales = await Deposito.findAll({
       where: { alcance: 'GESICOMM', activo: true },
+      order: [['nombre', 'ASC']],
+    });
+    if (centrosOficiales.length > 0) return centrosOficiales;
+
+    // Fallback: si no se asignó explícitamente el flag 'GESICOMM' pero existen
+    // depósitos pertenecientes a usuarios administradores, tómalos como centros.
+    return Deposito.findAll({
+      include: [{
+        model: Usuario,
+        required: true,
+        include: [{
+          model: Rol,
+          where: { nombre: ['administrador', 'Admin', 'SuperAdmin'] }
+        }]
+      }],
+      where: { activo: true },
       order: [['nombre', 'ASC']],
     });
   }

@@ -3,16 +3,26 @@ const { Deposito, Envio } = require('../models');
 const DepositoCourierService = require('../services/depositoCourier.service');
 const { envolverControlador } = require('../utils/asyncHandler');
 
+function valorTexto(body, ...campos) {
+  for (const campo of campos) {
+    if (Object.prototype.hasOwnProperty.call(body, campo)) {
+      const valor = body[campo];
+      return valor ? String(valor).trim() : null;
+    }
+  }
+  return null;
+}
+
 function normalizarPayload(body = {}) {
   return {
     nombre: String(body.nombre || '').trim(),
-    departamento: body.departamento ? String(body.departamento).trim() : null,
+    departamento: valorTexto(body, 'departamento'),
     ciudad: String(body.ciudad || '').trim(),
     direccion: String(body.direccion || '').trim(),
-    referencia: body.referencia ? String(body.referencia).trim() : null,
-    persona_contacto: body.personaContacto ? String(body.personaContacto).trim() : null,
-    telefono_contacto: body.telefonoContacto ? String(body.telefonoContacto).trim() : null,
-    google_maps_url: body.googleMapsUrl ? String(body.googleMapsUrl).trim() : null,
+    referencia: valorTexto(body, 'referencia'),
+    persona_contacto: valorTexto(body, 'personaContacto', 'persona_contacto'),
+    telefono_contacto: valorTexto(body, 'telefonoContacto', 'telefono_contacto'),
+    google_maps_url: valorTexto(body, 'googleMapsUrl', 'google_maps_url'),
   };
 }
 

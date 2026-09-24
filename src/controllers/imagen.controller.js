@@ -115,6 +115,28 @@ async function actualizarImagen(req, res) {
   }
 }
 
+async function reprocesarImagen(req, res) {
+  try {
+    const inquilino_id = req.usuario.tenantId;
+    if (!await productoEditablePorUsuario(req, res)) return;
+    const imagen = await ImagenService.reprocesar(req.params.imgId, req.params.id, inquilino_id, req.body);
+    return res.json(imagen);
+  } catch (err) {
+    logger.error({
+      mensaje: 'Error al reprocesar imagen de producto',
+      producto_id: req.params.id,
+      imagen_id: req.params.imgId,
+      operation: err.operation,
+      errorCode: err.code || err.name,
+    });
+    const status = err.message?.includes('no encontrada') ? 404 : (err.message?.includes('original conservado') ? 409 : 500);
+    const message = err instanceof R2StorageError || err instanceof R2ConfigError
+      ? 'No se pudo regenerar el archivo.'
+      : (err.message || 'Error al reprocesar la imagen.');
+    return res.status(status).json({ message });
+  }
+}
+
 async function eliminarImagen(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
@@ -138,4 +160,4 @@ async function eliminarImagen(req, res) {
   }
 }
 
-module.exports = { upload, subirImagenMiddleware, subirImagen, actualizarImagen, eliminarImagen };
+module.exports = { upload, subirImagenMiddleware, subirImagen, actualizarImagen, reprocesarImagen, eliminarImagen };

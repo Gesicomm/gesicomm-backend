@@ -106,7 +106,16 @@ async function obtenerPorSlug(req, res) {
 
     const vista = String(req.query?.vista || '').toLowerCase();
     const resultado = vista === 'catalogo'
-      ? await LandingService.obtenerCatalogoPublico(tienda, req.params.slug || null, preview)
+      ? await LandingService.obtenerCatalogoPublico(tienda, req.params.slug || null, preview, {
+          pagina: req.query.pagina,
+          porPagina: req.query.porPagina,
+          orden: req.query.orden,
+          disponibilidad: req.query.disponibilidad,
+          categoria: req.query.categoria,
+          etiqueta: req.query.etiqueta,
+          precioMin: req.query.precioMin,
+          precioMax: req.query.precioMax,
+        })
       : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview);
     if (resultado === null) {
       return res.status(404).json({ message: 'Landing no encontrada.' });

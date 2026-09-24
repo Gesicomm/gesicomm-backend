@@ -291,8 +291,9 @@ class ReporteService {
           attributes: ['id', 'nombre', 'sku']
         },
         {
-          model: Variante,
-          attributes: ['id', 'nombre', 'sku']
+          model: ProductoVariante,
+          as: 'Variante',
+          attributes: ['id', 'nombre', 'sku_variante']
         }
       ],
       order: [['id', 'DESC']]

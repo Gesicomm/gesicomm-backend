@@ -7,7 +7,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Tienda, Usuario, ProveedorDns, Suscripcion, Plan } = require('../models');
+const { Tienda, Usuario, ProveedorDns, Suscripcion, Plan, Landing } = require('../models');
 const EncryptionService = require('../utils/EncryptionService');
 const { validarFormato: validarFormatoSubdominio, disponible: subdominioDisponible } = require('../utils/validarSubdominio');
 const { ESTADOS, registrosPara, apuntaANuestroServidor, sirvePorHttps } = require('../utils/dominios');
@@ -83,16 +83,20 @@ class TiendaService {
   static async obtenerPorUsuario(usuario_id) {
     const tienda = await Tienda.findOne({ where: { usuario_id } });
     if (!tienda) return null;
-    const [usuario, suscripcion] = await Promise.all([
+    const [usuario, suscripcion, landingInicio] = await Promise.all([
       Usuario.findByPk(usuario_id, { attributes: ['plan'] }),
       suscripcionActivaDeUsuario(usuario_id),
+      Landing.findOne({
+        where: { tienda_id: tienda.id, tipo_pagina: 'inicio' },
+        attributes: ['color_primario', 'color_texto', 'color_fondo'],
+      }),
     ]);
     const plan = suscripcion?.Plan?.equivale_plan || usuario?.plan || null;
     if (suscripcion && usuario?.plan !== plan) {
       await Usuario.update({ plan }, { where: { id: usuario_id } });
     }
     return {
-      ...this.serializar(tienda),
+      ...this.serializarConTemaLanding(tienda, landingInicio),
       plan,
       suscripcion: serializarSuscripcion(suscripcion),
     };
@@ -228,6 +232,7 @@ class TiendaService {
     Object.assign(tienda, this.camposEditables(payload));
     if (nuevoSubdominio !== null) tienda.subdominio = nuevoSubdominio;
     await tienda.save();
+    await this.sincronizarTemaLandings(tienda, payload);
 
     const [usuario, suscripcion] = await Promise.all([
       Usuario.findByPk(usuario_id, { attributes: ['plan'] }),
@@ -483,6 +488,24 @@ class TiendaService {
     data.meta_access_token_configurado = !!data.meta_access_token;
     delete data.meta_access_token;
     return data;
+  }
+
+  static serializarConTemaLanding(tienda, landingInicio) {
+    const data = this.serializar(tienda);
+    if (!landingInicio) return data;
+    if (landingInicio.color_primario) data.color_primario = landingInicio.color_primario;
+    if (landingInicio.color_texto) data.color_secundario = landingInicio.color_texto;
+    if (landingInicio.color_fondo) data.color_fondo = landingInicio.color_fondo;
+    return data;
+  }
+
+  static async sincronizarTemaLandings(tienda, payload) {
+    const camposTema = {};
+    if (payload.color_primario !== undefined) camposTema.color_primario = tienda.color_primario;
+    if (payload.color_secundario !== undefined) camposTema.color_texto = tienda.color_secundario;
+    if (payload.color_fondo !== undefined) camposTema.color_fondo = tienda.color_fondo;
+    if (!Object.keys(camposTema).length) return;
+    await Landing.update(camposTema, { where: { tienda_id: tienda.id } });
   }
 }
 

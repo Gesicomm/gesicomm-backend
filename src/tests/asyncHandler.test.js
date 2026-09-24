@@ -213,7 +213,13 @@ describe('controllers cubiertos por la red de contencion', () => {
     'paymentGateways.controller': [],
     'suscripciones.controller': [],
     'webhooks.controller': [],
-    envioController: ['descontarStockYSnapshot', 'calcularAbastecimientoDesdeItems'],
+    envioController: [
+      'descontarStockYSnapshot',
+      'calcularAbastecimientoDesdeItems',
+      'costoParaComerciante',
+      'esProductoCargadoPorAdmin',
+      'subirComprobanteAbastecimientoMulter',
+    ],
   };
 
   test.each(Object.entries(cubiertos))('%s tiene todos sus handlers envueltos', (archivo, excluidos) => {

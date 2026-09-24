@@ -17,7 +17,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate, Testimonio } = require('../models');
+const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate, Testimonio, Producto } = require('../models');
 const LandingService = require('./landing.service');
 const LandingCodigoService = require('./landingCodigo.service');
 const ImagenService = require('./imagen.service');
@@ -452,6 +452,28 @@ class LandingSimpleService {
 
   static async cambiarEstado(id, tienda_id, activo) {
     const landing = await this.buscarPropia(id, tienda_id);
+
+    if (activo && landing.tipo_pagina === 'funnel') {
+      if (!landing.producto_id) throw new Error('No se puede publicar un funnel sin producto.');
+      const producto = await Producto.findByPk(landing.producto_id, { attributes: ['cantidad_disponible'] });
+      if (producto && Number(producto.cantidad_disponible) <= 0) {
+        throw new Error('No se puede publicar: el producto no tiene stock disponible.');
+      }
+    } else if (activo && landing.tipo_pagina !== 'contacto') {
+      const items = await LandingItem.findAll({ where: { landing_id: landing.id }, attributes: ['tipo', 'referencia_id'] });
+      // Si TODOS los productos (no combos, que tienen su propio cálculo de
+      // stock) están sin stock, se bloquea. Si hay al menos un producto con
+      // stock, o hay algún combo en el medio, se deja publicar: no vale la
+      // pena bloquear un catálogo grande por un ítem agotado suelto.
+      const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
+      const tieneCombo = items.some(i => i.tipo === 'combo');
+      if (idsProducto.length && !tieneCombo) {
+        const productos = await Producto.findAll({ where: { id: idsProducto }, attributes: ['cantidad_disponible'] });
+        const hayStock = productos.some(p => Number(p.cantidad_disponible) > 0);
+        if (!hayStock) throw new Error('No se puede publicar: ninguno de los productos incluidos tiene stock disponible.');
+      }
+    }
+
     landing.activo = !!activo;
     await landing.save();
     return landing.toJSON();

@@ -298,4 +298,8 @@ module.exports = {
   notificarComprobanteAbastecimientoSubidoSinBloquear,
   notificarPagoAbastecimientoRechazado,
   notificarPagoAbastecimientoRechazadoSinBloquear,
+  // Reusadas por otros dominios (ej. inventarioNotificaciones.service.js)
+  // para no reescribir el mismo fan-out a administradores por tercera vez.
+  idsDeAdministradores,
+  notificarEnApp,
 };

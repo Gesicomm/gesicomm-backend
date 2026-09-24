@@ -40,6 +40,10 @@ const MAX_TESTIMONIOS_POR_LANDING = 20;
 const MAX_FAQ_POR_LANDING = 20;
 const MAX_SECCIONES_POR_LANDING = 30;
 const MAX_ITEMS_CHECKOUT = 40;
+const ATRIBUTOS_IMAGEN_PRODUCTO = [
+  'id', 'producto_id', 'variante_id', 'url', 'storage_key', 'es_principal', 'orden',
+  'width', 'height', 'visual_modo', 'focal_x', 'focal_y', 'optimizacion_json',
+];
 // MVP: una sola landing por tienda, siempre en la raíz (es_home=true) — no
 // hay UI para elegir slug ni marcar "página principal", así que una
 // segunda landing quedaría inaccesible igual. Multi-landing por tienda
@@ -673,6 +677,8 @@ class LandingService {
     if (payload.testimonios !== undefined) await this.sincronizarTestimonios(landing.id, payload.testimonios);
     if (payload.faq !== undefined) await this.sincronizarFaq(landing.id, payload.faq);
     if (payload.secciones !== undefined) await this.sincronizarSecciones(landing.id, payload.secciones);
+    await this.sincronizarTemaConTienda(landing, payload);
+    await this.sincronizarTemaPaginasFijas(landing, payload);
 
     return this.obtener(landing.id, tienda_id);
   }
@@ -702,6 +708,8 @@ class LandingService {
 
     Object.assign(landing, this.camposEditables(payload));
     await landing.save();
+    await this.sincronizarTemaConTienda(landing, payload);
+    await this.sincronizarTemaPaginasFijas(landing, payload);
 
     if (payload.items !== undefined) {
       await this.sincronizarItems(landing.id, payload.items);
@@ -790,6 +798,45 @@ class LandingService {
   // el de Inicio. No son editables de forma independiente por diseño (ver
   // asegurarPaginasFijas más abajo, que los re-sincroniza en cada carga).
   static CAMPOS_TEMA = ['tema_modo', 'color_primario', 'color_fondo', 'color_texto', 'color_tarjeta', 'radio_bordes', 'fuente'];
+
+  static serializarImagenProducto(img) {
+    if (!img) return null;
+    const data = img.toJSON ? img.toJSON() : img;
+    return {
+      tipo: 'imagen',
+      id: data.id || null,
+      imagen_id: data.id || data.imagen_id || null,
+      producto_id: data.producto_id || null,
+      variante_id: data.variante_id || null,
+      url: data.url || null,
+      es_principal: !!data.es_principal,
+      orden: data.orden || 0,
+      width: data.width || null,
+      height: data.height || null,
+      visual_modo: data.visual_modo || 'contain',
+      focal_x: data.focal_x != null ? Number(data.focal_x) : 50,
+      focal_y: data.focal_y != null ? Number(data.focal_y) : 50,
+      optimizacion: data.optimizacion_json || null,
+    };
+  }
+
+  static async sincronizarTemaConTienda(landing, payload = {}) {
+    const camposTienda = {};
+    if (payload.color_primario !== undefined && landing.color_primario) camposTienda.color_primario = landing.color_primario;
+    if (payload.color_texto !== undefined && landing.color_texto) camposTienda.color_secundario = landing.color_texto;
+    if (payload.color_fondo !== undefined && landing.color_fondo) camposTienda.color_fondo = landing.color_fondo;
+    if (!Object.keys(camposTienda).length) return;
+    await Tienda.update(camposTienda, { where: { id: landing.tienda_id } });
+  }
+
+  static async sincronizarTemaPaginasFijas(landing, payload = {}) {
+    const tocoTema = this.CAMPOS_TEMA.some(campo => payload[campo] !== undefined);
+    if (!tocoTema || landing.tipo_pagina !== 'inicio') return;
+    const temaActual = Object.fromEntries(this.CAMPOS_TEMA.map(c => [c, landing[c]]));
+    await Landing.update(temaActual, {
+      where: { tienda_id: landing.tienda_id, tipo_pagina: { [Op.in]: ['catalogo', 'contacto'] } },
+    });
+  }
 
   static async asegurarPaginasFijas(tienda_id, inquilino_id) {
     const ROLES = [
@@ -931,9 +978,25 @@ class LandingService {
     // no romper datos publicados antes de retirar el flujo de creación.
     if (activo && landing.tipo_pagina === 'funnel') {
       if (!landing.producto_id) throw new Error('No se puede publicar un funnel sin producto.');
+      const producto = await Producto.findByPk(landing.producto_id, { attributes: ['cantidad_disponible'] });
+      if (producto && Number(producto.cantidad_disponible) <= 0) {
+        throw new Error('No se puede publicar: el producto no tiene stock disponible.');
+      }
     } else if (activo && landing.tipo_pagina !== 'contacto') {
-      const cantidadItems = await LandingItem.count({ where: { landing_id: landing.id } });
-      if (cantidadItems === 0) throw new Error('No se puede publicar una landing sin productos.');
+      const items = await LandingItem.findAll({ where: { landing_id: landing.id }, attributes: ['tipo', 'referencia_id'] });
+      if (items.length === 0) throw new Error('No se puede publicar una landing sin productos.');
+
+      // Si TODOS los productos (no combos, que tienen su propio cálculo de
+      // stock) están sin stock, se bloquea. Si hay al menos un producto con
+      // stock, o hay algún combo en el medio, se deja publicar: no vale la
+      // pena bloquear un catálogo grande por un ítem agotado suelto.
+      const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
+      const tieneCombo = items.some(i => i.tipo === 'combo');
+      if (idsProducto.length && !tieneCombo) {
+        const productos = await Producto.findAll({ where: { id: idsProducto }, attributes: ['cantidad_disponible'] });
+        const hayStock = productos.some(p => Number(p.cantidad_disponible) > 0);
+        if (!hayStock) throw new Error('No se puede publicar: ninguno de los productos incluidos tiene stock disponible.');
+      }
     }
 
     landing.activo = !!activo;
@@ -1526,7 +1589,7 @@ class LandingService {
         // imágenes propias de cada variante.
         ? ProductoImagen.findAll({
           where: { producto_id: { [Op.in]: idsParaImagen } },
-          attributes: ['producto_id', 'variante_id', 'url', 'es_principal'],
+          attributes: ATRIBUTOS_IMAGEN_PRODUCTO,
           order: [['es_principal', 'DESC'], ['orden', 'ASC']],
         })
         : Promise.resolve([]),
@@ -1596,7 +1659,7 @@ class LandingService {
     const mapaImagenes = new Map(); // producto_id -> [{id, url, variante_id, es_principal}]
     imagenes.forEach(img => {
       const lista = mapaImagenes.get(img.producto_id) || [];
-      lista.push({ id: img.id, url: img.url, variante_id: img.variante_id, es_principal: img.es_principal });
+      lista.push(this.serializarImagenProducto(img));
       mapaImagenes.set(img.producto_id, lista);
     });
 
@@ -1655,7 +1718,7 @@ class LandingService {
         // variante para armar su galería en el selector.
         ProductoImagen.findAll({
           where: { producto_id: { [Op.in]: idsComponentesAjenos } },
-          attributes: ['producto_id', 'variante_id', 'url', 'es_principal'],
+          attributes: ATRIBUTOS_IMAGEN_PRODUCTO,
           order: [['es_principal', 'DESC'], ['orden', 'ASC']],
         }),
         PrecioUsuario.findAll({
@@ -1685,7 +1748,7 @@ class LandingService {
       productosAjenos.forEach(p => mapaProducto.set(p.id, p));
       imagenesAjenas.forEach(img => {
         const lista = mapaImagenes.get(img.producto_id) || [];
-        lista.push({ id: img.id, url: img.url, variante_id: img.variante_id, es_principal: img.es_principal });
+        lista.push(this.serializarImagenProducto(img));
         mapaImagenes.set(img.producto_id, lista);
       });
       variantesAjenas.forEach(v => {
@@ -1732,7 +1795,7 @@ class LandingService {
       // están atadas a variantes), se usan todas igual — mejor mostrar
       // algo que una galería vacía.
       const galeriaGeneral = galeriaFuente.filter(i => !i.variante_id);
-      const imagenesDto = (galeriaCombo.length ? galeriaCombo : (galeriaGeneral.length ? galeriaGeneral : galeriaFuente)).map(i => i.url);
+      const imagenesDto = (galeriaCombo.length ? galeriaCombo : (galeriaGeneral.length ? galeriaGeneral : galeriaFuente)).map(i => this.serializarImagenProducto(i));
 
       // Variantes: precio_diferencial es un delta ABSOLUTO que fijó el
       // admin sobre precio_base (ej: "el talle XL cuesta 10.000 más"). Ese
@@ -1746,7 +1809,7 @@ class LandingService {
           nombre: v.nombre,
           stock: v.stock,
           precio_efectivo: precioVariante,
-          imagenes: galeriaFuente.filter(i => i.variante_id === v.id).map(i => i.url),
+          imagenes: galeriaFuente.filter(i => i.variante_id === v.id).map(i => this.serializarImagenProducto(i)),
           valoresOpcion: (v.valoresOpcion || []).map(vo => ({ opcion: vo.opcion.nombre, valor: vo.valor })),
         };
       }) : [];
@@ -1817,7 +1880,7 @@ class LandingService {
                 nombre: v.nombre,
                 stock: v.stock,
                 precio_efectivo: PricingService.calcularPrecioVariante(precioEfectivoProd, v.precio_diferencial, precioMinimoProd),
-                imagenes: imgs.filter(i => i.variante_id === v.id).map(i => i.url),
+                imagenes: imgs.filter(i => i.variante_id === v.id).map(i => this.serializarImagenProducto(i)),
                 valoresOpcion: (v.valoresOpcion || []).map(vo => ({ opcion: vo.opcion.nombre, valor: vo.valor })),
               }));
             }
@@ -1903,7 +1966,7 @@ class LandingService {
           if (m.tipo === 'video') return m.url ? { tipo: 'video', url: m.url, titulo: m.titulo || '' } : null;
           const img = imagenPorId.get(String(m.imagen_id ?? m.id)) || imagenPorUrl.get(String(m.url || ''));
           return img?.url
-            ? { tipo: 'imagen', imagen_id: img.id || m.imagen_id || null, url: img.url }
+            ? this.serializarImagenProducto(img)
             : (m.url ? { tipo: 'imagen', url: m.url } : null);
         }).filter(m => m && (typeof m === 'string' || m.url))
         : null;
@@ -1913,7 +1976,7 @@ class LandingService {
           typeof m === 'string' || m?.tipo !== 'video'
         ));
         if (typeof primeraImagen === 'string') return primeraImagen;
-        return primeraImagen?.url || imagenesDto[0] || null;
+        return primeraImagen?.url || imagenesDto[0]?.url || imagenesDto[0] || null;
       })();
 
       itemsDto.push({
@@ -2199,9 +2262,13 @@ class LandingService {
       tema: (esRigida || esFunnel) ? {
         modo: landing.tema_modo,
         primario: landing.color_primario || null,
-        secundario: null,
+        secundario: tienda.color_secundario || null,
         fondo: landing.color_fondo || null,
-        texto: landing.color_texto || null,
+        // texto: sin override propio, las rígidas sí heredan el color
+        // secundario de Branding (a diferencia de primario/fondo, que
+        // mantienen la paleta default del template) para que el texto
+        // nunca quede negro fijo sobre un fondo oscuro configurado.
+        texto: landing.color_texto || (esRigida ? (tienda.color_secundario || null) : null),
         tarjeta: landing.color_tarjeta || null,
       } : {
         modo: landing.tema_modo,
@@ -2320,7 +2387,18 @@ class LandingService {
     return porCombo[String(comboId)] || null;
   }
 
-  static async obtenerCatalogoPublico(tienda, slug, preview = false) {
+  static async obtenerCatalogoPublico(tienda, slug, preview = false, opciones = {}) {
+    const {
+      pagina = 1,
+      porPagina = 24,
+      orden = 'destacados',
+      disponibilidad = 'todos',
+      categoria = 'todas',
+      etiqueta = 'todas',
+      precioMin = null,
+      precioMax = null,
+    } = opciones;
+
     const where = { tienda_id: tienda.id };
     if (slug) where.slug = slug; else where.es_home = true;
 
@@ -2342,7 +2420,13 @@ class LandingService {
     const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
 
-    const [productos, combos, precios, imagenes] = await Promise.all([
+    // Fase 1: todo lo necesario para filtrar/ordenar/paginar sobre el
+    // catálogo COMPLETO, pero SIN imágenes todavía. Si las imágenes (la
+    // parte más pesada: varias filas por producto) se trajeran acá para
+    // los idsProducto enteros, paginar no ahorraría nada — el punto de
+    // paginar es no pagar esa galería completa para productos que ni
+    // siquiera se van a mostrar en esta página.
+    const [productos, combos, precios, deliveryCiudadesDto, pasarelasPublicas] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
           where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
@@ -2380,24 +2464,18 @@ class LandingService {
           },
         })
         : Promise.resolve([]),
-      idsProducto.length
-        ? ProductoImagen.findAll({
-          where: { producto_id: { [Op.in]: idsProducto } },
-          attributes: ['id', 'producto_id', 'url', 'variante_id', 'es_principal', 'orden'],
-          order: [['producto_id', 'ASC'], ['orden', 'ASC']],
-        })
-        : Promise.resolve([]),
+      // Antes venían hardcodeados en [] en esta vista liviana: el carrito de
+      // la página de Catálogo (CartDrawer) se abría sin ciudades de envío ni
+      // pasarelas de pago reales, aunque en el home/ficha de producto sí las
+      // tenía. Van en el mismo Promise.all que el resto de fase 1 porque no
+      // dependen de nada de acá — sumarlas no agrega ningún round-trip extra.
+      this.obtenerOpcionesDelivery(tienda.usuario_id),
+      PaymentService.getPublicGateways(tienda.usuario_id),
     ]);
 
     const mapaProducto = new Map(productos.map(p => [p.id, p]));
     const mapaCombo = new Map(combos.map(c => [c.id, c]));
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
-    const mapaImagenes = new Map();
-    imagenes.forEach(img => {
-      const lista = mapaImagenes.get(img.producto_id) || [];
-      lista.push({ id: img.id, url: img.url, variante_id: img.variante_id, es_principal: img.es_principal });
-      mapaImagenes.set(img.producto_id, lista);
-    });
 
     const resolverPrecioProducto = (prod, tipo = 'producto') => {
       const precioBase = parseFloat(tipo === 'combo' ? prod.precio_total : prod.precio_base);
@@ -2419,14 +2497,18 @@ class LandingService {
           if (m.tipo === 'video') return m.url ? { tipo: 'video', url: m.url, titulo: m.titulo || '' } : null;
           const img = imagenPorId.get(String(m.imagen_id ?? m.id)) || imagenPorUrl.get(String(m.url || ''));
           return img?.url
-            ? { tipo: 'imagen', imagen_id: img.id || m.imagen_id || null, url: img.url }
+            ? this.serializarImagenProducto(img)
             : (m.url ? { tipo: 'imagen', url: m.url } : null);
         }).filter(m => m && (typeof m === 'string' || m.url))
         : null;
       return medios?.length ? medios : imagenesDto;
     };
 
-    const itemsDto = [];
+    // Listado liviano de TODO el catálogo (sin imágenes) — lo mínimo para
+    // filtrar/ordenar/paginar correctamente. Si esto se recortara ANTES de
+    // filtrar, un filtro por categoría podría no encontrar productos reales
+    // que cayeron fuera de la página que se pidió.
+    const listado = [];
     for (const item of items) {
       const esCombo = item.tipo === 'combo';
       const entidad = esCombo ? mapaCombo.get(item.referencia_id) : mapaProducto.get(item.referencia_id);
@@ -2441,6 +2523,79 @@ class LandingService {
       if (precioAntes <= precioEfectivo) precioAntes = null;
 
       const productoParaFiltros = esCombo ? entidad.producto_padre : entidad;
+
+      listado.push({
+        item, entidad, esCombo,
+        content_id: entidad.slug || `${item.tipo}-${entidad.id}`,
+        referencia_id: entidad.id,
+        tipo: item.tipo,
+        nombre: entidad.nombre,
+        precio: precioEfectivo,
+        precio_antes: precioAntes,
+        stock: esCombo ? (productoParaFiltros?.cantidad_disponible ?? null) : entidad.cantidad_disponible,
+        categoria: productoParaFiltros?.categoria?.nombre || null,
+        marca: productoParaFiltros?.Marca?.nombre || null,
+        etiqueta: item.etiqueta,
+        destacado: esCombo ? false : !!entidad.destacado,
+        creado: item.createdAt,
+        mostrar_en_inicio: item.mostrar_en_inicio !== false,
+      });
+    }
+
+    // Opciones de los filtros de categoría/etiqueta — sobre el catálogo
+    // COMPLETO, nunca sobre la página ya recortada: si se calcularan sobre
+    // la página, el desplegable iría perdiendo opciones a medida que el
+    // visitante filtra o pagina.
+    const categoriasDisponibles = [...new Set(listado.map(i => i.categoria).filter(Boolean))].sort();
+    const etiquetasDisponibles = [...new Set(listado.map(i => i.etiqueta).filter(Boolean))].sort();
+
+    const min = precioMin !== null && precioMin !== '' && !Number.isNaN(Number(precioMin)) ? Number(precioMin) : null;
+    const max = precioMax !== null && precioMax !== '' && !Number.isNaN(Number(precioMax)) ? Number(precioMax) : null;
+
+    const filtrado = listado.filter(i => {
+      if (min !== null && i.precio < min) return false;
+      if (max !== null && i.precio > max) return false;
+      // stock null = no rastrea stock (siempre disponible) — solo se filtra
+      // cuando el dato existe, mismo criterio que tenía el frontend.
+      if (disponibilidad === 'en_stock' && i.stock != null && i.stock <= 0) return false;
+      if (disponibilidad === 'agotado' && !(i.stock != null && i.stock <= 0)) return false;
+      if (categoria && categoria !== 'todas' && i.categoria !== categoria) return false;
+      if (etiqueta && etiqueta !== 'todas' && i.etiqueta !== etiqueta) return false;
+      return true;
+    });
+
+    if (orden === 'az') filtrado.sort((a, b) => a.nombre.localeCompare(b.nombre));
+    else if (orden === 'za') filtrado.sort((a, b) => b.nombre.localeCompare(a.nombre));
+    else if (orden === 'min-max') filtrado.sort((a, b) => a.precio - b.precio);
+    else if (orden === 'max-min') filtrado.sort((a, b) => b.precio - a.precio);
+    // 'destacados' (default): se deja el orden natural (LandingItem.orden ASC).
+
+    const total = filtrado.length;
+    // Tope defensivo: nadie pide 100000 productos de una en un catálogo público.
+    const porPaginaFinal = Math.min(Math.max(Number(porPagina) || 24, 1), 100);
+    const totalPaginas = Math.max(1, Math.ceil(total / porPaginaFinal));
+    const paginaFinal = Math.min(Math.max(Number(pagina) || 1, 1), totalPaginas);
+    const pageSlice = filtrado.slice((paginaFinal - 1) * porPaginaFinal, paginaFinal * porPaginaFinal);
+
+    // Fase 2: acá es donde se paga el ahorro real de paginar — las
+    // imágenes (varias filas por producto) se piden SOLO para los
+    // productos de esta página, no para el catálogo entero.
+    const idsImagenPagina = pageSlice.filter(i => !i.esCombo).map(i => i.referencia_id);
+    const imagenesPagina = idsImagenPagina.length
+      ? await ProductoImagen.findAll({
+        where: { producto_id: { [Op.in]: idsImagenPagina } },
+        attributes: ATRIBUTOS_IMAGEN_PRODUCTO,
+        order: [['producto_id', 'ASC'], ['orden', 'ASC']],
+      })
+      : [];
+    const mapaImagenes = new Map();
+    imagenesPagina.forEach(img => {
+      const lista = mapaImagenes.get(img.producto_id) || [];
+      lista.push(this.serializarImagenProducto(img));
+      mapaImagenes.set(img.producto_id, lista);
+    });
+
+    const itemsDto = pageSlice.map(({ item, entidad, esCombo, ...resto }) => {
       const override = esCombo
         ? this.overrideDeCombo(landing.content, entidad.id)
         : this.overrideDeProducto(landing.content, entidad.id);
@@ -2452,39 +2607,38 @@ class LandingService {
         : (mapaImagenes.get(entidad.id) || []);
       const galeriaGeneral = galeriaFuente.filter(i => !i.variante_id);
       const imagenesBase = galeriaGeneral.length ? galeriaGeneral : galeriaFuente;
-      const imagenesDto = imagenesBase.map(i => i.url);
+      const imagenesDto = imagenesBase.map(i => this.serializarImagenProducto(i));
       const galeriaPublica = resolverMedios(override, imagenesBase, imagenesDto);
       const primeraImagen = (galeriaPublica || []).find(m => typeof m === 'string' || m?.tipo !== 'video');
-      const imagenPrincipal = typeof primeraImagen === 'string' ? primeraImagen : (primeraImagen?.url || imagenesDto[0] || null);
+      const imagenPrincipal = typeof primeraImagen === 'string' ? primeraImagen : (primeraImagen?.url || imagenesDto[0]?.url || imagenesDto[0] || null);
 
-      itemsDto.push({
-        content_id: entidad.slug || `${item.tipo}-${entidad.id}`,
-        referencia_id: entidad.id,
-        tipo: item.tipo,
-        nombre: entidad.nombre,
+      return {
+        content_id: resto.content_id,
+        referencia_id: resto.referencia_id,
+        tipo: resto.tipo,
+        nombre: resto.nombre,
         descripcion: esCombo ? entidad.descripcion : (override?.descripcion || entidad.descripcion_corta),
-        precio: precioEfectivo,
-        precio_antes: precioAntes,
-        descuento_pct: precioAntes ? Math.round((1 - precioEfectivo / precioAntes) * 100) : 0,
+        precio: resto.precio,
+        precio_antes: resto.precio_antes,
+        descuento_pct: resto.precio_antes ? Math.round((1 - resto.precio / resto.precio_antes) * 100) : 0,
         imagen: imagenPrincipal,
         imagenes: galeriaPublica,
-        stock: esCombo ? (productoParaFiltros?.cantidad_disponible ?? null) : entidad.cantidad_disponible,
-        categoria: productoParaFiltros?.categoria?.nombre || null,
-        marca: productoParaFiltros?.Marca?.nombre || null,
-        etiqueta: item.etiqueta,
+        stock: resto.stock,
+        categoria: resto.categoria,
+        marca: resto.marca,
+        etiqueta: resto.etiqueta,
         envio_incluido: item.envio_incluido === true,
-        destacado: esCombo ? false : !!entidad.destacado,
-        creado: item.createdAt,
-        mostrar_en_inicio: item.mostrar_en_inicio !== false,
+        destacado: resto.destacado,
+        creado: resto.creado,
+        mostrar_en_inicio: resto.mostrar_en_inicio,
         variantes: [],
         opciones: [],
         ofertas: [],
-      });
-    }
+      };
+    });
 
     const esRigida = landing.template?.kind === 'rigido';
     const esFunnel = landing.template?.kind === 'funnel';
-    const itemsHomeDto = itemsDto.filter(i => i.mostrar_en_inicio);
     return {
       disponible: true,
       id: landing.id,
@@ -2501,9 +2655,9 @@ class LandingService {
       tema: (esRigida || esFunnel) ? {
         modo: landing.tema_modo,
         primario: landing.color_primario || null,
-        secundario: null,
+        secundario: tienda.color_secundario || null,
         fondo: landing.color_fondo || null,
-        texto: landing.color_texto || null,
+        texto: landing.color_texto || (esRigida ? (tienda.color_secundario || null) : null),
         tarjeta: landing.color_tarjeta || null,
       } : {
         modo: landing.tema_modo,
@@ -2542,8 +2696,8 @@ class LandingService {
         incluir_url: !!landing.whatsapp_incluir_url,
       },
       content: { ofertas_carrito: [] },
-      checkout: { redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp, pasarelas: [] },
-      delivery_ciudades: [],
+      checkout: { redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp, pasarelas: pasarelasPublicas },
+      delivery_ciudades: deliveryCiudadesDto,
       banner: null,
       seo: {
         titulo: landing.seo_titulo || landing.titulo,
@@ -2557,8 +2711,11 @@ class LandingService {
         google_analytics_id: tienda.google_analytics_id || null,
         tiktok_pixel_id: tienda.tiktok_pixel_id || null,
       },
-      items: esRigida ? itemsHomeDto : itemsDto,
+      items: itemsDto,
       catalogo_items: itemsDto,
+      paginacion: { pagina: paginaFinal, porPagina: porPaginaFinal, total, totalPaginas },
+      categorias_disponibles: categoriasDisponibles,
+      etiquetas_disponibles: etiquetasDisponibles,
       secciones: [],
       secciones_producto: [],
       testimonios: [],
@@ -2858,8 +3015,7 @@ class LandingService {
       // genérico de cantidad simple.
       const { suficiente, faltantes } = PricingService.validarStock(resuelto, { mapaProducto: mapaStock, mapaVariante: mapaVariantePorId });
       if (!suficiente && throwOnStockInsuficiente) {
-        const primero = faltantes[0];
-        const err = new Error(`"${resuelto.nombre_final}" no tiene stock suficiente (disponible: ${primero.disponible}).`);
+        const err = new Error(`"${resuelto.nombre_final}" no tiene stock suficiente.`);
         err.status = 409;
         throw err;
       }

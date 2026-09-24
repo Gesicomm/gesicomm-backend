@@ -8,6 +8,7 @@ router.use(verificarToken);
 
 router.get('/zonas-delivery', courierController.listZonasDelivery);
 router.put('/zonas-delivery', courierController.replaceZonasDelivery);
+router.post('/geografia', courierController.catalogoGeografico);
 
 router.get('/', courierController.listCouriers);
 router.post('/', courierController.createCourier);

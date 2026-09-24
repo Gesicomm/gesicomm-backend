@@ -1,6 +1,7 @@
 'use strict';
 
 const { sequelize, IngresoInventario, IngresoInventarioItem, HistorialIngresoInventario, InventarioUbicacion, Deposito, Producto, ProductoVariante, Usuario } = require('../models');
+const { notificarIngresoConfirmadoSinBloquear } = require('./notificaciones/inventarioNotificaciones.service');
 
 const ESTADOS = {
   BORRADOR: 'BORRADOR',
@@ -82,8 +83,12 @@ class IngresoInventarioService {
    * Comercio confirma el envío (pasa a PENDIENTE_ENVIO).
    */
   static async confirmarEnvio(ingreso_id, usuario_id) {
-    return sequelize.transaction(async (t) => {
-      const ingreso = await IngresoInventario.findOne({ where: { id: ingreso_id, usuario_id }, transaction: t });
+    const ingreso = await sequelize.transaction(async (t) => {
+      const ingreso = await IngresoInventario.findOne({
+        where: { id: ingreso_id, usuario_id },
+        include: [{ model: IngresoInventarioItem, as: 'items' }],
+        transaction: t,
+      });
       if (!ingreso) throw errorHttp('Ingreso no encontrado', 404);
       if (ingreso.estado !== ESTADOS.BORRADOR) throw errorHttp('Solo se puede confirmar envíos en estado BORRADOR');
 
@@ -93,6 +98,13 @@ class IngresoInventarioService {
 
       return ingreso;
     });
+
+    // Fuera de la transaccion, a proposito: si la notificacion fallara nunca
+    // debe revertir la confirmacion del envio (mismo criterio que el resto
+    // de los '...SinBloquear' del proyecto).
+    notificarIngresoConfirmadoSinBloquear(ingreso);
+
+    return ingreso;
   }
 
   /**

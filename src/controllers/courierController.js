@@ -1,5 +1,6 @@
 const { Op } = require('sequelize');
 const { sequelize, Courier, DeliveryZonaTarifa } = require('../models');
+const RedFulfillmentService = require('../services/redFulfillment.service');
 const { envolverControlador } = require('../utils/asyncHandler');
 
 /** Las tarifas del comercio, tal como las consumen el listado y el guardado. */
@@ -40,11 +41,18 @@ function normalizarZonaDelivery(t, usuarioId, couriersPermitidos) {
   const courierId = (t.courier_id === '' || t.courier_id === undefined || t.courier_id === null)
     ? null
     : Number(t.courier_id);
+  const numeroONull = (valor) => (
+    valor === '' || valor === undefined || valor === null ? null : Number(valor)
+  );
   return {
     usuario_id: usuarioId,
     courier_id: courierId && couriersPermitidos.has(courierId) ? courierId : null,
     departamento: t.departamento ? String(t.departamento).trim() : null,
     ciudad: String(t.ciudad || t.ciudad_zona || '').trim(),
+    ciudad_id: numeroONull(t.ciudad_id),
+    departamento_id: numeroONull(t.departamento_id),
+    pais_id: numeroONull(t.pais_id),
+    tipo_cobertura: t.tipo_cobertura || 'CIUDAD',
     tipo_pago: t.tipo_pago || 'Ambos',
     rango_min: (t.rango_min === '' || t.rango_min === undefined || t.rango_min === null) ? 0 : Number(t.rango_min),
     rango_max: (t.rango_max === '' || t.rango_max === undefined || t.rango_max === null) ? null : Number(t.rango_max),
@@ -132,6 +140,16 @@ exports.listZonasDelivery = async (req, res) => {
     res.json(await zonasDelUsuario(usuario_id));
   } catch (error) {
     console.error('Error listing delivery zones:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+exports.catalogoGeografico = async (req, res) => {
+  try {
+    const conCiudades = req.body?.conCiudades === true || req.body?.conCiudades === 1 || req.body?.conCiudades === '1';
+    res.json(await RedFulfillmentService.catalogoGeografico({ conCiudades }));
+  } catch (error) {
+    console.error('Error listing courier geography catalog:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };

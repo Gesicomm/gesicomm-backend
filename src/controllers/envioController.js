@@ -1,4 +1,4 @@
-const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Deposito, Rol, SeguimientoRecordatorio, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, ProveedorLogistico, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Deposito, Rol, SeguimientoRecordatorio, InventarioUbicacion, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
@@ -142,7 +142,119 @@ function costoParaComerciante(prod, usuario_id) {
 // Exportada al final del archivo: el webhook de PagoPar la necesita para
 // confirmar un pedido pagado con el MISMO descuento de stock que usa el
 // cambio de estado manual, en vez de duplicar la lógica.
+/**
+ * Reserva stock desde un Centro de Fulfillment de Gesicomm para una venta,
+ * ANTES de tocar stock_salon/stock_deposito. Es una reserva puramente
+ * informativa/de ruteo: nunca cambia Producto.cantidad_disponible ni
+ * stock_deposito (esos siguen siendo, sin excepcion, la unica fuente de
+ * verdad de cuanto hay para vender en todo el resto del sistema — catalogo,
+ * landing, dashboard, alertas de stock bajo). Lo unico que decide es de
+ * donde sale FISICAMENTE lo vendido, para poder avisarle a Gesicomm que
+ * tiene que prepararlo (ver EnvioItemComponente.origen_centro_id).
+ *
+ * Si InventarioUbicacion queda desincronizada de stock_deposito con el
+ * tiempo, el peor caso es que un pedido no se rutee a la cola de Gesicomm
+ * cuando deberia (se prepara como si fuera stock propio) — nunca se vende
+ * de mas ni de menos, porque el total vendible nunca depende de esta tabla.
+ */
+async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadNecesaria, t, permiteGesicomm) {
+  if (cantidadNecesaria <= 0) return null;
+
+  // Un deposito propio trackeado (llego por Abastecimiento a "mi deposito")
+  // siempre es candidato: es informacion propia del comercio, no depende de
+  // como reparte sus entregas. Un Centro Gesicomm solo es candidato si la
+  // tienda eligio modalidad GESICOMM — sus couriers propios no tienen forma
+  // de retirar de ahi.
+  const depositoWhere = permiteGesicomm ? {} : { alcance: { [Op.ne]: 'GESICOMM' } };
+
+  const ubicacion = await InventarioUbicacion.findOne({
+    where: {
+      producto_id,
+      variante_id: variante_id || null,
+      cantidad_disponible: { [Op.gt]: 0 },
+    },
+    include: [{ model: Deposito, as: 'Deposito', where: depositoWhere, attributes: ['alcance'] }],
+    order: [['cantidad_disponible', 'DESC']],
+    transaction: t,
+    lock: Transaction.LOCK.UPDATE,
+  });
+  if (!ubicacion) return null;
+
+  const cantidad = Math.min(ubicacion.cantidad_disponible, cantidadNecesaria);
+  if (cantidad <= 0) return null;
+
+  await ubicacion.update({
+    cantidad_disponible: ubicacion.cantidad_disponible - cantidad,
+    cantidad_reservada: ubicacion.cantidad_reservada + cantidad,
+  }, { transaction: t });
+
+  return { centro_id: ubicacion.deposito_id, cantidad };
+}
+
+/**
+ * Resuelve, antes de reservar nada, de que ubicacion fisica sale cada linea
+ * del pedido — solo para las que tienen stock trackeado en
+ * InventarioUbicacion (llegado por Ingreso o Abastecimiento). Lo que no
+ * esta trackeado (producto propio cargado directo, sin pasar por ningun
+ * flujo de abastecimiento) se trata como stock generico, compatible con
+ * cualquier origen: no bloquea, porque hoy no hay forma de saber en cual de
+ * los depositos propios del comercio esta.
+ *
+ * Si dos lineas resuelven a ubicaciones especificas DISTINTAS, el pedido no
+ * se puede despachar en un solo paquete: se rechaza con 409
+ * PEDIDO_REQUIERE_SPLIT antes de tocar stock.
+ */
+async function resolverPlanFulfillment(items, t) {
+  const totalPorClave = new Map();
+  for (const item of items || []) {
+    const receta = await resolverReceta(item, t);
+    for (const { producto_id, variante_id, cantidad } of receta) {
+      const clave = `${producto_id}:${variante_id || ''}`;
+      const actual = totalPorClave.get(clave) || { producto_id, variante_id, cantidad: 0 };
+      actual.cantidad += cantidad;
+      totalPorClave.set(clave, actual);
+    }
+  }
+
+  let hayGenerico = false;
+  const especificos = new Map(); // deposito_id -> alcance
+  for (const { producto_id, variante_id } of totalPorClave.values()) {
+    const ubicacion = await InventarioUbicacion.findOne({
+      where: { producto_id, variante_id: variante_id || null, cantidad_disponible: { [Op.gt]: 0 } },
+      include: [{ model: Deposito, as: 'Deposito', attributes: ['alcance'] }],
+      order: [['cantidad_disponible', 'DESC']],
+      transaction: t,
+    });
+    if (ubicacion) {
+      especificos.set(ubicacion.deposito_id, ubicacion.Deposito?.alcance);
+    } else {
+      hayGenerico = true;
+    }
+  }
+
+  const distintos = especificos.size;
+  const incluyeGesicomm = [...especificos.values()].includes('GESICOMM');
+  const requiereSplit = distintos > 1 || (distintos === 1 && incluyeGesicomm && hayGenerico);
+
+  if (requiereSplit) {
+    const err = new Error('Este pedido mezcla productos que están en depósitos distintos: hay que separarlo en dos envíos.');
+    err.status = 409;
+    err.code = 'PEDIDO_REQUIERE_SPLIT';
+    throw err;
+  }
+}
+
 async function descontarStockYSnapshot(items, t, usuario_id) {
+  await resolverPlanFulfillment(items, t);
+
+  // Si la tienda eligio despachar con logistica PROPIA, no tiene sentido
+  // reservar de un Centro Gesicomm aunque tenga stock ahi: sus couriers
+  // salen de SU deposito, no tienen forma de retirar del centro de
+  // Gesicomm. Reservar igual dejaria la venta atada a un lugar que nadie
+  // va a ir a buscar.
+  const tienda = await Tienda.findOne({ where: { usuario_id }, transaction: t });
+  const permiteGesicomm = tienda?.modalidad_fulfillment === 'GESICOMM';
+
   const recetaPorItem = new Map();
   // Agrupado por producto_id:variante_id — un mismo producto puede aparecer
   // dos veces en el mismo pedido con variantes distintas (ej. un bump de
@@ -162,8 +274,13 @@ async function descontarStockYSnapshot(items, t, usuario_id) {
 
   const productosPorId = new Map();
   const productosConDescuentoDeVariante = new Set();
+  const origenGesicommPorClave = new Map();
 
   for (const { producto_id, variante_id, cantidad: cantidadTotal } of totalPorClave.values()) {
+    const clave = `${producto_id}:${variante_id || ''}`;
+    const origenGesicomm = await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm);
+    if (origenGesicomm) origenGesicommPorClave.set(clave, origenGesicomm);
+
     if (variante_id) {
       const variante = await ProductoVariante.findByPk(variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
       if (!variante) continue;
@@ -248,12 +365,24 @@ async function descontarStockYSnapshot(items, t, usuario_id) {
     const receta = recetaPorItem.get(item.id) || [];
     for (const { producto_id, variante_id, cantidad } of receta) {
       const prod = productosPorId.get(producto_id);
+      const clave = `${producto_id}:${variante_id || ''}`;
+      const origenGesicomm = origenGesicommPorClave.get(clave);
+      let origen_centro_id = null;
+      let cantidad_desde_centro = null;
+      if (origenGesicomm && origenGesicomm.cantidad > 0) {
+        const tomado = Math.min(origenGesicomm.cantidad, cantidad);
+        origen_centro_id = origenGesicomm.centro_id;
+        cantidad_desde_centro = tomado;
+        origenGesicomm.cantidad -= tomado;
+      }
       await EnvioItemComponente.create({
         envio_item_id: item.id,
         producto_id,
         variante_id,
         cantidad,
         costo_unitario: costoParaComerciante(prod, usuario_id),
+        origen_centro_id,
+        cantidad_desde_centro,
       }, { transaction: t });
     }
   }
@@ -277,6 +406,23 @@ async function moverAReservadoATransito(items, t) {
   for (const c of componentes) {
     totalPorProducto.set(c.producto_id, (totalPorProducto.get(c.producto_id) || 0) + c.cantidad);
   }
+
+  // Lo reservado en un Centro Gesicomm ya salio fisicamente de su deposito
+  // al llegar a este punto (Gesicomm lo preparo y lo despacho): se libera
+  // la reserva sin volver a cantidad_disponible, porque ya no esta ahi.
+  for (const c of componentes) {
+    if (!c.origen_centro_id || !c.cantidad_desde_centro) continue;
+    const ubicacion = await InventarioUbicacion.findOne({
+      where: { producto_id: c.producto_id, variante_id: c.variante_id || null, deposito_id: c.origen_centro_id },
+      transaction: t,
+      lock: Transaction.LOCK.UPDATE,
+    });
+    if (!ubicacion) continue;
+    await ubicacion.update({
+      cantidad_reservada: Math.max(0, ubicacion.cantidad_reservada - c.cantidad_desde_centro),
+    }, { transaction: t });
+  }
+
   for (const [producto_id, cantidad] of totalPorProducto) {
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (!prod) continue;
@@ -329,6 +475,27 @@ async function liberarStock(envio, items, t) {
   for (const c of componentes) {
     totalPorProducto.set(c.producto_id, (totalPorProducto.get(c.producto_id) || 0) + c.cantidad);
   }
+
+  // Espejo de reservarDesdeUbicacionTracked: solo se devuelve si el pedido nunca se
+  // despacho. Si ya se despacho, moverAReservadoATransito ya libero esa
+  // reserva (la mercaderia ya habia salido del centro Gesicomm), asi que
+  // sumarla de nuevo la duplicaria.
+  if (!envio.stock_despachado) {
+    for (const c of componentes) {
+      if (!c.origen_centro_id || !c.cantidad_desde_centro) continue;
+      const ubicacion = await InventarioUbicacion.findOne({
+        where: { producto_id: c.producto_id, variante_id: c.variante_id || null, deposito_id: c.origen_centro_id },
+        transaction: t,
+        lock: Transaction.LOCK.UPDATE,
+      });
+      if (!ubicacion) continue;
+      await ubicacion.update({
+        cantidad_disponible: ubicacion.cantidad_disponible + c.cantidad_desde_centro,
+        cantidad_reservada: Math.max(0, ubicacion.cantidad_reservada - c.cantidad_desde_centro),
+      }, { transaction: t });
+    }
+  }
+
   const campoOrigen = envio.stock_despachado ? 'cantidad_transito' : 'cantidad_reservada';
   for (const [producto_id, cantidad] of totalPorProducto) {
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
@@ -380,6 +547,17 @@ async function registrarDevolucionComponentes(envio, itemsPayload, t) {
       throw new Error(`Cantidad a devolver (${cant}) supera la cantidad disponible (${disponibleParaDevolver}) del componente ${envio_item_componente_id}`);
     }
 
+    // Que parte de ESTA devolucion corresponde a stock que salio de un
+    // Centro Gesicomm: mismo criterio "Gesicomm primero" que uso la venta
+    // al reservar (reservarDesdeUbicacionTracked), aplicado ahora en sentido
+    // inverso sobre lo que ya se gestiono de este componente. Sin esto,
+    // InventarioUbicacion nunca recuperaba una devolucion vendible — el
+    // stock quedaba contado como reservado/afuera para siempre.
+    const origenTotal = componente.origen_centro_id ? (componente.cantidad_desde_centro || 0) : 0;
+    const yaConsumidoDeGesicomm = Math.min(yaGestionado, origenTotal);
+    const restanteDeGesicomm = origenTotal - yaConsumidoDeGesicomm;
+    const cantDesdeGesicomm = Math.min(restanteDeGesicomm, cant);
+
     const prod = await Producto.findByPk(componente.producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (prod) {
       const transito = Math.max(0, (parseInt(prod.cantidad_transito) || 0) - cant);
@@ -393,6 +571,27 @@ async function registrarDevolucionComponentes(envio, itemsPayload, t) {
         if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') actualizacion.estado_venta = 'en_venta';
       }
       await prod.update(actualizacion, { transaction: t });
+    }
+
+    // Espejo en InventarioUbicacion: si esta devolucion (o parte de ella)
+    // salio originalmente de un centro Gesicomm y vuelve vendible, esas
+    // unidades quedan otra vez disponibles ahi — nunca en "reservada", que
+    // ya se libero al despachar (moverAReservadoATransito).
+    if (condicion === 'vendible' && cantDesdeGesicomm > 0) {
+      const ubicacion = await InventarioUbicacion.findOne({
+        where: {
+          producto_id: componente.producto_id,
+          variante_id: componente.variante_id || null,
+          deposito_id: componente.origen_centro_id,
+        },
+        transaction: t,
+        lock: Transaction.LOCK.UPDATE,
+      });
+      if (ubicacion) {
+        await ubicacion.update({
+          cantidad_disponible: ubicacion.cantidad_disponible + cantDesdeGesicomm,
+        }, { transaction: t });
+      }
     }
 
     if (condicion === 'vendible') {
@@ -610,7 +809,17 @@ function aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id } = {}) {
   }
 }
 
-function aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado } = {}) {
+function aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado, abastecimiento_estado_exacto } = {}) {
+  if (abastecimiento_estado_exacto && abastecimiento_estado_exacto !== 'TODOS') {
+    if (!ABASTECIMIENTO_ESTADOS.includes(abastecimiento_estado_exacto)) {
+      const err = new Error(`Estado de abastecimiento inválido: "${abastecimiento_estado_exacto}".`);
+      err.status = 400;
+      throw err;
+    }
+    where.abastecimiento_estado = abastecimiento_estado_exacto;
+    return;
+  }
+
   if (abastecimiento_estado && abastecimiento_estado !== 'TODOS') {
     const grupo = ABASTECIMIENTO_GRUPOS[abastecimiento_estado];
     if (grupo) {
@@ -657,14 +866,27 @@ async function calcularAbastecimientoDesdeItems(items, usuario_id, t) {
 
   for (const item of items || []) {
     const receta = await resolverReceta(item, t);
-    for (const { producto_id, cantidad } of receta) {
+    for (const { producto_id, variante_id, cantidad } of receta) {
       const prod = await Producto.findByPk(producto_id, {
         transaction: t,
         include: [{ model: Usuario, as: 'Creador', include: [Rol] }],
       });
       if (!esProductoCargadoPorAdmin(prod)) continue;
+
+      // Si ya hay stock de este producto acreditado en InventarioUbicacion
+      // (llegó por un Ingreso propio o una SolicitudAbastecimiento ya
+      // pagada, en cualquier centro Gesicomm o depósito propio), esa
+      // porción no genera una obligación NUEVA de abastecimiento — ya se
+      // pagó cuando se trajo. Solo lo que excede ese disponible es nuevo.
+      const disponibleAcreditado = (await InventarioUbicacion.sum('cantidad_disponible', {
+        where: { producto_id, variante_id: variante_id || null },
+        transaction: t,
+      })) || 0;
+      const cantidadNueva = Math.max(0, (Number(cantidad) || 0) - disponibleAcreditado);
+      if (cantidadNueva <= 0) continue;
+
       requiere = true;
-      costo += costoParaComerciante(prod, usuario_id) * (Number(cantidad) || 0);
+      costo += costoParaComerciante(prod, usuario_id) * cantidadNueva;
     }
   }
 
@@ -943,6 +1165,7 @@ exports.listEnviosPaginados = async (req, res) => {
       producto_busqueda,
       solo_abastecimiento,
       abastecimiento_estado,
+      abastecimiento_estado_exacto,
       // --- Filtros de seguimiento WhatsApp (BE-10) ---
       etiqueta_id,             // pedidos con esa etiqueta activa
       plantilla_id,            // pedidos donde se usó esa plantilla al menos una vez
@@ -1016,7 +1239,7 @@ exports.listEnviosPaginados = async (req, res) => {
     if (canal_venta_id && canal_venta_id !== 'TODOS') {
       where.canal_venta_id = canal_venta_id;
     }
-    aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado });
+    aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado, abastecimiento_estado_exacto });
     if (producto_busqueda && producto_busqueda.trim()) {
       const term = producto_busqueda.trim().replace(/'/g, "''");
       where[Op.and] = [
@@ -1239,7 +1462,7 @@ exports.createEnvio = async (req, res) => {
         // 'false' (contra entrega, el caso normal) — mismo criterio que
         // delivery_a_cargo arriba.
         pago_anticipado: pago_anticipado === true,
-        metodo_pago: metodo_pago || 'Efectivo',
+        metodo_pago: metodo_pago || null,
         metodo_pago_id: metodo_pago_id || null,
         comision_pct_aplicada: comision_pct_aplicada || 0,
         observaciones,
@@ -1314,7 +1537,7 @@ exports.createEnvio = async (req, res) => {
   } catch (error) {
     if (t) await t.rollback();
     console.error('Error creating envio:', error);
-    res.status(500).json({ error: 'Error al crear el envío' });
+    res.status(error.status || 500).json({ error: error.message || 'Error al crear el envío' });
   }
 };
 
@@ -1351,7 +1574,7 @@ exports.updateEstado = async (req, res) => {
     const usuario_id = req.usuario?.id || req.usuario?.tenantId || 0;
     const { id } = req.params;
     const {
-      estado, courier_id, estado_comercial, estado_logistico,
+      estado, courier_id, proveedor_logistico_id, estado_comercial, estado_logistico,
       // Campos que completa el modal único de Pedido (mismo componente de
       // alta, en modo "completar") al confirmar — el checkout público no
       // los pide (ruc es opcional ahí; courier/costo de envío los define
@@ -1368,7 +1591,7 @@ exports.updateEstado = async (req, res) => {
       costo_intento,
     } = req.body;
 
-    if (!estado && courier_id === undefined && !estado_comercial && !estado_logistico) {
+    if (!estado && courier_id === undefined && proveedor_logistico_id === undefined && !estado_comercial && !estado_logistico) {
       await t.rollback();
       return res.status(400).json({ error: 'Se requiere al menos estado o courier_id' });
     }
@@ -1573,6 +1796,7 @@ exports.updateEstado = async (req, res) => {
     // envioRoutes.js /abastecimiento/*), que valida actor + transición en
     // vez de aceptar cualquier valor que mande el cliente.
     if (courier_id !== undefined) updateData.courier_id = courier_id;
+    if (proveedor_logistico_id !== undefined) updateData.proveedor_logistico_id = proveedor_logistico_id;
     if (ruc !== undefined) updateData.ruc = ruc;
     if (direccion !== undefined) updateData.direccion = direccion;
     if (referencia !== undefined) updateData.referencia = referencia;
@@ -1594,13 +1818,19 @@ exports.updateEstado = async (req, res) => {
     if (typeof pago_anticipado === 'boolean') {
       updateData.pago_anticipado = pago_anticipado;
     }
-    // Mismo criterio que en la transición a Entregado: si el pedido to el
-    // método de pago cambia (edición fuera de esa transición — ej. NuevoPe-
-    // didoModal en modo editar), el nombre y la comisión se derivan del
-    // catálogo en vez de confiar en lo que el formulario haya calculado.
-    // El bloque de arriba ya cubrió el caso `estado === 'Entregado'`; este
-    // es para cuando se toca metodo_pago_id SIN cambiar de estado.
-    if (metodo_pago_id !== undefined && updateData.metodo_pago_id === undefined) {
+    // El método de pago real se define al marcar Entregado. Antes de eso
+    // solo corresponde `pago_anticipado` para saber si cobra al recibir o ya
+    // viene pago.
+    const puedeEditarMetodoPago = envio.estado === 'Entregado' || estado === 'Entregado';
+    if (!puedeEditarMetodoPago && (metodo_pago_id !== undefined || metodo_pago !== undefined)) {
+      await t.rollback();
+      return res.status(400).json({ error: 'El método de pago se define recién al marcar el pedido como Entregado.' });
+    }
+
+    // Mismo criterio que en la transición a Entregado: si el método de pago
+    // cambia en una edición de un pedido ya entregado, el nombre y la comisión
+    // se derivan del catálogo en vez de confiar en el formulario.
+    if (puedeEditarMetodoPago && metodo_pago_id !== undefined && updateData.metodo_pago_id === undefined) {
       const metodoEditado = await MetodoPago.findByPk(metodo_pago_id, { transaction: t });
       if (!metodoEditado) {
         await t.rollback();
@@ -1609,7 +1839,7 @@ exports.updateEstado = async (req, res) => {
       updateData.metodo_pago_id = metodo_pago_id;
       updateData.metodo_pago = metodoEditado.nombre;
       updateData.comision_pct_aplicada = Number(metodoEditado.comision_porcentaje) || 0;
-    } else if (metodo_pago !== undefined && updateData.metodo_pago === undefined) {
+    } else if (puedeEditarMetodoPago && metodo_pago !== undefined && updateData.metodo_pago === undefined) {
       // Sin metodo_pago_id (carga legacy o texto libre): se respeta el texto
       // tal cual, como siempre.
       updateData.metodo_pago = metodo_pago;
@@ -1671,7 +1901,7 @@ exports.updateEstado = async (req, res) => {
     console.error('Error updating estado:', error);
     const status = error.status || 500;
     const message = error.message || 'Error interno del servidor';
-    res.status(status).json({ error: message, message });
+    res.status(status).json({ error: message, message, ...(error.code ? { code: error.code } : {}) });
   }
 };
 
@@ -1770,7 +2000,7 @@ exports.actualizarPrecioItem = async (req, res) => {
 exports.cotizarLogisticaAbastecimiento = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
-    const { tipoLogistica, depositoId } = req.body || {};
+    const { tipoLogistica, depositoId, cantidad } = req.body || {};
 
     if (tipoLogistica === 'GESICOMM') {
       return res.json({ costo: 0, tiempo: null, proveedor: 'Red Gesicomm', cubierto: true });
@@ -1788,26 +2018,22 @@ exports.cotizarLogisticaAbastecimiento = async (req, res) => {
         return res.json({ cubierto: false, mensaje: 'Gesicomm aún no tiene centros activos.' });
       }
 
+      const cantidadPedida = Math.max(1, Number(cantidad) || 1);
       const opciones = await TarifaDelivery.resolverOpcionesDeRed(
         { centroIds: centros.map((c) => c.id) },
-        { paymentMethod: 'efectivo', items: [] }
+        { paymentMethod: 'efectivo', items: [{ cantidad: cantidadPedida }] }
       );
 
-      const opcionesValidas = opciones.filter(o => 
-        (o.tipo_cobertura === 'CIUDAD' && o.ciudad_id === deposito.ciudad_id) ||
-        (o.tipo_cobertura === 'RESTO_DEPARTAMENTO' && o.departamento_id === deposito.departamento_id) ||
-        (o.tipo_cobertura === 'RESTO_PAIS')
-      );
+      // Deposito no tiene ciudad_id/departamento_id: la resolucion de destino
+      // usa coincidencia exacta por texto, igual que el resto del sistema.
+      const mejor = TarifaDelivery.buscarOpcion(opciones, deposito.ciudad, deposito.departamento);
 
-      if (opcionesValidas.length === 0) {
+      if (!mejor) {
         return res.json({ 
           cubierto: false, 
           mensaje: 'Actualmente Gesicomm no posee cobertura logística para este depósito.' 
         });
       }
-
-      opcionesValidas.sort((a, b) => Number(a.costo) - Number(b.costo));
-      const mejor = opcionesValidas[0];
 
       return res.json({
         cubierto: true,
@@ -2281,6 +2507,28 @@ exports.conteoPorEstado = async (req, res) => {
       conteos.abastecimiento_pagado = 0;
     }
 
+    // Suma real (monto + costo de envio) de TODOS los pedidos que matchean
+    // los filtros activos, sin importar la pagina ni la pestana de estado
+    // seleccionada -- a diferencia del calculo anterior en el frontend, que
+    // sumaba solo lo que habia cargado en memoria (10 filas en la tabla,
+    // o solo el estado activo en el kanban) y por eso el 'Total visible a
+    // cobrar' mostraba numeros distintos entre Tabla y Kanban.
+    try {
+      const totalesFila = await Envio.findOne({
+        where,
+        include,
+        attributes: [
+          [Sequelize.fn('COALESCE', Sequelize.fn('SUM', Sequelize.col('Envio.monto')), 0), 'total_monto'],
+          [Sequelize.fn('COALESCE', Sequelize.fn('SUM', Sequelize.col('Envio.costo_envio')), 0), 'total_costo_envio'],
+        ],
+        raw: true,
+      });
+      conteos.total_visible_a_cobrar = (Number(totalesFila?.total_monto) || 0) + (Number(totalesFila?.total_costo_envio) || 0);
+    } catch (errTotales) {
+      console.error('Error calculando total_visible_a_cobrar en conteoPorEstado:', errTotales);
+      conteos.total_visible_a_cobrar = 0;
+    }
+
     res.json(conteos);
   } catch (error) {
     console.error('Error obteniendo conteo por estado:', error);
@@ -2722,7 +2970,105 @@ exports.deleteEnvio = async (req, res) => {
   }
 };
 
+/**
+ * Endpoint: GET /api/envios/gesicomm/pendientes
+ * ADMIN ONLY. Pedidos con al menos un componente vendido desde stock que
+ * fisicamente esta en un Centro de Fulfillment de Gesicomm (ver
+ * reservarDesdeUbicacionTracked en descontarStockYSnapshot) y que todavia no se
+ * despacharon — esta es la cola que faltaba: sin esto, nada le avisaba a
+ * Gesicomm que tenia que preparar un pedido vendido desde su stock.
+ */
+/**
+ * Matchea el proveedor logistico de la red de Gesicomm (proveedores_logisticos,
+ * NO Courier: ese es del comercio y el admin no debe verlo ni asignarlo acá)
+ * que cubre el destino del pedido, desde los centros donde realmente salió la
+ * mercadería (envio_item_componentes.origen_centro_id). Reusa el mismo
+ * matching por coincidencia EXACTA ciudad+departamento que ya usa
+ * TarifaDeliveryService para tarifas (TarifaDelivery.buscarOpcion): si no hay
+ * match exacto no se asigna nada, nunca se aproxima ni se deja a elección
+ * de una lista de "parecidos".
+ */
+exports.sugerirProveedorLogisticoGesicomm = async (req, res) => {
+  if (!esAdministrador(req)) return res.status(403).json({ error: 'Solo Admin' });
+
+  const idNum = parseInt(req.params.id, 10) || 0;
+  const envio = await Envio.findOne({
+    where: { id: idNum },
+    include: [{
+      model: EnvioItem,
+      as: 'items',
+      attributes: ['id', 'cantidad'],
+      include: [{
+        model: EnvioItemComponente,
+        as: 'componentes_vendidos',
+        attributes: ['origen_centro_id'],
+        required: false,
+      }],
+    }],
+  });
+  if (!envio) return res.status(404).json({ error: 'Envío no encontrado' });
+
+  const centroIds = [...new Set(
+    (envio.items || [])
+      .flatMap((it) => (it.componentes_vendidos || []).map((c) => c.origen_centro_id))
+      .filter(Boolean),
+  )];
+
+  const items = (envio.items || []).map((it) => ({ cantidad: it.cantidad }));
+  const paymentMethod = envio.pago_anticipado ? (envio.metodo_pago || 'transferencia') : 'efectivo';
+
+  const opciones = centroIds.length
+    ? await TarifaDelivery.resolverOpcionesDeRed({ centroIds }, { paymentMethod, items })
+    : [];
+  const match = TarifaDelivery.buscarOpcion(opciones, envio.ciudad, envio.departamento);
+
+  return res.json({
+    match: (match && match.proveedor_id) ? { proveedor_id: match.proveedor_id, proveedor_nombre: match.proveedor_nombre, costo: match.costo } : null,
+    pago_anticipado: envio.pago_anticipado,
+    metodo_pago: envio.metodo_pago,
+  });
+};
+exports.listarPedidosParaPrepararGesicomm = async (req, res) => {
+  try {
+    if (!esAdministrador(req)) return res.status(403).json({ error: 'Solo Admin' });
+
+    const envios = await Envio.findAll({
+      where: { estado: { [Op.in]: ['Confirmado', 'Preparado'] } },
+      include: [
+        { model: Usuario, attributes: ['id', 'nombre'] },
+        { model: ProveedorLogistico, as: 'proveedorLogistico', attributes: ['id', 'nombre', 'telefono', 'tipo'], required: false },
+        {
+          model: EnvioItem,
+          as: 'items',
+          required: true,
+          include: [
+            { model: ProductoVariante, as: 'Variante', attributes: ['id', 'nombre'], required: false },
+            {
+              model: EnvioItemComponente,
+              as: 'componentes_vendidos',
+              required: true,
+              where: { origen_centro_id: { [Op.ne]: null } },
+              include: [
+                { model: Producto, as: 'producto', attributes: ['id', 'nombre'] },
+                { model: Deposito, as: 'centroOrigen', attributes: ['id', 'nombre', 'ciudad'] },
+              ],
+            },
+          ],
+        },
+      ],
+      order: [['created_at', 'ASC']],
+    });
+
+    return res.json(envios);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
 exports.descontarStockYSnapshot = descontarStockYSnapshot;
+exports.costoParaComerciante = costoParaComerciante;
+exports.esProductoCargadoPorAdmin = esProductoCargadoPorAdmin;
+exports.subirComprobanteAbastecimientoMulter = subirComprobanteAbastecimientoMulter;
 exports.calcularAbastecimientoDesdeItems = calcularAbastecimientoDesdeItems;
 
 // Todo lo que estos handlers no atrapen termina en el middleware de errores
@@ -2732,5 +3078,5 @@ exports.calcularAbastecimientoDesdeItems = calcularAbastecimientoDesdeItems;
 // su propia firma (items, transacción, usuario_id), así que el tercer
 // argumento no es `next` y envolverlas se tragaría el error del llamador.
 envolverControlador(module.exports, {
-  excluir: ['descontarStockYSnapshot', 'calcularAbastecimientoDesdeItems'],
+  excluir: ['descontarStockYSnapshot', 'calcularAbastecimientoDesdeItems', 'costoParaComerciante', 'esProductoCargadoPorAdmin', 'subirComprobanteAbastecimientoMulter'],
 });
