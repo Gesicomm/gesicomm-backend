@@ -124,7 +124,13 @@ class TiendaService {
     if (payload.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(payload.email).trim())) {
       errores.push('email no tiene un formato válido.');
     }
-    for (const red of ['instagram', 'facebook', 'tiktok', 'youtube']) {
+    if (payload.canal_contacto && !['whatsapp', 'email', 'telefono', 'instagram'].includes(payload.canal_contacto)) {
+      errores.push('canal_contacto debe ser whatsapp, email, telefono o instagram.');
+    }
+    for (const [campo, max] of [['nombre_contacto', 100], ['direccion_publica', 255], ['ciudad_publica', 100]]) {
+      if (payload[campo] && String(payload[campo]).length > max) errores.push(`${campo} no puede superar los ${max} caracteres.`);
+    }
+    for (const red of ['instagram', 'facebook', 'tiktok', 'youtube', 'twitter']) {
       if (payload[red] && String(payload[red]).length > 100) errores.push(`${red} no puede superar los 100 caracteres.`);
     }
     if (payload.meta_pixel_id && !META_PIXEL_RE.test(payload.meta_pixel_id)) {
@@ -143,7 +149,8 @@ class TiendaService {
     const campos = {};
     for (const campo of [
       'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'documento', 'ruc',
-      'email', 'instagram', 'facebook', 'tiktok', 'youtube',
+      'email', 'instagram', 'facebook', 'tiktok', 'youtube', 'twitter',
+      'nombre_contacto', 'canal_contacto', 'direccion_publica', 'ciudad_publica',
       'color_primario', 'color_secundario', 'color_fondo',
       'meta_test_event_code', 'google_analytics_id', 'tiktok_pixel_id',
       'deposito_departamento', 'deposito_ciudad', 'deposito_direccion',

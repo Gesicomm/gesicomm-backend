@@ -109,6 +109,12 @@ const Tienda = sequelize.define('Tienda', {
   facebook: { type: DataTypes.STRING(100), allowNull: true },
   tiktok: { type: DataTypes.STRING(100), allowNull: true },
   youtube: { type: DataTypes.STRING(100), allowNull: true },
+  twitter: { type: DataTypes.STRING(100), allowNull: true },
+  // Contacto público ampliado (Configurar tienda → Contacto).
+  nombre_contacto: { type: DataTypes.STRING(100), allowNull: true },
+  canal_contacto: { type: DataTypes.STRING(20), allowNull: true, comment: 'whatsapp | email | telefono | instagram' },
+  direccion_publica: { type: DataTypes.STRING(255), allowNull: true, comment: 'La que se muestra al público, no la del depósito.' },
+  ciudad_publica: { type: DataTypes.STRING(100), allowNull: true },
   mensaje_contacto: {
     type: DataTypes.STRING(300),
     allowNull: true,

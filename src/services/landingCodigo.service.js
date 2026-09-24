@@ -87,6 +87,12 @@ const OPCIONES_HTML = {
     'g', 'defs', 'lineargradient', 'radialgradient', 'stop', 'use', 'symbol',
     'desc', 'mask', 'clippath', 'text', 'tspan',
     'iframe', 'canvas', 'progress', 'meter', 'output',
+    // <template>: el molde de cada lista del runtime (data-gesicomm-lista,
+    // ver runtimeGesicomm.js en el frontend). Su contenido es inerte —no se
+    // ejecuta ni se pinta— hasta que el runtime lo clona, y se sanea igual
+    // que el resto del HTML. Sin esto el guardado lo descartaba y todas las
+    // listas (catálogo, ofertas, variantes, recomendados) quedaban vacías.
+    'template',
     // <link> para hojas de estilo externas (Google Fonts es el caso real).
     // Cargar un script por acá no sirve: el CSP del documento solo admite
     // script inline. Ver construirDocumentoCodigo.js.

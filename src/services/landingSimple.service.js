@@ -393,6 +393,44 @@ class LandingSimpleService {
    * como `codigo_advertencias`; no se guardan, son del guardado que las
    * generó.
    */
+  /**
+   * Configuración de "Configurar venta" (paso 1 del lienzo en blanco).
+   * Se guarda una copia normalizada: solo claves conocidas, tipos
+   * esperados y listas acotadas, porque vuelve tal cual en la landing
+   * pública y la lee el runtime del iframe.
+   */
+  static normalizarVenta(venta) {
+    if (!venta || typeof venta !== 'object') return null;
+    const texto = (v, max = 80) => String(v ?? '').trim().slice(0, max);
+    const ids = (lista, max = 200) => (Array.isArray(lista) ? lista : [])
+      .map(Number).filter(n => Number.isInteger(n) && n > 0).slice(0, max);
+    const claves = (lista, max = 200) => (Array.isArray(lista) ? lista : [])
+      .map(v => texto(v, 120)).filter(Boolean).slice(0, max);
+    const TIPOS = ['catalogo', 'producto_unico', 'combos'];
+    const SELECCIONES = ['manual', 'todos', 'categoria'];
+    const reco = venta.recomendados && typeof venta.recomendados === 'object' ? venta.recomendados : {};
+    return {
+      configurado: venta.configurado === true,
+      tipo: TIPOS.includes(venta.tipo) ? venta.tipo : 'catalogo',
+      seleccion: SELECCIONES.includes(venta.seleccion) ? venta.seleccion : 'manual',
+      categorias: claves(venta.categorias, 50),
+      incluir_combos: venta.incluir_combos !== false,
+      cross_sell: {
+        activo: venta.cross_sell?.activo !== false,
+        ofertas: ids(venta.cross_sell?.ofertas),
+      },
+      recomendados: {
+        ...Object.fromEntries(Object.entries(reco)
+          .filter(([k, v]) => ['activo', 'modo', 'max', 'titulo'].includes(k) && ['string', 'number', 'boolean'].includes(typeof v))
+          .map(([k, v]) => [k, typeof v === 'string' ? texto(v, 120) : v])),
+        // Ids de recomendados tal cual los arma el panel (número o clave).
+        items: (Array.isArray(reco.items) ? reco.items : [])
+          .filter(v => (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && v.length <= 120))
+          .slice(0, 50),
+      },
+    };
+  }
+
   static async actualizarCodigo(landing, tienda_id, inquilino_id, payload) {
     let advertencias = [];
     if (payload.items !== undefined) {
@@ -405,6 +443,21 @@ class LandingSimpleService {
         ...(landing.content || {}),
         codigo: { html: limpio.html, css: limpio.css, js: limpio.js },
       };
+      landing.changed('content', true);
+    }
+    // Ficha de producto del lienzo: una sola plantilla que el runtime llena
+    // con el producto de la URL. Pasa por el mismo sanitizador que el inicio.
+    if (payload.vistas?.producto !== undefined) {
+      const limpioFicha = LandingCodigoService.sanitizar(payload.vistas.producto || {});
+      advertencias = [...advertencias, ...limpioFicha.advertencias.map(a => `Ficha de producto: ${a}`)];
+      landing.content = {
+        ...(landing.content || {}),
+        vistas: { ...(landing.content?.vistas || {}), producto: { html: limpioFicha.html, css: limpioFicha.css, js: limpioFicha.js } },
+      };
+      landing.changed('content', true);
+    }
+    if (payload.venta !== undefined) {
+      landing.content = { ...(landing.content || {}), venta: this.normalizarVenta(payload.venta) };
       landing.changed('content', true);
     }
     Object.assign(landing, this.camposEditables(payload, 'codigo'));

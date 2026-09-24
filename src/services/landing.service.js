@@ -22,7 +22,7 @@ const slugify = require('slugify');
 const {
   Landing, LandingItem, Producto, ProductoCombo, ProductoComboItem, Marca, PrecioUsuario,
   ProductoComboImagen, ProductoImagen, ProductoVariante, ProductoOpcion, ProductoOpcionValor, ProductoFaq, LandingSeccion, LandingEvento, Testimonio, Faq, LandingBeneficio, Envio, EnvioItem,
-  Oferta, OfertaComponente, Tienda, LandingTemplate, sequelize
+  Oferta, OfertaComponente, Tienda, LandingTemplate, Categoria, sequelize
 } = require('../models');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 const { registrarHistorial } = require('../utils/historial');
@@ -91,15 +91,17 @@ class LandingService {
       whatsapp: de(landing.contacto_whatsapp, tienda?.whatsapp),
       telefono: de(landing.contacto_telefono, tienda?.telefono),
       email: de(landing.contacto_email, tienda?.email),
-      direccion: landing.contacto_direccion || null,
-      ciudad: landing.contacto_ciudad || null,
+      direccion: de(landing.contacto_direccion, tienda?.direccion_publica),
+      ciudad: de(landing.contacto_ciudad, tienda?.ciudad_publica),
       pais: landing.contacto_pais || null,
       horarios: landing.contacto_horarios || null,
       instagram: de(landing.contacto_instagram, tienda?.instagram),
       facebook: de(landing.contacto_facebook, tienda?.facebook),
       tiktok: de(landing.contacto_tiktok, tienda?.tiktok),
       youtube: de(landing.contacto_youtube, tienda?.youtube),
-      twitter: landing.contacto_twitter || null,
+      twitter: de(landing.contacto_twitter, tienda?.twitter),
+      nombre: tienda?.nombre_contacto || null,
+      canal: tienda?.canal_contacto || null,
     };
   }
 
@@ -1455,28 +1457,13 @@ class LandingService {
     const esFunnel = landing.template?.kind === 'funnel';
     const esCodigo = landing.template?.kind === 'codigo';
 
+    // Lienzo en blanco sin productos curados: los define la regla de
+    // "Configurar venta" (todo el catálogo / por categoría, con o sin
+    // combos). Sin configuración, todo el catálogo — el comportamiento de
+    // siempre. El checkout valida con la misma regla (resolverCarrito).
     let itemsFallbackCodigo = null;
     if (esCodigo && !(landing.items || []).length) {
-      const productosFallback = await Producto.findAll({
-        where: {
-          inquilino_id: tienda.inquilino_id,
-          activo: true,
-          estado_venta: 'en_venta',
-        },
-        attributes: ['id', 'created_at'],
-        order: [['created_at', 'DESC']],
-        limit: MAX_ITEMS_POR_LANDING,
-      });
-      itemsFallbackCodigo = productosFallback.map((p, idx) => ({
-        tipo: 'producto',
-        referencia_id: p.id,
-        precio_ancla: null,
-        etiqueta: null,
-        orden: idx,
-        mostrar_en_inicio: true,
-        envio_incluido: false,
-        createdAt: p.created_at,
-      }));
+      itemsFallbackCodigo = await this.itemsSegunReglaCodigo(landing, tienda.inquilino_id);
     }
 
     // Un funnel nunca tiene LandingItem: su único producto vive en
@@ -2215,6 +2202,10 @@ class LandingService {
           css: landing.content?.codigo?.css || '',
           js: landing.content?.codigo?.js || '',
         },
+        // Ficha de producto propia y configuración de venta (formato,
+        // ventas cruzadas elegidas, recomendados): las lee el runtime.
+        ...(landing.content?.vistas?.producto ? { vistas: { producto: landing.content.vistas.producto } } : {}),
+        ...(landing.content?.venta ? { venta: landing.content.venta } : {}),
       } : {
         ofertas_carrito: landing.content?.ofertas_carrito || [],
         ofertas_producto_vista: landing.content?.ofertas_producto_vista || [],
@@ -2836,17 +2827,87 @@ class LandingService {
    *   en el item sin bloquear, para que el frontend avise sin interrumpir).
    * @returns {{landing, itemsResueltos}}
    */
+  /**
+   * Lienzo en blanco con selección por REGLA ("Todo el catálogo" / "Por
+   * categoría", content.venta.seleccion): no hay LandingItem, los productos
+   * salen de la regla. Devuelve los ids que la cumplen dentro del catálogo
+   * de la tienda (nunca de otro inquilino), activos y a la venta.
+   *
+   * @param {{producto?: number[], combo?: number[], slugs?: string[]}|null} acotar
+   *   Para el checkout: solo lo que pidió el carrito. null = hasta el tope.
+   */
+  static async itemsSegunReglaCodigo(landing, inquilino_id, acotar = null) {
+    const venta = landing.content?.venta || {};
+    const porCategoria = venta.seleccion === 'categoria';
+    const categorias = Array.isArray(venta.categorias) ? venta.categorias : [];
+    if (porCategoria && !categorias.length) return [];
+    const whereProducto = { inquilino_id, activo: true, estado_venta: 'en_venta' };
+    if (acotar) {
+      whereProducto[Op.or] = [
+        ...(acotar.producto?.length ? [{ id: { [Op.in]: acotar.producto } }] : []),
+        ...(acotar.slugs?.length ? [{ slug: { [Op.in]: acotar.slugs } }] : []),
+      ];
+      if (!whereProducto[Op.or].length) delete whereProducto[Op.or];
+    }
+    const sinProductosPedidos = acotar && !acotar.producto?.length && !acotar.slugs?.length;
+    const productos = sinProductosPedidos ? [] : await Producto.findAll({
+      where: whereProducto,
+      attributes: ['id', 'created_at'],
+      include: porCategoria
+        ? [{ model: Categoria, as: 'categoria', attributes: ['nombre'], where: { nombre: { [Op.in]: categorias } }, required: true }]
+        : [],
+      order: [['created_at', 'DESC']],
+      limit: acotar ? undefined : MAX_ITEMS_POR_LANDING,
+    });
+    const items = productos.map((p, idx) => ({
+      tipo: 'producto', referencia_id: p.id, precio_ancla: null, etiqueta: null,
+      orden: idx, mostrar_en_inicio: true, envio_incluido: false, createdAt: p.created_at,
+    }));
+    if (venta.incluir_combos !== false && (!acotar || acotar.combo?.length)) {
+      const combos = await ProductoCombo.findAll({
+        where: { inquilino_id, estado: 'ACTIVO', ...(acotar ? { id: { [Op.in]: acotar.combo } } : {}) },
+        attributes: ['id', 'created_at'],
+        limit: acotar ? undefined : MAX_ITEMS_POR_LANDING,
+      });
+      combos.forEach(c => items.push({
+        tipo: 'combo', referencia_id: c.id, precio_ancla: null, etiqueta: null,
+        orden: items.length, mostrar_en_inicio: true, envio_incluido: false, createdAt: c.created_at,
+      }));
+    }
+    return items;
+  }
+
   static async resolverCarrito(tienda, slug, items, throwOnStockInsuficiente = false) {
     const where = { tienda_id: tienda.id };
     if (slug) where.slug = slug; else where.es_home = true;
 
-    const landing = await Landing.findOne({ where, include: [{ model: LandingItem, as: 'items' }] });
+    const landing = await Landing.findOne({
+      where,
+      include: [
+        { model: LandingItem, as: 'items' },
+        { model: LandingTemplate, as: 'template', required: false, attributes: ['kind'] },
+      ],
+    });
     if (!landing) throw new Error('Landing no encontrada.');
     if (!landing.activo || !tienda.activo || !tienda.Usuario?.activo) throw new Error('Esta landing no está disponible.');
     if (!Array.isArray(items) || items.length === 0) throw new Error('El carrito está vacío.');
     if (items.length > MAX_ITEMS_CHECKOUT) throw new Error(`No se pueden pedir más de ${MAX_ITEMS_CHECKOUT} ítems distintos.`);
 
     const landingItems = landing.items || [];
+
+    // Lienzo en blanco sin productos curados = catálogo por regla (o el
+    // respaldo "todo el catálogo" de obtenerPublica): se arman los items
+    // con lo que pide el carrito, validado contra la regla y el inquilino.
+    if (landing.template?.kind === 'codigo' && !landingItems.length) {
+      const acotar = { producto: [], combo: [], slugs: [] };
+      for (const pedido of items) {
+        const cid = String(pedido?.content_id || '');
+        const m = cid.match(/^(producto|combo)-(\d+)$/);
+        if (m) acotar[m[1]].push(Number(m[2]));
+        else if (cid) acotar.slugs.push(cid);
+      }
+      landingItems.push(...await this.itemsSegunReglaCodigo(landing, tienda.inquilino_id, acotar));
+    }
     
     // FASE 5: Commerce Engine Integration para Funnels
     // Inyectamos el producto principal del funnel para que el motor valide y
