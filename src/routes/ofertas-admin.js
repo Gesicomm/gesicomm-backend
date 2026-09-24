@@ -13,6 +13,9 @@ const ofertaCtrl = require('../controllers/oferta.controller');
 
 router.use(verificarToken);
 
+// Todas las ofertas del inquilino (filtrables por estrategia/producto): el
+// armador de landing las pide de una vez en vez de producto por producto.
+router.get('/', verificarPermiso('ver_productos'), ofertaCtrl.listar);
 router.put('/:id', verificarPermiso('editar_productos'), ofertaCtrl.actualizar);
 router.delete('/:id', verificarPermiso('editar_productos'), ofertaCtrl.eliminar);
 

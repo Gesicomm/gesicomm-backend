@@ -295,6 +295,60 @@ class OfertaService {
     return ofertas.map(o => this.conMargen(o));
   }
 
+  /**
+   * Todas las ofertas del inquilino, sin pasar producto por producto. Lo usa
+   * el armador de landing para mostrar de una vez los bumps/upsells de los
+   * productos de la landing. Mismo formato que listarPorProducto (con
+   * margen) + `producto_ancla` para saber de qué producto es cada una.
+   *
+   * @param {number} inquilino_id
+   * @param {{estrategias?: string[], productoIds?: number[], soloActivas?: boolean}} filtros
+   */
+  static async listar(inquilino_id, { estrategias = [], productoIds = [], soloActivas = false } = {}) {
+    const where = { inquilino_id };
+    const validas = estrategias.filter(e => ESTRATEGIAS.includes(e));
+    if (validas.length) where.estrategia = validas;
+    if (productoIds.length) where.producto_ancla_id = productoIds;
+    if (soloActivas) where.activo = true;
+
+    const ofertas = await Oferta.findAll({
+      where,
+      include: [{
+        model: OfertaComponente,
+        as: 'componentes',
+        include: [{
+          model: Producto,
+          as: 'producto',
+          attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+          include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }],
+        }, {
+          model: ProductoVariante,
+          as: 'variante',
+        }],
+      }],
+      order: [['producto_ancla_id', 'ASC'], ['orden', 'ASC'], ['created_at', 'ASC']],
+    });
+
+    const idsAncla = [...new Set(ofertas.map(o => o.producto_ancla_id))];
+    const anclas = idsAncla.length
+      ? await Producto.findAll({
+        where: { id: idsAncla, inquilino_id },
+        attributes: ['id', 'nombre'],
+        include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }],
+      })
+      : [];
+    const mapaAnclas = new Map(anclas.map(p => {
+      const imgs = p.imagenes || [];
+      const principal = imgs.find(i => i.es_principal) || imgs[0];
+      return [p.id, { id: p.id, nombre: p.nombre, imagen: principal?.url || null }];
+    }));
+
+    return ofertas.map(o => ({
+      ...this.conMargen(o),
+      producto_ancla: mapaAnclas.get(o.producto_ancla_id) || null,
+    }));
+  }
+
   static conMargen(ofertaInstancia) {
     const oferta = ofertaInstancia.toJSON();
     const costo = (oferta.componentes || []).reduce((acc, c) => {
