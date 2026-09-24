@@ -264,6 +264,7 @@ class LandingSimpleService {
    * landing que la tuviera antes de crear esta.
    */
   static async _crearFila(tienda_id, inquilino_id, template, extra = {}) {
+    await this._eliminarLandingsEditorDeTienda(tienda_id);
     const slug = await LandingService.generarSlugUnico(template.name, tienda_id);
     await Landing.update({ es_home: false }, { where: { tienda_id, es_home: true } });
     return PaginaFactory.crearInicio({
@@ -386,15 +387,41 @@ class LandingSimpleService {
   static async actualizarCodigo(landing, tienda_id, inquilino_id, payload) {
     let advertencias = [];
     if (payload.items !== undefined) {
+      // El lienzo admite listas mucho más largas que un template (ver
+      // MAX_ITEMS_LIENZO); con "todos"/"por categoría" ni siquiera hay lista.
+      const errores = Array.isArray(payload.items) && payload.items.length > LandingService.MAX_ITEMS_LIENZO
+        ? [`Una lista elegida a mano admite hasta ${LandingService.MAX_ITEMS_LIENZO} productos. Para vender todo el catálogo usá "Todos" o "Por categoría".`]
+        : [];
+      if (errores.length) {
+        const err = new Error('Validación fallida.');
+        err.errores = errores;
+        throw err;
+      }
       await LandingService.resolverItemsCatalogo(payload.items, inquilino_id);
     }
-    if (payload.codigo !== undefined) {
-      const limpio = LandingCodigoService.sanitizar(payload.codigo);
-      advertencias = limpio.advertencias;
-      landing.content = {
-        ...(landing.content || {}),
-        codigo: { html: limpio.html, css: limpio.css, js: limpio.js },
+    // Cada vista se sanea por separado y ANTES de tocar content: si la de
+    // producto no pasa, no se guarda a medias la de inicio.
+    const limpioInicio = payload.codigo !== undefined ? LandingCodigoService.sanitizar(payload.codigo) : null;
+    const limpioProducto = payload.vistas?.producto !== undefined
+      ? this.sanitizarVista(payload.vistas.producto, 'Vista de producto')
+      : null;
+    const content = { ...(landing.content || {}) };
+    if (limpioInicio) {
+      advertencias = limpioInicio.advertencias;
+      content.codigo = { html: limpioInicio.html, css: limpioInicio.css, js: limpioInicio.js };
+    }
+    if (limpioProducto) {
+      advertencias = [...advertencias, ...limpioProducto.advertencias.map(a => `Vista de producto: ${a}`)];
+      content.vistas = {
+        ...(content.vistas || {}),
+        producto: { html: limpioProducto.html, css: limpioProducto.css, js: limpioProducto.js },
       };
+    }
+    if (payload.venta !== undefined) {
+      content.venta = LandingCodigoService.limpiarVenta(payload.venta);
+    }
+    if (limpioInicio || limpioProducto || payload.venta !== undefined) {
+      landing.content = content;
       landing.changed('content', true);
     }
     Object.assign(landing, this.camposEditables(payload, 'codigo'));
@@ -406,6 +433,16 @@ class LandingSimpleService {
     return { ...dto, codigo_advertencias: advertencias };
   }
 
+  /** sanitizar() con el nombre de la vista en cada error, para que el editor diga en cuál está. */
+  static sanitizarVista(codigo, nombre) {
+    try {
+      return LandingCodigoService.sanitizar(codigo);
+    } catch (err) {
+      if (Array.isArray(err.errores)) err.errores = err.errores.map(e => `${nombre}: ${e}`);
+      throw err;
+    }
+  }
+
   static async actualizar(id, tienda_id, inquilino_id, payload) {
     this.rechazarClavesEstructurales(payload);
 
@@ -414,7 +451,7 @@ class LandingSimpleService {
     if (landing.template?.kind === 'codigo') {
       return this.actualizarCodigo(landing, tienda_id, inquilino_id, payload);
     }
-    if (payload.codigo !== undefined) {
+    if (payload.codigo !== undefined || payload.vistas !== undefined || payload.venta !== undefined) {
       const err = new Error('Validación fallida.');
       err.errores = ['Esta landing usa un template: el código a mano solo existe en el lienzo en blanco.'];
       throw err;
@@ -507,23 +544,31 @@ class LandingSimpleService {
     }
   }
 
-  static async eliminar(id, tienda_id) {
-    const landing = await this.buscarPropia(id, tienda_id);
-    const eraPrincipal = Boolean(landing.es_home) || landing.tipo_pagina === 'inicio';
-    await this._limpiarImagenesLanding(landing);
-    await landing.destroy();
+  /**
+   * Este módulo funciona como "una landing editable por tienda". Antes se
+   * podían acumular filas rigido/codigo viejas; entonces al borrar la landing
+   * actual, /landing encontraba otra fila residual y abría su template en vez
+   * de volver al selector.
+   */
+  static async _eliminarLandingsEditorDeTienda(tienda_id) {
+    const landings = await Landing.findAll({
+      where: { tienda_id },
+      include: [{ model: LandingTemplate, as: 'template', required: true, where: { kind: { [Op.in]: KINDS_EDITOR } } }],
+    });
+    if (!landings.length) return 0;
 
-    if (eraPrincipal) {
-      const companeras = await Landing.findAll({
-        where: { tienda_id, tipo_pagina: { [Op.in]: ['catalogo', 'contacto'] } },
-      });
-      for (const companera of companeras) {
-        await this._limpiarImagenesLanding(companera);
-      }
-      await Landing.destroy({
-        where: { tienda_id, tipo_pagina: { [Op.in]: ['catalogo', 'contacto'] } },
-      });
+    for (const landing of landings) {
+      await this._limpiarImagenesLanding(landing);
     }
+
+    const ids = landings.map(l => l.id);
+    await Landing.destroy({ where: { id: { [Op.in]: ids }, tienda_id } });
+    return ids.length;
+  }
+
+  static async eliminar(id, tienda_id) {
+    await this.buscarPropia(id, tienda_id);
+    await this._eliminarLandingsEditorDeTienda(tienda_id);
     return true;
   }
 

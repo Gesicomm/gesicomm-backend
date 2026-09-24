@@ -13,6 +13,8 @@ const ofertaCtrl = require('../controllers/oferta.controller');
 
 router.use(verificarToken);
 
+// Todas las ofertas activas de la tienda (?estrategias=order_bump,upsell).
+router.get('/', verificarPermiso('ver_productos'), ofertaCtrl.listarTodas);
 router.put('/:id', verificarPermiso('editar_productos'), ofertaCtrl.actualizar);
 router.delete('/:id', verificarPermiso('editar_productos'), ofertaCtrl.eliminar);
 

@@ -13,6 +13,7 @@ const router = express.Router();
 const { verificarToken } = require('../middleware/autenticacion');
 const { verificarPermiso } = require('../middleware/autorizacion');
 const ctrl = require('../controllers/tienda.controller');
+const { subirImagenMiddleware } = require('../controllers/landingSimple.controller');
 
 router.use(verificarToken);
 router.use(verificarPermiso('gestionar_tienda'));
@@ -31,6 +32,9 @@ router.get('/fulfillment', ctrl.obtenerFulfillment);
 router.post('/fulfillment/depositos', ctrl.listarDepositosFulfillment);
 router.put('/fulfillment', ctrl.guardarFulfillment);
 router.get('/fulfillment/cobertura', ctrl.coberturaGesicomm);
+
+router.post('/logo', subirImagenMiddleware, ctrl.subirLogo);
+router.delete('/logo', ctrl.eliminarLogo);
 
 router.get('/', ctrl.obtener);
 router.post('/', ctrl.crear);

@@ -87,6 +87,11 @@ const OPCIONES_HTML = {
     'g', 'defs', 'lineargradient', 'radialgradient', 'stop', 'use', 'symbol',
     'desc', 'mask', 'clippath', 'text', 'tspan',
     'iframe', 'canvas', 'progress', 'meter', 'output',
+    // <template> es el molde de las listas del runtime de Gesicomm
+    // (data-gesicomm-lista, ver runtimeGesicomm.js en el frontend). Su
+    // contenido es inerte hasta que el runtime lo clona, y sus hijos pasan
+    // por este mismo whitelist como cualquier otro nodo.
+    'template',
     // <link> para hojas de estilo externas (Google Fonts es el caso real).
     // Cargar un script por acá no sirve: el CSP del documento solo admite
     // script inline. Ver construirDocumentoCodigo.js.
@@ -474,6 +479,68 @@ class LandingCodigoService {
     };
   }
 }
+
+/**
+ * Configuración comercial del lienzo en blanco (content.venta): qué tipo de
+ * venta arma la landing y cómo se eligieron sus productos. Es público (el
+ * runtime del iframe la lee para pintar recomendados y ventas cruzadas), así
+ * que se arma campo por campo desde una lista blanca — nunca se guarda el
+ * objeto que mandó el cliente.
+ *
+ * Los productos en sí NO viven acá: siguen siendo LandingItem, que es lo que
+ * el checkout acepta. `seleccion`/`categorias` solo recuerdan CÓMO se armó
+ * esa lista, para que el editor la pueda volver a mostrar igual.
+ */
+const TIPOS_VENTA = ['catalogo', 'producto_unico', 'combos'];
+const MODOS_SELECCION = ['manual', 'categoria', 'todos'];
+const MODOS_RECOMENDADOS = ['auto', 'manual'];
+
+function textoCorto(valor, max) {
+  if (typeof valor !== 'string') return '';
+  return valor.trim().slice(0, max);
+}
+
+function listaDe(valor, max, mapear) {
+  if (!Array.isArray(valor)) return [];
+  const vistos = new Set();
+  const salida = [];
+  for (const v of valor) {
+    const limpio = mapear(v);
+    if (limpio === null || limpio === '' || vistos.has(limpio)) continue;
+    vistos.add(limpio);
+    salida.push(limpio);
+    if (salida.length >= max) break;
+  }
+  return salida;
+}
+
+const enteroPositivo = v => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
+const contentId = v => (typeof v === 'string' && /^[a-z0-9-]{1,200}$/i.test(v) ? v : null);
+
+LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
+  if (!venta || typeof venta !== 'object' || Array.isArray(venta)) return null;
+  const cross = venta.cross_sell || {};
+  const reco = venta.recomendados || {};
+  const max = Number(reco.max);
+  return {
+    configurado: true,
+    tipo: TIPOS_VENTA.includes(venta.tipo) ? venta.tipo : 'catalogo',
+    seleccion: MODOS_SELECCION.includes(venta.seleccion) ? venta.seleccion : 'manual',
+    categorias: listaDe(venta.categorias, 30, v => textoCorto(v, 100)),
+    incluir_combos: venta.incluir_combos !== false,
+    cross_sell: {
+      activo: cross.activo !== false,
+      ofertas: listaDe(cross.ofertas, 20, enteroPositivo),
+    },
+    recomendados: {
+      activo: reco.activo !== false,
+      modo: MODOS_RECOMENDADOS.includes(reco.modo) ? reco.modo : 'auto',
+      items: listaDe(reco.items, 12, contentId),
+      max: Number.isInteger(max) && max >= 1 && max <= 8 ? max : 4,
+      titulo: textoCorto(reco.titulo, 80),
+    },
+  };
+};
 
 module.exports = LandingCodigoService;
 module.exports.MAX_HTML = MAX_HTML;

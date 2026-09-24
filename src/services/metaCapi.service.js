@@ -10,8 +10,9 @@
  * tienda.service.js) — no hay un pixel de plataforma compartido.
  */
 
+const crypto = require('crypto');
 const EncryptionService = require('../utils/EncryptionService');
-const { LandingEvento } = require('../models');
+const { LandingEvento, Tienda } = require('../models');
 
 const FB_API_VERSION = process.env.FACEBOOK_API_VERSION || 'v23.0';
 
@@ -34,6 +35,46 @@ async function guardarEvento(registro) {
   }
 }
 
+const sha256 = valor => crypto.createHash('sha256').update(valor).digest('hex');
+
+/** Minúsculas, sin tildes ni espacios — la normalización que pide Meta para nombre y ciudad. */
+function normalizarTexto(valor) {
+  return String(valor || '')
+    .normalize('NFD').replace(/\p{M}/gu, '')
+    .toLowerCase().replace(/[^a-z]/g, '');
+}
+
+/**
+ * Teléfono en formato internacional sin "+" (Meta lo exige así para que
+ * coincida). Paraguay: 0981 123 456 → 595981123456.
+ */
+function normalizarTelefono(valor) {
+  let digitos = String(valor || '').replace(/\D/g, '');
+  if (!digitos) return null;
+  if (digitos.startsWith('595')) return digitos;
+  if (digitos.startsWith('0')) digitos = digitos.slice(1);
+  return digitos.length >= 8 ? `595${digitos}` : null;
+}
+
+/**
+ * Datos del comprador para la Conversions API, hasheados. Solo viajan
+ * hashes: Meta los usa para asociar la compra a la persona que vio el
+ * anuncio (sube la "calidad de coincidencia"), nunca el dato en claro.
+ */
+function userDataCliente(cliente) {
+  if (!cliente) return {};
+  const salida = {};
+  const telefono = normalizarTelefono(cliente.telefono);
+  if (telefono) salida.ph = [sha256(telefono)];
+  const [nombre, ...resto] = String(cliente.nombre || '').trim().split(/\s+/);
+  if (normalizarTexto(nombre)) salida.fn = [sha256(normalizarTexto(nombre))];
+  if (normalizarTexto(resto.join(''))) salida.ln = [sha256(normalizarTexto(resto.join('')))];
+  if (normalizarTexto(cliente.ciudad)) salida.ct = [sha256(normalizarTexto(cliente.ciudad))];
+  salida.country = [sha256('py')];
+  if (cliente.id_externo) salida.external_id = [sha256(String(cliente.id_externo))];
+  return salida;
+}
+
 /**
  * @param {object} tienda - instancia de Tienda con meta_pixel_id/meta_access_token/meta_test_event_code.
  * @param {object} evento
@@ -46,6 +87,8 @@ async function guardarEvento(registro) {
  * @param {string|null} evento.fbc
  * @param {string|null} evento.fbp
  * @param {object} evento.custom_data
+ * @param {object|undefined} evento.cliente - {telefono, nombre, ciudad, id_externo}: se hashea
+ *   antes de salir (ver userDataCliente). Solo lo usa la compra — nunca se guarda.
  * @param {Array|undefined} evento.items - detalle por producto de un checkout de carrito.
  *   Solo se guarda en LandingEvento (lo usa estadisticas() para "productos más
  *   consultados") — nunca se manda a la Graph API, que solo entiende custom_data.
@@ -74,7 +117,7 @@ async function enviarEvento(tienda, evento) {
   try {
     const accessToken = EncryptionService.decrypt(tienda.meta_access_token);
 
-    const userData = {};
+    const userData = userDataCliente(evento.cliente);
     if (evento.client_ip) userData.client_ip_address = evento.client_ip;
     if (evento.client_user_agent) userData.client_user_agent = evento.client_user_agent;
     if (evento.fbc) userData.fbc = evento.fbc;
@@ -116,4 +159,59 @@ async function enviarEvento(tienda, evento) {
   }
 }
 
-module.exports = { enviarEvento };
+/** El mismo id que usa el Pixel del navegador para esta compra — así Meta la cuenta una vez. */
+function eventIdCompra(envio) {
+  return `purchase-${envio.id}`;
+}
+
+/**
+ * Evento Purchase de un pedido que salió de una landing. Se llama en dos
+ * momentos distintos según cómo se paga:
+ *   - contra entrega / transferencia: al crear el pedido (crearCheckout);
+ *   - PagoPar: recién cuando el pago se confirma (confirmarPedidoPagado),
+ *     para no reportarle a Meta como venta un pago abandonado.
+ *
+ * Pedidos sin landing_id (cargados a mano) no se reportan: no vienen de
+ * ningún anuncio. Nunca rechaza, igual que enviarEvento.
+ *
+ * @param {object} envio - Envio con id, landing_id, usuario_id, monto, numero_pedido, telefono, cliente, ciudad.
+ * @param {object} [opciones]
+ * @param {object} [opciones.tienda] - si no viene, se busca por envio.usuario_id.
+ * @param {object} [opciones.contexto] - {client_ip, client_user_agent, fbc, fbp, event_source_url} del navegador, cuando lo hay.
+ * @param {number} [opciones.numItems]
+ */
+async function enviarCompra(envio, { tienda = null, contexto = {}, numItems = null } = {}) {
+  try {
+    if (!envio?.landing_id) return { enviado: false, motivo: 'El pedido no viene de una landing.' };
+    const tiendaFinal = tienda || await Tienda.findOne({ where: { usuario_id: envio.usuario_id } });
+    if (!tiendaFinal) return { enviado: false, motivo: 'Tienda no encontrada.' };
+    const custom_data = {
+      value: Math.max(0, Math.round(Number(envio.monto) || 0)),
+      currency: 'PYG',
+      order_id: String(envio.numero_pedido || envio.id),
+    };
+    if (numItems) custom_data.num_items = numItems;
+    return await enviarEvento(tiendaFinal, {
+      landing_id: envio.landing_id,
+      event_name: 'Purchase',
+      event_id: eventIdCompra(envio),
+      event_source_url: contexto.event_source_url || null,
+      client_ip: contexto.client_ip || null,
+      client_user_agent: contexto.client_user_agent || null,
+      fbc: contexto.fbc || null,
+      fbp: contexto.fbp || null,
+      custom_data,
+      cliente: {
+        telefono: envio.telefono,
+        nombre: envio.nombre_cliente || envio.cliente,
+        ciudad: envio.ciudad,
+        id_externo: envio.telefono ? normalizarTelefono(envio.telefono) : null,
+      },
+    });
+  } catch (err) {
+    console.error('[meta-capi] Error al enviar Purchase:', err.message);
+    return { enviado: false, motivo: err.message };
+  }
+}
+
+module.exports = { enviarEvento, enviarCompra, eventIdCompra, userDataCliente, normalizarTelefono };

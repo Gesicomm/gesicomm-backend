@@ -141,6 +141,10 @@ class TiendaService {
       'meta_test_event_code', 'google_analytics_id', 'tiktok_pixel_id',
       'deposito_departamento', 'deposito_ciudad', 'deposito_direccion',
       'deposito_referencia', 'deposito_telefono',
+      // Contacto extendido
+      'nombre_contacto', 'canal_contacto', 'email_contacto',
+      'instagram', 'facebook', 'twitter', 'tiktok', 'youtube',
+      'direccion_publica', 'ciudad_publica',
     ]) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo] || null;
     }
@@ -151,6 +155,7 @@ class TiendaService {
     }
     return campos;
   }
+
 
   // ─── CRUD ────────────────────────────────────────────────────────────────
 
@@ -211,7 +216,8 @@ class TiendaService {
     const errores = this.validarCamposComunes(payload);
 
     let nuevoSubdominio = null;
-    if (payload.subdominio !== undefined) {
+    const usaDominioPropio = Boolean(tienda.dominio_propio);
+    if (payload.subdominio !== undefined && !usaDominioPropio) {
       nuevoSubdominio = (payload.subdominio || '').trim().toLowerCase();
       if (nuevoSubdominio !== tienda.subdominio) {
         const { valido, motivo } = validarFormatoSubdominio(nuevoSubdominio);
@@ -248,6 +254,30 @@ class TiendaService {
       plan,
       suscripcion: serializarSuscripcion(suscripcion),
     };
+  }
+
+  /**
+   * Reemplaza (o quita, con imagenData = null) el logo de la tienda.
+   * Devuelve `anterior` para que el controller borre ese objeto de R2 —
+   * mismo contrato que LandingSimpleService._actualizarImagenCampo.
+   */
+  static async actualizarLogo(usuario_id, imagenData) {
+    const tienda = await Tienda.findOne({ where: { usuario_id } });
+    if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
+
+    const anterior = tienda.logo_imagen
+      ? { url: tienda.logo_imagen, storage_key: tienda.logo_imagen_storage_key }
+      : null;
+
+    tienda.logo_imagen = imagenData ? imagenData.url : null;
+    tienda.logo_imagen_storage_key = imagenData ? imagenData.storage_key : null;
+    tienda.logo_imagen_mime_type = imagenData ? imagenData.mime_type : null;
+    tienda.logo_imagen_size = imagenData ? imagenData.size : null;
+    tienda.logo_imagen_width = imagenData ? imagenData.width : null;
+    tienda.logo_imagen_height = imagenData ? imagenData.height : null;
+    await tienda.save();
+
+    return { tienda: await this.obtenerPorUsuario(usuario_id), anterior };
   }
 
   static async verificarDisponibilidadSubdominio(sub, usuario_id = null) {

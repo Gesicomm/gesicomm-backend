@@ -87,6 +87,20 @@ async function quitarImagen(req, res) {
   }
 }
 
+const ESTRATEGIAS = ['normal', 'order_bump', 'upsell'];
+
+async function listarTodas(req, res) {
+  try {
+    const estrategias = String(req.query.estrategias || '')
+      .split(',').map(e => e.trim()).filter(e => ESTRATEGIAS.includes(e));
+    const ofertas = await OfertaService.listarPorInquilino(req.usuario.tenantId, { estrategias });
+    return res.json(ofertas);
+  } catch (err) {
+    console.error('[oferta] listarTodas:', err.message);
+    return res.status(500).json({ message: 'Error al listar las ofertas.' });
+  }
+}
+
 async function listarPorProducto(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
@@ -155,6 +169,6 @@ async function eliminar(req, res) {
 }
 
 module.exports = {
-  listarPorProducto, crear, actualizar, eliminar,
+  listarTodas, listarPorProducto, crear, actualizar, eliminar,
   subirImagenMiddleware, subirImagen, quitarImagen,
 };

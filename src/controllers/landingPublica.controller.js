@@ -115,6 +115,7 @@ async function obtenerPorSlug(req, res) {
           etiqueta: req.query.etiqueta,
           precioMin: req.query.precioMin,
           precioMax: req.query.precioMax,
+          busqueda: typeof req.query.q === 'string' ? req.query.q : '',
         })
       : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview);
     if (resultado === null) {
@@ -303,6 +304,12 @@ async function crearCheckout(req, res) {
       payment_method: limpiarTexto(body.payment_method, 50),
       // El cupon se re-valida contra la BD en LandingService.crearCheckout; aca solo se sanea.
       cupon_codigo: limpiarTexto(body.cupon_codigo, 40),
+      // Atribución: el carrito los manda desde la primera visita (ver
+      // capturarUtm en useStoreCart). Antes se descartaban acá y todo pedido
+      // de landing quedaba sin campaña aunque las columnas existieran.
+      utm_source: limpiarTexto(body.utm_source, 100),
+      utm_medium: limpiarTexto(body.utm_medium, 100),
+      utm_campaign: limpiarTexto(body.utm_campaign, 100),
       items: Array.isArray(body.items) ? body.items.slice(0, 40).map(i => ({
         content_id: typeof i?.content_id === 'string' ? i.content_id.slice(0, 200) : null,
         variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
@@ -316,7 +323,14 @@ async function crearCheckout(req, res) {
       })) : [],
     };
 
-    const resultado = await LandingService.crearCheckout(tienda, req.params.slug || null, datosCliente);
+    const contexto = {
+      client_ip: req.ip,
+      client_user_agent: req.headers['user-agent'] || null,
+      fbc: typeof body.fbc === 'string' ? body.fbc.slice(0, 200) : (req.cookies?._fbc || null),
+      fbp: typeof body.fbp === 'string' ? body.fbp.slice(0, 200) : (req.cookies?._fbp || null),
+      event_source_url: limpiarUrlOrigen(body.event_source_url),
+    };
+    const resultado = await LandingService.crearCheckout(tienda, req.params.slug || null, datosCliente, contexto);
     return res.status(201).json(resultado);
   } catch (err) {
     const status = err.status || (err.message?.includes('no encontrada') ? 404 : 400);
@@ -503,7 +517,11 @@ async function registrarEvento(req, res) {
     // conteo de conversiones sigue siendo válido), pero sin detalle de
     // producto — no se descarta entero para no perder eventos legítimos de
     // alguien que tenía la landing abierta cuando se editó el catálogo.
-    const catalogo = await LandingService.obtenerCatalogoParaEvento(landing_id);
+    const contentIdsEvento = [
+      ...(Array.isArray(custom_data?.content_ids) ? custom_data.content_ids : []),
+      ...(Array.isArray(items) ? items.map(i => i?.content_id) : []),
+    ].filter(id => typeof id === 'string').slice(0, MAX_CONTENT_IDS);
+    const catalogo = await LandingService.obtenerCatalogoParaEvento(landing_id, contentIdsEvento);
 
     // Nunca bloquea la respuesta al visitante por un fallo de Meta — ver
     // metaCapi.service.js, enviarEvento() no rechaza.

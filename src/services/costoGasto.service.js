@@ -497,7 +497,7 @@ class CostoGastoService {
       Producto.findAll({
         where: {
           activo: true,
-          ...(inquilino_id ? { inquilino_id } : { creado_por: usuario_id }),
+          creado_por: usuario_id,
         },
         attributes: ['id', 'precio_base', 'precio_costo', 'cantidad_disponible'],
         raw: true,
@@ -613,7 +613,7 @@ class CostoGastoService {
     const flujoCajaNeto = entradasReales - salidasReales;
 
     const valorInventario = productos.reduce((acc, p) => {
-      const costo = Number(p.precio_base) || Number(p.precio_costo) || 0;
+      const costo = Number(p.precio_costo) || Number(p.precio_base) || 0;
       return acc + costo * (Number(p.cantidad_disponible) || 0);
     }, 0);
 

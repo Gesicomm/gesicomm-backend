@@ -273,3 +273,45 @@ describe('LandingCodigoService.sanitizar', () => {
     });
   });
 });
+
+describe('Runtime de Gesicomm en el HTML', () => {
+  it('conserva los <template> de las listas y sanea lo que tienen adentro', () => {
+    const html = '<div data-gesicomm-lista="productos"><template><article><h3 data-gesicomm-bind="nombre"></h3>'
+      + '<a href="javascript:alert(1)">x</a><script>alert(1)</script></article></template></div>';
+    const r = LandingCodigoService.sanitizar({ html, css: '', js: '' });
+    expect(r.html).toContain('<template><article><h3 data-gesicomm-bind="nombre"></h3>');
+    expect(r.html).not.toContain('javascript:');
+    expect(r.html).not.toContain('<script');
+  });
+});
+
+describe('LandingCodigoService.limpiarVenta', () => {
+  it('arma la configuración campo por campo y descarta lo que no está en la lista blanca', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      tipo: 'combos',
+      seleccion: 'categoria',
+      categorias: ['Cocina', 'Cocina', ' Fitness ', 42],
+      cross_sell: { activo: true, ofertas: [3, '4', -1, 'x', 3] },
+      recomendados: { modo: 'manual', items: ['air-fryer', '<script>'], max: 20, titulo: 'x'.repeat(200) },
+      __proto__hack: true,
+    });
+    expect(v).toEqual({
+      configurado: true,
+      tipo: 'combos',
+      seleccion: 'categoria',
+      categorias: ['Cocina', 'Fitness'],
+      incluir_combos: true,
+      cross_sell: { activo: true, ofertas: [3, 4] },
+      recomendados: { activo: true, modo: 'manual', items: ['air-fryer'], max: 4, titulo: 'x'.repeat(80) },
+    });
+  });
+
+  it('valores desconocidos caen a los defaults', () => {
+    const v = LandingCodigoService.limpiarVenta({ tipo: 'otra', seleccion: 'nada', cross_sell: { activo: false } });
+    expect(v.tipo).toBe('catalogo');
+    expect(v.seleccion).toBe('manual');
+    expect(v.cross_sell.activo).toBe(false);
+    expect(LandingCodigoService.limpiarVenta('texto')).toBeNull();
+    expect(LandingCodigoService.limpiarVenta([1])).toBeNull();
+  });
+});

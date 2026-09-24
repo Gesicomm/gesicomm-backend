@@ -10,6 +10,7 @@
  * a partir del catálogo real (precio_costo) al listar.
  */
 
+const { Op } = require('sequelize');
 const { Oferta, OfertaComponente, Producto, ProductoImagen, ProductoVariante } = require('../models');
 
 const TIPOS_CONTENIDO = ['pack', 'combo'];
@@ -293,6 +294,38 @@ class OfertaService {
     });
 
     return ofertas.map(o => this.conMargen(o));
+  }
+
+  /**
+   * Ofertas activas de TODA la tienda, con el producto al que pertenecen.
+   * La usa el paso "Configurar venta" de la landing HTML para elegir ventas
+   * cruzadas sin tener que haber elegido antes los productos.
+   *
+   * @param {string[]} estrategias - ej. ['order_bump', 'upsell']; vacío = todas.
+   */
+  static async listarPorInquilino(inquilino_id, { estrategias = [] } = {}) {
+    const where = { inquilino_id, activo: true };
+    if (estrategias.length) where.estrategia = { [Op.in]: estrategias };
+    const ofertas = await Oferta.findAll({
+      where,
+      include: [{
+        model: Producto,
+        as: 'producto_ancla',
+        attributes: ['id', 'nombre', 'slug', 'activo', 'estado_venta'],
+        required: true,
+        where: { activo: true },
+      }, {
+        // QUÉ ofrece cada oferta (el producto que se suma, o N unidades del
+        // mismo): sin esto la pantalla solo podía mostrar el nombre.
+        model: OfertaComponente,
+        as: 'componentes',
+        attributes: ['producto_id', 'cantidad'],
+        include: [{ model: Producto, as: 'producto', attributes: ['id', 'nombre'] }],
+      }],
+      attributes: ['id', 'nombre', 'descripcion', 'estrategia', 'tipo_contenido', 'precio_normal', 'precio_order_bump', 'producto_ancla_id', 'imagen_url'],
+      order: [['producto_ancla_id', 'ASC'], ['orden', 'ASC']],
+    });
+    return ofertas.map(o => o.toJSON());
   }
 
   static conMargen(ofertaInstancia) {

@@ -92,6 +92,19 @@ const Tienda = sequelize.define('Tienda', {
     allowNull: true,
     defaultValue: '#0a0a0a',
   },
+  // --- Logo: default de todas las landings de la tienda. Una landing con
+  // logo propio (Landing.logo_imagen o el del bloque Header) lo pisa. Solo
+  // lo escriben los endpoints de subida, nunca el PUT de texto. ---
+  logo_imagen: {
+    type: DataTypes.STRING(700),
+    allowNull: true,
+    comment: 'URL pública del logo (CDN de R2).',
+  },
+  logo_imagen_storage_key: { type: DataTypes.STRING(700), allowNull: true },
+  logo_imagen_mime_type: { type: DataTypes.STRING(100), allowNull: true },
+  logo_imagen_size: { type: DataTypes.INTEGER, allowNull: true },
+  logo_imagen_width: { type: DataTypes.INTEGER, allowNull: true },
+  logo_imagen_height: { type: DataTypes.INTEGER, allowNull: true },
   // --- Contacto base ---
   whatsapp: {
     type: DataTypes.STRING(20),
@@ -106,6 +119,56 @@ const Tienda = sequelize.define('Tienda', {
     type: DataTypes.STRING(300),
     allowNull: true,
     comment: 'Plantilla de mensaje de WhatsApp. Soporta el placeholder {producto}.',
+  },
+  nombre_contacto: {
+    type: DataTypes.STRING(150),
+    allowNull: true,
+    comment: 'Nombre visible al público en la sección de contacto.',
+  },
+  canal_contacto: {
+    type: DataTypes.STRING(30),
+    allowNull: true,
+    defaultValue: 'whatsapp',
+    comment: 'Canal preferido de contacto: whatsapp, email, telefono, instagram.',
+  },
+  email_contacto: {
+    type: DataTypes.STRING(200),
+    allowNull: true,
+  },
+  instagram: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+    comment: 'Handle de Instagram sin @.',
+  },
+  facebook: {
+    type: DataTypes.STRING(200),
+    allowNull: true,
+    comment: 'Handle o URL de página de Facebook.',
+  },
+  twitter: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+    comment: 'Handle de Twitter/X sin @.',
+  },
+  tiktok: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+    comment: 'Handle de TikTok sin @.',
+  },
+  youtube: {
+    type: DataTypes.STRING(200),
+    allowNull: true,
+    comment: 'URL del canal de YouTube.',
+  },
+  direccion_publica: {
+    type: DataTypes.STRING(300),
+    allowNull: true,
+    comment: 'Dirección física visible al público (distinta de deposito_direccion).',
+  },
+  ciudad_publica: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+    comment: 'Ciudad o localidad visible al público.',
   },
   // --- Reservado: Meta Pixel / CAPI, sin uso todavía ---
   meta_pixel_id: {

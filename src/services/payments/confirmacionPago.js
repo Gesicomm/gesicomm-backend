@@ -2,6 +2,7 @@ const { sequelize, PaymentTransaction, Envio, Usuario } = require('../../models'
 const envioController = require('../../controllers/envioController');
 const { registrarHistorial } = require('../../utils/historial');
 const AuthTracking = require('../authTracking.service');
+const MetaCapiService = require('../metaCapi.service');
 
 const { descontarStockYSnapshot } = envioController;
 const calcularAbastecimientoDesdeItems = envioController.calcularAbastecimientoDesdeItems || (async () => ({
@@ -103,6 +104,16 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
     );
     resultado = 'confirmado';
   });
+
+  // Purchase para Meta: con PagoPar es ACÁ, cuando el pago es real (ver
+  // LandingService.crearCheckout). Solo en la primera confirmación — el
+  // bloqueo de arriba garantiza que 'ya_pagado' no llegue acá dos veces.
+  // No se espera: el webhook de PagoPar no puede tardar por la Graph API.
+  if (resultado === 'confirmado' || resultado === 'pago_registrado') {
+    MetaCapiService.enviarCompra(envio, {
+      numItems: (envio.items || []).reduce((s, i) => s + (Number(i.cantidad) || 0), 0) || null,
+    });
+  }
 
   if (resultado === 'confirmado' || resultado === 'pago_registrado') {
     const usuario = Usuario?.findByPk ? await Usuario.findByPk(envio.usuario_id).catch(() => null) : null;

@@ -11,12 +11,15 @@
  * GET    /api/mi-tienda/dominio-propio/estado      → consultar verificación
  * PATCH  /api/mi-tienda/dominio-propio/habilitado  → apagar/prender sin borrarlo
  * DELETE /api/mi-tienda/dominio-propio             → revocar dominio propio
+ * POST   /api/mi-tienda/logo                        → subir/reemplazar logo
+ * DELETE /api/mi-tienda/logo                        → quitar logo
  */
 
 const TiendaService = require('../services/tienda.service');
 const AuthTracking = require('../services/authTracking.service');
 const FulfillmentService = require('../services/fulfillment.service');
 const RedFulfillment = require('../services/redFulfillment.service');
+const ImagenService = require('../services/imagen.service');
 
 function manejarError(res, err, defaultMsg) {
   console.error('[tienda]', err.message);
@@ -190,10 +193,36 @@ async function coberturaGesicomm(req, res) {
   }
 }
 
+async function subirLogo(req, res) {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
+    // Mismo tamaño que el logo de landing-simple: el header nunca lo muestra
+    // más ancho que esto. WebP conserva la transparencia del PNG.
+    const imagenData = await ImagenService.procesarArchivoParaR2(req.file, `tiendas/logo/${req.usuario.id}`, { width: 400, quality: 85 });
+    const { tienda, anterior } = await TiendaService.actualizarLogo(req.usuario.id, imagenData);
+    if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
+    return res.status(201).json(tienda);
+  } catch (err) {
+    await ImagenService.borrarArchivoSeguro(req.file?.path);
+    return manejarError(res, err, 'Error al subir el logo.');
+  }
+}
+
+async function eliminarLogo(req, res) {
+  try {
+    const { tienda, anterior } = await TiendaService.actualizarLogo(req.usuario.id, null);
+    if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
+    return res.json(tienda);
+  } catch (err) {
+    return manejarError(res, err, 'Error al quitar el logo.');
+  }
+}
+
 module.exports = {
   obtener, crear, actualizar, disponibilidadSubdominio,
   coberturaGesicomm,
   guardarDominioPropio, estadoDominioPropio, habilitacionDominioPropio,
   eliminarDominioPropio, whoisDominio,
-  obtenerFulfillment, listarDepositosFulfillment, guardarFulfillment
+  obtenerFulfillment, listarDepositosFulfillment, guardarFulfillment,
+  subirLogo, eliminarLogo,
 };
