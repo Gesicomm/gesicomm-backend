@@ -104,18 +104,24 @@ async function obtenerPorSlug(req, res) {
       }
     }
 
-    const vista = String(req.query?.vista || '').toLowerCase();
-    const resultado = vista === 'catalogo'
+    // Support both GET (for initial load) and POST (for search/filtering)
+    const options = req.method === 'POST' ? req.body : req.query;
+    const vista = String(options.vista || '').toLowerCase();
+    
+    // For POST /buscar route, we always assume vista=catalogo
+    const isCatalogo = vista === 'catalogo' || req.path.endsWith('/buscar');
+    
+    const resultado = isCatalogo
       ? await LandingService.obtenerCatalogoPublico(tienda, req.params.slug || null, preview, {
-          pagina: req.query.pagina,
-          porPagina: req.query.porPagina,
-          orden: req.query.orden,
-          disponibilidad: req.query.disponibilidad,
-          categoria: req.query.categoria,
-          etiqueta: req.query.etiqueta,
-          precioMin: req.query.precioMin,
-          precioMax: req.query.precioMax,
-          busqueda: typeof req.query.q === 'string' ? req.query.q : '',
+          pagina: options.pagina,
+          porPagina: options.porPagina,
+          orden: options.orden,
+          disponibilidad: options.disponibilidad,
+          categoria: options.categoria,
+          etiqueta: options.etiqueta,
+          precioMin: options.precioMin,
+          precioMax: options.precioMax,
+          busqueda: typeof options.busqueda === 'string' ? options.busqueda : (typeof options.q === 'string' ? options.q : ''),
         })
       : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview);
     if (resultado === null) {

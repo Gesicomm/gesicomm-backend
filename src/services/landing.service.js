@@ -2109,6 +2109,22 @@ class LandingService {
             : (o.componentes || []).filter(c => c.producto_id !== entidad.id);
           productosIncluidos = componentes.map(c => resolverProducto(c)).filter(Boolean);
           productoComplementario = productosIncluidos[0] || null;
+          // Bump/upsell de "otra unidad del mismo producto": su único
+          // componente es el ancla, así que el filtro de arriba lo dejaba sin
+          // complementario y el frontend lo descartaba en silencio (no se
+          // veía ni en la ficha ni en el carrito).
+          if (!productoComplementario && o.estrategia !== 'combo' && (o.componentes || []).length) {
+            productoComplementario = resolverProducto(o.componentes[0]);
+            if (productoComplementario) productosIncluidos = [productoComplementario];
+          }
+          // Sin foto propia de la oferta ni del complemento → la del producto
+          // ancla. Sin imagen, la oferta tampoco se publicaba.
+          if (productoComplementario && !productoComplementario.imagen && !o.imagen_url) {
+            const imgsAncla = mapaImagenes.get(entidad.id) || [];
+            const principalAncla = imgsAncla.find(i => i.es_principal) || imgsAncla[0];
+            productoComplementario = { ...productoComplementario, imagen: principalAncla?.url || null };
+            productosIncluidos = [productoComplementario, ...productosIncluidos.slice(1)];
+          }
           // Cuántas unidades del complemento entran al aceptar el bump. No es
           // filtrar la receta: es lo que el comprador va a recibir, y sin
           // esto un bump de "2 × Aceite" se ofrecía como si fuera uno solo.

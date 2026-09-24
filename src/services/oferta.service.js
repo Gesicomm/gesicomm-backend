@@ -322,7 +322,7 @@ class OfertaService {
         attributes: ['producto_id', 'cantidad'],
         include: [{ model: Producto, as: 'producto', attributes: ['id', 'nombre'] }],
       }],
-      attributes: ['id', 'nombre', 'descripcion', 'estrategia', 'tipo_contenido', 'precio_normal', 'precio_order_bump', 'producto_ancla_id', 'imagen_url'],
+      attributes: ['id', 'nombre', 'descripcion', 'estrategia', 'tipo_contenido', 'precio_normal', 'precio_order_bump', 'producto_ancla_id', 'imagen_url', 'fecha_inicio', 'fecha_fin'],
       order: [['producto_ancla_id', 'ASC'], ['orden', 'ASC']],
     });
     return ofertas.map(o => o.toJSON());

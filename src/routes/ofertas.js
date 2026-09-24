@@ -10,7 +10,7 @@ const ofertaCtrl = require('../controllers/oferta.controller');
 
 const router = express.Router({ mergeParams: true });
 
-router.get('/', verificarPermiso('ver_productos'), ofertaCtrl.listarPorProducto);
+router.post('/buscar', verificarPermiso('ver_productos'), ofertaCtrl.listarPorProducto);
 router.post('/', verificarPermiso('editar_productos'), ofertaCtrl.crear);
 router.put('/:id', verificarPermiso('editar_productos'), ofertaCtrl.actualizar);
 router.delete('/:id', verificarPermiso('editar_productos'), ofertaCtrl.eliminar);

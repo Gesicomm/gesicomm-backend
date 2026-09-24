@@ -91,8 +91,9 @@ const ESTRATEGIAS = ['normal', 'order_bump', 'upsell'];
 
 async function listarTodas(req, res) {
   try {
-    const estrategias = String(req.query.estrategias || '')
-      .split(',').map(e => e.trim()).filter(e => ESTRATEGIAS.includes(e));
+    const bodyEstrategias = req.body.estrategias || [];
+    const estrategiasCrudas = Array.isArray(bodyEstrategias) ? bodyEstrategias : String(bodyEstrategias).split(',');
+    const estrategias = estrategiasCrudas.map(e => String(e).trim()).filter(e => ESTRATEGIAS.includes(e));
     const ofertas = await OfertaService.listarPorInquilino(req.usuario.tenantId, { estrategias });
     return res.json(ofertas);
   } catch (err) {
@@ -104,12 +105,12 @@ async function listarTodas(req, res) {
 async function listarPorProducto(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    // ?soloActivas=true — la baja de una oferta es lógica (activo=false), así
+    // req.body.soloActivas = true — la baja de una oferta es lógica (activo=false), así
     // que sin esto quien la acaba de borrar la sigue viendo en la lista y
     // parece que el borrado no hizo nada. La pantalla de administración de
     // ofertas sí las quiere todas (muestra un badge "Inactivo"), por eso es
     // opt-in y no el comportamiento por defecto.
-    const soloActivas = req.query.soloActivas === 'true';
+    const soloActivas = req.body.soloActivas === true;
     const ofertas = await OfertaService.listarPorProducto(req.params.productoId, inquilino_id, { soloActivas });
     return res.json(ofertas);
   } catch (err) {

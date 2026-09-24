@@ -67,6 +67,7 @@ const limiteCheckout = rateLimit({
 // antes): así una ráfaga de tráfico abusivo se corta sin gastar una
 // consulta a la base por request.
 router.get('/', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);   // landing es_home de la tienda del hostname
+router.post('/buscar', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug); // busqueda catalogo
 router.post('/eventos', limiteEventos, resolverTiendaOpcional, ctrl.registrarEvento);
 router.post('/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheckout);
 // Recálculo de carrito en vivo: mismo rate limit que el GET (limitePublico)
@@ -77,6 +78,7 @@ router.post('/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);
 router.get('/pagopar/resultado/:hash', limitePublico, resolverTiendaOpcional, ctrl.resultadoPago);
 router.get('/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 router.get('/:slug', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);
+router.post('/:slug/buscar', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug); // busqueda catalogo
 router.get('/:slug/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 router.post('/:slug/eventos', limiteEventos, resolverTiendaOpcional, ctrl.registrarEvento);
 router.post('/:slug/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheckout);
