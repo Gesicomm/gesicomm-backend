@@ -121,6 +121,12 @@ class TiendaService {
     if (payload.whatsapp && !WHATSAPP_RE.test(payload.whatsapp)) {
       errores.push('whatsapp debe contener solo dígitos (código de país + número), entre 8 y 15 caracteres.');
     }
+    if (payload.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(payload.email).trim())) {
+      errores.push('email no tiene un formato válido.');
+    }
+    for (const red of ['instagram', 'facebook', 'tiktok', 'youtube']) {
+      if (payload[red] && String(payload[red]).length > 100) errores.push(`${red} no puede superar los 100 caracteres.`);
+    }
     if (payload.meta_pixel_id && !META_PIXEL_RE.test(payload.meta_pixel_id)) {
       errores.push('meta_pixel_id inválido (debe ser numérico, 15 o 16 dígitos).');
     }
@@ -137,6 +143,7 @@ class TiendaService {
     const campos = {};
     for (const campo of [
       'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'documento', 'ruc',
+      'email', 'instagram', 'facebook', 'tiktok', 'youtube',
       'color_primario', 'color_secundario', 'color_fondo',
       'meta_test_event_code', 'google_analytics_id', 'tiktok_pixel_id',
       'deposito_departamento', 'deposito_ciudad', 'deposito_direccion',

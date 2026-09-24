@@ -115,6 +115,13 @@ const Tienda = sequelize.define('Tienda', {
     type: DataTypes.STRING(20),
     allowNull: true,
   },
+  // Email y redes: se cargan en el onboarding / Configurar tienda y son el
+  // default del contacto de todas las landings (landing.contacto_* los pisa).
+  email: { type: DataTypes.STRING(150), allowNull: true },
+  instagram: { type: DataTypes.STRING(100), allowNull: true },
+  facebook: { type: DataTypes.STRING(100), allowNull: true },
+  tiktok: { type: DataTypes.STRING(100), allowNull: true },
+  youtube: { type: DataTypes.STRING(100), allowNull: true },
   mensaje_contacto: {
     type: DataTypes.STRING(300),
     allowNull: true,

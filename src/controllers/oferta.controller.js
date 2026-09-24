@@ -119,6 +119,26 @@ async function listarPorProducto(req, res) {
   }
 }
 
+/**
+ * GET /api/ofertas?estrategias=order_bump,upsell&productos=6,7&soloActivas=true
+ * Todos los filtros son opcionales; sin ninguno devuelve todas las ofertas
+ * del inquilino.
+ */
+async function listar(req, res) {
+  try {
+    const lista = v => String(v || '').split(',').map(x => x.trim()).filter(Boolean);
+    const ofertas = await OfertaService.listar(req.usuario.tenantId, {
+      estrategias: lista(req.query.estrategias),
+      productoIds: lista(req.query.productos).map(Number).filter(Number.isInteger),
+      soloActivas: req.query.soloActivas === 'true',
+    });
+    return res.json(ofertas);
+  } catch (err) {
+    console.error('[oferta] listar:', err.message);
+    return res.status(500).json({ message: 'Error al listar las ofertas.' });
+  }
+}
+
 async function crear(req, res) {
   const t = await sequelize.transaction();
   try {
@@ -170,6 +190,6 @@ async function eliminar(req, res) {
 }
 
 module.exports = {
-  listarTodas, listarPorProducto, crear, actualizar, eliminar,
+  listarTodas, listar, listarPorProducto, crear, actualizar, eliminar,
   subirImagenMiddleware, subirImagen, quitarImagen,
 };

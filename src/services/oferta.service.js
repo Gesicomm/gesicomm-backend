@@ -297,35 +297,57 @@ class OfertaService {
   }
 
   /**
-   * Ofertas activas de TODA la tienda, con el producto al que pertenecen.
-   * La usa el paso "Configurar venta" de la landing HTML para elegir ventas
-   * cruzadas sin tener que haber elegido antes los productos.
+   * Todas las ofertas del inquilino, sin pasar producto por producto. Lo usa
+   * el armador de landing para mostrar de una vez los bumps/upsells de los
+   * productos de la landing. Mismo formato que listarPorProducto (con
+   * margen) + `producto_ancla` para saber de qué producto es cada una.
    *
-   * @param {string[]} estrategias - ej. ['order_bump', 'upsell']; vacío = todas.
+   * @param {number} inquilino_id
+   * @param {{estrategias?: string[], productoIds?: number[], soloActivas?: boolean}} filtros
    */
-  static async listarPorInquilino(inquilino_id, { estrategias = [] } = {}) {
-    const where = { inquilino_id, activo: true };
-    if (estrategias.length) where.estrategia = { [Op.in]: estrategias };
+  static async listar(inquilino_id, { estrategias = [], productoIds = [], soloActivas = false } = {}) {
+    const where = { inquilino_id };
+    const validas = estrategias.filter(e => ESTRATEGIAS.includes(e));
+    if (validas.length) where.estrategia = validas;
+    if (productoIds.length) where.producto_ancla_id = productoIds;
+    if (soloActivas) where.activo = true;
+
     const ofertas = await Oferta.findAll({
       where,
       include: [{
-        model: Producto,
-        as: 'producto_ancla',
-        attributes: ['id', 'nombre', 'slug', 'activo', 'estado_venta'],
-        required: true,
-        where: { activo: true },
-      }, {
-        // QUÉ ofrece cada oferta (el producto que se suma, o N unidades del
-        // mismo): sin esto la pantalla solo podía mostrar el nombre.
         model: OfertaComponente,
         as: 'componentes',
-        attributes: ['producto_id', 'cantidad'],
-        include: [{ model: Producto, as: 'producto', attributes: ['id', 'nombre'] }],
+        include: [{
+          model: Producto,
+          as: 'producto',
+          attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+          include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }],
+        }, {
+          model: ProductoVariante,
+          as: 'variante',
+        }],
       }],
-      attributes: ['id', 'nombre', 'descripcion', 'estrategia', 'tipo_contenido', 'precio_normal', 'precio_order_bump', 'producto_ancla_id', 'imagen_url', 'fecha_inicio', 'fecha_fin'],
-      order: [['producto_ancla_id', 'ASC'], ['orden', 'ASC']],
+      order: [['producto_ancla_id', 'ASC'], ['orden', 'ASC'], ['created_at', 'ASC']],
     });
-    return ofertas.map(o => o.toJSON());
+
+    const idsAncla = [...new Set(ofertas.map(o => o.producto_ancla_id))];
+    const anclas = idsAncla.length
+      ? await Producto.findAll({
+        where: { id: idsAncla, inquilino_id },
+        attributes: ['id', 'nombre'],
+        include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }],
+      })
+      : [];
+    const mapaAnclas = new Map(anclas.map(p => {
+      const imgs = p.imagenes || [];
+      const principal = imgs.find(i => i.es_principal) || imgs[0];
+      return [p.id, { id: p.id, nombre: p.nombre, imagen: principal?.url || null }];
+    }));
+
+    return ofertas.map(o => ({
+      ...this.conMargen(o),
+      producto_ancla: mapaAnclas.get(o.producto_ancla_id) || null,
+    }));
   }
 
   static conMargen(ofertaInstancia) {

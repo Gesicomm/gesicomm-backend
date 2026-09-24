@@ -88,6 +88,31 @@ const TIPOS_SECCION = new Set([
 
 class LandingService {
 
+  /**
+   * Contacto público de una landing: lo propio de la landing y, campo por
+   * campo, lo de la Tienda (onboarding / Configurar tienda) donde la
+   * landing no cargó nada. Así una landing nueva — o una de "Lienzo en
+   * blanco", que no tiene panel de contacto — sale con las redes de la
+   * tienda sin volver a tipearlas.
+   */
+  static contactoLandingDto(landing, tienda) {
+    const de = (propio, heredado) => propio || heredado || null;
+    return {
+      whatsapp: de(landing.contacto_whatsapp, tienda?.whatsapp),
+      telefono: de(landing.contacto_telefono, tienda?.telefono),
+      email: de(landing.contacto_email, tienda?.email),
+      direccion: landing.contacto_direccion || null,
+      ciudad: landing.contacto_ciudad || null,
+      pais: landing.contacto_pais || null,
+      horarios: landing.contacto_horarios || null,
+      instagram: de(landing.contacto_instagram, tienda?.instagram),
+      facebook: de(landing.contacto_facebook, tienda?.facebook),
+      tiktok: de(landing.contacto_tiktok, tienda?.tiktok),
+      youtube: de(landing.contacto_youtube, tienda?.youtube),
+      twitter: landing.contacto_twitter || null,
+    };
+  }
+
   // Las tarifas de delivery se resuelven en un \u00fanico lugar
   // (TarifaDeliveryService). Ac\u00e1 quedan s\u00f3lo los puentes para no cambiar los
   // call sites internos de este service.
@@ -2469,22 +2494,8 @@ class LandingService {
       // en null (columnas nunca escritas ahí). Nombre distinto de
       // "contacto" (más abajo, el contacto heredado de Tienda) a propósito:
       // son dos conceptos distintos, no se pueden fusionar en una clave.
-      // Sin logo propio, hereda el de la tienda (Mi Tienda → Branding).
-      logo_imagen: landing.logo_imagen || tienda.logo_imagen || null,
-      contacto_landing: {
-        whatsapp: landing.contacto_whatsapp || null,
-        telefono: landing.contacto_telefono || null,
-        email: landing.contacto_email || null,
-        direccion: landing.contacto_direccion || null,
-        ciudad: landing.contacto_ciudad || null,
-        pais: landing.contacto_pais || null,
-        horarios: landing.contacto_horarios || null,
-        instagram: landing.contacto_instagram || null,
-        facebook: landing.contacto_facebook || null,
-        tiktok: landing.contacto_tiktok || null,
-        youtube: landing.contacto_youtube || null,
-        twitter: landing.contacto_twitter || null,
-      },
+      logo_imagen: landing.logo_imagen || null,
+      contacto_landing: LandingService.contactoLandingDto(landing, tienda),
       contenido_titulo: landing.contenido_titulo || null,
       contenido_texto: landing.contenido_texto || null,
       // Título de "Productos destacados" (home) — también lo usa la página
@@ -2946,20 +2957,7 @@ class LandingService {
         buscador: landing.mostrar_buscador,
         orden_precio: landing.mostrar_orden_precio,
       },
-      contacto_landing: {
-        whatsapp: landing.contacto_whatsapp || null,
-        telefono: landing.contacto_telefono || null,
-        email: landing.contacto_email || null,
-        direccion: landing.contacto_direccion || null,
-        ciudad: landing.contacto_ciudad || null,
-        pais: landing.contacto_pais || null,
-        horarios: landing.contacto_horarios || null,
-        instagram: landing.contacto_instagram || null,
-        facebook: landing.contacto_facebook || null,
-        tiktok: landing.contacto_tiktok || null,
-        youtube: landing.contacto_youtube || null,
-        twitter: landing.contacto_twitter || null,
-      },
+      contacto_landing: LandingService.contactoLandingDto(landing, tienda),
       contacto: {
         whatsapp: landing.mostrar_whatsapp ? (tienda.whatsapp || null) : null,
         telefono: tienda.telefono,
