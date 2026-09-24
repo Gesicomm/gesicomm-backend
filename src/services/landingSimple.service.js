@@ -101,15 +101,25 @@ function codigoInicial(nombreTienda) {
       '<section class="hero">',
       `  <h1>${nombre}</h1>`,
       '  <p>Escribí acá el HTML de tu landing. El CSS y el JavaScript van en las otras pestañas.</p>',
-      '  <a class="cta" href="#contacto">Quiero saber más</a>',
+      '  <a class="cta" href="#productos-seleccionados">Ver productos</a>',
       '</section>',
     ].join('\n'),
+    // Las variables --gc-* son el contrato con Gesicom: el carrito/checkout
+    // y las secciones de contacto/footer que se agregan solas las leen para
+    // pintarse con los colores de la landing (ver el prompt de generación
+    // en LandingCodigoEditor.jsx del frontend).
     css: [
-      'body { margin: 0; font-family: system-ui, sans-serif; background: #0b0b0f; color: #fff; }',
+      ':root {',
+      '  --gc-primario: #2563eb;',
+      '  --gc-texto-sobre-primario: #ffffff;',
+      '  --gc-fondo: #ffffff;',
+      '  --gc-texto: #0f172a;',
+      '}',
+      'body { margin: 0; font-family: system-ui, sans-serif; background: var(--gc-fondo); color: var(--gc-texto); }',
       '.hero { min-height: 70vh; display: grid; place-content: center; gap: 16px; text-align: center; padding: 48px 24px; }',
       '.hero h1 { font-size: clamp(32px, 6vw, 64px); margin: 0; }',
       '.hero p { margin: 0; opacity: .7; max-width: 46ch; }',
-      '.cta { justify-self: center; padding: 14px 28px; border-radius: 999px; background: #fff; color: #000; font-weight: 700; text-decoration: none; }',
+      '.cta { justify-self: center; padding: 14px 28px; border-radius: 999px; background: var(--gc-primario); color: var(--gc-texto-sobre-primario); font-weight: 700; text-decoration: none; }',
     ].join('\n'),
     js: [
       '// Tu JavaScript corre aislado en un iframe: no ve la sesión de la',
