@@ -324,6 +324,31 @@ class ProductoService {
     };
   }
 
+  /**
+   * SKU obligatorio y único por inquilino. Es la clave con la que se
+   * identifican los productos en la importación masiva de precios (Excel de
+   * Mi catálogo) y en la carga desde la API del proveedor, así que:
+   *   - se guarda sin espacios alrededor;
+   *   - la unicidad se controla SIN distinguir mayúsculas: el índice de la
+   *     base (sku, inquilino_id) sí distingue, y dejaría convivir "ws-1" con
+   *     "WS-1", que para la importación serían el mismo SKU.
+   * Devuelve el SKU normalizado.
+   */
+  static async validarSku(sku, inquilino_id, excluirId = null, transaction) {
+    const limpio = typeof sku === 'string' ? sku.trim() : (sku == null ? '' : String(sku).trim());
+    if (!limpio) throw new Error('El SKU es obligatorio.');
+    if (limpio.length > 100) throw new Error('El SKU no puede superar los 100 caracteres.');
+
+    const where = {
+      inquilino_id,
+      [Op.and]: [sequelize.where(sequelize.fn('upper', sequelize.fn('trim', sequelize.col('sku'))), limpio.toUpperCase())],
+    };
+    if (excluirId) where.id = { [Op.ne]: excluirId };
+    const existente = await Producto.findOne({ where, attributes: ['id', 'nombre'], transaction });
+    if (existente) throw new Error(`El SKU "${limpio}" ya está usado en el producto "${existente.nombre}".`);
+    return limpio;
+  }
+
   static async crear(datos, inquilino_id, usuario_id, esAdmin, transaction) {
     const precioAncla = datos.precio_ancla !== undefined ? datos.precio_ancla : datos.precio_tachado;
     const {
@@ -343,11 +368,12 @@ class ProductoService {
       throw new Error('Nombre y precio_base son requeridos.');
     }
 
+    const skuValido = await this.validarSku(sku, inquilino_id, null, transaction);
     const slug = slugManual ? slugManual : await this.generarSlugUnico(nombre, inquilino_id);
 
     const producto = await Producto.create({
       inquilino_id, nombre,
-      sku: sku || null,
+      sku: skuValido,
       categoria_id: categoria_id || null,
       marca_id: marca_id || null,
       proveedor_id: proveedor_id || null,
@@ -416,6 +442,17 @@ class ProductoService {
 
     if (!esAdmin && producto.creado_por !== usuario_id) {
       throw new Error('No tienes permiso para modificar un producto que no creaste.');
+    }
+
+    // Productos viejos sin SKU se pueden seguir editando sin cargarlo; lo que
+    // no se permite es borrar un SKU que ya existe ni duplicar uno.
+    if (campos.sku !== undefined) {
+      const skuEnviado = campos.sku == null ? '' : String(campos.sku).trim();
+      if (!skuEnviado && !producto.sku) {
+        delete campos.sku;
+      } else {
+        campos.sku = await this.validarSku(skuEnviado, inquilino_id, producto.id, transaction);
+      }
     }
 
     // Cualquier toque al stock recalcula el total desde el desglose, para que

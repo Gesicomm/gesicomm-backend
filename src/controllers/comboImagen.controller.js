@@ -4,6 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const ImagenService = require('../services/imagen.service');
 const { ProductoCombo } = require('../models');
+const ComboService = require('../services/combo.service');
 const { handleR2Error } = require('../services/r2/r2.errors');
 
 const MAX_IMAGEN_BYTES = 5 * 1024 * 1024; // 5MB por imagen
@@ -32,6 +33,7 @@ async function obtenerCombo(req) {
     where: {
       id: req.params.id,
       inquilino_id: req.usuario.tenantId,
+      ...ComboService.alcance({ usuario_id: req.usuario.id, esAdmin: req.usuario.rol === 'administrador' }),
     },
   });
 }

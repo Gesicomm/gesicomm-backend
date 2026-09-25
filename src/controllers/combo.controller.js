@@ -4,7 +4,7 @@
  * Controller de Combos — Módulo Administrativo de Pricing.
  *
  * POST /api/combos/simular         → Simular rentabilidad sin persistir
- * GET  /api/combos                 → Listar todos los combos del tenant
+ * GET  /api/combos                 → Listar los combos del usuario (admin: todos)
  * POST /api/combos                 → Crear combo
  * GET  /api/combos/:id             → Detalle de un combo
  * PUT  /api/combos/:id             → Actualizar combo
@@ -54,7 +54,7 @@ async function listar(req, res) {
     const filtros = {
       estado: req.query.estado || undefined,
     };
-    const combos = await ComboService.listar(inquilino_id, filtros);
+    const combos = await ComboService.listar(inquilino_id, filtros, contextoEconomico(req));
     return res.json(combos);
   } catch (err) {
     console.error('[combo] listar:', err.message);
@@ -123,7 +123,7 @@ async function cambiarEstado(req, res) {
       await rollbackSeguro(t);
       return res.status(400).json({ message: 'El campo "estado" es requerido.' });
     }
-    const combo = await ComboService.cambiarEstado(Number(req.params.id), estado, req.usuario.tenantId, t);
+    const combo = await ComboService.cambiarEstado(Number(req.params.id), estado, req.usuario.tenantId, t, contextoEconomico(req));
     await t.commit();
     return res.json(combo);
   } catch (err) {
@@ -138,7 +138,7 @@ async function cambiarEstado(req, res) {
 
 async function listarPorProducto(req, res) {
   try {
-    const combos = await ComboService.listarPorProducto(req.params.productoId, req.usuario.tenantId);
+    const combos = await ComboService.listarPorProducto(req.params.productoId, req.usuario.tenantId, contextoEconomico(req));
     return res.json(combos);
   } catch (err) {
     console.error('[combo] listarPorProducto:', err.message);

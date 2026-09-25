@@ -301,6 +301,10 @@ describe('LandingCodigoService.limpiarVenta', () => {
       seleccion: 'categoria',
       categorias: ['Cocina', 'Fitness'],
       incluir_combos: true,
+      abrir_en: 'tienda',
+      combos_primero: false,
+      principal_id: null,
+      paquetes: {},
       cross_sell: { activo: true, ofertas: [3, 4] },
       recomendados: { activo: true, modo: 'manual', items: ['air-fryer'], max: 4, titulo: 'x'.repeat(80) },
     });

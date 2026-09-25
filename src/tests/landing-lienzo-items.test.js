@@ -8,9 +8,15 @@
 
 const mockProductoFindAll = jest.fn();
 const mockComboFindAll = jest.fn();
+const mockProductoCount = jest.fn();
+const mockComboCount = jest.fn();
+const mockUsuarioFindAll = jest.fn();
 jest.mock('../models', () => ({
-  Producto: { findAll: (...a) => mockProductoFindAll(...a), count: jest.fn() },
-  ProductoCombo: { findAll: (...a) => mockComboFindAll(...a), count: jest.fn() },
+  Producto: { findAll: (...a) => mockProductoFindAll(...a), count: (...a) => mockProductoCount(...a) },
+  ProductoCombo: { findAll: (...a) => mockComboFindAll(...a), count: (...a) => mockComboCount(...a) },
+  // obtenerIdsAdministradores (precioUsuario.service)
+  Usuario: { findAll: (...a) => mockUsuarioFindAll(...a) },
+  Rol: {},
 }));
 for (const m of [
   '../services/pricing.service', '../services/tarifaDelivery.service', '../services/fulfillment.service',
@@ -22,12 +28,18 @@ for (const m of [
 const { Op } = require('sequelize');
 const LandingService = require('../services/landing.service');
 
-const tienda = { inquilino_id: 7 };
+const ADMIN = 1;
+const DUENO = 20;
+const OTRO = 99;
+const tienda = { inquilino_id: 7, usuario_id: DUENO };
 const reglaTodos = { configurado: true, seleccion: 'todos', tipo: 'catalogo' };
 
 beforeEach(() => {
   mockProductoFindAll.mockReset().mockResolvedValue([]);
   mockComboFindAll.mockReset().mockResolvedValue([]);
+  mockProductoCount.mockReset().mockResolvedValue(0);
+  mockComboCount.mockReset().mockResolvedValue(0);
+  mockUsuarioFindAll.mockReset().mockResolvedValue([{ id: ADMIN }]);
 });
 
 describe('regla "todos" / "por categoría"', () => {
@@ -103,5 +115,121 @@ describe('lista manual', () => {
     mockProductoFindAll.mockResolvedValue([{ id: 3 }]); // slug "remera" → id 3
     const items = await LandingService.itemsDelLienzo(landing, tienda, { contentIds: ['remera', 'combo-9', 'combo-99', 'producto-42'] });
     expect(items.map(i => `${i.tipo}:${i.referencia_id}`).sort()).toEqual(['combo:9', 'producto:3']);
+  });
+});
+
+/**
+ * Evalúa un where de Sequelize contra una fila, solo lo que usan estas
+ * consultas (igualdad, null, Op.in, Op.or, Op.and). Así los mocks devuelven
+ * lo que la base devolvería y el test prueba el efecto, no la forma.
+ */
+function cumple(where, fila) {
+  return Object.keys(where).every(k => {
+    const v = where[k];
+    if (k === 'inquilino_id' || k === 'activo' || k === 'estado_venta' || k === 'estado') return true;
+    return v && typeof v === 'object' && v[Op.in] ? v[Op.in].includes(fila[k]) : fila[k] === v;
+  }) && Object.getOwnPropertySymbols(where).every(sym => {
+    if (sym === Op.and) return where[sym].every(w => cumple(w, fila));
+    if (sym === Op.or) return where[sym].some(w => cumple(w, fila));
+    throw new Error(`operador no soportado en el test: ${String(sym)}`);
+  });
+}
+
+const PRODUCTOS = [
+  { id: 1, creado_por: null, slug: 'viejo' },
+  { id: 2, creado_por: ADMIN, slug: 'del-admin' },
+  { id: 3, creado_por: DUENO, slug: 'mio' },
+  { id: 4, creado_por: OTRO, slug: 'ajeno' },
+];
+const COMBOS = [
+  { id: 10, creado_por: null },
+  { id: 11, creado_por: ADMIN },
+  { id: 12, creado_por: DUENO },
+  { id: 13, creado_por: OTRO },
+];
+
+describe('catálogo por regla: solo lo que la tienda puede vender (tenant único)', () => {
+  beforeEach(() => {
+    mockProductoFindAll.mockImplementation(async ({ where }) => PRODUCTOS.filter(p => cumple(where, p)));
+    mockComboFindAll.mockImplementation(async ({ where }) => COMBOS.filter(c => cumple(where, c)));
+    mockProductoCount.mockImplementation(async ({ where }) => PRODUCTOS.filter(p => cumple(where, p)).length);
+    mockComboCount.mockImplementation(async ({ where }) => COMBOS.filter(c => cumple(where, c)).length);
+  });
+
+  const ids = items => items.map(i => `${i.tipo}:${i.referencia_id}`).sort();
+
+  it('"todo el catálogo" no trae productos ni combos de otro usuario', async () => {
+    const items = await LandingService.itemsDelLienzo({ content: { venta: reglaTodos } }, tienda);
+    expect(ids(items)).toEqual(['combo:11', 'combo:12', 'producto:1', 'producto:2', 'producto:3']);
+  });
+
+  it('"por categoría" aplica el mismo filtro de dueño', async () => {
+    const items = await LandingService.itemsDelLienzo(
+      { content: { venta: { ...reglaTodos, seleccion: 'categoria', categorias: ['Cocina'] } } }, tienda);
+    expect(ids(items)).not.toContain('producto:4');
+    expect(ids(items)).not.toContain('combo:13');
+  });
+
+  it('el contador ("N productos") coincide con la lista', async () => {
+    const total = await LandingService.contarLienzo({ content: { venta: reglaTodos } }, tienda);
+    expect(total).toBe(5);
+  });
+
+  it('carrito y eventos: pedir por id o slug un ítem ajeno no lo resuelve, y el Op.or de content_ids no pisa el filtro', async () => {
+    const items = await LandingService.itemsDelLienzo({ content: { venta: reglaTodos } }, tienda, {
+      contentIds: ['ajeno', 'producto-4', 'mio', 'combo-13', 'combo-12'],
+    });
+    expect(ids(items)).toEqual(['combo:12', 'producto:3']);
+  });
+
+  it('el combo sin dueño (anterior a creado_por) solo entra en la tienda de un admin', async () => {
+    const deAdmin = await LandingService.itemsDelLienzo({ content: { venta: reglaTodos } }, { inquilino_id: 7, usuario_id: ADMIN });
+    expect(ids(deAdmin)).toEqual(['combo:10', 'combo:11', 'producto:1', 'producto:2']);
+  });
+
+  it('sin configurar (fallback) tampoco trae productos ajenos', async () => {
+    const items = await LandingService.itemsDelLienzo({ content: {}, items: [] }, tienda);
+    expect(ids(items)).toEqual(['producto:1', 'producto:2', 'producto:3']);
+  });
+
+  it('checkout (itemsSegunReglaCodigo): no se puede comprar lo que la landing no muestra', async () => {
+    const landing = { content: { venta: reglaTodos } };
+    const acotar = { producto: [4, 3], combo: [13, 11], slugs: ['ajeno'] };
+    const items = await LandingService.itemsSegunReglaCodigo(landing, tienda, acotar);
+    expect(ids(items)).toEqual(['combo:11', 'producto:3']);
+
+    const vista = await LandingService.itemsSegunReglaCodigo(landing, tienda);
+    expect(ids(vista)).toEqual(['combo:11', 'combo:12', 'producto:1', 'producto:2', 'producto:3']);
+  });
+
+  it('una tienda sin dueño resuelto no ve nada ajeno (falla cerrado)', async () => {
+    const items = await LandingService.itemsDelLienzo({ content: { venta: reglaTodos } }, { inquilino_id: 7 });
+    expect(ids(items)).toEqual(['combo:11', 'producto:1', 'producto:2']);
+  });
+});
+
+describe('LandingService.vistasPublicas — ficha propia por producto', () => {
+  const content = {
+    vistas: {
+      producto: { html: '<p>general</p>', css: '', js: '' },
+      productos: { adelfit: { html: '<p>adelfit</p>', css: '', js: '' }, 'combo-3': { html: '<p>combo</p>', css: '', js: '' } },
+    },
+    venta: { abrir_en: 'tienda' },
+  };
+
+  it('manda la general y SOLO la ficha propia del producto pedido', () => {
+    expect(LandingService.vistasPublicas(content, 'combo-3')).toEqual({
+      producto: content.vistas.producto,
+      productos: { 'combo-3': content.vistas.productos['combo-3'] },
+    });
+  });
+
+  it('en el inicio de una tienda no manda fichas propias', () => {
+    expect(LandingService.vistasPublicas(content, null, 'adelfit')).toEqual({ producto: content.vistas.producto });
+  });
+
+  it('"directo en un producto": manda la ficha propia del principal', () => {
+    const directo = { ...content, venta: { abrir_en: 'producto' } };
+    expect(LandingService.vistasPublicas(directo, null, 'adelfit').productos).toEqual({ adelfit: content.vistas.productos.adelfit });
   });
 });

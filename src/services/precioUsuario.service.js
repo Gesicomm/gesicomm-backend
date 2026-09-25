@@ -65,6 +65,33 @@ class PrecioUsuarioService {
     };
   }
 
+  /**
+   * Combos: se filtran por el dueño DEL COMBO, no por el del producto
+   * principal (un usuario puede armar un combo sobre un producto del admin,
+   * y ese combo es solo suyo). A diferencia de productos, creado_por NULL
+   * (combos anteriores a la columna) solo lo ve el admin.
+   */
+  static visibilidadComboWhere(usuario_id, esAdmin, miosOnly = false, administradoresIds = []) {
+    if (miosOnly) return { creado_por: usuario_id };
+    if (esAdmin) return {};
+    const creadoresVisibles = [...new Set([usuario_id, ...administradoresIds].filter(id => id != null))];
+    return { creado_por: { [Op.in]: creadoresVisibles } };
+  }
+
+  static visibilidadComboSql(esAdmin, miosOnly = false) {
+    if (miosOnly) return 'AND c.creado_por = :usuario_id';
+    if (esAdmin) return '';
+    return `AND (
+      c.creado_por = :usuario_id
+      OR c.creado_por IN (
+        SELECT u.id
+        FROM usuarios u
+        INNER JOIN roles r ON r.id = u.rol_id
+        WHERE u.inquilino_id = :inquilino_id AND r.nombre = 'administrador'
+      )
+    )`;
+  }
+
   static visibilidadCatalogoSql(esAdmin, miosOnly = false) {
     if (miosOnly) return 'AND p.creado_por = :usuario_id';
     if (esAdmin) return '';
@@ -100,7 +127,7 @@ class PrecioUsuarioService {
         order: [['nombre', 'ASC']],
       }),
       ProductoCombo.findAll({
-        where: { inquilino_id, estado: 'ACTIVO' },
+        where: { inquilino_id, estado: 'ACTIVO', ...this.visibilidadComboWhere(usuario_id, esAdmin, false, administradoresIds) },
         attributes: [
           'id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at',
           // Vista del combo — para que el armador de landings pueda armar
@@ -343,7 +370,8 @@ class PrecioUsuarioService {
       INNER JOIN productos p ON c.producto_id = p.id AND p.inquilino_id = :inquilino_id AND p.activo = true
       LEFT JOIN precios_usuario pu ON pu.tipo = 'combo' AND pu.referencia_id = c.id AND pu.usuario_id = :usuario_id
       WHERE c.inquilino_id = :inquilino_id AND c.estado = 'ACTIVO'
-      ${creadorFilter}
+      ${this.visibilidadComboSql(esAdmin, miosOnly)}
+      ${this.visibilidadCatalogoSql(esAdmin, false)}
       ${catFilter}
       ${provFilter}
       ${searchFilter}
@@ -643,7 +671,7 @@ class PrecioUsuarioService {
   static async guardarPrecioCombo(usuario_id, inquilino_id, combo_id, precio, esAdmin = false) {
     const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
     const combo = await ProductoCombo.findOne({
-      where: { id: combo_id, inquilino_id, estado: 'ACTIVO' },
+      where: { id: combo_id, inquilino_id, estado: 'ACTIVO', ...this.visibilidadComboWhere(usuario_id, esAdmin, false, administradoresIds) },
       include: [{
         model: Producto,
         as: 'producto_padre',
@@ -741,7 +769,7 @@ class PrecioUsuarioService {
   static async analizarSensibilidadCombo(usuario_id, inquilino_id, combo_id, esAdmin = false) {
     const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
     const combo = await ProductoCombo.findOne({
-      where: { id: combo_id, inquilino_id, estado: 'ACTIVO' },
+      where: { id: combo_id, inquilino_id, estado: 'ACTIVO', ...this.visibilidadComboWhere(usuario_id, esAdmin, false, administradoresIds) },
       include: [{
         model: Producto,
         as: 'producto_padre',

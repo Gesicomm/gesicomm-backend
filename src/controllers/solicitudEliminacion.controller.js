@@ -43,7 +43,7 @@ async function solicitar(req, res) {
         email: req.body.email,
         nombre: req.body.nombre,
         codigo: solicitud.codigo,
-        fechaLimite: solicitud.fecha_limite,
+        fechaLimite: solicitud.fecha_limite, isDuplicada: duplicada,
         urlEstado: url_estado,
       }).catch(err => {
         logger.error({ mensaje: '[solicitar] Error enviando email de confirmación:', error: err.message });

@@ -1,0 +1,865 @@
+{
+  "$defs": {
+    "BaseStyle": {
+      "properties": {
+        "background": {
+          "default": "background",
+          "enum": [
+            "background",
+            "surface",
+            "primary",
+            "secondary"
+          ],
+          "title": "Background",
+          "type": "string"
+        },
+        "textColor": {
+          "default": "text",
+          "enum": [
+            "text",
+            "textMuted",
+            "primary",
+            "secondary",
+            "background"
+          ],
+          "title": "Textcolor",
+          "type": "string"
+        },
+        "spacing": {
+          "default": "md",
+          "enum": [
+            "none",
+            "sm",
+            "md",
+            "lg",
+            "xl"
+          ],
+          "title": "Spacing",
+          "type": "string"
+        }
+      },
+      "title": "BaseStyle",
+      "type": "object"
+    },
+    "CategoryGridContent": {
+      "properties": {
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "title": "CategoryGridContent",
+      "type": "object"
+    },
+    "CategoryGridLayout": {
+      "properties": {
+        "variant": {
+          "default": "grid",
+          "enum": [
+            "grid",
+            "carousel"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "columns": {
+          "default": 4,
+          "enum": [
+            2,
+            3,
+            4,
+            6
+          ],
+          "title": "Columns",
+          "type": "integer"
+        }
+      },
+      "title": "CategoryGridLayout",
+      "type": "object"
+    },
+    "CategoryGridSection": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "CategoryGrid",
+          "default": "CategoryGrid",
+          "title": "Type",
+          "type": "string"
+        },
+        "content": {
+          "$ref": "#/$defs/CategoryGridContent"
+        },
+        "layout": {
+          "$ref": "#/$defs/CategoryGridLayout"
+        },
+        "source": {
+          "discriminator": {
+            "mapping": {
+              "manual": "#/$defs/ManualCategorySource"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ManualCategorySource"
+            }
+          ],
+          "title": "Source"
+        },
+        "style": {
+          "$ref": "#/$defs/BaseStyle"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "layout",
+        "source"
+      ],
+      "title": "CategoryGridSection",
+      "type": "object"
+    },
+    "FAQContent": {
+      "properties": {
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/FAQItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "FAQContent",
+      "type": "object"
+    },
+    "FAQItem": {
+      "properties": {
+        "q": {
+          "title": "Q",
+          "type": "string"
+        },
+        "a": {
+          "title": "A",
+          "type": "string"
+        }
+      },
+      "required": [
+        "q",
+        "a"
+      ],
+      "title": "FAQItem",
+      "type": "object"
+    },
+    "FAQLayout": {
+      "properties": {
+        "variant": {
+          "default": "accordion",
+          "enum": [
+            "accordion",
+            "grid"
+          ],
+          "title": "Variant",
+          "type": "string"
+        }
+      },
+      "title": "FAQLayout",
+      "type": "object"
+    },
+    "FAQSection": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "FAQ",
+          "default": "FAQ",
+          "title": "Type",
+          "type": "string"
+        },
+        "content": {
+          "$ref": "#/$defs/FAQContent"
+        },
+        "layout": {
+          "$ref": "#/$defs/FAQLayout"
+        },
+        "style": {
+          "$ref": "#/$defs/BaseStyle"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "layout"
+      ],
+      "title": "FAQSection",
+      "type": "object"
+    },
+    "HeroContent": {
+      "properties": {
+        "eyebrow": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Eyebrow"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "HeroContent",
+      "type": "object"
+    },
+    "HeroLayout": {
+      "properties": {
+        "variant": {
+          "default": "center",
+          "enum": [
+            "center",
+            "split_left",
+            "split_right"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "alignment": {
+          "default": "center",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Alignment",
+          "type": "string"
+        }
+      },
+      "title": "HeroLayout",
+      "type": "object"
+    },
+    "HeroSection": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "Hero",
+          "default": "Hero",
+          "title": "Type",
+          "type": "string"
+        },
+        "content": {
+          "$ref": "#/$defs/HeroContent"
+        },
+        "layout": {
+          "$ref": "#/$defs/HeroLayout"
+        },
+        "style": {
+          "$ref": "#/$defs/BaseStyle"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "layout"
+      ],
+      "title": "HeroSection",
+      "type": "object"
+    },
+    "ManualCategorySource": {
+      "properties": {
+        "type": {
+          "const": "manual",
+          "default": "manual",
+          "title": "Type",
+          "type": "string"
+        },
+        "category_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Category Ids",
+          "type": "array"
+        }
+      },
+      "title": "ManualCategorySource",
+      "type": "object"
+    },
+    "ManualProductSource": {
+      "properties": {
+        "type": {
+          "const": "manual",
+          "default": "manual",
+          "title": "Type",
+          "type": "string"
+        },
+        "product_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Product Ids",
+          "type": "array"
+        }
+      },
+      "title": "ManualProductSource",
+      "type": "object"
+    },
+    "ProductGridContent": {
+      "properties": {
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "title": "ProductGridContent",
+      "type": "object"
+    },
+    "ProductGridLayout": {
+      "properties": {
+        "variant": {
+          "default": "grid",
+          "enum": [
+            "grid",
+            "carousel"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "columns": {
+          "default": 4,
+          "enum": [
+            2,
+            3,
+            4
+          ],
+          "title": "Columns",
+          "type": "integer"
+        }
+      },
+      "title": "ProductGridLayout",
+      "type": "object"
+    },
+    "ProductGridSection": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "ProductGrid",
+          "default": "ProductGrid",
+          "title": "Type",
+          "type": "string"
+        },
+        "content": {
+          "$ref": "#/$defs/ProductGridContent"
+        },
+        "layout": {
+          "$ref": "#/$defs/ProductGridLayout"
+        },
+        "source": {
+          "discriminator": {
+            "mapping": {
+              "manual": "#/$defs/ManualProductSource",
+              "query": "#/$defs/QueryProductSource"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ManualProductSource"
+            },
+            {
+              "$ref": "#/$defs/QueryProductSource"
+            }
+          ],
+          "title": "Source"
+        },
+        "style": {
+          "$ref": "#/$defs/BaseStyle"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "layout",
+        "source"
+      ],
+      "title": "ProductGridSection",
+      "type": "object"
+    },
+    "ProductShowcaseContent": {
+      "properties": {
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "title": "ProductShowcaseContent",
+      "type": "object"
+    },
+    "ProductShowcaseLayout": {
+      "properties": {
+        "alignment": {
+          "default": "left",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Alignment",
+          "type": "string"
+        },
+        "show_description": {
+          "default": true,
+          "title": "Show Description",
+          "type": "boolean"
+        }
+      },
+      "title": "ProductShowcaseLayout",
+      "type": "object"
+    },
+    "ProductShowcaseSection": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "ProductShowcase",
+          "default": "ProductShowcase",
+          "title": "Type",
+          "type": "string"
+        },
+        "content": {
+          "$ref": "#/$defs/ProductShowcaseContent"
+        },
+        "layout": {
+          "$ref": "#/$defs/ProductShowcaseLayout"
+        },
+        "product_id": {
+          "title": "Product Id",
+          "type": "integer"
+        },
+        "style": {
+          "$ref": "#/$defs/BaseStyle"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "layout",
+        "product_id"
+      ],
+      "title": "ProductShowcaseSection",
+      "type": "object"
+    },
+    "QueryProductSource": {
+      "properties": {
+        "type": {
+          "const": "query",
+          "default": "query",
+          "title": "Type",
+          "type": "string"
+        },
+        "category_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category Id"
+        },
+        "collection_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collection Id"
+        },
+        "sort": {
+          "default": "best_selling",
+          "enum": [
+            "best_selling",
+            "newest",
+            "price_asc",
+            "price_desc"
+          ],
+          "title": "Sort",
+          "type": "string"
+        },
+        "limit": {
+          "default": 12,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "title": "QueryProductSource",
+      "type": "object"
+    },
+    "SeoConfig": {
+      "properties": {
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "title": "SeoConfig",
+      "type": "object"
+    },
+    "TestimonialItem": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "quote": {
+          "title": "Quote",
+          "type": "string"
+        },
+        "rating": {
+          "default": 5,
+          "enum": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "title": "Rating",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "quote"
+      ],
+      "title": "TestimonialItem",
+      "type": "object"
+    },
+    "TestimonialsContent": {
+      "properties": {
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/TestimonialItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "title": "TestimonialsContent",
+      "type": "object"
+    },
+    "TestimonialsLayout": {
+      "properties": {
+        "variant": {
+          "default": "grid",
+          "enum": [
+            "grid",
+            "carousel"
+          ],
+          "title": "Variant",
+          "type": "string"
+        }
+      },
+      "title": "TestimonialsLayout",
+      "type": "object"
+    },
+    "TestimonialsSection": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "Testimonials",
+          "default": "Testimonials",
+          "title": "Type",
+          "type": "string"
+        },
+        "content": {
+          "$ref": "#/$defs/TestimonialsContent"
+        },
+        "layout": {
+          "$ref": "#/$defs/TestimonialsLayout"
+        },
+        "style": {
+          "$ref": "#/$defs/BaseStyle"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "layout"
+      ],
+      "title": "TestimonialsSection",
+      "type": "object"
+    },
+    "Theme": {
+      "properties": {
+        "palette": {
+          "$ref": "#/$defs/ThemePalette"
+        },
+        "typography": {
+          "$ref": "#/$defs/ThemeTypography"
+        },
+        "radius": {
+          "$ref": "#/$defs/ThemeRadius"
+        }
+      },
+      "required": [
+        "palette",
+        "typography",
+        "radius"
+      ],
+      "title": "Theme",
+      "type": "object"
+    },
+    "ThemePalette": {
+      "properties": {
+        "primary": {
+          "title": "Primary",
+          "type": "string"
+        },
+        "secondary": {
+          "title": "Secondary",
+          "type": "string"
+        },
+        "background": {
+          "title": "Background",
+          "type": "string"
+        },
+        "surface": {
+          "title": "Surface",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "textMuted": {
+          "title": "Textmuted",
+          "type": "string"
+        },
+        "success": {
+          "title": "Success",
+          "type": "string"
+        }
+      },
+      "required": [
+        "primary",
+        "secondary",
+        "background",
+        "surface",
+        "text",
+        "textMuted",
+        "success"
+      ],
+      "title": "ThemePalette",
+      "type": "object"
+    },
+    "ThemeRadius": {
+      "properties": {
+        "card": {
+          "title": "Card",
+          "type": "string"
+        },
+        "button": {
+          "title": "Button",
+          "type": "string"
+        }
+      },
+      "required": [
+        "card",
+        "button"
+      ],
+      "title": "ThemeRadius",
+      "type": "object"
+    },
+    "ThemeTypography": {
+      "properties": {
+        "heading": {
+          "title": "Heading",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        }
+      },
+      "required": [
+        "heading",
+        "body"
+      ],
+      "title": "ThemeTypography",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "2.0",
+      "default": "2.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "page_type": {
+      "enum": [
+        "home",
+        "landing",
+        "product",
+        "category"
+      ],
+      "title": "Page Type",
+      "type": "string"
+    },
+    "theme": {
+      "$ref": "#/$defs/Theme"
+    },
+    "seo": {
+      "$ref": "#/$defs/SeoConfig"
+    },
+    "sections": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "CategoryGrid": "#/$defs/CategoryGridSection",
+            "FAQ": "#/$defs/FAQSection",
+            "Hero": "#/$defs/HeroSection",
+            "ProductGrid": "#/$defs/ProductGridSection",
+            "ProductShowcase": "#/$defs/ProductShowcaseSection",
+            "Testimonials": "#/$defs/TestimonialsSection"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/HeroSection"
+          },
+          {
+            "$ref": "#/$defs/ProductGridSection"
+          },
+          {
+            "$ref": "#/$defs/ProductShowcaseSection"
+          },
+          {
+            "$ref": "#/$defs/CategoryGridSection"
+          },
+          {
+            "$ref": "#/$defs/FAQSection"
+          },
+          {
+            "$ref": "#/$defs/TestimonialsSection"
+          }
+        ]
+      },
+      "title": "Sections",
+      "type": "array"
+    }
+  },
+  "required": [
+    "page_type",
+    "theme",
+    "seo"
+  ],
+  "title": "PageSchema",
+  "type": "object"
+}

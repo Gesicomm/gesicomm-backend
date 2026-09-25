@@ -229,9 +229,10 @@ class TiendaService {
 
     const errores = this.validarCamposComunes(payload);
 
+    // El prefijo URL (subdominio) es independiente del nombre y se puede
+    // cambiar siempre: con dominio propio queda como dirección de respaldo.
     let nuevoSubdominio = null;
-    const usaDominioPropio = Boolean(tienda.dominio_propio);
-    if (payload.subdominio !== undefined && !usaDominioPropio) {
+    if (payload.subdominio !== undefined) {
       nuevoSubdominio = (payload.subdominio || '').trim().toLowerCase();
       if (nuevoSubdominio !== tienda.subdominio) {
         const { valido, motivo } = validarFormatoSubdominio(nuevoSubdominio);

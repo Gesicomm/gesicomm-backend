@@ -398,6 +398,34 @@ class LandingCodigoService {
   }
 
   /**
+   * Verifica que el JS al menos PARSEE — no lo ejecuta, solo lo compila con
+   * `new Function()` para que el motor de JS tire el SyntaxError si lo hay
+   * (variable declarada dos veces, paréntesis sin cerrar, etc.). Sin esto,
+   * un JS roto se guardaba igual y recién explotaba en el navegador del
+   * visitante (o del comercio, mirando el preview) — visto en código
+   * generado por IA que declaró la misma constante dos veces.
+   *
+   * @returns {string[]} motivos (vacío = OK)
+   */
+  static revisarSintaxisJs(js) {
+    const texto = String(js || '').trim();
+    if (!texto) return [];
+    try {
+      // eslint-disable-next-line no-new-func
+      new Function(texto);
+      return [];
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        return [`El JavaScript tiene un error de sintaxis y no se puede guardar: ${err.message}.`];
+      }
+      // Un error que no sea de sintaxis (ReferenceError, etc.) no bloquea:
+      // `new Function` no ejecuta el cuerpo, así que esto no debería pasar,
+      // pero si pasa no es motivo para rechazar el guardado.
+      return [];
+    }
+  }
+
+  /**
    * Punto de entrada único. Lanza si el código no se puede guardar (mismo
    * contrato de error que el resto de landingSimple: err.errores).
    *
@@ -458,6 +486,7 @@ class LandingCodigoService {
       errores.push(`El total de HTML + CSS + JavaScript supera el máximo de ${Math.round(maxTotal / 1024)} KB.`);
     }
 
+    errores.push(...this.revisarSintaxisJs(js));
     errores.push(...this.revisarJs(js));
     errores.push(...this.revisarEventosInline(html));
 
@@ -517,6 +546,22 @@ function listaDe(valor, max, mapear) {
 const enteroPositivo = v => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
 const contentId = v => (typeof v === 'string' && /^[a-z0-9-]{1,200}$/i.test(v) ? v : null);
 
+function limpiarPaquetes(paquetes) {
+  if (!paquetes || typeof paquetes !== 'object' || Array.isArray(paquetes)) return {};
+  const salida = {};
+  let destacado = false;
+  for (const [clave, conf] of Object.entries(paquetes).slice(0, 50)) {
+    const id = enteroPositivo(clave);
+    if (!id || !conf || typeof conf !== 'object') continue;
+    const etiqueta = String(conf.etiqueta ?? '').replace(/\s+/g, ' ').trim().slice(0, 24);
+    // Un solo paquete destacado por landing.
+    const esDestacado = conf.destacado === true && !destacado;
+    if (esDestacado) destacado = true;
+    if (etiqueta || esDestacado) salida[id] = { etiqueta, destacado: esDestacado };
+  }
+  return salida;
+}
+
 LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
   if (!venta || typeof venta !== 'object' || Array.isArray(venta)) return null;
   const cross = venta.cross_sell || {};
@@ -528,14 +573,22 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
     seleccion: MODOS_SELECCION.includes(venta.seleccion) ? venta.seleccion : 'manual',
     categorias: listaDe(venta.categorias, 30, v => textoCorto(v, 100)),
     incluir_combos: venta.incluir_combos !== false,
+    // Dónde entra el cliente: la tienda (catálogo) o directo en la ficha del
+    // producto principal. `tipo` se sigue guardando por compatibilidad.
+    abrir_en: venta.abrir_en === 'producto' ? 'producto' : 'tienda',
+    combos_primero: venta.combos_primero === true,
+    principal_id: enteroPositivo(venta.principal_id),
+    // Por paquete (oferta 'normal'): la etiqueta que muestra la ficha
+    // ("Más elegido", "Mayor ahorro"…) y cuál se destaca (arranca elegido).
+    paquetes: limpiarPaquetes(venta.paquetes),
     cross_sell: {
       activo: cross.activo !== false,
-      ofertas: listaDe(cross.ofertas, 20, enteroPositivo),
+      ofertas: listaDe(cross.ofertas, 200, enteroPositivo),
     },
     recomendados: {
       activo: reco.activo !== false,
       modo: MODOS_RECOMENDADOS.includes(reco.modo) ? reco.modo : 'auto',
-      items: listaDe(reco.items, 12, contentId),
+      items: listaDe(reco.items, 50, contentId),
       max: Number.isInteger(max) && max >= 1 && max <= 8 ? max : 4,
       titulo: textoCorto(reco.titulo, 80),
     },

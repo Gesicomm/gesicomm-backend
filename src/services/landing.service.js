@@ -35,6 +35,7 @@ const CuponService = require('./cupon.service');
 const PedidoNumeracion = require('./pedidoNumeracion.service');
 const MetaCapiService = require('./metaCapi.service');
 const ImagenService = require('./imagen.service');
+const PrecioUsuarioService = require('./precioUsuario.service');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
@@ -85,6 +86,15 @@ const TIPOS_SECCION = new Set([
   'scrolling_text',
   'producto_galeria',
 ]);
+
+/** Los colores de Branding de Mi Tienda, para las landings HTML. */
+function coloresDeTienda(tienda) {
+  return {
+    primario: tienda.color_primario || null,
+    secundario: tienda.color_secundario || null,
+    fondo: tienda.color_fondo || null,
+  };
+}
 
 class LandingService {
 
@@ -1080,7 +1090,8 @@ class LandingService {
       include: [
         { model: LandingItem, as: 'items', attributes: ['tipo', 'referencia_id', 'orden'] },
         { model: LandingTemplate, as: 'template', required: false, attributes: ['kind'] },
-        { model: Tienda, attributes: ['inquilino_id'] },
+        // usuario_id: el catálogo por regla se acota al dueño (visibilidadDeTienda).
+        { model: Tienda, attributes: ['inquilino_id', 'usuario_id'] },
       ],
     });
     if (!landing) return new Map();
@@ -1450,6 +1461,28 @@ class LandingService {
    * @returns {{disponible:true, ...}} landing pública lista para renderizar
    */
   /**
+   * Qué productos y combos puede vender una tienda por REGLA (todo el
+   * catálogo / por categoría / fallback). Con tenant único, filtrar solo por
+   * inquilino_id metía en la landing de una tienda lo que cargaron otros
+   * usuarios. Mismas reglas que la Vitrina de su dueño (precioUsuario.service):
+   *   - productos: creado_por NULL, del dueño o de un admin;
+   *   - combos: del dueño o de un admin. NULL (anteriores a 2026-09-24) es
+   *     solo del admin, así que entra únicamente si el dueño es admin.
+   * Devuelve fragmentos de where envueltos en Op.and para combinarlos con el
+   * Op.or de los content_ids sin pisarlo.
+   */
+  static async visibilidadDeTienda(tienda) {
+    const administradoresIds = await PrecioUsuarioService.obtenerIdsAdministradores(tienda.inquilino_id);
+    const duenoId = tienda.usuario_id ?? null;
+    const duenoEsAdmin = duenoId != null && administradoresIds.includes(duenoId);
+    const producto = PrecioUsuarioService.visibilidadCatalogoWhere(duenoId, false, false, administradoresIds);
+    const combo = duenoEsAdmin
+      ? { [Op.or]: [{ creado_por: null }, { creado_por: { [Op.in]: administradoresIds } }] }
+      : PrecioUsuarioService.visibilidadComboWhere(duenoId, false, false, administradoresIds);
+    return { producto: { [Op.and]: [producto] }, combo: { [Op.and]: [combo] } };
+  }
+
+  /**
    * Un lienzo en blanco sin productos elegidos vende los últimos
    * MAX_ITEMS_POR_LANDING productos en venta de la tienda. Vive en un solo
    * lugar porque lo usan tres caminos que TIENEN que coincidir: lo que se
@@ -1458,9 +1491,10 @@ class LandingService {
    * aplicaba obtenerPublica: el visitante veía el producto, tocaba
    * "Comprar" y el checkout respondía "carrito vacío".
    */
-  static async itemsFallbackLienzo(inquilino_id) {
+  static async itemsFallbackLienzo(tienda, visibilidad = null) {
+    const { producto: visibles } = visibilidad || await this.visibilidadDeTienda(tienda);
     const productos = await Producto.findAll({
-      where: { inquilino_id, activo: true, estado_venta: 'en_venta' },
+      where: { inquilino_id: tienda.inquilino_id, activo: true, estado_venta: 'en_venta', ...visibles },
       attributes: ['id', 'created_at'],
       order: [['created_at', 'DESC']],
       limit: MAX_ITEMS_POR_LANDING,
@@ -1517,15 +1551,17 @@ class LandingService {
    * @param {string[]|null} opciones.contentIds - solo estos (carrito, eventos, ficha).
    * @param {number|null} opciones.limite - los primeros N (destacados y más nuevos primero).
    */
-  static async itemsPorReglaLienzo(inquilino_id, venta, { contentIds = null, limite = null } = {}) {
+  static async itemsPorReglaLienzo(tienda, venta, { contentIds = null, limite = null } = {}, visibilidad = null) {
     const categorias = venta.seleccion === 'categoria' ? (venta.categorias || []) : null;
     if (categorias && !categorias.length) return [];
     const filtroCategoria = categorias
       ? [{ association: 'categoria', attributes: [], where: { nombre: { [Op.in]: categorias } }, required: true }]
       : [];
 
-    const whereProducto = { inquilino_id, activo: true, estado_venta: 'en_venta' };
-    const whereCombo = { inquilino_id, estado: 'ACTIVO' };
+    const visibles = visibilidad || await this.visibilidadDeTienda(tienda);
+    const { inquilino_id } = tienda;
+    const whereProducto = { inquilino_id, activo: true, estado_venta: 'en_venta', ...visibles.producto };
+    const whereCombo = { inquilino_id, estado: 'ACTIVO', ...visibles.combo };
     let buscarProductos = true;
     let buscarCombos = venta.incluir_combos !== false;
     if (contentIds) {
@@ -1578,17 +1614,18 @@ class LandingService {
   static async contarLienzo(landing, tienda) {
     const venta = landing.content?.venta;
     if (!(venta?.configurado && ['todos', 'categoria'].includes(venta.seleccion))) {
-      return (landing.items || []).length || (await this.itemsFallbackLienzo(tienda.inquilino_id)).length;
+      return (landing.items || []).length || (await this.itemsFallbackLienzo(tienda)).length;
     }
     const categorias = venta.seleccion === 'categoria' ? (venta.categorias || []) : null;
     if (categorias && !categorias.length) return 0;
     const filtroCategoria = categorias
       ? [{ association: 'categoria', attributes: [], where: { nombre: { [Op.in]: categorias } }, required: true }]
       : [];
+    const visibles = await this.visibilidadDeTienda(tienda);
     const [nProductos, nCombos] = await Promise.all([
-      Producto.count({ where: { inquilino_id: tienda.inquilino_id, activo: true, estado_venta: 'en_venta' }, include: filtroCategoria }),
+      Producto.count({ where: { inquilino_id: tienda.inquilino_id, activo: true, estado_venta: 'en_venta', ...visibles.producto }, include: filtroCategoria }),
       venta.incluir_combos === false ? 0 : ProductoCombo.count({
-        where: { inquilino_id: tienda.inquilino_id, estado: 'ACTIVO' },
+        where: { inquilino_id: tienda.inquilino_id, estado: 'ACTIVO', ...visibles.combo },
         include: [{ model: Producto, as: 'producto_padre', attributes: [], where: { activo: true }, required: true, include: filtroCategoria }],
       }),
     ]);
@@ -1608,13 +1645,33 @@ class LandingService {
    * @param {number|null} opciones.limite - solo los primeros N.
    * @param {string|null} opciones.asegurar - content_id que tiene que estar aunque quede fuera del límite (la ficha).
    */
+  /**
+   * Las vistas del lienzo que viajan en la respuesta pública: la ficha
+   * general + la ficha propia SOLO del producto que se va a mostrar (el de
+   * la URL, o el principal si la landing abre directo en un producto).
+   */
+  static vistasPublicas(content, contentIdPedido = null, contentIdPrincipal = null) {
+    const vistas = content?.vistas || {};
+    const venta = content?.venta || {};
+    const propias = vistas.productos || {};
+    const salida = {};
+    if (vistas.producto) salida.producto = vistas.producto;
+    // El principal va primero en los items cuando la landing abre en él
+    // (ver principal_id en obtenerPublica).
+    const buscado = contentIdPedido || (venta.abrir_en === 'producto' ? contentIdPrincipal : null);
+    const elegidas = buscado && propias[buscado] ? { [buscado]: propias[buscado] } : {};
+    if (Object.keys(elegidas).length) salida.productos = elegidas;
+    return salida;
+  }
+
   static async itemsDelLienzo(landing, tienda, { contentIds = null, limite = null, asegurar = null } = {}) {
     const venta = landing.content?.venta;
     let items;
     if (venta?.configurado && ['todos', 'categoria'].includes(venta.seleccion)) {
-      items = await this.itemsPorReglaLienzo(tienda.inquilino_id, venta, { contentIds, limite });
+      const visibilidad = await this.visibilidadDeTienda(tienda);
+      items = await this.itemsPorReglaLienzo(tienda, venta, { contentIds, limite }, visibilidad);
       if (asegurar && !contentIds) {
-        const extra = await this.itemsPorReglaLienzo(tienda.inquilino_id, venta, { contentIds: [asegurar] });
+        const extra = await this.itemsPorReglaLienzo(tienda, venta, { contentIds: [asegurar] }, visibilidad);
         const ya = new Set(items.map(i => `${i.tipo}:${i.referencia_id}`));
         extra.forEach(i => { if (!ya.has(`${i.tipo}:${i.referencia_id}`)) items.push({ ...i, orden: items.length }); });
       }
@@ -1623,7 +1680,7 @@ class LandingService {
 
     items = (landing.items || []).length
       ? [...landing.items].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0))
-      : await this.itemsFallbackLienzo(tienda.inquilino_id);
+      : await this.itemsFallbackLienzo(tienda);
 
     if (contentIds || (asegurar && limite && items.length > limite)) {
       const buscados = contentIds || [asegurar];
@@ -1689,7 +1746,7 @@ class LandingService {
     // siempre. El checkout valida con la misma regla (resolverCarrito).
     let itemsFallbackCodigo = null;
     if (esCodigo && !(landing.items || []).length) {
-      itemsFallbackCodigo = await this.itemsSegunReglaCodigo(landing, tienda.inquilino_id);
+      itemsFallbackCodigo = await this.itemsSegunReglaCodigo(landing, tienda);
     }
 
     // Un funnel nunca tiene LandingItem: su único producto vive en
@@ -1709,6 +1766,14 @@ class LandingService {
       : (itemsFallbackCodigo || null)
         ? itemsFallbackCodigo
       : (landing.items || []);
+    // Lienzo "directo en un producto": la landing abre en la ficha del
+    // principal, así que tiene que venir primero (y aunque la regla lo deje
+    // fuera del primer lote).
+    const principalLienzo = Number(landing.content?.venta?.principal_id);
+    if (esCodigo && landing.content?.venta?.abrir_en === 'producto' && principalLienzo) {
+      const i = items.findIndex(x => x.tipo === 'producto' && Number(x.referencia_id) === principalLienzo);
+      if (i > 0) items.unshift(items.splice(i, 1)[0]);
+    }
     const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
     // Templates rígidos (Fitness/Beauty/Tech/Básico), funnels y lienzo en
@@ -2446,7 +2511,9 @@ class LandingService {
         },
         // Ficha de producto propia y configuración de venta (formato,
         // ventas cruzadas elegidas, recomendados): las lee el runtime.
-        ...(landing.content?.vistas?.producto ? { vistas: { producto: landing.content.vistas.producto } } : {}),
+        ...(landing.content?.vistas?.producto || landing.content?.vistas?.productos
+          ? { vistas: this.vistasPublicas(landing.content, opciones.asegurarContentId, itemsDto.find(i => i.tipo === 'producto')?.content_id) }
+          : {}),
         ...(landing.content?.venta ? { venta: landing.content.venta } : {}),
       } : {
         ofertas_carrito: landing.content?.ofertas_carrito || [],
@@ -2490,6 +2557,9 @@ class LandingService {
         nombre: tienda.nombre,
         subdominio: tienda.subdominio,
         logo_imagen: tienda.logo_imagen || null,
+        // Branding de Mi Tienda tal cual: la landing HTML (lienzo en blanco)
+        // arranca con estos colores (ver --tienda-* en construirDocumentoCodigo).
+        colores: coloresDeTienda(tienda),
       },
       // primario/fondo: null en la landing = hereda el default de Tienda.
       // "claro" nunca hereda el fondo oscuro de la tienda (pensado para
@@ -2913,7 +2983,7 @@ class LandingService {
       catalogo_titulo: landing.catalogo_titulo || null,
       catalogo_descripcion: landing.catalogo_descripcion || null,
       template: landing.template ? { slug: landing.template.slug, kind: landing.template.kind } : null,
-      tienda: { nombre: tienda.nombre, subdominio: tienda.subdominio, logo_imagen: tienda.logo_imagen || null },
+      tienda: { nombre: tienda.nombre, subdominio: tienda.subdominio, logo_imagen: tienda.logo_imagen || null, colores: coloresDeTienda(tienda) },
       tema: (esRigida || esFunnel) ? {
         modo: landing.tema_modo,
         primario: landing.color_primario || null,
@@ -3097,12 +3167,14 @@ class LandingService {
    * @param {{producto?: number[], combo?: number[], slugs?: string[]}|null} acotar
    *   Para el checkout: solo lo que pidió el carrito. null = hasta el tope.
    */
-  static async itemsSegunReglaCodigo(landing, inquilino_id, acotar = null) {
+  static async itemsSegunReglaCodigo(landing, tienda, acotar = null) {
     const venta = landing.content?.venta || {};
     const porCategoria = venta.seleccion === 'categoria';
     const categorias = Array.isArray(venta.categorias) ? venta.categorias : [];
     if (porCategoria && !categorias.length) return [];
-    const whereProducto = { inquilino_id, activo: true, estado_venta: 'en_venta' };
+    const { inquilino_id } = tienda;
+    const visibles = await this.visibilidadDeTienda(tienda);
+    const whereProducto = { inquilino_id, activo: true, estado_venta: 'en_venta', ...visibles.producto };
     if (acotar) {
       whereProducto[Op.or] = [
         ...(acotar.producto?.length ? [{ id: { [Op.in]: acotar.producto } }] : []),
@@ -3126,7 +3198,7 @@ class LandingService {
     }));
     if (venta.incluir_combos !== false && (!acotar || acotar.combo?.length)) {
       const combos = await ProductoCombo.findAll({
-        where: { inquilino_id, estado: 'ACTIVO', ...(acotar ? { id: { [Op.in]: acotar.combo } } : {}) },
+        where: { inquilino_id, estado: 'ACTIVO', ...visibles.combo, ...(acotar ? { id: { [Op.in]: acotar.combo } } : {}) },
         attributes: ['id', 'created_at'],
         limit: acotar ? undefined : MAX_ITEMS_POR_LANDING,
       });
@@ -3167,7 +3239,7 @@ class LandingService {
         if (m) acotar[m[1]].push(Number(m[2]));
         else if (cid) acotar.slugs.push(cid);
       }
-      landingItems.push(...await this.itemsSegunReglaCodigo(landing, tienda.inquilino_id, acotar));
+      landingItems.push(...await this.itemsSegunReglaCodigo(landing, tienda, acotar));
     }
     
     // FASE 5: Commerce Engine Integration para Funnels

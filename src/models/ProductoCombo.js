@@ -26,6 +26,12 @@ const ProductoCombo = sequelize.define('ProductoCombo', {
     allowNull: false,
     comment: 'Aislamiento de tenant',
   },
+  // Dueño del combo. Un usuario solo ve y edita los suyos; el admin, todos.
+  // NULL = combo anterior a la columna, visible solo para el admin.
+  creado_por: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   // FK al producto principal del combo.
   // Los upsells viven en ProductoComboItem.
   producto_id: {

@@ -219,13 +219,24 @@ class ComboService {
   // ─── CRUD ─────────────────────────────────────────────────────────────────
 
   /**
+   * Qué combos puede ver/editar quien hace el pedido. El admin ve todos
+   * (incluidos los anteriores a creado_por, que quedaron en NULL); cualquier
+   * otro usuario, solo los que armó él. Sin usuario identificado no se
+   * devuelve nada — nunca `creado_por: null`, que matchearía los huérfanos.
+   */
+  static alcance({ usuario_id = null, esAdmin = false } = {}) {
+    if (esAdmin) return {};
+    return { creado_por: usuario_id != null ? Number(usuario_id) : { [Op.in]: [] } };
+  }
+
+  /**
    * Lista todos los combos del tenant con sus upsells.
    *
    * @param {number} inquilino_id
    * @param {{ estado?: string, texto?: string }} filtros
    */
-  static async listar(inquilino_id, filtros = {}) {
-    const where = { inquilino_id };
+  static async listar(inquilino_id, filtros = {}, opciones = {}) {
+    const where = { inquilino_id, ...this.alcance(opciones) };
     if (filtros.estado) where.estado = filtros.estado;
 
     const combos = await ProductoCombo.findAll({
@@ -268,7 +279,7 @@ class ComboService {
   static async obtener(comboId, inquilino_id, opciones = {}) {
     const { usuario_id = null, esAdmin = false } = opciones;
     const combo = await ProductoCombo.findOne({
-      where: { id: comboId, inquilino_id },
+      where: { id: comboId, inquilino_id, ...this.alcance(opciones) },
       include: [
         {
           model: Producto,
@@ -378,6 +389,7 @@ class ComboService {
 
     const comboInstancia = await ProductoCombo.create({
       inquilino_id,
+      creado_por: opciones.usuario_id ?? null,
       producto_id: principalProductId,
       nombre: nombre.trim(),
       descripcion: descripcion?.trim() || null,
@@ -409,7 +421,7 @@ class ComboService {
    */
   static async actualizar(comboId, payload, inquilino_id, transaction, opciones = {}) {
     const combo = await ProductoCombo.findOne({
-      where: { id: comboId, inquilino_id },
+      where: { id: comboId, inquilino_id, ...this.alcance(opciones) },
       transaction,
     });
     if (!combo) throw new Error('Combo no encontrado.');
@@ -464,14 +476,14 @@ class ComboService {
    * @param {number} inquilino_id
    * @param {object} transaction
    */
-  static async cambiarEstado(comboId, nuevoEstado, inquilino_id, transaction) {
+  static async cambiarEstado(comboId, nuevoEstado, inquilino_id, transaction, opciones = {}) {
     const estadosValidos = ['BORRADOR', 'ACTIVO', 'INACTIVO'];
     if (!estadosValidos.includes(nuevoEstado)) {
       throw new Error(`Estado inválido. Valores permitidos: ${estadosValidos.join(', ')}.`);
     }
 
     const combo = await ProductoCombo.findOne({
-      where: { id: comboId, inquilino_id },
+      where: { id: comboId, inquilino_id, ...this.alcance(opciones) },
       transaction,
     });
     if (!combo) throw new Error('Combo no encontrado.');
@@ -569,9 +581,9 @@ class ComboService {
    * @deprecated Usar listar() con filtros en su lugar.
    * Mantenido para compatibilidad con /api/productos/:id/combos
    */
-  static async listarPorProducto(producto_id, inquilino_id) {
+  static async listarPorProducto(producto_id, inquilino_id, opciones = {}) {
     return ProductoCombo.findAll({
-      where: { producto_id, inquilino_id },
+      where: { producto_id, inquilino_id, ...this.alcance(opciones) },
       include: [{
         model: ProductoComboItem,
         as: 'items',

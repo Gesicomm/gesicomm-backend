@@ -41,6 +41,8 @@ const LiquidacionEnvio = require('./LiquidacionEnvio');
 const EnvioHistorial = require('./EnvioHistorial');
 const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
+const Page = require('./Page');
+const PageVersion = require('./PageVersion');
 const ProveedorDns = require('./ProveedorDns');
 const LandingTemplate = require('./LandingTemplate');
 const Landing = require('./Landing');
@@ -842,4 +844,6 @@ module.exports = {
   SolicitudAbastecimiento,
   HistorialSolicitudAbastecimiento,
   HistorialIngresoInventario,
+  Page,
+  PageVersion,
 };

@@ -453,6 +453,11 @@ class LandingSimpleService {
     const limpioProducto = payload.vistas?.producto !== undefined
       ? this.sanitizarVista(payload.vistas.producto, 'Vista de producto')
       : null;
+    // Ficha propia de un producto (pisa la general solo para ese producto):
+    // { [content_id]: {html,css,js} | null }. null = volver a la general.
+    const fichasPropias = payload.vistas?.productos !== undefined
+      ? this.sanitizarFichasPropias(payload.vistas.productos, landing.content?.vistas?.productos)
+      : null;
     const content = { ...(landing.content || {}) };
     if (limpioInicio) {
       advertencias = limpioInicio.advertencias;
@@ -465,26 +470,17 @@ class LandingSimpleService {
         producto: { html: limpioProducto.html, css: limpioProducto.css, js: limpioProducto.js },
       };
     }
+    if (fichasPropias) {
+      advertencias = [...advertencias, ...fichasPropias.advertencias];
+      content.vistas = { ...(content.vistas || {}), productos: fichasPropias.productos };
+    }
+    // Una sola pasada: antes había una segunda (normalizarVenta) que pisaba
+    // esta y descartaba abrir_en / combos_primero / principal_id.
     if (payload.venta !== undefined) {
       content.venta = LandingCodigoService.limpiarVenta(payload.venta);
     }
-    if (limpioInicio || limpioProducto || payload.venta !== undefined) {
+    if (limpioInicio || limpioProducto || fichasPropias || payload.venta !== undefined) {
       landing.content = content;
-      landing.changed('content', true);
-    }
-    // Ficha de producto del lienzo: una sola plantilla que el runtime llena
-    // con el producto de la URL. Pasa por el mismo sanitizador que el inicio.
-    if (payload.vistas?.producto !== undefined) {
-      const limpioFicha = LandingCodigoService.sanitizar(payload.vistas.producto || {});
-      advertencias = [...advertencias, ...limpioFicha.advertencias.map(a => `Ficha de producto: ${a}`)];
-      landing.content = {
-        ...(landing.content || {}),
-        vistas: { ...(landing.content?.vistas || {}), producto: { html: limpioFicha.html, css: limpioFicha.css, js: limpioFicha.js } },
-      };
-      landing.changed('content', true);
-    }
-    if (payload.venta !== undefined) {
-      landing.content = { ...(landing.content || {}), venta: this.normalizarVenta(payload.venta) };
       landing.changed('content', true);
     }
     Object.assign(landing, this.camposEditables(payload, 'codigo'));
@@ -494,6 +490,36 @@ class LandingSimpleService {
     }
     const dto = await this.obtener(landing.id, tienda_id);
     return { ...dto, codigo_advertencias: advertencias };
+  }
+
+  /**
+   * Fichas propias por producto: se sanea cada una igual que la general.
+   * Las claves son content_id públicos (slug o "combo-12"); null borra la
+   * ficha propia de ese producto. Tope de fichas propias por landing: cada
+   * una puede pesar lo mismo que la general.
+   */
+  static sanitizarFichasPropias(nuevas, actuales = {}) {
+    const MAX_FICHAS_PROPIAS = 60;
+    if (!nuevas || typeof nuevas !== 'object' || Array.isArray(nuevas)) {
+      const err = new Error('Validación fallida.');
+      err.errores = ['Fichas por producto: formato inválido.'];
+      throw err;
+    }
+    const productos = { ...(actuales && typeof actuales === 'object' ? actuales : {}) };
+    const advertencias = [];
+    for (const [clave, codigo] of Object.entries(nuevas)) {
+      if (!/^[a-z0-9][a-z0-9-]{0,119}$/i.test(clave)) continue;
+      if (codigo === null) { delete productos[clave]; continue; }
+      const limpio = this.sanitizarVista(codigo, `Ficha de ${clave}`);
+      productos[clave] = { html: limpio.html, css: limpio.css, js: limpio.js };
+      advertencias.push(...limpio.advertencias.map(a => `Ficha de ${clave}: ${a}`));
+    }
+    if (Object.keys(productos).length > MAX_FICHAS_PROPIAS) {
+      const err = new Error('Validación fallida.');
+      err.errores = [`Hasta ${MAX_FICHAS_PROPIAS} productos pueden tener ficha propia; el resto usa la ficha general.`];
+      throw err;
+    }
+    return { productos, advertencias };
   }
 
   /** sanitizar() con el nombre de la vista en cada error, para que el editor diga en cuál está. */

@@ -122,11 +122,71 @@ async function crearDesdeOnboarding(req, res) {
   }
 }
 
+async function crearDesdeIA(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    
+    // Validar req.body (prompt, items)
+    let { prompt, items, productos_ids } = req.body;
+    
+    // Compatibilidad por si el front sigue mandando el array viejo
+    if (!items && Array.isArray(productos_ids)) {
+      items = productos_ids.map(id => ({ tipo: 'producto', id: Number(id) }));
+    }
+    
+    const AILandingService = require('../services/aiLanding.service');
+    const landing = await AILandingService.crearDesdeIA({
+      tienda_id: tienda.id,
+      inquilino_id: req.usuario.tenantId,
+      prompt,
+      items
+    });
+    
+    // Registrar evento
+    const AuthTracking = require('../services/authTracking.service');
+    await AuthTracking.registrarEventoConNotificacion({
+      tipo: 'ai_landing_generated',
+      req,
+      usuario: req.usuario,
+      metadata: {
+        tienda_id: tienda.id,
+        landing_id: landing.id,
+        prompt: prompt.slice(0, 100)
+      }
+    });
+    
+    return res.status(201).json(landing);
+  } catch (err) {
+    return manejarError(res, err, 'Error al generar la landing con Inteligencia Artificial.');
+  }
+}
+
 /**
  * Lienzo en blanco — no recibe template_id: el template de código es uno
  * solo y global (slug 'lienzo-blanco'), lo resuelve el servicio. El
  * frontend nunca tiene que conocer su id.
  */
+async function regenerarConIA(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+
+    const AILandingService = require('../services/aiLanding.service');
+    const landing = await AILandingService.regenerarConIA({
+      tienda_id: tienda.id,
+      inquilino_id: req.usuario.tenantId,
+      landing_id: req.params.id,
+      prompt: req.body.prompt,
+      target: req.body.target === 'producto' ? 'producto' : 'inicio',
+    });
+
+    return res.json(landing);
+  } catch (err) {
+    return manejarError(res, err, 'Error al regenerar la landing con Inteligencia Artificial.');
+  }
+}
+
 async function crearLienzoBlanco(req, res) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
@@ -255,7 +315,7 @@ async function eliminarHeroImagen(req, res) {
 }
 
 module.exports = {
-  listar, crear, crearDesdeOnboarding, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
+  listar, crear, crearDesdeOnboarding, crearDesdeIA, regenerarConIA, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
   subirImagenMiddleware,
   subirLogo, eliminarLogo,
   subirHeroImagen, eliminarHeroImagen,
