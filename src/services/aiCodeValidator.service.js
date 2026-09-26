@@ -89,10 +89,23 @@ function contarOcurrencias(html, patron) {
   return m ? m.length : 0;
 }
 
-// Si el pedido dice explícitamente esto, se permite un reemplazo grande sin
-// que la validación de preservación lo rechace — el comercio SÍ pidió
-// rehacer todo, no es la IA yéndose de tema.
-const PERMISO_REESCRITURA_TOTAL = /\b(rehac[eéí]|reemplaz[aá]|empez[aá]r?\s+de\s+cero|desde\s+cero|borr[aá]\s+todo|elimin[aá]\s+todo|dise[ñn]o\s+nuevo|nueva\s+landing|arm[aá]\s+de\s+nuevo|reescrib[ií])\b/i;
+// Dos modos de edición: por default un pedido es EDIT_PRESERVE (achicar
+// mucho el código es sospechoso, se rechaza). Si el pedido entra en este
+// patrón, pasa a EDIT_DESTRUCTIVE_ALLOWED: reducir/rehacer es justo lo que
+// se pidió, así que los guardrails de tamaño no aplican. No es una
+// clasificación con IA — alcanza con reconocer las formas típicas de
+// pedir menos código a propósito ("simplificá", "sacá X") además de las de
+// pedir un rehecho total ("desde cero").
+// OJO: sin \b al final de cada alternativa — \b es ASCII-only en JS, así
+// que "rehacé\b" nunca matchea (la é no cuenta como "letra" para \b y la
+// posición entre é y el espacio deja de ser un límite de palabra). Mejor
+// una lista de raíces sin acento final, sin \b de cierre.
+const PATRON_EDIT_DESTRUCTIVE_ALLOWED = /\b(rehac|reemplaz|empez[aá]r?\s+de\s+cero|desde\s+cero|arm[aá]\s+de\s+nuevo|reescrib|dise[ñn]o\s+nuevo|nueva\s+landing|simplific|minimalista|reduc|menos\s+secciones|sac[aá]\s|quit[aá]\s|elimin|borr|dej[aá]\s+solo)/i;
+
+/** @returns {'preserve'|'destructive_allowed'} */
+function modoEdicion(instruccion) {
+  return PATRON_EDIT_DESTRUCTIVE_ALLOWED.test(String(instruccion || '')) ? 'destructive_allowed' : 'preserve';
+}
 
 class AICodeValidator {
   /**
@@ -160,8 +173,9 @@ class AICodeValidator {
    * falta un diff real para atajar el caso típico, con contar
    * atributos/acciones antes y después alcanza.
    *
-   * Se salta entero si `instruccion` pide explícitamente un rehecho total
-   * (PERMISO_REESCRITURA_TOTAL) o si no había nada previo que preservar.
+   * Se salta entero si `instruccion` es EDIT_DESTRUCTIVE_ALLOWED (rehecho
+   * total o reducción a propósito, ver modoEdicion()) o si no había nada
+   * previo que preservar.
    *
    * @returns {{ errores: string[] }}
    */
@@ -169,7 +183,7 @@ class AICodeValidator {
     const htmlAnterior = String(anterior?.html || '').trim();
     const htmlNuevo = String(nuevo?.html || '').trim();
     if (!htmlAnterior) return { errores: [] };
-    if (PERMISO_REESCRITURA_TOTAL.test(String(instruccion || ''))) return { errores: [] };
+    if (modoEdicion(instruccion) === 'destructive_allowed') return { errores: [] };
 
     const errores = [];
     const REGEX_ATRIBUTOS = /\sdata-gesicomm-[a-z0-9-]+/gi;
@@ -200,3 +214,4 @@ class AICodeValidator {
 }
 
 module.exports = AICodeValidator;
+module.exports.modoEdicion = modoEdicion;

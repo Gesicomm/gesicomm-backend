@@ -109,11 +109,11 @@ comportamiento existente salvo que la instrucción pida explícitamente
 cambiarlos. Modificá principalmente la capa visual: CSS, layout, animaciones,
 tipografía. No inventes productos nuevos ni cambies los que ya estaban."*
 
-## Endpoint 3 — `POST /ai/code/repair` (opcional, o reusar `/edit`)
+## Endpoint 3 — `POST /ai/code/repair` — YA IMPLEMENTADO
 
 Cuando Node valida el HTML devuelto y encuentra errores (`AICodeValidator`),
-le puede volver a pedir al RAG que corrija SOLO esos errores puntuales, en
-vez de regenerar todo:
+le pide al RAG que corrija SOLO esos errores puntuales, en vez de regenerar
+todo:
 
 ```json
 {
@@ -121,16 +121,19 @@ vez de regenerar todo:
   "errores": [
     "El atributo \"data-gesicomm-super-checkout\" no existe en Gesicomm.",
     "La página muestra productos pero no tiene ningún botón de compra."
-  ]
+  ],
+  "page_type": "landing",
+  "context": { "store": { "...": "..." }, "products": [ "...": "..." ] }
 }
 ```
 
-Si no quieren un tercer endpoint, `/ai/code/edit` con
-`instruction: "Corregí exclusivamente estos errores: ..."` sirve igual.
-Node limita esto a **1 repair como máximo** (nunca un loop) — ver
-`AILandingService.asegurarCodigoValido` en `aiLanding.service.js`, que hoy
-tira el error directo; cuando el RAG tenga este endpoint, ahí se engancha
-el retry antes de tirar.
+Implementado en `app/routers/ai_code.py` / `app/services/code_ai_service.py`
+(`repair()`, temperatura 0.2 — es corregir, no diseñar). Node limita esto a
+**1 repair como máximo** (nunca un loop) — ver
+`AILandingService._conRepairAutomatico` en `aiLanding.service.js`: pide el
+primer intento, valida con `validarTodo()` (sanitizador + sintaxis JS +
+preservación + CommerceCodeValidator), y si falla pide UN repair y valida
+de nuevo antes de tirar el error final.
 
 ## Ficha de producto — mismo pipeline, no un motor aparte
 
@@ -187,12 +190,26 @@ estructura, solo inspirarse en la jerarquía y calidad.
   ejecutar) antes de guardar, después de que un código generado por IA
   quedó guardado con una variable declarada dos veces y rompió el runtime
   en producción.
-- **Target de edición conectado** (`target: "inicio"|"producto"` en
-  `POST /:id/ai-regenerar`, mapea a `page_type: "landing"|"product"` en
-  `/ai/code/edit`): el Asistente IA del editor ahora edita la vista en la
-  que está parado el usuario (Inicio o Ficha de producto general), no
-  siempre "Inicio". Las fichas PROPIAS (por producto específico) todavía no
-  tienen IA automática — sólo el flujo manual de "Prompt IA".
+- **Target de edición conectado** (`target: "inicio"|"producto"|"producto_especifico"`
+  en `POST /:id/ai-regenerar`, mapea a `page_type: "landing"|"product"` en
+  `/ai/code/edit`): el Asistente IA del editor edita la vista en la que
+  está parado el usuario — Inicio, ficha general, o la ficha PROPIA de un
+  producto puntual (`content.vistas.productos[contentId]`, con
+  `context.product` = datos reales del producto — `AILandingService.
+  resolverProductoPorContentId`). Esto es lo que permite que cada producto
+  tenga un diseño de ficha distinto ("este termo estilo outdoor", "este
+  auricular tech futurista") sin compartir código con la ficha general ni
+  con otros productos.
+- **Repair loop automático**: ver Endpoint 3 arriba.
+- **Telemetría** (`ai_generation_logs`, migración `20260925184200-create-ai-generation-logs.js`
+  + modelo `AiGenerationLog`): una fila por cada `crearDesdeIA`/`regenerarConIA`
+  — prompt, page_type, target, content_id, modelo, latencia_ms, tokens_input/
+  output, repair_used, exitoso, validation_errors (post-repair) y
+  validation_errors_pre_repair. `AiGenerationLogService.registrar()` nunca
+  rompe el flujo principal si guardar el log falla. `/ai/code/generate|edit|
+  repair` devuelven `tokens_input`/`tokens_output` (desglosados, no solo el
+  total) para esto — si se agregan más providers/endpoints del lado RAG,
+  mantener esos dos campos en la respuesta.
 
 ## Pendiente / decisiones para quien construya el lado RAG
 

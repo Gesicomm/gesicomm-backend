@@ -160,7 +160,7 @@ const OPCIONES_HTML = {
 // Construcciones prohibidas en el CSS. url() con http(s)/data: se permite
 // (fuentes e imágenes son parte de armar una landing).
 const CSS_PROHIBIDO = [
-  { re: /@import\b/i, motivo: '@import (traé la fuente con un <link> en el HTML o pegá el @font-face)' },
+  { re: /@import\b/i, motivo: '@import (las fuentes externas se guardan en el campo fonts y Gesicomm las carga en el <head>)' },
   { re: /expression\s*\(/i, motivo: 'expression()' },
   { re: /-moz-binding/i, motivo: '-moz-binding' },
   { re: /(^|[;{}\s])behavior\s*:/i, motivo: 'behavior:' },
@@ -269,6 +269,54 @@ function unir(existente, agregado) {
   return `${a}\n\n${b}`;
 }
 
+function limpiarFonts(fonts) {
+  const lista = Array.isArray(fonts) ? fonts : [];
+  const salida = [];
+  const vistos = new Set();
+  for (const valor of lista) {
+    try {
+      const url = new URL(String(valor || '').trim());
+      if (url.protocol !== 'https:') continue;
+      if (url.hostname !== 'fonts.googleapis.com') continue;
+      if (!url.pathname.startsWith('/css2')) continue;
+      const limpio = url.toString();
+      if (vistos.has(limpio)) continue;
+      vistos.add(limpio);
+      salida.push(limpio);
+      if (salida.length >= 4) break;
+    } catch {
+      // URL inválida: se ignora.
+    }
+  }
+  return salida;
+}
+
+function limpiarDesignContext(valor, profundidad = 0) {
+  if (!valor || typeof valor !== 'object' || Array.isArray(valor) || profundidad > 2) return {};
+  const salida = {};
+  for (const [clave, crudo] of Object.entries(valor).slice(0, 20)) {
+    const k = String(clave || '').replace(/[^\w-]/g, '').slice(0, 40);
+    if (!k) continue;
+    if (typeof crudo === 'string' || typeof crudo === 'number' || typeof crudo === 'boolean' || crudo === null) {
+      salida[k] = typeof crudo === 'string' ? crudo.replace(/\s+/g, ' ').trim().slice(0, 160) : crudo;
+    } else if (crudo && typeof crudo === 'object' && !Array.isArray(crudo)) {
+      salida[k] = limpiarDesignContext(crudo, profundidad + 1);
+    }
+  }
+  return salida;
+}
+
+function extraerFontsDeHtml(html) {
+  const fonts = [];
+  const sinLinks = String(html || '').replace(/<link\b[^>]*>/gi, (link) => {
+    if (!/\brel\s*=\s*["']?stylesheet/i.test(link)) return '';
+    const href = (link.match(/\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i) || []).slice(1).find(Boolean);
+    if (href) fonts.push(href);
+    return '';
+  });
+  return { html: sinLinks, fonts };
+}
+
 class LandingCodigoService {
 
   /**
@@ -290,7 +338,7 @@ class LandingCodigoService {
   static separarDocumentoCompleto(htmlOriginal) {
     const original = String(htmlOriginal || '');
     if (!ES_DOCUMENTO_COMPLETO.test(original)) {
-      return { html: original, css: '', js: '', advertencias: [] };
+      return { html: original, css: '', js: '', fonts: [], advertencias: [] };
     }
 
     const advertencias = [];
@@ -314,10 +362,11 @@ class LandingCodigoService {
       return '';
     });
 
-    // Los <link rel="stylesheet"> viven en el <head>, que se descarta más
-    // abajo — se rescatan antes para no perder la fuente de Google.
+    // Los <link rel="stylesheet"> viven en el <head>; se convierten al
+    // campo `fonts` para que el render los inyecte donde corresponde.
     const links = [];
     resto.replace(/<link\b[^>]*>/gi, (m) => { links.push(m); return m; });
+    const fonts = extraerFontsDeHtml(links.join('\n')).fonts;
 
     const cuerpo = resto.match(/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i);
     if (cuerpo) {
@@ -327,9 +376,7 @@ class LandingCodigoService {
         .replace(/<!doctype[^>]*>/gi, '')
         .replace(/<\/?(html|head|body)\b[^>]*>/gi, '');
     }
-    // El <head> quedó afuera: se reinyectan los <link> que tenía.
-    const linksFueraDelCuerpo = links.filter(l => !resto.includes(l));
-    if (linksFueraDelCuerpo.length) resto = `${linksFueraDelCuerpo.join('\n')}\n${resto}`;
+    resto = extraerFontsDeHtml(resto).html;
 
     if (estilos.length) advertencias.push(`Pegaste una página completa: el contenido de ${estilos.length === 1 ? 'su <style>' : `sus ${estilos.length} <style>`} se movió a la pestaña CSS.`);
     if (scripts.length) advertencias.push(`Pegaste una página completa: el contenido de ${scripts.length === 1 ? 'su <script>' : `sus ${scripts.length} <script>`} se movió a la pestaña JavaScript.`);
@@ -339,6 +386,7 @@ class LandingCodigoService {
       html: resto.trim(),
       css: estilos.join('\n\n'),
       js: scripts.join('\n\n'),
+      fonts,
       advertencias,
     };
   }
@@ -460,7 +508,8 @@ class LandingCodigoService {
     // los tres campos y recién después se valida — así los límites y el
     // blocklist se aplican sobre lo que realmente se va a guardar.
     const separado = this.separarDocumentoCompleto(codigo.html);
-    const html = separado.html;
+    const htmlConFonts = extraerFontsDeHtml(separado.html);
+    const html = htmlConFonts.html;
     // Pegar una página entera encima de un CSS que ya existía deja dos
     // hojas de estilo compitiendo (típico: el código de arranque del
     // lienzo todavía puesto). Se avisa en vez de borrar por las dudas:
@@ -473,6 +522,12 @@ class LandingCodigoService {
     // vez de quedar tapado por él.
     const css = unir(String(codigo.css ?? ''), separado.css);
     const js = unir(String(codigo.js ?? ''), separado.js);
+    const fonts = limpiarFonts([
+      ...(Array.isArray(codigo.fonts) ? codigo.fonts : []),
+      ...(separado.fonts || []),
+      ...htmlConFonts.fonts,
+    ]);
+    const designContext = limpiarDesignContext(codigo.design_context);
 
     const errores = [];
     const bytesHtml = Buffer.byteLength(html, 'utf8');
@@ -503,6 +558,8 @@ class LandingCodigoService {
       html: htmlLimpio.html,
       css: cssLimpio.css,
       js,
+      fonts,
+      design_context: designContext,
       bytes: bytesHtml + bytesCss + bytesJs,
       advertencias: [...separado.advertencias, ...htmlLimpio.advertencias, ...cssLimpio.advertencias],
     };
