@@ -429,6 +429,14 @@ router.post('/campaigns', verificarToken, async (req, res) => {
             + afterParam
             + filteringParam;
 
+        // Consultar la moneda de la cuenta para saber si el presupuesto viene multiplicado por 100 (USD) o no (PYG)
+        const accUrl = `https://graph.facebook.com/${FB_API_VERSION}/${targetAdAccount}?access_token=${accessToken}&fields=currency`;
+        const accData = await fetchMeta(accUrl);
+        const currency = accData.currency || 'USD';
+        // Monedas que Facebook NO multiplica por 100 en la API (sin centavos)
+        const zeroDecimalCurrencies = ['PYG', 'CLP', 'COP', 'JPY', 'KRW', 'VND', 'IDR'];
+        const divisor = zeroDecimalCurrencies.includes(currency) ? 1 : 100;
+
         const campsData = await fetchMeta(campsUrl);
         const campaignsResult = [];
 
@@ -444,7 +452,7 @@ router.post('/campaigns', verificarToken, async (req, res) => {
                 
                 // Base
                 const spend = parseFloat(insight.spend || 0);
-                const budget = camp.daily_budget ? parseFloat(camp.daily_budget)/100 : (camp.lifetime_budget ? parseFloat(camp.lifetime_budget)/100 : 0);
+                const budget = camp.daily_budget ? parseFloat(camp.daily_budget)/divisor : (camp.lifetime_budget ? parseFloat(camp.lifetime_budget)/divisor : 0);
                 
                 // Web
                 const purchases = parseFloat(getVal(actions, 'purchase') || getVal(actions, 'offsite_conversion.fb_pixel_purchase'));
