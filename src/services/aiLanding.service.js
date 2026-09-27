@@ -16,6 +16,51 @@ const AiGenerationLogService = require('./aiGenerationLog.service');
 const rawUrl = process.env.RAG_INTERNAL_URL || 'http://rag-backend:8000';
 const RAG_URL = rawUrl.replace('localhost', '127.0.0.1');
 
+/**
+ * Duplas tipográficas curadas (Google Fonts), agrupadas por el CARÁCTER
+ * que le dan a la página.
+ *
+ * Por qué la variedad se decide acá y no en el prompt: con la misma
+ * instrucción y temperatura baja, el modelo elige siempre la misma dupla
+ * (venía sacando Playfair Display + Instrument Sans en todas las tiendas,
+ * porque además estaba de ejemplo en el contrato). Si la elección la hace
+ * el LLM "libremente", el default se muda de fuente pero sigue siendo un
+ * default. Acá, en cambio, cada tienda recibe un abanico distinto.
+ *
+ * La elección es DETERMINISTA por tienda: la misma tienda siempre ve las
+ * mismas candidatas (regenerar no le cambia la identidad de un día para
+ * otro), pero dos tiendas distintas arrancan de paletas distintas.
+ */
+const DUPLAS_TIPOGRAFICAS = [
+  { display: 'Fraunces', body: 'Karla', caracter: 'editorial cálido, con personalidad artesanal' },
+  { display: 'Archivo Black', body: 'Archivo', caracter: 'impacto rotundo, casi cartel' },
+  { display: 'Cormorant Garamond', body: 'Lato', caracter: 'clásico elegante, aire de boutique' },
+  { display: 'Space Grotesk', body: 'IBM Plex Sans', caracter: 'técnico y contemporáneo' },
+  { display: 'Bodoni Moda', body: 'Work Sans', caracter: 'alto contraste, lujo editorial' },
+  { display: 'Outfit', body: 'Inter Tight', caracter: 'geométrico limpio, producto moderno' },
+  { display: 'Bitter', body: 'Source Sans 3', caracter: 'robusto y confiable, tono de oficio' },
+  { display: 'Syne', body: 'DM Sans', caracter: 'raro y de diseño, para marcas jóvenes' },
+  { display: 'Libre Baskerville', body: 'Jost', caracter: 'tradición con base moderna' },
+  { display: 'Unbounded', body: 'Manrope', caracter: 'expresivo y expansivo, tono pop' },
+  { display: 'Instrument Serif', body: 'Geist', caracter: 'editorial sobrio, mínimo' },
+  { display: 'Anton', body: 'Barlow', caracter: 'condensado y directo, tono deportivo' },
+];
+
+/** URL de Google Fonts para una dupla, con los pesos que hacen falta. */
+function urlGoogleFonts({ display, body }) {
+  const familia = (nombre, pesos) => `family=${nombre.replace(/ /g, '+')}:wght@${pesos}`;
+  return `https://fonts.googleapis.com/css2?${familia(display, '400;600;700')}&${familia(body, '400;500;600')}&display=swap`;
+}
+
+/** Hash estable de un string — para que la misma tienda reciba siempre lo mismo. */
+function hashEstable(texto) {
+  let h = 0;
+  for (let i = 0; i < String(texto).length; i++) {
+    h = (h * 31 + String(texto).charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
+
 class AILandingService {
 
   /**
@@ -63,6 +108,29 @@ class AILandingService {
     }
   }
 
+  /**
+   * La marca que el comercio cargó en "Mi Tienda" (Branding) — es lo que
+   * la landing TIENE que respetar. Antes acá viajaban solo los dos colores
+   * de acento: sin `color_fondo` el modelo se inventaba el fondo (sommix
+   * tiene #101A21 y las landings salían con #0a0a0a), y sin saber si hay
+   * logo no podía decidir entre mostrar el logo o el nombre en el header.
+   */
+  /**
+   * Tres duplas tipográficas distintas para esta tienda, sacadas del
+   * catálogo con un salto (no tres seguidas del array) para que el abanico
+   * no sea siempre "vecinas". Determinista por tienda — ver
+   * DUPLAS_TIPOGRAFICAS.
+   */
+  static fuentesSugeridasParaTienda(tienda) {
+    const total = DUPLAS_TIPOGRAFICAS.length;
+    const inicio = hashEstable(`${tienda.id}-${tienda.nombre || ''}`) % total;
+    const salto = 5; // coprimo con 12: recorre el catálogo sin repetir
+    return [0, 1, 2].map(i => {
+      const dupla = DUPLAS_TIPOGRAFICAS[(inicio + i * salto) % total];
+      return { ...dupla, url: urlGoogleFonts(dupla) };
+    });
+  }
+
   static storeContextParaRAG(tienda) {
     return {
       nombre: tienda.nombre || 'Mi Tienda',
@@ -70,6 +138,17 @@ class AILandingService {
       whatsapp: tienda.contacto_whatsapp || tienda.telefono || '',
       color_primario: tienda.color_primario || '#2563eb',
       color_secundario: tienda.color_secundario || null,
+      color_fondo: tienda.color_fondo || null,
+      fuentes_sugeridas: this.fuentesSugeridasParaTienda(tienda),
+      // Solo si tiene logo o no: la URL no le sirve al modelo (la imagen
+      // real la inyecta el runtime con data-gesicomm-tienda="logo"), pero
+      // saber que existe cambia cómo maqueta el header.
+      tiene_logo: !!tienda.logo_imagen,
+      instrucciones_marca: [
+        'Respetar color_primario, color_secundario y color_fondo usando variables CSS --gc-primario, --gc-secundario, --gc-fondo, --gc-texto y --gc-superficie.',
+        'Si tiene_logo=true, incluir un <img data-gesicomm-tienda="logo"> visible en el header junto al nombre con data-gesicomm-tienda="nombre".',
+        'Las imagenes reales de productos y combos deben mostrarse completas con object-fit: contain, no recortadas como banners.',
+      ],
     };
   }
 
@@ -79,10 +158,28 @@ class AILandingService {
     return match ? match[1].trim() : '';
   }
 
-  static _extraerFuente(css, variable) {
-    const valor = this._extraerVariableCss(css, variable);
-    const match = valor.match(/['"]([^'"]+)['"]|([^,\s][^,]*)/);
-    return (match?.[1] || match?.[2] || '').trim();
+  /**
+   * Primera familia de una variable de fuente. Acepta varios nombres
+   * porque el nombre de la variable lo elige el modelo: pide
+   * --font-display/--font-text pero en la práctica también escribe
+   * --font-heading/--font-body. Si no encuentra ninguna, cae al
+   * font-family del selector que se le pase (h1 o body).
+   */
+  static _extraerFuente(css, variables, selectorFallback = null) {
+    const nombres = Array.isArray(variables) ? variables : [variables];
+    for (const nombre of nombres) {
+      const valor = this._extraerVariableCss(css, nombre);
+      const match = valor.match(/['"]([^'"]+)['"]|([^,\s][^,]*)/);
+      const fuente = (match?.[1] || match?.[2] || '').trim();
+      // var(--otra-cosa) no es una fuente: es un alias, no sirve para heredar.
+      if (fuente && !fuente.startsWith('var(')) return fuente;
+    }
+    if (selectorFallback) {
+      const bloque = String(css || '').match(new RegExp(`${selectorFallback}\\s*\\{[^}]*font-family\\s*:\\s*([^;}]+)`, 'i'));
+      const primera = bloque?.[1]?.split(',')[0]?.replace(/['"]/g, '').trim();
+      if (primera && !primera.startsWith('var(')) return primera;
+    }
+    return '';
   }
 
   static designContextDesdeCodigo(codigo, tienda) {
@@ -97,8 +194,10 @@ class AILandingService {
         text: existente.brand?.text || this._extraerVariableCss(css, '--gc-texto') || '#111827',
       },
       typography: {
-        heading: existente.typography?.heading || this._extraerFuente(css, '--font-display'),
-        body: existente.typography?.body || this._extraerFuente(css, '--font-text'),
+        heading: existente.typography?.heading
+          || this._extraerFuente(css, ['--font-display', '--font-heading', '--font-titulo'], 'h1'),
+        body: existente.typography?.body
+          || this._extraerFuente(css, ['--font-text', '--font-body', '--font-texto'], 'body'),
       },
       visual_style: existente.visual_style || existente.visualStyle || 'derivado del inicio generado',
       radius: existente.radius || (css.includes('999px') ? 'pill' : css.includes('14px') || css.includes('16px') ? 'medium' : 'subtle'),
@@ -126,11 +225,11 @@ class AILandingService {
    * el LLM escribe código de verdad (animaciones, layouts) en vez de
    * rellenar un JSON tipado sin lugar para eso.
    */
-  static async solicitarCodigoRAG({ prompt, tienda, productos, pageType = 'landing', producto = null }) {
+  static async solicitarCodigoRAG({ prompt, tienda, productos, pageType = 'landing', producto = null, comercio = null }) {
     const data = await this._fetchRAG('/ai/code/generate', {
       page_type: pageType,
       prompt,
-      context: { store: this.storeContextParaRAG(tienda), products: productos, product: producto },
+      context: { store: this.storeContextParaRAG(tienda), products: productos, product: producto, commerce: comercio || {} },
     });
     if (!data.ok || !data.html) throw new Error('Respuesta del microservicio de IA inválida.');
     return this._codigoConMetadata(data);
@@ -141,7 +240,7 @@ class AILandingService {
    * rehacerlo todo — esto es lo que hace que "hacela más animada" ajuste la
    * landing existente en vez de regenerarla entera con textos distintos.
    */
-  static async solicitarEdicionRAG({ instruction, current, tienda, productos, pageType = 'landing', producto = null }) {
+  static async solicitarEdicionRAG({ instruction, current, tienda, productos, pageType = 'landing', producto = null, comercio = null }) {
     const data = await this._fetchRAG('/ai/code/edit', {
       instruction,
       current: {
@@ -152,7 +251,7 @@ class AILandingService {
         design_context: current?.design_context || {},
       },
       page_type: pageType,
-      context: { store: this.storeContextParaRAG(tienda), products: productos, product: producto },
+      context: { store: this.storeContextParaRAG(tienda), products: productos, product: producto, commerce: comercio || {} },
     });
     if (!data.ok || !data.html) throw new Error('Respuesta del microservicio de IA inválida.');
     return this._codigoConMetadata(data);
@@ -163,7 +262,7 @@ class AILandingService {
    * _conRepairAutomatico) — no vuelve a diseñar, solo arregla los errores
    * que le mandamos.
    */
-  static async solicitarRepairRAG({ current, errores, tienda, productos, pageType = 'landing', producto = null }) {
+  static async solicitarRepairRAG({ current, errores, tienda, productos, pageType = 'landing', producto = null, comercio = null }) {
     const data = await this._fetchRAG('/ai/code/repair', {
       current: {
         html: current?.html || '',
@@ -174,7 +273,7 @@ class AILandingService {
       },
       errores,
       page_type: pageType,
-      context: { store: this.storeContextParaRAG(tienda), products: productos, product: producto },
+      context: { store: this.storeContextParaRAG(tienda), products: productos, product: producto, commerce: comercio || {} },
     });
     if (!data.ok || !data.html) throw new Error('Respuesta del microservicio de IA inválida.');
     return this._codigoConMetadata(data);
@@ -233,10 +332,129 @@ class AILandingService {
       });
     }
 
+    // Ofertas reales de esos productos (paquetes, order bump y upsell). Sin
+    // esto el modelo no sabía que existían y nunca ponía los bloques
+    // data-gesicomm-lista="ofertas_bump" / "paquetes" en la ficha: el
+    // comercio cargaba sus ofertas y la landing generada no las mostraba.
+    const ofertasPorProducto = await this.ofertasPorProducto(inquilino_id, productos.map(p => p.id));
+
     return [
-      ...productos.map(p => ({ id: `producto_${p.id}`, nombre: p.nombre, precio: p.precio_base || p.precio, descripcion: p.descripcion_corta || '' })),
-      ...combos.map(c => ({ id: `combo_${c.id}`, nombre: c.nombre, precio: c.precio, descripcion: c.descripcion || '' })),
+      ...productos.map(p => ({
+        id: `producto_${p.id}`,
+        content_id: p.slug || `producto-${p.id}`,
+        nombre: p.nombre,
+        precio: p.precio_base || p.precio,
+        descripcion: p.descripcion_corta || '',
+        ...(ofertasPorProducto.get(p.id) || {}),
+      })),
+      ...combos.map(c => ({ id: `combo_${c.id}`, content_id: `combo-${c.id}`, nombre: c.nombre, precio: c.precio, descripcion: c.descripcion || '', tipo: 'combo' })),
     ];
+  }
+
+  /**
+   * Ofertas activas agrupadas por producto ancla y por estrategia, con la
+   * forma en que las muestra la landing:
+   *   - paquetes    → lista "paquetes" ("Elegí tu oferta": x2, x3…)
+   *   - order_bump  → lista "ofertas_bump" (casilla arriba del botón)
+   *   - upsell      → NO va en la ficha; Gesicomm lo muestra en el checkout
+   * Se manda solo lo que el modelo necesita para decidir qué bloques poner,
+   * no el detalle de componentes (eso lo resuelve el runtime).
+   */
+  static async ofertasPorProducto(inquilino_id, idsProducto) {
+    const mapa = new Map();
+    if (!idsProducto.length) return mapa;
+    const { Oferta } = require('../models');
+    const ofertas = await Oferta.findAll({
+      where: { inquilino_id, activo: true, producto_ancla_id: { [Op.in]: idsProducto } },
+      attributes: ['id', 'nombre', 'estrategia', 'precio_normal', 'precio_order_bump', 'producto_ancla_id'],
+      order: [['orden', 'ASC']],
+    });
+
+    for (const o of ofertas) {
+      const actual = mapa.get(o.producto_ancla_id) || { paquetes: [], order_bumps: [], upsells: [] };
+      const resumen = {
+        id: o.id,
+        nombre: o.nombre,
+        estrategia: o.estrategia,
+        precio: Number(o.precio_order_bump || o.precio_normal) || null,
+      };
+      if (o.estrategia === 'normal') actual.paquetes.push(resumen);
+      else if (o.estrategia === 'order_bump') actual.order_bumps.push(resumen);
+      else if (o.estrategia === 'upsell') actual.upsells.push(resumen);
+      mapa.set(o.producto_ancla_id, actual);
+    }
+    // Se limpian las listas vacías para no mandarle ruido al modelo.
+    for (const [id, grupos] of mapa) {
+      const limpio = Object.fromEntries(Object.entries(grupos).filter(([, v]) => v.length));
+      mapa.set(id, Object.keys(limpio).length ? limpio : {});
+    }
+    return mapa;
+  }
+
+  /**
+   * La configuración comercial de "Configurar venta" que el modelo necesita
+   * para decidir qué bloques incluir: qué tipo de venta es, si hay ventas
+   * cruzadas activas y si van recomendados.
+   */
+  static contextoComercialParaRAG(venta, catalogoRAG) {
+    const ventaConfigurada = venta?.configurado === true;
+    const idsOfertasElegidas = new Set((venta?.cross_sell?.ofertas || []).map(Number).filter(Boolean));
+    const recomendadosItems = Array.isArray(venta?.recomendados?.items) ? venta.recomendados.items.map(String).filter(Boolean) : [];
+    const idsDestacados = new Set(recomendadosItems.flatMap(id => [
+      id,
+      id.replace(/^producto-/, 'producto_').replace(/^combo-/, 'combo_'),
+      id.replace(/^producto_/, 'producto-').replace(/^combo_/, 'combo-'),
+    ]));
+    const ofertaVisible = oferta => !ventaConfigurada || idsOfertasElegidas.has(Number(oferta.id));
+    const hayBumps = catalogoRAG.some(p => (p.order_bumps || []).some(ofertaVisible));
+    const hayPaquetes = catalogoRAG.some(p => (p.paquetes || []).some(ofertaVisible));
+    const hayCombos = catalogoRAG.some(p => p.tipo === 'combo');
+    const ofertasSeleccionadas = catalogoRAG.flatMap(p => [
+      ...(p.paquetes || []).filter(ofertaVisible).map(o => ({ ...o, producto: p.nombre, bloque: 'paquetes' })),
+      ...(p.order_bumps || []).filter(ofertaVisible).map(o => ({ ...o, producto: p.nombre, bloque: 'ofertas_bump' })),
+      ...(p.upsells || []).filter(ofertaVisible).map(o => ({ ...o, producto: p.nombre, bloque: 'upsell_carrito' })),
+    ]);
+    const destacadosSeleccionados = catalogoRAG
+      .filter(p => idsDestacados.has(String(p.id)) || idsDestacados.has(String(p.content_id || '')))
+      .map(p => ({ id: p.id, nombre: p.nombre, tipo: p.tipo || 'producto', precio: p.precio }))
+      .slice(0, 12);
+    return {
+      tipo_venta: venta?.tipo || 'catalogo',
+      seleccion: venta?.seleccion || 'manual',
+      categorias: Array.isArray(venta?.categorias) ? venta.categorias : [],
+      incluir_combos: venta?.incluir_combos !== false,
+      abrir_en: venta?.abrir_en || 'tienda',
+      principal_id: venta?.principal_id || null,
+      combos_primero: venta?.combos_primero === true,
+      cross_sell_activo: venta?.cross_sell?.activo !== false,
+      ofertas_elegidas_ids: Array.from(idsOfertasElegidas),
+      ofertas_seleccionadas: ofertasSeleccionadas.slice(0, 30),
+      paquetes_config: venta?.paquetes || {},
+      recomendados_activo: venta?.recomendados?.activo !== false,
+      recomendados_modo: venta?.recomendados?.modo || 'auto',
+      recomendados_items: recomendadosItems,
+      destacados_seleccionados: destacadosSeleccionados,
+      recomendados_max: venta?.recomendados?.max || 4,
+      recomendados_titulo: venta?.recomendados?.titulo || '',
+      hay_order_bumps: hayBumps,
+      hay_paquetes: hayPaquetes,
+      hay_combos: hayCombos,
+    };
+  }
+
+  static productosParaFichasIniciales(catalogoRAG, venta) {
+    const recomendadosItems = Array.isArray(venta?.recomendados?.items) ? venta.recomendados.items.map(String).filter(Boolean) : [];
+    const idsDestacados = new Set(recomendadosItems.flatMap(id => [
+      id,
+      id.replace(/^producto-/, 'producto_').replace(/^combo-/, 'combo_'),
+      id.replace(/^producto_/, 'producto-').replace(/^combo_/, 'combo-'),
+    ]));
+    const catalogo = Array.isArray(catalogoRAG) ? catalogoRAG : [];
+    const destacados = catalogo.filter(p => idsDestacados.has(String(p.id)) || idsDestacados.has(String(p.content_id || '')));
+    const base = destacados.length ? destacados : catalogo;
+    return base
+      .filter(p => p?.content_id)
+      .slice(0, 4);
   }
 
   /**
@@ -311,28 +529,43 @@ class AILandingService {
    * tokensOutput, modelo } — el detalle es para AiGenerationLog (ver
    * registrarLog más abajo), no hace falta en el camino feliz.
    */
-  static async _conRepairAutomatico({ generar, anterior, instruccion, vista, tienda, productos, pageType, producto }) {
+  static async _conRepairAutomatico({ generar, anterior, instruccion, vista, tienda, productos, pageType, producto, comercio = null }) {
     let codigo = await generar();
     let errores = this.validarTodo(anterior, codigo, instruccion, vista);
-    const erroresPreRepair = errores;
+    // Calidad (dirección de arte): se le pide al repair junto con los
+    // errores reales, pero si sigue sin cumplir NO se bloquea el guardado
+    // — ver AICodeValidator.validarCalidad.
+    let mejorables = AICodeValidator.validarCalidad(codigo);
+    const erroresPreRepair = [...errores, ...mejorables];
     let repairUsed = false;
     let tokensInput = codigo._tokensInput || 0;
     let tokensOutput = codigo._tokensOutput || 0;
     let modelo = codigo._modelo || null;
 
-    if (errores.length) {
+    if (errores.length || mejorables.length) {
       try {
-        const reparado = await this.solicitarRepairRAG({ current: codigo, errores, tienda, productos, pageType, producto });
+        const reparado = await this.solicitarRepairRAG({
+          current: codigo, errores: [...errores, ...mejorables], tienda, productos, pageType, producto, comercio,
+        });
         repairUsed = true;
         tokensInput += reparado._tokensInput || 0;
         tokensOutput += reparado._tokensOutput || 0;
         modelo = reparado._modelo || modelo;
-        codigo = reparado;
-        errores = this.validarTodo(anterior, codigo, instruccion, vista);
+        const erroresReparado = this.validarTodo(anterior, reparado, instruccion, vista);
+        // El repair solo se acepta si no empeoró lo importante: si vuelve
+        // con errores reales que antes no estaban, se queda el original.
+        if (!erroresReparado.length || errores.length) {
+          codigo = reparado;
+          errores = erroresReparado;
+          mejorables = AICodeValidator.validarCalidad(codigo);
+        }
       } catch (err) {
         if (err.status !== 404) throw err;
         // /ai/code/repair todavía no desplegado: se mantienen los errores originales.
       }
+    }
+    if (mejorables.length) {
+      console.warn('[AI Landing] se guarda con observaciones de calidad:', mejorables.join(' | '));
     }
 
     if (errores.length) {
@@ -350,7 +583,7 @@ class AILandingService {
    * Crea un borrador de landing generado por IA en Gesicomm.
    * La landing se guarda con activo: false (borrador) para revisión previa.
    */
-  static async crearDesdeIA({ tienda_id, inquilino_id, prompt, items = [] }) {
+  static async crearDesdeIA({ tienda_id, inquilino_id, prompt, items = [], venta = null }) {
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 5) {
       throw new Error('Escribí una descripción de al menos 5 caracteres para que la IA arme tu landing.');
     }
@@ -358,7 +591,15 @@ class AILandingService {
     const tienda = await Tienda.findByPk(tienda_id);
     if (!tienda) throw new Error('Tienda no encontrada.');
 
+    const ventaLimpia = LandingCodigoService.limpiarVenta(venta);
     const catalogoRAG = await this.catalogoParaRAG(inquilino_id, items);
+    // El wizard del chat ya trae la configuración de venta (ofertas que
+    // se muestran, combos, recomendados, tipo de venta): con eso el modelo
+    // pone los bloques correctos desde la PRIMERA generación, sin que el
+    // comercio tenga que pedir un ajuste después. Si viene sin venta
+    // (flujos viejos), el contexto sale igual de las ofertas reales que ya
+    // tienen los productos elegidos.
+    const comercio = this.contextoComercialParaRAG(ventaLimpia, catalogoRAG);
 
     // Antes se guardaba en pages/page_versions (arquitectura aparte del
     // Page Builder) y esa fila nunca aparecía en /api/mis-landings-simples
@@ -375,9 +616,10 @@ class AILandingService {
     let tokensInput = 0;
     let tokensOutput = 0;
     let modelo = null;
+    const vistasProductos = {};
     try {
       const resultado = await this._conRepairAutomatico({
-        generar: () => this.solicitarCodigoRAG({ prompt: instruccion, tienda, productos: catalogoRAG, pageType: 'landing' }),
+        generar: () => this.solicitarCodigoRAG({ prompt: instruccion, tienda, productos: catalogoRAG, pageType: 'landing', comercio }),
         anterior: null,
         instruccion,
         vista: 'inicio',
@@ -385,9 +627,48 @@ class AILandingService {
         productos: catalogoRAG,
         pageType: 'landing',
         producto: null,
+        comercio,
       });
       ({ codigo, repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo } = resultado);
       codigo.design_context = this.designContextDesdeCodigo(codigo, tienda);
+
+      const fichasIniciales = this.productosParaFichasIniciales(catalogoRAG, ventaLimpia);
+      for (const productoFicha of fichasIniciales) {
+        const instruccionFicha = [
+          instruccion,
+          '',
+          `Generá una ficha de producto propia para "${productoFicha.nombre}".`,
+          'Si el prompt del comercio menciona este producto o pide timer, urgencia, paquetes, order bump, upsell o una oferta agresiva, aplicalo en esta ficha.',
+          'Usá datos reales con data-gesicomm-bind, data-gesicomm-comprar y las listas comerciales disponibles; no inventes precios.',
+        ].join('\n');
+        try {
+          const ficha = await this._conRepairAutomatico({
+            generar: () => this.solicitarCodigoRAG({
+              prompt: instruccionFicha,
+              tienda,
+              productos: catalogoRAG,
+              pageType: 'product',
+              producto: productoFicha,
+              comercio,
+            }),
+            anterior: null,
+            instruccion: instruccionFicha,
+            vista: 'ficha',
+            tienda,
+            productos: catalogoRAG,
+            pageType: 'product',
+            producto: productoFicha,
+            comercio,
+          });
+          const codigoFicha = ficha.codigo;
+          codigoFicha.design_context = this.designContextDesdeCodigo(codigoFicha, tienda);
+          vistasProductos[productoFicha.content_id] = codigoFicha;
+          tokensInput += ficha.tokensInput || 0;
+          tokensOutput += ficha.tokensOutput || 0;
+        } catch (errFicha) {
+          console.warn('[AI Landing] no se pudo generar ficha inicial IA:', productoFicha.content_id, errFicha.message);
+        }
+      }
     } catch (err) {
       await AiGenerationLogService.registrar({
         tiendaId: tienda_id, operacion: 'generate', pageType: 'landing', target: 'inicio',
@@ -412,7 +693,12 @@ class AILandingService {
     const guardada = await LandingSimpleService.actualizarCodigo(landingModel, tienda_id, inquilino_id, {
       titulo,
       codigo,
-      venta: { configurado: true, tipo: 'catalogo', seleccion: 'manual' },
+      ...(Object.keys(vistasProductos).length ? { vistas: { productos: vistasProductos } } : {}),
+      // Si el wizard ya pasó por el panel de venta, se guarda lo que el
+      // comercio eligió ahí. Si no vino nada, la landing queda SIN venta
+      // configurada a propósito: el editor abre en "Configurar venta" en
+      // vez de saltear ese paso con valores por defecto.
+      ...(ventaLimpia ? { venta: ventaLimpia } : {}),
     });
     await AiGenerationLogService.registrar({
       tiendaId: tienda_id, landingId: guardada.id, operacion: 'generate', pageType: 'landing', target: 'inicio',
@@ -466,6 +752,10 @@ class AILandingService {
     const { LandingItem } = require('../models');
     const items = await LandingItem.findAll({ where: { landing_id: landingModel.id }, attributes: ['tipo', 'referencia_id'] });
     const catalogoRAG = await this.catalogoParaRAG(inquilino_id, items.map(i => i.toJSON()));
+    // Acá la landing SÍ pasó por "Configurar venta": se respeta lo que el
+    // comercio marcó (ventas cruzadas prendidas o apagadas, recomendados,
+    // tipo de venta) además de las ofertas reales de sus productos.
+    const comercio = this.contextoComercialParaRAG(landingModel.content?.venta, catalogoRAG);
 
     let productoContexto = null;
     if (esFichaEspecifica) {
@@ -500,8 +790,8 @@ class AILandingService {
         // desde cero; si ya había algo, se edita conservando lo que no
         // haga falta cambiar.
         generar: () => (actual?.html?.trim()
-          ? this.solicitarEdicionRAG({ instruction: instruccionParaRAG, current: actual, tienda, productos: catalogoRAG, pageType, producto: productoContexto })
-          : this.solicitarCodigoRAG({ prompt: instruccionParaRAG, tienda, productos: catalogoRAG, pageType, producto: productoContexto })),
+          ? this.solicitarEdicionRAG({ instruction: instruccionParaRAG, current: actual, tienda, productos: catalogoRAG, pageType, producto: productoContexto, comercio })
+          : this.solicitarCodigoRAG({ prompt: instruccionParaRAG, tienda, productos: catalogoRAG, pageType, producto: productoContexto, comercio })),
         anterior: actual,
         instruccion,
         vista: esFicha ? 'ficha' : 'inicio',
@@ -509,6 +799,7 @@ class AILandingService {
         productos: catalogoRAG,
         pageType,
         producto: productoContexto,
+        comercio,
       });
       ({ codigo, repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo } = resultado);
       codigo.design_context = this.designContextDesdeCodigo(codigo, tienda);

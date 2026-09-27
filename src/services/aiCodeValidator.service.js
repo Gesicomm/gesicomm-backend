@@ -211,6 +211,38 @@ class AICodeValidator {
 
     return { errores };
   }
+
+  /**
+   * Chequeos de CALIDAD del CSS, separados de validar() a propósito: acá
+   * no hay nada inseguro ni roto, es código que se puede publicar — pero
+   * incumple la dirección de arte del contrato. Por eso estos motivos
+   * disparan UN repair (la IA suele corregirlos sola) pero NO bloquean el
+   * guardado si el repair no los arregla: una landing con un solo corte
+   * responsive es peor que una con dos, pero mucho mejor que ninguna.
+   *
+   * @returns {string[]} motivos (vacío = OK)
+   */
+  static validarCalidad(codigo) {
+    const css = String(codigo?.css || '');
+    const motivos = [];
+    if (!css.trim()) return motivos;
+
+    // Los @media de layout son los que tienen un ancho; el de
+    // prefers-reduced-motion no cuenta como corte responsive.
+    const mediasLayout = (css.match(/@media[^{]*\((?:max|min)-width/gi) || []).length;
+    if (mediasLayout < 2) {
+      motivos.push(
+        `El CSS tiene ${mediasLayout} corte responsive con ancho y hacen falta al menos 2 (mobile y tablet): agregá los @media que falten sin tocar el diseño de escritorio.`,
+      );
+    }
+    if (!/prefers-reduced-motion/i.test(css) && /@keyframes|animation\s*:|transition\s*:/i.test(css)) {
+      motivos.push('El CSS anima pero no respeta @media (prefers-reduced-motion: reduce): agregá ese bloque al final.');
+    }
+    if (!/clamp\(/i.test(css)) {
+      motivos.push('La tipografía no usa clamp(): pasá al menos los títulos a una escala fluida con clamp().');
+    }
+    return motivos;
+  }
 }
 
 module.exports = AICodeValidator;

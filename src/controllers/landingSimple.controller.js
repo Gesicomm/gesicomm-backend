@@ -140,7 +140,11 @@ async function crearDesdeIA(req, res) {
       tienda_id: tienda.id,
       inquilino_id: req.usuario.tenantId,
       prompt,
-      items
+      items,
+      // Configuración de venta armada en el wizard (ofertas a mostrar,
+      // combos, recomendados, tipo de venta). Opcional: sin esto la
+      // landing se crea sin venta configurada y el editor la pide.
+      venta: req.body.venta || null,
     });
     
     // Registrar evento

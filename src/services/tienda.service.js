@@ -127,6 +127,9 @@ class TiendaService {
     if (payload.canal_contacto && !['whatsapp', 'email', 'telefono', 'instagram'].includes(payload.canal_contacto)) {
       errores.push('canal_contacto debe ser whatsapp, email, telefono o instagram.');
     }
+    if (payload.mensaje_contacto && String(payload.mensaje_contacto).length > 300) {
+      errores.push('mensaje_contacto no puede superar los 300 caracteres.');
+    }
     for (const [campo, max] of [['nombre_contacto', 100], ['direccion_publica', 255], ['ciudad_publica', 100]]) {
       if (payload[campo] && String(payload[campo]).length > max) errores.push(`${campo} no puede superar los ${max} caracteres.`);
     }
