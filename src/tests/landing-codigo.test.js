@@ -199,9 +199,13 @@ describe('LandingCodigoService.sanitizar', () => {
       expect(r.advertencias.join(' ')).toMatch(/página completa/i);
     });
 
+    // El <link> no puede quedar en el HTML (Gesicomm inyecta las fuentes en
+    // el <head> del iframe), pero la fuente tampoco se pierde: sale por el
+    // campo `fonts`, que es de donde las toma construirDocumentoCodigo.
     it('rescata el <link> del <head> para no perder la fuente', () => {
-      const { html } = LandingCodigoService.sanitizar({ html: documento });
-      expect(html).toContain('fonts.googleapis.com');
+      const { html, fonts } = LandingCodigoService.sanitizar({ html: documento });
+      expect(html).not.toContain('<link');
+      expect(fonts).toContain('https://fonts.googleapis.com/css2?family=Inter');
     });
 
     it('suma lo extraído DESPUÉS de lo que ya había en css/js', () => {

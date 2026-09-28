@@ -307,7 +307,12 @@ class AILandingService {
    * así el LLM siempre ve datos reales y nunca inventa precios.
    */
   static async catalogoParaRAG(inquilino_id, items) {
-    const { Combo } = require('../models');
+    const { Combo, Categoria } = require('../models');
+    // La categoría viaja con cada producto porque el HTML la usa como
+    // filtro EXACTO (data-gesicomm-categoria="Freidoras de Aire"): sin
+    // esto el modelo la inventaba corta ("Freidoras") y la grilla filtrada
+    // quedaba vacía en la landing publicada.
+    const incluirCategoria = [{ model: Categoria, as: 'categoria', attributes: ['nombre'], required: false }];
     const lista = Array.isArray(items) ? items : [];
     const idsProductos = lista.filter(i => i.tipo === 'producto').map(i => Number(i.referencia_id ?? i.id));
     const idsCombos = lista.filter(i => i.tipo === 'combo').map(i => Number(i.referencia_id ?? i.id));
@@ -317,7 +322,7 @@ class AILandingService {
     if (idsProductos.length || idsCombos.length) {
       [productos, combos] = await Promise.all([
         idsProductos.length
-          ? Producto.findAll({ where: { inquilino_id, activo: true, id: { [Op.in]: idsProductos } } })
+          ? Producto.findAll({ where: { inquilino_id, activo: true, id: { [Op.in]: idsProductos } }, include: incluirCategoria })
           : Promise.resolve([]),
         idsCombos.length
           ? Combo.findAll({ where: { inquilino_id, activo: true, id: { [Op.in]: idsCombos } } })
@@ -327,6 +332,7 @@ class AILandingService {
       // Sin selección (fallback inicial): primeros 10 productos activos.
       productos = await Producto.findAll({
         where: { inquilino_id, activo: true },
+        include: incluirCategoria,
         limit: 10,
         order: [['created_at', 'DESC']],
       });
@@ -339,15 +345,20 @@ class AILandingService {
     const ofertasPorProducto = await this.ofertasPorProducto(inquilino_id, productos.map(p => p.id));
 
     return [
+      // Un solo identificador visible para el modelo: el content_id, que es
+      // lo único que resuelve buscar() en el runtime. Antes iba también un
+      // `id` con formato "producto_310" que el runtime NO resuelve — y el
+      // contrato le decía al modelo "usá su id", así que cualquier control
+      // que lo usara quedaba muerto en silencio.
       ...productos.map(p => ({
-        id: `producto_${p.id}`,
         content_id: p.slug || `producto-${p.id}`,
         nombre: p.nombre,
         precio: p.precio_base || p.precio,
         descripcion: p.descripcion_corta || '',
+        categoria: p.categoria?.nombre || null,
         ...(ofertasPorProducto.get(p.id) || {}),
       })),
-      ...combos.map(c => ({ id: `combo_${c.id}`, content_id: `combo-${c.id}`, nombre: c.nombre, precio: c.precio, descripcion: c.descripcion || '', tipo: 'combo' })),
+      ...combos.map(c => ({ content_id: `combo-${c.id}`, nombre: c.nombre, precio: c.precio, descripcion: c.descripcion || '', tipo: 'combo' })),
     ];
   }
 
@@ -400,11 +411,9 @@ class AILandingService {
     const ventaConfigurada = venta?.configurado === true;
     const idsOfertasElegidas = new Set((venta?.cross_sell?.ofertas || []).map(Number).filter(Boolean));
     const recomendadosItems = Array.isArray(venta?.recomendados?.items) ? venta.recomendados.items.map(String).filter(Boolean) : [];
-    const idsDestacados = new Set(recomendadosItems.flatMap(id => [
-      id,
-      id.replace(/^producto-/, 'producto_').replace(/^combo-/, 'combo_'),
-      id.replace(/^producto_/, 'producto-').replace(/^combo_/, 'combo-'),
-    ]));
+    // Content_id tal cual: es la única forma de identidad que maneja el
+    // wizard y la única que entiende el runtime.
+    const idsDestacados = new Set(recomendadosItems);
     const ofertaVisible = oferta => !ventaConfigurada || idsOfertasElegidas.has(Number(oferta.id));
     const hayBumps = catalogoRAG.some(p => (p.order_bumps || []).some(ofertaVisible));
     const hayPaquetes = catalogoRAG.some(p => (p.paquetes || []).some(ofertaVisible));
@@ -415,8 +424,8 @@ class AILandingService {
       ...(p.upsells || []).filter(ofertaVisible).map(o => ({ ...o, producto: p.nombre, bloque: 'upsell_carrito' })),
     ]);
     const destacadosSeleccionados = catalogoRAG
-      .filter(p => idsDestacados.has(String(p.id)) || idsDestacados.has(String(p.content_id || '')))
-      .map(p => ({ id: p.id, nombre: p.nombre, tipo: p.tipo || 'producto', precio: p.precio }))
+      .filter(p => idsDestacados.has(String(p.content_id || '')))
+      .map(p => ({ content_id: p.content_id, nombre: p.nombre, tipo: p.tipo || 'producto', precio: p.precio }))
       .slice(0, 12);
     return {
       tipo_venta: venta?.tipo || 'catalogo',
@@ -444,13 +453,11 @@ class AILandingService {
 
   static productosParaFichasIniciales(catalogoRAG, venta) {
     const recomendadosItems = Array.isArray(venta?.recomendados?.items) ? venta.recomendados.items.map(String).filter(Boolean) : [];
-    const idsDestacados = new Set(recomendadosItems.flatMap(id => [
-      id,
-      id.replace(/^producto-/, 'producto_').replace(/^combo-/, 'combo_'),
-      id.replace(/^producto_/, 'producto-').replace(/^combo_/, 'combo-'),
-    ]));
+    // Los destacados vienen del wizard como content_id, igual que el
+    // catálogo: ya no hace falta tolerar la variante "producto_310".
+    const idsDestacados = new Set(recomendadosItems);
     const catalogo = Array.isArray(catalogoRAG) ? catalogoRAG : [];
-    const destacados = catalogo.filter(p => idsDestacados.has(String(p.id)) || idsDestacados.has(String(p.content_id || '')));
+    const destacados = catalogo.filter(p => idsDestacados.has(String(p.content_id || '')));
     const base = destacados.length ? destacados : catalogo;
     return base
       .filter(p => p?.content_id)
@@ -471,7 +478,7 @@ class AILandingService {
       const { Combo } = require('../models');
       const combo = await Combo.findOne({ where: { id: Number(comboMatch[1]), inquilino_id, activo: true } });
       if (!combo) return null;
-      return { id: `combo_${combo.id}`, tipo: 'combo', nombre: combo.nombre, precio: combo.precio, descripcion: combo.descripcion || '' };
+      return { content_id: `combo-${combo.id}`, tipo: 'combo', nombre: combo.nombre, precio: combo.precio, descripcion: combo.descripcion || '' };
     }
     let producto = await Producto.findOne({ where: { slug: contentId, inquilino_id, activo: true } });
     const idMatch = !producto && /^producto-(\d+)$/.exec(String(contentId || ''));
@@ -480,7 +487,7 @@ class AILandingService {
     }
     if (!producto) return null;
     return {
-      id: `producto_${producto.id}`,
+      content_id: producto.slug || `producto-${producto.id}`,
       tipo: 'producto',
       nombre: producto.nombre,
       precio: producto.precio_base || producto.precio,
@@ -500,7 +507,7 @@ class AILandingService {
    *
    * @returns {string[]} errores (vacío = todo OK)
    */
-  static validarTodo(anterior, nuevo, instruccion, vista) {
+  static validarTodo(anterior, nuevo, instruccion, vista, categoriasReales = null, contentIdsPermitidos = null) {
     const errores = [];
     try {
       LandingCodigoService.sanitizar(nuevo);
@@ -510,7 +517,7 @@ class AILandingService {
     if (anterior) {
       errores.push(...AICodeValidator.validarPreservacion(anterior, nuevo, instruccion).errores);
     }
-    errores.push(...AICodeValidator.validar(nuevo.html, { vista }).errores);
+    errores.push(...AICodeValidator.validar(nuevo.html, { vista, categoriasReales, contentIdsPermitidos }).errores);
     return errores;
   }
 
@@ -530,8 +537,14 @@ class AILandingService {
    * registrarLog más abajo), no hace falta en el camino feliz.
    */
   static async _conRepairAutomatico({ generar, anterior, instruccion, vista, tienda, productos, pageType, producto, comercio = null }) {
+    // Las categorías que el HTML puede usar como filtro son las de los
+    // productos de ESTA landing: cualquier otra deja la grilla vacía.
+    const categoriasReales = [...new Set((productos || []).map(p => p.categoria).filter(Boolean))];
+    // Identidad de los items: el content_id es lo único que el runtime sabe
+    // resolver, y es lo único que le pasamos al modelo (ver catalogoParaRAG).
+    const contentIdsPermitidos = [...new Set((productos || []).map(p => p.content_id).filter(Boolean))];
     let codigo = await generar();
-    let errores = this.validarTodo(anterior, codigo, instruccion, vista);
+    let errores = this.validarTodo(anterior, codigo, instruccion, vista, categoriasReales, contentIdsPermitidos);
     // Calidad (dirección de arte): se le pide al repair junto con los
     // errores reales, pero si sigue sin cumplir NO se bloquea el guardado
     // — ver AICodeValidator.validarCalidad.
@@ -551,7 +564,7 @@ class AILandingService {
         tokensInput += reparado._tokensInput || 0;
         tokensOutput += reparado._tokensOutput || 0;
         modelo = reparado._modelo || modelo;
-        const erroresReparado = this.validarTodo(anterior, reparado, instruccion, vista);
+        const erroresReparado = this.validarTodo(anterior, reparado, instruccion, vista, categoriasReales, contentIdsPermitidos);
         // El repair solo se acepta si no empeoró lo importante: si vuelve
         // con errores reales que antes no estaban, se queda el original.
         if (!erroresReparado.length || errores.length) {
@@ -617,6 +630,7 @@ class AILandingService {
     let tokensOutput = 0;
     let modelo = null;
     const vistasProductos = {};
+    let vistaProductoGeneral = null;
     try {
       const resultado = await this._conRepairAutomatico({
         generar: () => this.solicitarCodigoRAG({ prompt: instruccion, tienda, productos: catalogoRAG, pageType: 'landing', comercio }),
@@ -669,6 +683,37 @@ class AILandingService {
           console.warn('[AI Landing] no se pudo generar ficha inicial IA:', productoFicha.content_id, errFicha.message);
         }
       }
+
+      // Ficha GENERAL: la que usa todo producto que no tiene la suya propia.
+      // Sin esto, la landing salía con ficha solo para los destacados y el
+      // resto del catálogo no tenía página: el cliente tocaba "Ver" y no
+      // llegaba a ningún lado.
+      const referencia = catalogoRAG.find(p => !vistasProductos[p.content_id]) || catalogoRAG[0] || null;
+      if (referencia) {
+        const instruccionGeneral = [
+          instruccion,
+          '',
+          'Generá la ficha de producto GENERAL de esta tienda: la plantilla que se usa para CUALQUIER producto del catálogo.',
+          'Todo sale de binds y listas (no menciones un producto puntual por su nombre en los textos fijos).',
+          'Tiene que funcionar igual para el producto más caro y el más barato, con y sin ofertas.',
+        ].join('\n');
+        try {
+          const general = await this._conRepairAutomatico({
+            generar: () => this.solicitarCodigoRAG({
+              prompt: instruccionGeneral, tienda, productos: catalogoRAG,
+              pageType: 'product', producto: referencia, comercio,
+            }),
+            anterior: null, instruccion: instruccionGeneral, vista: 'ficha',
+            tienda, productos: catalogoRAG, pageType: 'product', producto: referencia, comercio,
+          });
+          vistaProductoGeneral = general.codigo;
+          vistaProductoGeneral.design_context = this.designContextDesdeCodigo(vistaProductoGeneral, tienda);
+          tokensInput += general.tokensInput || 0;
+          tokensOutput += general.tokensOutput || 0;
+        } catch (errGeneral) {
+          console.warn('[AI Landing] no se pudo generar la ficha general:', errGeneral.message);
+        }
+      }
     } catch (err) {
       await AiGenerationLogService.registrar({
         tiendaId: tienda_id, operacion: 'generate', pageType: 'landing', target: 'inicio',
@@ -693,7 +738,12 @@ class AILandingService {
     const guardada = await LandingSimpleService.actualizarCodigo(landingModel, tienda_id, inquilino_id, {
       titulo,
       codigo,
-      ...(Object.keys(vistasProductos).length ? { vistas: { productos: vistasProductos } } : {}),
+      ...((Object.keys(vistasProductos).length || vistaProductoGeneral)
+        ? { vistas: {
+            ...(Object.keys(vistasProductos).length ? { productos: vistasProductos } : {}),
+            ...(vistaProductoGeneral ? { producto: vistaProductoGeneral } : {}),
+          } }
+        : {}),
       // Si el wizard ya pasó por el panel de venta, se guarda lo que el
       // comercio eligió ahí. Si no vino nada, la landing queda SIN venta
       // configurada a propósito: el editor abre en "Configurar venta" en

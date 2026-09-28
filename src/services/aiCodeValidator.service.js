@@ -52,7 +52,7 @@ const ATRIBUTOS_VALIDOS = new Set([...ATRIBUTOS_AUTOR, ...ATRIBUTOS_RUNTIME]);
 
 const LISTAS_VALIDAS = new Set([
   'catalogo', 'productos', 'solo_productos', 'combos', 'combos_producto', 'recomendados',
-  'ofertas', 'ofertas_bump', 'ofertas_pack', 'ofertas_upsell', 'variantes', 'imagenes',
+  'ofertas', 'ofertas_bump', 'ofertas_pack', 'variantes', 'imagenes',
   'beneficios', 'confianza', 'preguntas', 'combo_incluye', 'paquetes',
 ]);
 
@@ -102,6 +102,33 @@ function contarOcurrencias(html, patron) {
 // una lista de raíces sin acento final, sin \b de cierre.
 const PATRON_EDIT_DESTRUCTIVE_ALLOWED = /\b(rehac|reemplaz|empez[aá]r?\s+de\s+cero|desde\s+cero|arm[aá]\s+de\s+nuevo|reescrib|dise[ñn]o\s+nuevo|nueva\s+landing|simplific|minimalista|reduc|menos\s+secciones|sac[aá]\s|quit[aá]\s|elimin|borr|dej[aá]\s+solo)/i;
 
+// Atributos cuyo valor es la IDENTIDAD de un item de la landing. Todos se
+// resuelven con buscar() en el runtime, que solo acepta el content_id
+// exacto o "principal". data-gesicomm-oferta-id / -variante-id / -paquete
+// NO están acá: los escribe el runtime al renderizar, no el modelo.
+const ATRIBUTOS_CON_CONTENT_ID = [
+  'data-gesicomm-comprar', 'data-gesicomm-agregar', 'data-gesicomm-ver', 'data-gesicomm-item',
+];
+
+// Campos reales del producto en el runtime (itemPublicoARuntime +
+// contenidoFicha en datosRuntime.js). data-gesicomm-si / -sin consultan
+// productoActual[campo]: un campo inventado esconde el bloque para siempre.
+const CAMPOS_PRODUCTO = new Set([
+  'id', 'referencia_id', 'tipo', 'nombre', 'descripcion', 'descripcion_larga',
+  'precio', 'precio_antes', 'precio_separado', 'descuento_pct', 'ahorro',
+  'imagen', 'imagenes_url', 'categoria', 'etiqueta', 'stock', 'agotado',
+  'tiene_variantes', 'variantes', 'ofertas', 'productos_incluidos', 'combo_productos',
+  'propuesta_valor', 'sobre', 'beneficios', 'confianza', 'preguntas', 'combo_incluye', 'url',
+]);
+
+// Campos de la tienda que data-gesicomm-tienda puede pintar (tiendaRuntime
+// en datosRuntime.js). Se dejan afuera "colores", "incluir_precio" e
+// "incluir_url": no son texto y saldrían como [object Object] o "true".
+const CAMPOS_TIENDA = new Set([
+  'nombre', 'logo', 'whatsapp', 'mensaje', 'telefono', 'email', 'direccion',
+  'horarios', 'instagram', 'facebook', 'tiktok', 'youtube', 'twitter',
+]);
+
 /** @returns {'preserve'|'destructive_allowed'} */
 function modoEdicion(instruccion) {
   return PATRON_EDIT_DESTRUCTIVE_ALLOWED.test(String(instruccion || '')) ? 'destructive_allowed' : 'preserve';
@@ -117,7 +144,7 @@ class AICodeValidator {
    *   contexto de producto (el bind vive fuera de listas).
    * @returns {{ errores: string[], advertencias: string[] }}
    */
-  static validar(html, { contentIdsPermitidos = null, vista = 'inicio' } = {}) {
+  static validar(html, { contentIdsPermitidos = null, vista = 'inicio', categoriasReales = null } = {}) {
     const texto = String(html || '');
     const errores = [];
     const advertencias = [];
@@ -129,7 +156,13 @@ class AICodeValidator {
     }
 
     for (const valor of extraerValores(texto, 'data-gesicomm-lista')) {
-      if (valor && !LISTAS_VALIDAS.has(valor)) {
+      if (valor === 'ofertas_upsell') {
+        // El runtime la devuelve vacía a propósito: el upsell es una etapa
+        // del checkout, no un bloque de página. Se sigue ignorando en las
+        // landings viejas que ya la tienen guardada; lo que se corta acá es
+        // que una generación nueva la vuelva a producir.
+        errores.push('data-gesicomm-lista="ofertas_upsell" no es una lista de página: Gesicomm muestra el upsell como etapa del checkout, así que ese bloque queda vacío siempre. Sacalo.');
+      } else if (valor && !LISTAS_VALIDAS.has(valor)) {
         errores.push(`data-gesicomm-lista="${valor}" no existe: esa sección va a quedar vacía para siempre.`);
       }
     }
@@ -141,13 +174,51 @@ class AICodeValidator {
     }
 
     if (contentIdsPermitidos) {
-      const permitidos = new Set(contentIdsPermitidos.map(String));
-      for (const atributo of ['data-gesicomm-comprar', 'data-gesicomm-agregar', 'data-gesicomm-oferta']) {
+      // El runtime resuelve estos valores en buscar(): solo el content_id
+      // exacto (o "principal"). Un identificador construido por el modelo
+      // —"producto_310", el nombre del producto, un slug inventado— no
+      // resuelve nada y el botón queda muerto sin ningún error visible.
+      const permitidos = new Set([...contentIdsPermitidos.map(String), 'principal']);
+      const muestra = [...permitidos].slice(0, 10).join(', ');
+      const sufijo = permitidos.size > 10 ? `, … (${permitidos.size} en total)` : '';
+      for (const atributo of ATRIBUTOS_CON_CONTENT_ID) {
         for (const valor of extraerValores(texto, atributo)) {
           // Sin valor = "el producto de la tarjeta/ficha", siempre válido.
           if (valor && !permitidos.has(valor)) {
-            errores.push(`${atributo}="${valor}" apunta a un producto que no está en la selección de esta landing.`);
+            errores.push(
+              `${atributo}="${valor}" no es un content_id de esta landing: el runtime no lo resuelve y ese control queda muerto. `
+              + `Usá uno de estos, tal cual: ${muestra}${sufijo}.`,
+            );
           }
+        }
+      }
+    }
+
+    // Mismo principio que los content_id: el modelo solo puede consultar
+    // campos que existen de verdad. Un data-gesicomm-si="garantia" deja el
+    // bloque oculto para siempre y no hay forma de notarlo mirando la página.
+    for (const atributo of ['data-gesicomm-si', 'data-gesicomm-sin']) {
+      for (const valor of extraerValores(texto, atributo)) {
+        if (valor && !CAMPOS_PRODUCTO.has(valor)) {
+          errores.push(`${atributo}="${valor}" no es un campo del producto: ese bloque queda oculto siempre. Campos válidos: ${[...CAMPOS_PRODUCTO].join(', ')}.`);
+        }
+      }
+    }
+    for (const valor of extraerValores(texto, 'data-gesicomm-tienda')) {
+      if (valor && !CAMPOS_TIENDA.has(valor)) {
+        errores.push(`data-gesicomm-tienda="${valor}" no es un dato de la tienda: se muestra vacío. Campos válidos: ${[...CAMPOS_TIENDA].join(', ')}.`);
+      }
+    }
+
+    // El runtime filtra por categoría con igualdad exacta (ver
+    // runtimeGesicomm.js), así que una categoría aproximada —"Freidoras"
+    // cuando la real es "Freidoras de Aire"— deja la grilla vacía sin
+    // ningún aviso. Solo se valida si sabemos las categorías reales.
+    if (categoriasReales?.length) {
+      const reales = new Map(categoriasReales.filter(Boolean).map(c => [String(c).toLowerCase(), String(c)]));
+      for (const valor of extraerValores(texto, 'data-gesicomm-categoria')) {
+        if (valor && !reales.has(valor.toLowerCase())) {
+          errores.push(`data-gesicomm-categoria="${valor}" no es una categoría real: el filtro es exacto y esa grilla queda vacía. Usá una de estas, tal cual: ${[...reales.values()].join(', ')}.`);
         }
       }
     }
@@ -224,7 +295,19 @@ class AICodeValidator {
    */
   static validarCalidad(codigo) {
     const css = String(codigo?.css || '');
+    const html = String(codigo?.html || '');
     const motivos = [];
+
+    // Un <div class="...placeholder..."></div> vacío se ve como un
+    // rectángulo de color en la página publicada: pasaba en el hero, donde
+    // debería ir la foto real del producto (<img data-gesicomm-bind="imagen">).
+    const placeholdersVacios = (html.match(/<(\w+)[^>]*class="[^"]*placeholder[^"]*"[^>]*>\s*<\/\1>/gi) || []).length;
+    if (placeholdersVacios) {
+      motivos.push(
+        `Hay ${placeholdersVacios} elemento(s) "placeholder" vacíos: en la página publicada son un rectángulo de color. Poné la imagen real del producto con <img data-gesicomm-bind="imagen"> o sacá el bloque.`,
+      );
+    }
+
     if (!css.trim()) return motivos;
 
     // Los @media de layout son los que tienen un ancho; el de

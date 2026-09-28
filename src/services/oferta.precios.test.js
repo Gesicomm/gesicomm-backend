@@ -117,8 +117,20 @@ describe('validarPayload', () => {
 
 describe('normalizarExtras', () => {
   test('vacío se guarda como NULL, no como cadena vacía', () => {
+    // Tocar imagen_url arrastra los metadatos de R2 a NULL: una URL escrita a
+    // mano ya no corresponde al objeto subido, así que storage_key/mime/size/
+    // width/height dejarían de describir la imagen que realmente se muestra.
     expect(OfertaService.normalizarExtras({ imagen_url: '  ', fecha_inicio: '', fecha_fin: '' }))
-      .toEqual({ imagen_url: null, fecha_inicio: null, fecha_fin: null });
+      .toEqual({
+        imagen_url: null,
+        imagen_storage_key: null,
+        imagen_mime_type: null,
+        imagen_size: null,
+        imagen_width: null,
+        imagen_height: null,
+        fecha_inicio: null,
+        fecha_fin: null,
+      });
   });
 
   test('lo que no viene en el payload no se toca', () => {
