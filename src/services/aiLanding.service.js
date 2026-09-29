@@ -443,6 +443,13 @@ class AILandingService {
 
   static inferirFamiliaProducto(texto, catalogo = []) {
     const categorias = this._textoClasificacion((catalogo || []).map(p => [p?.categoria, p?.ficha_rubro, p?.nombre].filter(Boolean).join(' ')).join(' '));
+    const rubros = this._textoClasificacion((catalogo || []).map(p => p?.ficha_rubro).filter(Boolean).join(' '));
+    if (/(suplement|fitness|nutric)/.test(rubros)) return 'suplementos';
+    if (/(electrodom|freidora|air fryer|cafetera|aspiradora|licuadora)/.test(rubros)) return 'electrodomesticos';
+    if (/(bazar|hogar|cocina|utensilio|organizador|decoracion|limpieza|jardin)/.test(rubros)) return 'bazar_hogar';
+    if (/(tech|tecnolog|electron|gadget)/.test(rubros)) return 'tecnologia';
+    if (/(beauty|belleza|skincare|piel|cabello|cosmetic|maquill)/.test(rubros)) return 'belleza';
+    if (/(ropa|moda|calzado)/.test(rubros)) return 'moda';
     const t = `${texto} ${categorias}`;
     if (/(suplement|proteina|creatina|colageno|vitamina|capsula|adelgaz|fitness|gimnas|nutric|omega|magnesio|probio)/.test(t)) return 'suplementos';
     if (/(electrodom|licuadora|freidora|air fryer|cafetera|aspiradora|cortador|procesador|batidora|cocina)/.test(t)) return 'electrodomesticos';
