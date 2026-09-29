@@ -140,7 +140,11 @@ async function crearDesdeIA(req, res) {
       tienda_id: tienda.id,
       inquilino_id: req.usuario.tenantId,
       prompt,
-      items
+      items,
+      // Configuración de venta armada en el wizard (ofertas a mostrar,
+      // combos, recomendados, tipo de venta). Opcional: sin esto la
+      // landing se crea sin venta configurada y el editor la pide.
+      venta: req.body.venta || null,
     });
     
     // Registrar evento
@@ -172,13 +176,15 @@ async function regenerarConIA(req, res) {
     const tienda = await resolverTiendaPropia(req, res);
     if (!tienda) return;
 
+    const TARGETS_VALIDOS = ['inicio', 'producto', 'producto_especifico'];
     const AILandingService = require('../services/aiLanding.service');
     const landing = await AILandingService.regenerarConIA({
       tienda_id: tienda.id,
       inquilino_id: req.usuario.tenantId,
       landing_id: req.params.id,
       prompt: req.body.prompt,
-      target: req.body.target === 'producto' ? 'producto' : 'inicio',
+      target: TARGETS_VALIDOS.includes(req.body.target) ? req.body.target : 'inicio',
+      contentId: req.body.contentId || null,
     });
 
     return res.json(landing);

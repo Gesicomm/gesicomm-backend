@@ -461,13 +461,25 @@ class LandingSimpleService {
     const content = { ...(landing.content || {}) };
     if (limpioInicio) {
       advertencias = limpioInicio.advertencias;
-      content.codigo = { html: limpioInicio.html, css: limpioInicio.css, js: limpioInicio.js };
+      content.codigo = {
+        html: limpioInicio.html,
+        css: limpioInicio.css,
+        js: limpioInicio.js,
+        fonts: limpioInicio.fonts,
+        design_context: limpioInicio.design_context,
+      };
     }
     if (limpioProducto) {
       advertencias = [...advertencias, ...limpioProducto.advertencias.map(a => `Vista de producto: ${a}`)];
       content.vistas = {
         ...(content.vistas || {}),
-        producto: { html: limpioProducto.html, css: limpioProducto.css, js: limpioProducto.js },
+        producto: {
+          html: limpioProducto.html,
+          css: limpioProducto.css,
+          js: limpioProducto.js,
+          fonts: limpioProducto.fonts,
+          design_context: limpioProducto.design_context,
+        },
       };
     }
     if (fichasPropias) {
@@ -511,7 +523,13 @@ class LandingSimpleService {
       if (!/^[a-z0-9][a-z0-9-]{0,119}$/i.test(clave)) continue;
       if (codigo === null) { delete productos[clave]; continue; }
       const limpio = this.sanitizarVista(codigo, `Ficha de ${clave}`);
-      productos[clave] = { html: limpio.html, css: limpio.css, js: limpio.js };
+      productos[clave] = {
+        html: limpio.html,
+        css: limpio.css,
+        js: limpio.js,
+        fonts: limpio.fonts,
+        design_context: limpio.design_context,
+      };
       advertencias.push(...limpio.advertencias.map(a => `Ficha de ${clave}: ${a}`));
     }
     if (Object.keys(productos).length > MAX_FICHAS_PROPIAS) {

@@ -43,6 +43,7 @@ const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
 const Page = require('./Page');
 const PageVersion = require('./PageVersion');
+const AiGenerationLog = require('./AiGenerationLog');
 const ProveedorDns = require('./ProveedorDns');
 const LandingTemplate = require('./LandingTemplate');
 const Landing = require('./Landing');
@@ -846,4 +847,5 @@ module.exports = {
   HistorialIngresoInventario,
   Page,
   PageVersion,
+  AiGenerationLog,
 };
