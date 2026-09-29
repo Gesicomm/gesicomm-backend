@@ -23,6 +23,20 @@ const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago
 
 const EVENTOS_PERMITIDOS = new Set(['PageView', 'Contact', 'AddToCart', 'InitiateCheckout', 'ViewContent', 'Lead']);
 const MAX_CONTENT_IDS = 40;
+const TIPOS_PAGINA_PUBLICA = new Set([
+  'contacto',
+  'catalogo',
+  'politica_privacidad',
+  'politica_reembolso',
+  'terminos_servicio',
+  'politica_envio',
+  'aviso_legal',
+]);
+
+function tipoPaginaPublica(valor) {
+  const normalizado = String(valor || '').trim().toLowerCase().replace(/-/g, '_');
+  return TIPOS_PAGINA_PUBLICA.has(normalizado) ? normalizado : null;
+}
 
 async function resolverTiendaYLanding(req) {
   let tienda = req.tienda;
@@ -111,6 +125,8 @@ async function obtenerPorSlug(req, res) {
     // For POST /buscar route, we always assume vista=catalogo
     const isCatalogo = vista === 'catalogo' || req.path.endsWith('/buscar');
     
+    const tipoPagina = tipoPaginaPublica(options.tipo_pagina || options.tipoPagina || options.pagina_tipo);
+
     const resultado = isCatalogo
       ? await LandingService.obtenerCatalogoPublico(tienda, req.params.slug || null, preview, {
           pagina: options.pagina,
@@ -123,7 +139,7 @@ async function obtenerPorSlug(req, res) {
           precioMax: options.precioMax,
           busqueda: typeof options.busqueda === 'string' ? options.busqueda : (typeof options.q === 'string' ? options.q : ''),
         })
-      : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview);
+      : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview, { tipoPagina });
     if (resultado === null) {
       return res.status(404).json({ message: 'Landing no encontrada.' });
     }

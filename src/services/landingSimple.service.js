@@ -340,16 +340,21 @@ class LandingSimpleService {
    * estructura fija — ni banner, ni FAQ, ni beneficios, ni items. Todo lo
    * que se ve sale de content.codigo, que el comercio escribe a mano.
    */
-  static async crearLienzoBlanco(tienda_id, inquilino_id, nombreTienda, items = []) {
+  static async crearLienzoBlanco(tienda_id, inquilino_id, nombreTienda, items = [], opciones = {}) {
     const template = await this.obtenerTemplateLienzoBlanco();
     if (Array.isArray(items) && items.length) {
       await LandingService.resolverItemsCatalogo(items, inquilino_id);
     }
+    const creationSource = opciones.creationSource === 'ai' ? 'ai' : 'blank';
     const landing = await this._crearFila(tienda_id, inquilino_id, template, {
       titulo: nombreTienda || template.name,
       mostrar_faq: false,
       mostrar_banner: false,
-      content: { codigo: codigoInicial(nombreTienda) },
+      content: {
+        editor_type: 'code',
+        creation_source: creationSource,
+        codigo: codigoInicial(nombreTienda),
+      },
     });
     if (Array.isArray(items) && items.length) {
       await LandingService.sincronizarItems(landing.id, items.map((item, idx) => ({
@@ -458,6 +463,9 @@ class LandingSimpleService {
     const fichasPropias = payload.vistas?.productos !== undefined
       ? this.sanitizarFichasPropias(payload.vistas.productos, landing.content?.vistas?.productos)
       : null;
+    const legales = payload.vistas?.legales !== undefined
+      ? this.sanitizarLegales(payload.vistas.legales, landing.content?.vistas?.legales)
+      : null;
     const content = { ...(landing.content || {}) };
     if (limpioInicio) {
       advertencias = limpioInicio.advertencias;
@@ -486,12 +494,16 @@ class LandingSimpleService {
       advertencias = [...advertencias, ...fichasPropias.advertencias];
       content.vistas = { ...(content.vistas || {}), productos: fichasPropias.productos };
     }
+    if (legales) {
+      advertencias = [...advertencias, ...legales.advertencias];
+      content.vistas = { ...(content.vistas || {}), legales: legales.paginas };
+    }
     // Una sola pasada: antes había una segunda (normalizarVenta) que pisaba
     // esta y descartaba abrir_en / combos_primero / principal_id.
     if (payload.venta !== undefined) {
       content.venta = LandingCodigoService.limpiarVenta(payload.venta);
     }
-    if (limpioInicio || limpioProducto || fichasPropias || payload.venta !== undefined) {
+    if (limpioInicio || limpioProducto || fichasPropias || legales || payload.venta !== undefined) {
       landing.content = content;
       landing.changed('content', true);
     }
@@ -538,6 +550,31 @@ class LandingSimpleService {
       throw err;
     }
     return { productos, advertencias };
+  }
+
+  static sanitizarLegales(nuevas, actuales = {}) {
+    const TIPOS = new Set(['contacto', 'politica_privacidad', 'politica_reembolso', 'terminos_servicio', 'politica_envio', 'aviso_legal']);
+    if (!nuevas || typeof nuevas !== 'object' || Array.isArray(nuevas)) {
+      const err = new Error('Validación fallida.');
+      err.errores = ['Páginas legales: formato inválido.'];
+      throw err;
+    }
+    const paginas = { ...(actuales && typeof actuales === 'object' ? actuales : {}) };
+    const advertencias = [];
+    for (const [tipo, codigo] of Object.entries(nuevas)) {
+      if (!TIPOS.has(tipo)) continue;
+      if (codigo === null) { delete paginas[tipo]; continue; }
+      const limpio = this.sanitizarVista(codigo, `Página legal ${tipo}`);
+      paginas[tipo] = {
+        html: limpio.html,
+        css: limpio.css,
+        js: limpio.js,
+        fonts: limpio.fonts,
+        design_context: limpio.design_context,
+      };
+      advertencias.push(...limpio.advertencias.map(a => `Página legal ${tipo}: ${a}`));
+    }
+    return { paginas, advertencias };
   }
 
   /** sanitizar() con el nombre de la vista en cada error, para que el editor diga en cuál está. */

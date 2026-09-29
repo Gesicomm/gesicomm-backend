@@ -10,6 +10,7 @@ const { Producto, Tienda } = require('../models');
 const LandingSimpleService = require('./landingSimple.service');
 const LandingCodigoService = require('./landingCodigo.service');
 const AICodeValidator = require('./aiCodeValidator.service');
+const { aplicarBloquesCanonicos } = require('./bloquesVentaCanonicos');
 const AiGenerationLogService = require('./aiGenerationLog.service');
 
 // Reemplazamos localhost por 127.0.0.1 para evitar problemas de IPv6 en Node 18+ con docker
@@ -457,10 +458,14 @@ class AILandingService {
     // catálogo: ya no hace falta tolerar la variante "producto_310".
     const idsDestacados = new Set(recomendadosItems);
     const catalogo = Array.isArray(catalogoRAG) ? catalogoRAG : [];
-    const destacados = catalogo.filter(p => idsDestacados.has(String(p.content_id || '')));
-    const base = destacados.length ? destacados : catalogo;
-    return base
-      .filter(p => p?.content_id)
+    // SOLO los destacados. Antes, sin ninguno marcado, esto caía a "los
+    // primeros 4 productos" y generaba 4 fichas propias además de la home:
+    // seis llamadas al modelo en fila, casi cinco minutos, y el navegador
+    // cortaba la request antes de que el backend terminara. Desde que existe
+    // la ficha GENERAL ese fallback no aporta nada: los productos que nadie
+    // destacó ya tienen página.
+    return catalogo
+      .filter(p => p?.content_id && idsDestacados.has(String(p.content_id)))
       .slice(0, 4);
   }
 
@@ -646,8 +651,11 @@ class AILandingService {
       ({ codigo, repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo } = resultado);
       codigo.design_context = this.designContextDesdeCodigo(codigo, tienda);
 
+      // En paralelo, no en fila: son independientes entre sí y encadenarlas
+      // multiplicaba el tiempo total de la request por la cantidad de fichas.
       const fichasIniciales = this.productosParaFichasIniciales(catalogoRAG, ventaLimpia);
-      for (const productoFicha of fichasIniciales) {
+      const conFichaPropia = new Set(fichasIniciales.map(p => p.content_id));
+      const tareasFichas = fichasIniciales.map(async (productoFicha) => {
         const instruccionFicha = [
           instruccion,
           '',
@@ -675,6 +683,10 @@ class AILandingService {
             comercio,
           });
           const codigoFicha = ficha.codigo;
+          // El order bump y los paquetes los pone Gesicomm con su bloque
+          // canónico (foto, precio tachado, ahorro, estados): ver
+          // bloquesVentaCanonicos. El modelo solo decide dónde van.
+          Object.assign(codigoFicha, aplicarBloquesCanonicos(codigoFicha));
           codigoFicha.design_context = this.designContextDesdeCodigo(codigoFicha, tienda);
           vistasProductos[productoFicha.content_id] = codigoFicha;
           tokensInput += ficha.tokensInput || 0;
@@ -682,14 +694,16 @@ class AILandingService {
         } catch (errFicha) {
           console.warn('[AI Landing] no se pudo generar ficha inicial IA:', productoFicha.content_id, errFicha.message);
         }
-      }
+      });
 
       // Ficha GENERAL: la que usa todo producto que no tiene la suya propia.
       // Sin esto, la landing salía con ficha solo para los destacados y el
       // resto del catálogo no tenía página: el cliente tocaba "Ver" y no
-      // llegaba a ningún lado.
-      const referencia = catalogoRAG.find(p => !vistasProductos[p.content_id]) || catalogoRAG[0] || null;
-      if (referencia) {
+      // llegaba a ningún lado. No depende de las propias, así que se lanza
+      // junto con ellas.
+      const referencia = catalogoRAG.find(p => !conFichaPropia.has(p.content_id)) || catalogoRAG[0] || null;
+      const tareaGeneral = (async () => {
+        if (!referencia) return;
         const instruccionGeneral = [
           instruccion,
           '',
@@ -707,13 +721,16 @@ class AILandingService {
             tienda, productos: catalogoRAG, pageType: 'product', producto: referencia, comercio,
           });
           vistaProductoGeneral = general.codigo;
+          Object.assign(vistaProductoGeneral, aplicarBloquesCanonicos(vistaProductoGeneral));
           vistaProductoGeneral.design_context = this.designContextDesdeCodigo(vistaProductoGeneral, tienda);
           tokensInput += general.tokensInput || 0;
           tokensOutput += general.tokensOutput || 0;
         } catch (errGeneral) {
           console.warn('[AI Landing] no se pudo generar la ficha general:', errGeneral.message);
         }
-      }
+      })();
+
+      await Promise.all([...tareasFichas, tareaGeneral]);
     } catch (err) {
       await AiGenerationLogService.registrar({
         tiendaId: tienda_id, operacion: 'generate', pageType: 'landing', target: 'inicio',
@@ -732,8 +749,22 @@ class AILandingService {
     // `referencia_id`, no `id` (que es lo que manda el wizard del frontend).
     const itemsLanding = (Array.isArray(items) ? items : [])
       .filter(i => i && (i.tipo === 'producto' || i.tipo === 'combo') && Number(i.id) > 0)
-      .map(i => ({ tipo: i.tipo, referencia_id: Number(i.id) }));
-    const creada = await LandingSimpleService.crearLienzoBlanco(tienda_id, inquilino_id, tienda.nombre, itemsLanding);
+      // El precio ancla es POR LANDING (landing_items.precio_ancla), no del
+      // producto: el mismo producto puede tener un precio tachado distinto en
+      // cada página, y no le toca el precio real a nadie. Es lo que ya hacen
+      // los templates rígidos desde CatalogoPanel.
+      .map(i => ({
+        tipo: i.tipo,
+        referencia_id: Number(i.id),
+        precio_ancla: Number(i.precio_ancla) > 0 ? Number(i.precio_ancla) : null,
+      }));
+    const creada = await LandingSimpleService.crearLienzoBlanco(
+      tienda_id,
+      inquilino_id,
+      tienda.nombre,
+      itemsLanding,
+      { creationSource: 'ai' },
+    );
     const landingModel = await LandingSimpleService.buscarPropia(creada.id, tienda_id);
     const guardada = await LandingSimpleService.actualizarCodigo(landingModel, tienda_id, inquilino_id, {
       titulo,
@@ -865,6 +896,12 @@ class AILandingService {
         throw new Error('El motor de código libre del RAG no está disponible (/ai/code/edit o /ai/code/generate). Reiniciá o redeployá el RAG antes de editar landings con IA.');
       }
       throw err;
+    }
+
+    // Editar una ficha con IA también reinyecta los bloques canónicos: si no,
+    // el primer "hacela más linda" se llevaba puesto el bump con su foto.
+    if (esFicha || esFichaEspecifica) {
+      Object.assign(codigo, aplicarBloquesCanonicos(codigo));
     }
 
     let guardada;

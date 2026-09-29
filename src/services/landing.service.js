@@ -876,12 +876,21 @@ class LandingService {
     await Tienda.update(camposTienda, { where: { id: landing.tienda_id } });
   }
 
+  static TIPOS_SIN_CATALOGO = [
+    'contacto',
+    'politica_privacidad',
+    'politica_reembolso',
+    'terminos_servicio',
+    'politica_envio',
+    'aviso_legal',
+  ];
+
   static async sincronizarTemaPaginasFijas(landing, payload = {}) {
     const tocoTema = this.CAMPOS_TEMA.some(campo => payload[campo] !== undefined);
     if (!tocoTema || landing.tipo_pagina !== 'inicio') return;
     const temaActual = Object.fromEntries(this.CAMPOS_TEMA.map(c => [c, landing[c]]));
     await Landing.update(temaActual, {
-      where: { tienda_id: landing.tienda_id, tipo_pagina: { [Op.in]: ['catalogo', 'contacto'] } },
+      where: { tienda_id: landing.tienda_id, tipo_pagina: { [Op.in]: ['catalogo', ...this.TIPOS_SIN_CATALOGO] } },
     });
   }
 
@@ -890,6 +899,11 @@ class LandingService {
       { tipo_pagina: 'inicio', nombre: 'Inicio', es_home: true },
       { tipo_pagina: 'catalogo', nombre: 'Catálogo', es_home: false },
       { tipo_pagina: 'contacto', nombre: 'Contacto', es_home: false },
+      { tipo_pagina: 'politica_privacidad', nombre: 'Política de Privacidad', es_home: false, activo: true },
+      { tipo_pagina: 'politica_reembolso', nombre: 'Política de Reembolso', es_home: false, activo: true },
+      { tipo_pagina: 'terminos_servicio', nombre: 'Términos del Servicio', es_home: false, activo: true },
+      { tipo_pagina: 'politica_envio', nombre: 'Política de Envío', es_home: false, activo: true },
+      { tipo_pagina: 'aviso_legal', nombre: 'Aviso Legal', es_home: false, activo: true },
     ];
 
     const existentes = await Landing.findAll({ where: { tienda_id } });
@@ -910,7 +924,7 @@ class LandingService {
         slug,
         tipo_pagina: rol.tipo_pagina,
         es_home: rol.es_home,
-        activo: false,
+        activo: rol.activo === true,
         // Catálogo/Contacto nacen con el tema vigente de Inicio, no con
         // el default del schema — si Inicio todavía no existe (primera
         // vez que se llama, se crea antes en este mismo loop por el orden
@@ -926,7 +940,7 @@ class LandingService {
     const inicioActual = porTipo.get('inicio') || await Landing.findOne({ where: { tienda_id, tipo_pagina: 'inicio' } });
     if (inicioActual) {
       const temaActual = Object.fromEntries(this.CAMPOS_TEMA.map(c => [c, inicioActual[c]]));
-      await Landing.update(temaActual, { where: { tienda_id, tipo_pagina: { [Op.in]: ['catalogo', 'contacto'] } } });
+      await Landing.update(temaActual, { where: { tienda_id, tipo_pagina: { [Op.in]: ['catalogo', ...this.TIPOS_SIN_CATALOGO] } } });
     }
 
     const paginas = await Landing.findAll({
@@ -1019,7 +1033,7 @@ class LandingService {
     const landing = await Landing.findOne({ where: { id, tienda_id } });
     if (!landing) throw new Error('Landing no encontrada.');
 
-    // Contacto es la única de las 3 páginas fijas sin catálogo propio.
+    // Las páginas informativas fijas no tienen catálogo propio.
     // Una landing legacy de producto nunca tiene LandingItem — su producto
     // vive en Landing.producto_id directo — así que se valida aparte para
     // no romper datos publicados antes de retirar el flujo de creación.
@@ -1029,7 +1043,7 @@ class LandingService {
       if (producto && Number(producto.cantidad_disponible) <= 0) {
         throw new Error('No se puede publicar: el producto no tiene stock disponible.');
       }
-    } else if (activo && landing.tipo_pagina !== 'contacto') {
+    } else if (activo && !this.TIPOS_SIN_CATALOGO.includes(landing.tipo_pagina)) {
       const items = await LandingItem.findAll({ where: { landing_id: landing.id }, attributes: ['tipo', 'referencia_id'] });
       if (items.length === 0) throw new Error('No se puede publicar una landing sin productos.');
 
@@ -1656,6 +1670,7 @@ class LandingService {
     const propias = vistas.productos || {};
     const salida = {};
     if (vistas.producto) salida.producto = vistas.producto;
+    if (vistas.legales && typeof vistas.legales === 'object') salida.legales = vistas.legales;
     // El principal va primero en los items cuando la landing abre en él
     // (ver principal_id en obtenerPublica).
     const buscado = contentIdPedido || (venta.abrir_en === 'producto' ? contentIdPrincipal : null);
@@ -1706,7 +1721,9 @@ class LandingService {
    */
   static async obtenerPublica(tienda, slug, preview = false, opciones = {}) {
     const where = { tienda_id: tienda.id };
-    if (slug) where.slug = slug; else where.es_home = true;
+    if (opciones.tipoPagina) where.tipo_pagina = opciones.tipoPagina;
+    else if (slug) where.slug = slug;
+    else where.es_home = true;
 
     const landing = await Landing.findOne({
       where,
@@ -2163,7 +2180,13 @@ class LandingService {
             if (!prod) return null;
             const imgs = mapaImagenes.get(prod.id) || [];
             const principal = imgs.find(i => i.es_principal) || imgs[0];
-            const dto = { nombre: prod.nombre, imagen: principal?.url || null };
+            const precioEfectivoProd = precioVentaProducto(prod);
+            const dto = {
+              nombre: prod.nombre,
+              imagen: principal?.url || null,
+              precio: precioEfectivoProd,
+              precio_efectivo: precioEfectivoProd,
+            };
             // Solo si el admin activó "que el cliente elija" para ESTE
             // componente se manda el selector real (opciones/variantes) del
             // producto — nunca se inventan variantes nuevas acá, se reusa
@@ -2171,7 +2194,6 @@ class LandingService {
             // opcionesDto para el producto principal de la ficha.
             if (componente.permite_elegir_variante) {
               const precioMinimoProd = prod.precio_minimo !== null && prod.precio_minimo !== undefined ? parseFloat(prod.precio_minimo) : null;
-              const precioEfectivoProd = precioVentaProducto(prod);
               dto.permite_elegir_variante = true;
               dto.opciones = (mapaOpciones.get(prod.id) || []).map(op => ({
                 nombre: op.nombre,
@@ -2228,17 +2250,21 @@ class LandingService {
         const precioNormal = parseFloat(o.precio_normal ?? o.precio) || 0;
         const precioBump = (o.precio_order_bump === null || o.precio_order_bump === undefined)
           ? null : (parseFloat(o.precio_order_bump) || 0);
+        const precioComplementario = parseFloat(productoComplementario?.precio_efectivo ?? productoComplementario?.precio) || 0;
+        const precioNormalPublico = (esOrderBump || esUpsell) && precioComplementario > 0
+          ? precioComplementario
+          : precioNormal;
         return {
           id: o.id,
           nombre: o.nombre,
           tipo_contenido: o.tipo_contenido,
           estrategia: o.estrategia,
-          precio: precioNormal,
-          precio_normal: precioNormal,
+          precio: precioNormalPublico,
+          precio_normal: precioNormalPublico,
           precio_order_bump: precioBump,
           // Lo que se cobra realmente si el visitante la acepta por su canal
           // — el frontend muestra ESTO, no adivina cuál de los dos aplica.
-          precio_efectivo: (esOrderBump || esUpsell) ? (precioBump ?? precioNormal) : precioNormal,
+          precio_efectivo: (esOrderBump || esUpsell) ? (precioBump ?? precioNormalPublico) : precioNormalPublico,
           descripcion: o.descripcion || null,
           beneficios: Array.isArray(o.beneficios)
             ? o.beneficios.map(b => String(b || '').trim()).filter(Boolean)
@@ -2511,7 +2537,7 @@ class LandingService {
         },
         // Ficha de producto propia y configuración de venta (formato,
         // ventas cruzadas elegidas, recomendados): las lee el runtime.
-        ...(landing.content?.vistas?.producto || landing.content?.vistas?.productos
+        ...(landing.content?.vistas?.producto || landing.content?.vistas?.productos || landing.content?.vistas?.legales
           ? { vistas: this.vistasPublicas(landing.content, opciones.asegurarContentId, itemsDto.find(i => i.tipo === 'producto')?.content_id) }
           : {}),
         ...(landing.content?.venta ? { venta: landing.content.venta } : {}),
