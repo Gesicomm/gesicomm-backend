@@ -227,10 +227,16 @@ class AILandingService {
    * rellenar un JSON tipado sin lugar para eso.
    */
   static async solicitarCodigoRAG({ prompt, tienda, productos, pageType = 'landing', producto = null, comercio = null }) {
+    const plan = this.planLandingIA({ prompt, productos, pageType, producto, comercio });
     const data = await this._fetchRAG('/ai/code/generate', {
       page_type: pageType,
-      prompt,
-      context: { store: this.storeContextParaRAG(tienda), products: productos, product: producto, commerce: comercio || {} },
+      prompt: this.promptConPlanLanding(prompt, plan),
+      context: {
+        store: this.storeContextParaRAG(tienda),
+        products: productos,
+        product: producto,
+        commerce: { ...(comercio || {}), landing_plan: plan },
+      },
     });
     if (!data.ok || !data.html) throw new Error('Respuesta del microservicio de IA inválida.');
     return this._codigoConMetadata(data);
@@ -242,8 +248,9 @@ class AILandingService {
    * landing existente en vez de regenerarla entera con textos distintos.
    */
   static async solicitarEdicionRAG({ instruction, current, tienda, productos, pageType = 'landing', producto = null, comercio = null }) {
+    const plan = this.planLandingIA({ prompt: instruction, productos, pageType, producto, comercio });
     const data = await this._fetchRAG('/ai/code/edit', {
-      instruction,
+      instruction: this.promptConPlanLanding(instruction, plan),
       current: {
         html: current?.html || '',
         css: current?.css || '',
@@ -252,7 +259,12 @@ class AILandingService {
         design_context: current?.design_context || {},
       },
       page_type: pageType,
-      context: { store: this.storeContextParaRAG(tienda), products: productos, product: producto, commerce: comercio || {} },
+      context: {
+        store: this.storeContextParaRAG(tienda),
+        products: productos,
+        product: producto,
+        commerce: { ...(comercio || {}), landing_plan: plan },
+      },
     });
     if (!data.ok || !data.html) throw new Error('Respuesta del microservicio de IA inválida.');
     return this._codigoConMetadata(data);
@@ -264,6 +276,7 @@ class AILandingService {
    * que le mandamos.
    */
   static async solicitarRepairRAG({ current, errores, tienda, productos, pageType = 'landing', producto = null, comercio = null }) {
+    const plan = this.planLandingIA({ prompt: errores.join('\n'), productos, pageType, producto, comercio });
     const data = await this._fetchRAG('/ai/code/repair', {
       current: {
         html: current?.html || '',
@@ -274,7 +287,12 @@ class AILandingService {
       },
       errores,
       page_type: pageType,
-      context: { store: this.storeContextParaRAG(tienda), products: productos, product: producto, commerce: comercio || {} },
+      context: {
+        store: this.storeContextParaRAG(tienda),
+        products: productos,
+        product: producto,
+        commerce: { ...(comercio || {}), landing_plan: plan },
+      },
     });
     if (!data.ok || !data.html) throw new Error('Respuesta del microservicio de IA inválida.');
     return this._codigoConMetadata(data);
@@ -301,19 +319,261 @@ class AILandingService {
     };
   }
 
+  /**
+   * Planner comercial liviano para el generador IA.
+   *
+   * No es un PageSchema ni una plantilla rígida: no define componentes ni
+   * layout. Solo le dice al modelo qué bloques comerciales tienen sentido
+   * según los datos reales disponibles. El RAG sigue generando HTML libre.
+   */
+  static planLandingIA({ prompt = '', productos = [], pageType = 'landing', producto = null, comercio = null } = {}) {
+    const catalogo = Array.isArray(productos) ? productos : [];
+    const foco = producto || catalogo[0] || {};
+    const texto = this._textoClasificacion([prompt, foco?.nombre, foco?.categoria, foco?.ficha_rubro, foco?.descripcion, foco?.propuesta_valor, JSON.stringify(foco?.ficha_datos || {})].join(' '));
+    const familia = this.inferirFamiliaProducto(texto, catalogo);
+    const hayPaquetes = !!comercio?.hay_paquetes || catalogo.some(p => Array.isArray(p.paquetes) && p.paquetes.length);
+    const hayBumps = !!comercio?.hay_order_bumps || catalogo.some(p => Array.isArray(p.order_bumps) && p.order_bumps.length);
+    const hayCombos = !!comercio?.hay_combos || catalogo.some(p => p.tipo === 'combo');
+    const hayRelacionados = comercio?.recomendados_activo !== false && (
+      (Array.isArray(comercio?.recomendados_items) && comercio.recomendados_items.length > 0)
+      || catalogo.length > 1
+    );
+    const hayBeneficios = this._alguno(catalogo, p => Array.isArray(p.beneficios) && p.beneficios.some(b => b?.titulo || b?.texto));
+    const hayFaq = this._alguno(catalogo, p => Array.isArray(p.preguntas_frecuentes) && p.preguntas_frecuentes.some(f => f?.pregunta && f?.respuesta));
+    const hayVariantes = this._alguno(catalogo, p => Number(p.variantes_count) > 0);
+    const hayGaleria = this._alguno(catalogo, p => Number(p.imagenes_count) > 1);
+    const hayFichaDatos = this._alguno(catalogo, p => p.ficha_datos && typeof p.ficha_datos === 'object' && Object.keys(p.ficha_datos).length > 0);
+
+    const sections = [];
+    const add = (id, reason, opts = {}) => {
+      if (sections.some(s => s.id === id)) return;
+      sections.push({
+        id,
+        reason,
+        priority: opts.priority || 'recommended',
+        data_source: opts.data_source || 'real_data_or_runtime',
+        required_when: opts.required_when || null,
+        omit_if_missing: opts.omit_if_missing !== false,
+      });
+    };
+
+    add('trust_bar', 'Reduce fricción antes del primer CTA: envío, pago, devolución y seguridad.', { priority: 'high', omit_if_missing: false });
+    add('hero_product_value', 'Primera pantalla con propuesta clara, producto real, precio por bind y CTA principal.', { priority: 'high', omit_if_missing: false });
+    if (hayGaleria) add('gallery_or_demo', 'Hay varias imágenes: conviene mostrar exploración visual o demo sin inventar media.');
+    add('offer_price_cta', 'El precio, precio tachado y CTA deben salir de binds/data-gesicomm, no texto fijo.', { priority: 'high', omit_if_missing: false });
+    if (hayVariantes) add('variants_selector', 'Hay variantes reales: se necesita selector visible antes de comprar.', { priority: 'high', data_source: 'data-gesicomm-lista="variantes"' });
+    if (hayPaquetes) add('quantity_packages', 'Hay paquetes/ofertas por cantidad: usar lista "paquetes" como bloque de decisión.', { priority: 'high', data_source: 'data-gesicomm-lista="paquetes"' });
+    if (hayBumps && pageType === 'product') add('order_bump_slot', 'Hay order bumps reales: reservar casilla arriba del botón de compra.', { priority: 'high', data_source: 'data-gesicomm-lista="ofertas_bump"' });
+    if (hayCombos) add('combos_or_bundle_value', 'Hay combos reales: mostrar ahorro/incluye sin inventar composición.', { data_source: 'data-gesicomm-lista="combos" o "combos_producto"' });
+    if (hayBeneficios || hayFichaDatos) add('benefits', 'Hay beneficios o datos de ficha: convertirlos en razones de compra escaneables.', { data_source: 'beneficios/ficha_datos' });
+
+    if (familia === 'suplementos') {
+      add('how_it_works', 'En suplementos conviene explicar mecanismo/objetivo sin claims médicos.', { data_source: 'propuesta_valor/ficha_datos' });
+      add('ingredients_or_formula', 'Si hay ingredientes/dosis en ficha_datos, mostrarlos; si no hay datos reales, omitir.', { data_source: 'ficha_datos', required_when: 'ingredientes reales disponibles' });
+      add('how_to_use', 'Modo de uso y rutina reducen objeciones en suplementos.', { data_source: 'ficha_datos o copy informativo no médico' });
+    } else if (familia === 'tecnologia' || familia === 'electrodomesticos') {
+      add('features_specs', 'Productos técnicos necesitan funciones y especificaciones antes de comprar.', { data_source: 'ficha_datos/especificaciones' });
+      add('comparison', 'La comparación ayuda si hay diferencias verificables; no inventar competidores.', { data_source: 'datos reales o comparación genérica nosotros/alternativas' });
+    } else if (familia === 'bazar_hogar') {
+      add('use_cases', 'Bazar/hogar convierte mejor mostrando usos concretos y escenarios.', { data_source: 'descripcion/ficha_datos' });
+      add('before_after_or_steps', 'Una demo paso a paso reemplaza texto largo cuando el producto resuelve una tarea.', { data_source: 'imagenes/descripción' });
+    } else if (familia === 'belleza') {
+      add('routine_steps', 'Belleza necesita rutina, aplicación y resultado esperado sin promesas falsas.', { data_source: 'ficha_datos/propuesta_valor' });
+      add('ingredients_or_materials', 'Ingredientes/materiales reales sostienen confianza.', { data_source: 'ficha_datos' });
+    }
+
+    add('social_proof_real_only', 'Prueba social solo si hay datos reales; si no, usar marcador editable o no mostrar.', { data_source: 'testimonios reales', required_when: 'testimonios reales disponibles' });
+    if (hayFaq) add('faq', 'Hay preguntas frecuentes reales: usarlas para resolver objeciones.', { data_source: 'data-gesicomm-lista="preguntas"' });
+    else add('faq', 'FAQ útil para objeciones de envío, pago y cambios, sin inventar datos del producto.', { priority: 'optional', data_source: 'políticas/tienda' });
+    if (hayRelacionados) add('related_products', 'Productos relacionados/complementos permiten cross-sell sin bloquear la compra principal.', { data_source: 'data-gesicomm-lista="recomendados"' });
+    add('guarantee_shipping_returns', 'Cierre de confianza con envío, pago seguro, cambios/devoluciones y links legales.', { priority: 'high', omit_if_missing: false });
+    add('final_cta', 'Resumen de oferta y CTA final después de resolver objeciones.', { priority: 'high', omit_if_missing: false });
+
+    return {
+      strategy: pageType === 'product' ? 'direct_response_product_page' : 'adaptive_ecommerce_landing',
+      product_family: familia,
+      goal: comercio?.tipo_venta === 'producto_unico' || pageType === 'product'
+        ? 'vender una ficha de producto con alto foco en conversión'
+        : 'presentar tienda/catalogo y llevar a fichas de producto',
+      rules: [
+        'Este plan es una guía comercial, no un layout rígido ni una lista obligatoria de componentes.',
+        'Podés fusionar, reordenar o representar visualmente las secciones de manera creativa.',
+        'No inventes testimonios, certificaciones, comparaciones, stock, precios, descuentos ni claims médicos.',
+        'Los datos comerciales deben salir de data-gesicomm-* y de las listas del runtime.',
+        'Si una sección no tiene datos reales suficientes, omitila o dejá un marcador editable claramente marcado.',
+      ],
+      facts: {
+        products_count: catalogo.length,
+        has_packages: hayPaquetes,
+        has_order_bumps: hayBumps,
+        has_combos: hayCombos,
+        has_related_products: hayRelacionados,
+        has_variants: hayVariantes,
+        has_gallery: hayGaleria,
+        has_product_benefits: hayBeneficios,
+        has_product_faq: hayFaq,
+      },
+      sections,
+    };
+  }
+
+  static promptConPlanLanding(prompt, plan) {
+    return [
+      String(prompt || '').trim(),
+      '',
+      'PLAN_INTERNO_DE_LANDING_GESICOMM:',
+      JSON.stringify(plan, null, 2),
+      '',
+      'Usá el plan como criterio de estructura comercial adaptable. La salida sigue siendo HTML/CSS/JS libre: no devuelvas JSON, no nombres el plan al usuario y no conviertas esto en una plantilla rígida.',
+    ].join('\n');
+  }
+
+  static _textoClasificacion(texto) {
+    return String(texto || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  }
+
+  static _alguno(lista, predicado) {
+    return Array.isArray(lista) && lista.some(item => {
+      try { return predicado(item); } catch { return false; }
+    });
+  }
+
+  static inferirFamiliaProducto(texto, catalogo = []) {
+    const categorias = this._textoClasificacion((catalogo || []).map(p => [p?.categoria, p?.ficha_rubro, p?.nombre].filter(Boolean).join(' ')).join(' '));
+    const t = `${texto} ${categorias}`;
+    if (/(suplement|proteina|creatina|colageno|vitamina|capsula|adelgaz|fitness|gimnas|nutric|omega|magnesio|probio)/.test(t)) return 'suplementos';
+    if (/(electrodom|licuadora|freidora|air fryer|cafetera|aspiradora|cortador|procesador|batidora|cocina)/.test(t)) return 'electrodomesticos';
+    if (/(bazar|hogar|cocina|utensilio|organizador|recipiente|mesa|decoracion|limpieza|jardin)/.test(t)) return 'bazar_hogar';
+    if (/(tech|tecnolog|electron|auricular|smart|celular|notebook|gadget|parlante|reloj|camara)/.test(t)) return 'tecnologia';
+    if (/(beauty|belleza|skincare|piel|cabello|cosmetic|maquill|serum|crema|shampoo)/.test(t)) return 'belleza';
+    if (/(ropa|moda|calzado|remera|camisa|vestido|jean|zapatilla|talle)/.test(t)) return 'moda';
+    return 'general';
+  }
+
+  static resumenTextoRAG(valor, max = 320) {
+    const texto = String(valor || '').replace(/\s+/g, ' ').trim();
+    if (!texto) return null;
+    return texto.length > max ? `${texto.slice(0, max - 1)}…` : texto;
+  }
+
+  static valorCompactoRAG(valor, profundidad = 0) {
+    if (valor === null || valor === undefined || valor === '') return null;
+    if (typeof valor === 'number' || typeof valor === 'boolean') return valor;
+    if (typeof valor === 'string') return this.resumenTextoRAG(valor, 180);
+    if (Array.isArray(valor)) {
+      const lista = valor
+        .slice(0, 8)
+        .map(item => this.valorCompactoRAG(item, profundidad + 1))
+        .filter(item => item !== null && item !== undefined && item !== '');
+      return lista.length ? lista : null;
+    }
+    if (typeof valor === 'object' && profundidad < 2) {
+      const salida = {};
+      for (const [clave, contenido] of Object.entries(valor).slice(0, 14)) {
+        const compacto = this.valorCompactoRAG(contenido, profundidad + 1);
+        if (compacto !== null && compacto !== undefined && compacto !== '') salida[clave] = compacto;
+      }
+      return Object.keys(salida).length ? salida : null;
+    }
+    return null;
+  }
+
+  static listaMarketingRAG(lista, max = 6) {
+    if (!Array.isArray(lista)) return [];
+    return lista
+      .map(item => {
+        if (typeof item === 'string') return this.resumenTextoRAG(item, 180);
+        if (!item || typeof item !== 'object') return null;
+        const titulo = this.resumenTextoRAG(item.titulo || item.title || item.nombre || item.label, 80);
+        const texto = this.resumenTextoRAG(item.texto || item.descripcion || item.description || item.detalle || item.body, 180);
+        if (!titulo && !texto) return null;
+        return { ...(titulo ? { titulo } : {}), ...(texto ? { texto } : {}) };
+      })
+      .filter(Boolean)
+      .slice(0, max);
+  }
+
+  static listaFaqRAG(lista, max = 6) {
+    if (!Array.isArray(lista)) return [];
+    return lista
+      .map(item => {
+        if (!item || typeof item !== 'object') return null;
+        const pregunta = this.resumenTextoRAG(item.pregunta || item.question, 120);
+        const respuesta = this.resumenTextoRAG(item.respuesta || item.answer, 240);
+        return pregunta && respuesta ? { pregunta, respuesta } : null;
+      })
+      .filter(Boolean)
+      .slice(0, max);
+  }
+
+  static resumenProductoRAG(p, ofertas = {}) {
+    const faqJson = this.listaFaqRAG(p.preguntas_frecuentes);
+    const faqRelacion = this.listaFaqRAG(p.faq);
+    return {
+      content_id: p.slug || `producto-${p.id}`,
+      tipo: 'producto',
+      nombre: p.nombre,
+      precio: p.precio_base || p.precio,
+      precio_tachado: p.precio_tachado || null,
+      descripcion: this.resumenTextoRAG(p.descripcion_corta || p.sobre_este_producto || p.descripcion_larga, 420) || '',
+      propuesta_valor: this.resumenTextoRAG(p.propuesta_valor, 420),
+      categoria: p.categoria?.nombre || null,
+      ficha_rubro: p.ficha_rubro || null,
+      ficha_datos: this.valorCompactoRAG(p.ficha_datos) || {},
+      beneficios: this.listaMarketingRAG(p.beneficios),
+      confianza: this.listaMarketingRAG(p.confianza, 4),
+      preguntas_frecuentes: faqJson.length ? faqJson : faqRelacion,
+      tags: Array.isArray(p.tags) ? p.tags.slice(0, 12).map(t => String(t)).filter(Boolean) : [],
+      stock: Number(p.cantidad_disponible) || 0,
+      estado_venta: p.estado_venta || null,
+      imagenes_count: Array.isArray(p.imagenes) ? p.imagenes.length : 0,
+      variantes_count: Array.isArray(p.variantes) ? p.variantes.length : 0,
+      ...(ofertas || {}),
+    };
+  }
+
+  static resumenComboRAG(c) {
+    return {
+      content_id: `combo-${c.id}`,
+      tipo: 'combo',
+      nombre: c.nombre,
+      precio: c.precio_total,
+      precio_tachado: c.snapshot_precio_original || null,
+      descripcion: this.resumenTextoRAG(c.descripcion || c.sobre_este_producto, 420) || '',
+      propuesta_valor: this.resumenTextoRAG(c.propuesta_valor, 420),
+      categoria: c.producto_padre?.categoria?.nombre || null,
+      ficha_rubro: c.ficha_rubro || null,
+      ficha_datos: this.valorCompactoRAG(c.ficha_datos) || {},
+      beneficios: this.listaMarketingRAG(c.beneficios),
+      confianza: this.listaMarketingRAG(c.confianza, 4),
+      preguntas_frecuentes: this.listaFaqRAG(c.preguntas_frecuentes),
+      imagenes_count: Array.isArray(c.imagenes) ? c.imagenes.length : 0,
+      items_count: Array.isArray(c.items) ? c.items.length + 1 : 1,
+    };
+  }
+
 
   /**
-   * Productos/combos reales (id, nombre, precio, descripción) que se le
-   * mandan al RAG como contexto — misma forma para crear y para regenerar,
-   * así el LLM siempre ve datos reales y nunca inventa precios.
+   * Productos/combos reales que se le mandan al RAG como contexto — misma
+   * forma para crear y para regenerar, así el LLM siempre ve datos reales
+   * y nunca inventa precios, secciones ni claims.
    */
   static async catalogoParaRAG(inquilino_id, items) {
-    const { Combo, Categoria } = require('../models');
+    const { Categoria, ProductoCombo, ProductoComboImagen, ProductoComboItem, ProductoFaq, ProductoImagen, ProductoVariante } = require('../models');
     // La categoría viaja con cada producto porque el HTML la usa como
     // filtro EXACTO (data-gesicomm-categoria="Freidoras de Aire"): sin
     // esto el modelo la inventaba corta ("Freidoras") y la grilla filtrada
     // quedaba vacía en la landing publicada.
     const incluirCategoria = [{ model: Categoria, as: 'categoria', attributes: ['nombre'], required: false }];
+    const incluirProductoRAG = [
+      ...incluirCategoria,
+      { model: ProductoImagen, as: 'imagenes', attributes: ['id'], required: false },
+      { model: ProductoVariante, as: 'variantes', attributes: ['id'], required: false, where: { activo: true } },
+      { model: ProductoFaq, as: 'faq', attributes: ['pregunta', 'respuesta', 'orden'], required: false },
+    ];
     const lista = Array.isArray(items) ? items : [];
     const idsProductos = lista.filter(i => i.tipo === 'producto').map(i => Number(i.referencia_id ?? i.id));
     const idsCombos = lista.filter(i => i.tipo === 'combo').map(i => Number(i.referencia_id ?? i.id));
@@ -323,17 +583,24 @@ class AILandingService {
     if (idsProductos.length || idsCombos.length) {
       [productos, combos] = await Promise.all([
         idsProductos.length
-          ? Producto.findAll({ where: { inquilino_id, activo: true, id: { [Op.in]: idsProductos } }, include: incluirCategoria })
+          ? Producto.findAll({ where: { inquilino_id, activo: true, id: { [Op.in]: idsProductos } }, include: incluirProductoRAG })
           : Promise.resolve([]),
         idsCombos.length
-          ? Combo.findAll({ where: { inquilino_id, activo: true, id: { [Op.in]: idsCombos } } })
+          ? ProductoCombo.findAll({
+            where: { inquilino_id, estado: 'ACTIVO', id: { [Op.in]: idsCombos } },
+            include: [
+              { model: Producto, as: 'producto_padre', attributes: ['id', 'nombre'], required: false, include: incluirCategoria },
+              { model: ProductoComboImagen, as: 'imagenes', attributes: ['id'], required: false },
+              { model: ProductoComboItem, as: 'items', attributes: ['id'], required: false },
+            ],
+          })
           : Promise.resolve([]),
       ]);
     } else {
       // Sin selección (fallback inicial): primeros 10 productos activos.
       productos = await Producto.findAll({
         where: { inquilino_id, activo: true },
-        include: incluirCategoria,
+        include: incluirProductoRAG,
         limit: 10,
         order: [['created_at', 'DESC']],
       });
@@ -351,15 +618,8 @@ class AILandingService {
       // `id` con formato "producto_310" que el runtime NO resuelve — y el
       // contrato le decía al modelo "usá su id", así que cualquier control
       // que lo usara quedaba muerto en silencio.
-      ...productos.map(p => ({
-        content_id: p.slug || `producto-${p.id}`,
-        nombre: p.nombre,
-        precio: p.precio_base || p.precio,
-        descripcion: p.descripcion_corta || '',
-        categoria: p.categoria?.nombre || null,
-        ...(ofertasPorProducto.get(p.id) || {}),
-      })),
-      ...combos.map(c => ({ content_id: `combo-${c.id}`, nombre: c.nombre, precio: c.precio, descripcion: c.descripcion || '', tipo: 'combo' })),
+      ...productos.map(p => this.resumenProductoRAG(p, ofertasPorProducto.get(p.id) || {})),
+      ...combos.map(c => this.resumenComboRAG(c)),
     ];
   }
 
@@ -480,27 +740,32 @@ class AILandingService {
   static async resolverProductoPorContentId(inquilino_id, contentId) {
     const comboMatch = /^combo-(\d+)$/.exec(String(contentId || ''));
     if (comboMatch) {
-      const { Combo } = require('../models');
-      const combo = await Combo.findOne({ where: { id: Number(comboMatch[1]), inquilino_id, activo: true } });
+      const { Categoria, ProductoCombo, ProductoComboImagen, ProductoComboItem } = require('../models');
+      const combo = await ProductoCombo.findOne({
+        where: { id: Number(comboMatch[1]), inquilino_id, estado: 'ACTIVO' },
+        include: [
+          { model: Producto, as: 'producto_padre', attributes: ['id', 'nombre'], required: false, include: [{ model: Categoria, as: 'categoria', attributes: ['nombre'], required: false }] },
+          { model: ProductoComboImagen, as: 'imagenes', attributes: ['id'], required: false },
+          { model: ProductoComboItem, as: 'items', attributes: ['id'], required: false },
+        ],
+      });
       if (!combo) return null;
-      return { content_id: `combo-${combo.id}`, tipo: 'combo', nombre: combo.nombre, precio: combo.precio, descripcion: combo.descripcion || '' };
+      return this.resumenComboRAG(combo);
     }
-    let producto = await Producto.findOne({ where: { slug: contentId, inquilino_id, activo: true } });
+    const { Categoria, ProductoFaq, ProductoImagen, ProductoVariante } = require('../models');
+    const include = [
+      { model: Categoria, as: 'categoria', attributes: ['nombre'], required: false },
+      { model: ProductoImagen, as: 'imagenes', attributes: ['id'], required: false },
+      { model: ProductoVariante, as: 'variantes', attributes: ['id'], required: false, where: { activo: true } },
+      { model: ProductoFaq, as: 'faq', attributes: ['pregunta', 'respuesta', 'orden'], required: false },
+    ];
+    let producto = await Producto.findOne({ where: { slug: contentId, inquilino_id, activo: true }, include });
     const idMatch = !producto && /^producto-(\d+)$/.exec(String(contentId || ''));
     if (idMatch) {
-      producto = await Producto.findOne({ where: { id: Number(idMatch[1]), inquilino_id, activo: true } });
+      producto = await Producto.findOne({ where: { id: Number(idMatch[1]), inquilino_id, activo: true }, include });
     }
     if (!producto) return null;
-    return {
-      content_id: producto.slug || `producto-${producto.id}`,
-      tipo: 'producto',
-      nombre: producto.nombre,
-      precio: producto.precio_base || producto.precio,
-      descripcion: producto.descripcion_corta || '',
-      ficha_rubro: producto.ficha_rubro || null,
-      ficha_datos: producto.ficha_datos || null,
-      propuesta_valor: producto.propuesta_valor || null,
-    };
+    return this.resumenProductoRAG(producto);
   }
 
   /**
