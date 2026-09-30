@@ -231,6 +231,12 @@ class AICodeValidator {
     if (vista === 'ficha' && !/data-gesicomm-comprar/.test(texto)) {
       errores.push('La ficha de producto no tiene botón de compra (data-gesicomm-comprar).');
     }
+    // Sin data-gesicomm-cta el total del botón sube al marcar un order bump
+    // o elegir un paquete, pero el texto sigue diciendo "Comprar ahora": el
+    // cliente ve un número que no coincide con el precio de arriba.
+    if (vista === 'ficha' && /data-gesicomm-total/.test(texto) && !/data-gesicomm-cta\b/.test(texto)) {
+      errores.push('El botón de compra tiene data-gesicomm-total pero no data-gesicomm-cta: envolvé su texto en <span data-gesicomm-cta>Comprar ahora</span> para que Gesicomm pueda nombrar el paquete y las ofertas que se llevan.');
+    }
 
     return { errores, advertencias };
   }

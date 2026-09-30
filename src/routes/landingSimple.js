@@ -22,6 +22,10 @@ router.post('/', ctrl.crear);
 router.post('/onboarding', ctrl.crearDesdeOnboarding);
 router.post('/ai-draft', ctrl.crearDesdeIA);
 router.post('/:id/ai-regenerar', ctrl.regenerarConIA);
+// Reemplaza el order bump y los paquetes de las fichas por el bloque
+// canónico de Gesicomm. Lo nuevo ya sale así; esto es para las landings
+// generadas antes, que quedaron con el markup que inventó el modelo.
+router.post('/:id/bloques-venta', ctrl.actualizarBloquesVenta);
 router.post('/lienzo-blanco', ctrl.crearLienzoBlanco);
 router.get('/:id', ctrl.detalle);
 router.put('/:id', ctrl.actualizar);

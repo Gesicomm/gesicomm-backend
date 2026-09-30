@@ -193,6 +193,45 @@ async function regenerarConIA(req, res) {
   }
 }
 
+/**
+ * Pone el bloque de venta canónico (order bump y paquetes, con foto, precio
+ * anterior y ahorro) en las fichas de una landing YA creada. Las nuevas ya
+ * salen así desde aiLanding.service; esto repara las anteriores sin tener
+ * que regenerarlas con IA —que costaría tiempo y cambiaría el diseño—.
+ */
+async function actualizarBloquesVenta(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+
+    const { aplicarBloquesCanonicos } = require('../services/bloquesVentaCanonicos');
+    const landing = await LandingSimpleService.buscarPropia(req.params.id, tienda.id);
+    const content = JSON.parse(JSON.stringify(landing.content || {}));
+
+    const vistas = content.vistas || {};
+    const tocadas = [];
+    const aplicar = (cod, nombre) => {
+      if (!cod?.html) return;
+      const r = aplicarBloquesCanonicos(cod);
+      if (!r.aplicados.length) return;
+      cod.html = r.html;
+      cod.css = r.css;
+      tocadas.push({ vista: nombre, bloques: r.aplicados });
+    };
+    aplicar(vistas.producto, 'ficha general');
+    for (const [contentId, cod] of Object.entries(vistas.productos || {})) aplicar(cod, contentId);
+
+    if (!tocadas.length) {
+      return res.json({ actualizadas: 0, detalle: [], message: 'Las fichas no tienen bloques de order bump ni de paquetes para actualizar.' });
+    }
+
+    const guardada = await LandingSimpleService.actualizarCodigo(landing, tienda.id, req.usuario.tenantId, { vistas });
+    return res.json({ actualizadas: tocadas.length, detalle: tocadas, landing: guardada });
+  } catch (err) {
+    return manejarError(res, err, 'No se pudieron actualizar los bloques de venta.');
+  }
+}
+
 async function crearLienzoBlanco(req, res) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
@@ -321,7 +360,7 @@ async function eliminarHeroImagen(req, res) {
 }
 
 module.exports = {
-  listar, crear, crearDesdeOnboarding, crearDesdeIA, regenerarConIA, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
+  listar, crear, crearDesdeOnboarding, crearDesdeIA, regenerarConIA, actualizarBloquesVenta, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
   subirImagenMiddleware,
   subirLogo, eliminarLogo,
   subirHeroImagen, eliminarHeroImagen,
