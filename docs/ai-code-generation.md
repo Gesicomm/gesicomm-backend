@@ -163,6 +163,89 @@ por rubro (galería protagonista + specs técnicas para TECH, tono/tacto para
 BEAUTY, etc.), aclarando explícitamente que no tiene que copiar la
 estructura, solo inspirarse en la jerarquía y calidad.
 
+## Urgencia (countdown) y prueba social (estadísticas): modo demo → real
+
+La IA puede generar countdown de oferta y estadísticas cuantitativas ("94% se sintió más
+liviano") — son patrones de alta conversión, especialmente en suplementos. Pero nunca como
+texto/fecha fija en el HTML: eso sería publicidad engañosa real (Meta Ads y la Ley 1334 de
+Paraguay prohíben ambas cosas explícitamente). La resolución es un modo demo→real:
+
+1. El HTML SOLO declara la estructura (`data-gesicomm-countdown` con sus
+   `data-gesicomm-countdown-parte="horas|minutos|segundos"`, y
+   `data-gesicomm-lista="estadisticas"` con binds `valor`/`etiqueta`) — nunca calcula fechas ni
+   escribe cifras. El runtime (`runtimeGesicomm.js`, `prepararCountdowns()`/`fuenteDeLista()`)
+   es quien pinta los valores reales en vivo, leyendo `venta.urgencia`/`venta.prueba_social`.
+2. El RAG puede proponer que la composición use esos bloques vía `demo_data` en su respuesta
+   (`{"urgencia": {"activo": true, "preset": "24h"|"48h"|"72h"}, "prueba_social": {"items": [...]}}`)
+   — nunca calcula la fecha real, solo la intensidad; Node resuelve "ahora + preset".
+3. Node (`AILandingService.fusionarDemoData`) solo LLENA HUECOS: si la landing ya tiene
+   cualquier config para ese bloque (confirmada o no), la IA nunca la pisa al regenerar.
+4. Todo lo que entra por `demo_data` o por el panel "Configurar venta" queda en
+   `estado: 'demo'` — `LandingCodigoService.limpiarVenta()` lo fuerza siempre así. La ÚNICA
+   puerta hacia `estado: 'confirmado'` es un campo separado `confirmaciones` en el PUT (nunca
+   dentro de `venta`), que el backend solo acepta si el bloque ya está completo
+   (`activo && fin_at`, o `activo && items.length`).
+5. `AICodeValidator.detectarBloquesSinConfirmar()` bloquea `cambiarEstado(activo=true)`
+   (publicar) si el HTML usa esas primitivas y el bloque correspondiente no está
+   `activo + completo + estado:'confirmado'` — sin importar si venció la fecha (eso es
+   comportamiento normal de runtime, no un motivo de bloqueo).
+
+`estado` es un string (`'demo' | 'confirmado'`), no un boolean, a propósito: deja espacio para
+sumar `'importado'`/`'verificado'`/`'incompleto'` el día que haga falta, sin migrar nada.
+
+## Estructura concreta por rubro (`product_family`)
+
+`planLandingIA()` (Node) clasifica el producto con `inferirFamiliaProducto()`
+y manda el resultado en `context.commerce.landing_plan.product_family`
+(`suplementos | electrodomesticos | bazar_hogar | tecnologia | belleza | moda
+| general`). Hasta acá esa familia solo entraba al RAG como una lista de
+secciones sugeridas ("guía comercial, no un layout rígido"), sin ningún
+detalle de CÓMO armar esas secciones — en la práctica, dos productos de
+rubros distintos podían terminar con la misma landing genérica de "hero +
+grilla" porque el LLM no tenía un patrón concreto que seguir por rubro.
+
+Del lado RAG (`app/services/code_ai_service.py`) ahora existe
+`INSTRUCCIONES_FAMILIA`: un diccionario `product_family → bloque de texto`
+con la estructura concreta que convierte mejor para ese rubro (qué secciones,
+en qué orden, con qué `data-gesicomm-*` de datos reales), inyectado en el
+system prompt SOLO cuando `product_family` coincide con una clave del
+diccionario (`_familia_desde_contexto()` + `_system_prompt(page_type,
+product_family)`). Si la familia no tiene entrada, no se agrega nada y el
+modelo sigue con la libertad total de `INSTRUCCIONES_LANDING`/`PRODUCTO` — así
+un producto de un rubro sin estructura definida (o mal clasificado) nunca
+hereda por accidente la estructura de otro rubro.
+
+Implementado: `suplementos` (venta directa: hero con galería +
+comparador de packs, franja de confianza sin urgencia falsa, cómo funciona/
+modo de uso, ingredientes/fórmula desde `ficha_datos`, prueba social solo si
+es real, antes/después solo con imagen real, diferenciales reales en vez de
+comparación contra competidores inventados, FAQ) y `tecnologia`/
+`electrodomesticos` (mismo texto para ambos: ficha técnica de specs REALES
+desde `ficha_datos` sin versión "de ejemplo" — a diferencia de las
+estadísticas de marketing, una especificación técnica inventada es un dato
+falso, no un placeholder —, comparativa contra "modelos básicos" genéricos
+nunca marcas inventadas, y reseñas con nombre de persona prohibidas sin
+excepción salvo que sean reales), `belleza` (mismo patrón que suplementos
+pero tono editorial/sensorial: rutina de pasos, ingredientes/activos,
+antes/después solo con imagen real, calificación con conteo de reseñas vía
+demo→real, reseñas con nombre solo si son reales) y `bazar_hogar` (principio
+central: "no vendas el objeto, vendé cómo queda el espacio" — prioriza
+ambientación/contexto de uso con imágenes reales, y para el selector de
+compra prioriza `paquetes` reales del comercio sobre un selector genérico de
+cantidad — cantidad libre queda como fallback solo si no hay paquetes
+cargados; medidas y materiales solo si vienen de `ficha_datos`) y `moda`
+(talle SIEMPRE como variante, nunca como paquete ni cantidad; guía de
+talles/tabla de medidas es el dato de mayor sensibilidad de todos los
+rubros — una medida inventada hace que compren el talle equivocado — así
+que tiene tolerancia CERO: sin `ficha_datos` ni brief con medidas reales,
+la tabla se omite completa, sin excepción). Las cinco entradas implementadas
+(`suplementos`, `tecnologia`/`electrodomesticos`, `belleza`, `bazar_hogar`,
+`moda`) — que cubren todos los valores que devuelve `inferirFamiliaProducto()`
+salvo `general` — ya usan BRIEF_COMERCIAL_DEL_COMERCIANTE como respaldo antes
+de omitir una sección: el wizard le pregunta al comercio los datos que falten
+ANTES de generar (ver AILandingWizard → construirPreguntasBrief), así que
+"omitir" es el último recurso, no el default.
+
 ## Del lado Node (Gesicomm backend) — ya construido
 
 - `/ai/code/generate` y `/ai/code/edit` **ya están implementados** en el RAG

@@ -20,6 +20,7 @@ const { Op } = require('sequelize');
 const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate, Testimonio, Producto } = require('../models');
 const LandingService = require('./landing.service');
 const LandingCodigoService = require('./landingCodigo.service');
+const AICodeValidator = require('./aiCodeValidator.service');
 const ImagenService = require('./imagen.service');
 const PaginaFactory = require('../factories/PaginaFactory');
 
@@ -503,7 +504,23 @@ class LandingSimpleService {
     if (payload.venta !== undefined) {
       content.venta = LandingCodigoService.limpiarVenta(payload.venta);
     }
-    if (limpioInicio || limpioProducto || fichasPropias || legales || payload.venta !== undefined) {
+    // Única puerta hacia estado "confirmado": un `confirmaciones` separado de
+    // `venta` (nunca un campo que viaje dentro del payload de venta), así un
+    // guardado normal de "Configurar venta" (editar la fecha, por ejemplo)
+    // nunca puede dejar `confirmado` por accidente sobre un dato que cambió.
+    // "Editar + confirmar" en un solo click del comercio manda ambos en el
+    // mismo PUT (payload.venta con el valor nuevo + confirmaciones.urgencia).
+    // Si el bloque no está completo (sin fin_at, sin items), se ignora el
+    // intento de confirmar: no hay nada que confirmar todavía.
+    if (payload.confirmaciones && typeof payload.confirmaciones === 'object' && content.venta) {
+      if (payload.confirmaciones.urgencia === true && content.venta.urgencia?.activo && content.venta.urgencia?.fin_at) {
+        content.venta = { ...content.venta, urgencia: { ...content.venta.urgencia, estado: 'confirmado' } };
+      }
+      if (payload.confirmaciones.prueba_social === true && content.venta.prueba_social?.activo && content.venta.prueba_social?.items?.length) {
+        content.venta = { ...content.venta, prueba_social: { ...content.venta.prueba_social, estado: 'confirmado' } };
+      }
+    }
+    if (limpioInicio || limpioProducto || fichasPropias || legales || payload.venta !== undefined || payload.confirmaciones !== undefined) {
       landing.content = content;
       landing.changed('content', true);
     }
@@ -633,6 +650,30 @@ class LandingSimpleService {
 
   static async cambiarEstado(id, tienda_id, activo) {
     const landing = await this.buscarPropia(id, tienda_id);
+
+    if (activo) {
+      const htmls = [
+        landing.content?.codigo?.html,
+        landing.content?.vistas?.producto?.html,
+        ...Object.values(landing.content?.vistas?.productos || {}).map(v => v?.html),
+      ];
+      const pendientes = AICodeValidator.detectarBloquesSinConfirmar(htmls, landing.content?.venta);
+      if (pendientes.length) {
+        const NOMBRES = { urgencia: 'el countdown de oferta', prueba_social: 'las estadísticas/prueba social' };
+        const detalle = pendientes.map(p => NOMBRES[p] || p).join(' y ');
+        // El mensaje nombra la política de Meta Ads y la Ley 1334 (Defensa
+        // del Consumidor, Paraguay) a propósito: countdown falso y cifras
+        // inventadas publicadas como hecho están prohibidos en ambas, y
+        // Gesicomm no puede quedar expuesta a que una cuenta de anuncios se
+        // suspenda o a un reclamo por publicidad engañosa por un dato de
+        // ejemplo que nunca se confirmó como real.
+        throw new Error(
+          `No se puede publicar: ${detalle} todavía están en modo "ejemplo" (los generó la IA para que veas cómo queda, no son datos reales). `
+          + 'Meta prohíbe countdowns falsos y estadísticas inventadas en anuncios (puede suspender tu cuenta publicitaria), y la Ley 1334 de Defensa del Consumidor prohíbe la publicidad engañosa. '
+          + 'Confirmá estos datos con información real en "Configurar venta" antes de publicar.',
+        );
+      }
+    }
 
     if (activo && landing.tipo_pagina === 'funnel') {
       if (!landing.producto_id) throw new Error('No se puede publicar un funnel sin producto.');

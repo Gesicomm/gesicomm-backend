@@ -17,15 +17,14 @@ const { sequelize } = require('../models');
 const OfertaService = require('../services/oferta.service');
 const ImagenService = require('../services/imagen.service');
 const { rollbackSeguro } = require('../utils/transaction');
+const { destinoUploadsTmp } = require('../utils/uploadTmp');
 
 // Mismo filtro que imagen.controller.js y landing.controller.js.
 // Instancia propia porque el destino es otro modelo, no porque el criterio
 // cambie.
-const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
-
 const uploadImagenOferta = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOADS_TMP),
+    destination: destinoUploadsTmp,
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
       cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);

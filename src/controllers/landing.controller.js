@@ -27,16 +27,15 @@ const multer = require('multer');
 const { Tienda } = require('../models');
 const LandingService = require('../services/landing.service');
 const ImagenService = require('../services/imagen.service');
+const { destinoUploadsTmp } = require('../utils/uploadTmp');
 
 // Mismo filtro que imagen.controller.js (subida de fotos de producto) —
 // instancia propia porque el destino (Landing) es un modelo distinto. Se
 // reutiliza tanto para el banner como para la imagen OG: es el mismo tipo
 // de subida, solo cambia a qué columna de Landing termina escribiendo.
-const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
-
 const uploadImagenLanding = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOADS_TMP),
+    destination: destinoUploadsTmp,
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
       cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);

@@ -16,6 +16,10 @@ const AiGenerationLogService = require('./aiGenerationLog.service');
 // Reemplazamos localhost por 127.0.0.1 para evitar problemas de IPv6 en Node 18+ con docker
 const rawUrl = process.env.RAG_INTERNAL_URL || 'http://rag-backend:8000';
 const RAG_URL = rawUrl.replace('localhost', '127.0.0.1');
+// El RAG actual valida prompt/instruction con max_length=12000
+// (app/schemas/code_gen.py). Usamos margen, pero preservando la intención
+// del comercio antes que el plan interno de Gesicomm.
+const RAG_MAX_STRING_CHARS = 11800;
 
 /**
  * Duplas tipográficas curadas (Google Fonts), agrupadas por el CARÁCTER
@@ -62,6 +66,123 @@ function hashEstable(texto) {
   return h;
 }
 
+function textoErrorRAG(valor, fallback) {
+  if (!valor) return fallback;
+  if (typeof valor === 'string') return valor;
+  if (Array.isArray(valor)) {
+    const partes = valor
+      .map(item => textoErrorRAG(item, ''))
+      .filter(Boolean);
+    return partes.length ? partes.join(' | ') : fallback;
+  }
+  if (typeof valor === 'object') {
+    if (valor.message || valor.mensaje || valor.msg || valor.error || valor.detail) {
+      return textoErrorRAG(valor.message || valor.mensaje || valor.msg || valor.error || valor.detail, fallback);
+    }
+    try {
+      return JSON.stringify(valor);
+    } catch {
+      return fallback;
+    }
+  }
+  return String(valor);
+}
+
+function recortarEnPalabra(texto, max) {
+  const limpio = String(texto || '').replace(/\s+/g, ' ').trim();
+  if (limpio.length <= max) return limpio;
+  const corte = limpio.slice(0, max);
+  const ultimoEspacio = corte.lastIndexOf(' ');
+  return `${corte.slice(0, ultimoEspacio > max * 0.7 ? ultimoEspacio : max).trim()}...`;
+}
+
+function compactarPromptSemanticamente(prompt, max) {
+  const original = String(prompt || '').trim();
+  if (original.length <= max) return original;
+
+  const parrafos = original
+    .split(/\n{2,}|(?<=\.)\s+(?=[A-ZÁÉÍÓÚÑ0-9])/)
+    .map(t => t.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+
+  const categorias = [
+    { key: 'objetivo', re: /(objetivo|quiero|necesito|vender|landing|pagina|campaña|producto|audiencia|cliente)/i },
+    { key: 'estructura', re: /(estructura|hero|secci[oó]n|bloque|header|footer|cat[aá]logo|beneficio|problema|dolor|testimonio|prueba social|faq|pregunta|comparaci[oó]n)/i },
+    { key: 'estilo_visual', re: /(estilo|visual|diseñ|color|tipograf|premium|minimal|moderno|elegante|referencia|look|parecido|layout|animaci[oó]n)/i },
+    { key: 'oferta', re: /(oferta|precio|descuento|promo|pack|combo|ahorro|urgencia|timer|cta|comprar|order bump|upsell|cross.?sell)/i },
+    { key: 'restricciones', re: /(no |nunca|evitar|prohib|sin |debe|obligatorio|usar|mantener|respetar|no inventar|real|exacto)/i },
+    { key: 'copy_mensajes', re: /(copy|texto|t[ií]tulo|headline|subt[ií]tulo|mensaje|tono|voseo|frase|palabra)/i },
+  ];
+
+  const salida = {
+    aviso: 'Prompt original compactado semanticamente por limite tecnico del RAG. Preservar estos requisitos sobre cualquier plantilla interna.',
+    objetivo: [],
+    estructura: [],
+    estilo_visual: [],
+    oferta: [],
+    restricciones: [],
+    copy_mensajes: [],
+    prioridades: [],
+  };
+
+  const vistos = new Set();
+  const puntuar = (texto) => {
+    let score = Math.min(4, Math.floor(texto.length / 260));
+    if (/(debe|obligatorio|importante|prioridad|clave|no inventar|exacto|sí o sí)/i.test(texto)) score += 5;
+    if (/(hero|oferta|cta|beneficio|faq|testimonio|prueba social|estilo|color|tipograf|order bump|upsell)/i.test(texto)) score += 3;
+    if (/^[A-ZÁÉÍÓÚÑ0-9\s:,-]{12,}$/.test(texto.slice(0, 90))) score += 2;
+    return score;
+  };
+
+  for (const parrafo of parrafos) {
+    const corto = recortarEnPalabra(parrafo, 520);
+    for (const categoria of categorias) {
+      if (!categoria.re.test(parrafo)) continue;
+      if (salida[categoria.key].length < 10) salida[categoria.key].push(corto);
+    }
+  }
+
+  parrafos
+    .map(parrafo => ({ parrafo, score: puntuar(parrafo) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 14)
+    .forEach(({ parrafo }) => {
+      const corto = recortarEnPalabra(parrafo, 420);
+      if (!vistos.has(corto)) {
+        vistos.add(corto);
+        salida.prioridades.push(corto);
+      }
+    });
+
+  let texto = [
+    'PROMPT_DEL_COMERCIANTE_COMPACTADO:',
+    JSON.stringify(salida, null, 2),
+  ].join('\n');
+
+  if (texto.length <= max) return texto;
+
+  const reducir = (limiteItem, limiteLista) => {
+    const reducido = {};
+    for (const [key, valor] of Object.entries(salida)) {
+      reducido[key] = Array.isArray(valor)
+        ? valor.slice(0, limiteLista).map(item => recortarEnPalabra(item, limiteItem))
+        : valor;
+    }
+    return ['PROMPT_DEL_COMERCIANTE_COMPACTADO:', JSON.stringify(reducido, null, 2)].join('\n');
+  };
+
+  texto = reducir(300, 6);
+  if (texto.length <= max) return texto;
+  texto = reducir(200, 4);
+  if (texto.length <= max) return texto;
+  return texto.slice(0, max);
+}
+
+function promptPideRespetarPlantilla(prompt) {
+  return /(plantilla|template|referencia|estructura|layout|wireframe|html|css|secciones|bloques|como\s+deber[ií]a\s+verse|tal\s+cual|igual\s+a|parecido\s+a|respet|manten|rellen)/i
+    .test(String(prompt || ''));
+}
+
 class AILandingService {
 
   /**
@@ -70,7 +191,7 @@ class AILandingService {
    * ok — si el RAG no tiene /ai/code/* desplegado, el flujo falla de forma
    * explícita para no volver al generador rígido basado en PageSchema.
    */
-  static async _fetchRAG(path, payload, timeoutMs = 90000) {
+  static async _fetchRAG(path, payload, timeoutMs = 300000) {
     const ragKey = process.env.RAG_API_KEY;
     if (!ragKey) {
       throw new Error('La variable de entorno RAG_API_KEY no está configurada en el servidor.');
@@ -93,9 +214,17 @@ class AILandingService {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const err = new Error(errorData.detail || `Error del microservicio de IA (${response.status})`);
+        const raw = await response.text().catch(() => '');
+        let errorData = {};
+        try {
+          errorData = raw ? JSON.parse(raw) : {};
+        } catch {
+          errorData = raw ? { detail: raw } : {};
+        }
+        const fallback = `Error del microservicio de IA (${response.status})`;
+        const err = new Error(textoErrorRAG(errorData.detail || errorData.message || errorData.error, fallback));
         err.status = response.status;
+        err.detalle = errorData;
         throw err;
       }
 
@@ -208,6 +337,56 @@ class AILandingService {
     };
   }
 
+  static normalizarCodigoBaseIA(codigo, nombre = 'template base') {
+    if (!codigo || typeof codigo !== 'object' || Array.isArray(codigo)) return null;
+    const tieneCodigo = ['html', 'css', 'js'].some(campo => String(codigo[campo] || '').trim());
+    if (!tieneCodigo) return null;
+    try {
+      const limpio = LandingCodigoService.sanitizar({
+        html: codigo.html || '',
+        css: codigo.css || '',
+        js: codigo.js || '',
+        fonts: Array.isArray(codigo.fonts) ? codigo.fonts : [],
+        design_context: codigo.design_context || {},
+      });
+      return {
+        html: limpio.html,
+        css: limpio.css,
+        js: limpio.js,
+        fonts: limpio.fonts,
+        design_context: limpio.design_context,
+      };
+    } catch (err) {
+      const error = new Error(`El ${nombre} no se puede usar como base para IA.`);
+      error.errores = err.errores || [err.message];
+      throw error;
+    }
+  }
+
+  static basesCodigoDesdePayload(base) {
+    if (!base || typeof base !== 'object' || Array.isArray(base)) return { inicio: null, producto: null };
+    return {
+      inicio: this.normalizarCodigoBaseIA(base.codigo || base.inicio || base, 'template base de inicio'),
+      producto: this.normalizarCodigoBaseIA(base.vistas?.producto || base.producto, 'template base de ficha'),
+    };
+  }
+
+  static instruccionEdicionDeTemplate(instruccion, vista = 'inicio') {
+    const nombreVista = vista === 'ficha' ? 'ficha de producto' : 'inicio de la landing';
+    return [
+      `MODO_OPTIMIZACION_DE_TEMPLATE_BASE (${nombreVista}):`,
+      'El HTML/CSS/JS actual es el template elegido por el comercio y es la fuente de verdad visual.',
+      'No lo reemplaces por una landing nueva ni cambies la direccion de arte.',
+      'Conserva estructura, orden de secciones, clases principales, texturas visuales, ritmo de espaciado, header, footer, CTAs y comportamiento JS salvo que el pedido diga explicitamente lo contrario.',
+      'Las secciones marcadas con data-template-section son obligatorias: mantenelas y optimiza su contenido. No borres ingredientes, prueba social, countdown, galeria, comparacion, FAQ, tabla comparativa ni bloques de oferta si existen en el template base.',
+      'Optimiza el template rellenando copy, beneficios, FAQ, argumentos comerciales y binds/listas data-gesicomm-* con los datos reales disponibles.',
+      'Adapta solamente colores/tokens a la marca de la tienda usando las variables Gesicomm; no inventes una paleta ajena al template.',
+      '',
+      'PEDIDO_DEL_COMERCIANTE:',
+      instruccion,
+    ].join('\n');
+  }
+
   static referenciaVisualInicio(landingModel) {
     const codigoInicio = landingModel?.content?.codigo || {};
     const fonts = Array.isArray(codigoInicio.fonts) ? codigoInicio.fonts : [];
@@ -312,11 +491,84 @@ class AILandingService {
       js: data.js || '',
       fonts: Array.isArray(data.fonts) ? data.fonts : [],
       design_context: data.design_context && typeof data.design_context === 'object' ? data.design_context : null,
+      // Propuesta de bloques de urgencia/prueba social del RAG (ver
+      // fusionarDemoData) — nunca se persiste tal cual en content.codigo,
+      // actualizarCodigo() arma ese objeto explícitamente sin este campo.
+      demo_data: data.demo_data && typeof data.demo_data === 'object' ? data.demo_data : null,
       _modelo: data.model || null,
       _intentos: data.intentos || 1,
       _tokensInput: data.tokens_input || 0,
       _tokensOutput: data.tokens_output || 0,
+      _productFamily: data.product_family || null,
+      _referenceTemplate: data.reference_template || null,
+      _referenceTemplateChars: Number(data.reference_template_chars) || 0,
+      _systemPromptChars: Number(data.system_prompt_chars) || 0,
     };
+  }
+
+  static asegurarDemoDataVisual(codigo) {
+    if (!codigo || typeof codigo !== 'object') return codigo;
+    const html = String(codigo.html || '');
+    const usaCountdown = /data-gesicomm-countdown(?!-parte)/.test(html);
+    const usaEstadisticas = /data-gesicomm-lista=["']estadisticas["']/.test(html);
+    if (!usaCountdown && !usaEstadisticas) return codigo;
+
+    const demoData = codigo.demo_data && typeof codigo.demo_data === 'object' && !Array.isArray(codigo.demo_data)
+      ? { ...codigo.demo_data }
+      : {};
+
+    if (usaCountdown) {
+      const urgencia = demoData.urgencia && typeof demoData.urgencia === 'object' && !Array.isArray(demoData.urgencia)
+        ? { ...demoData.urgencia }
+        : {};
+      demoData.urgencia = {
+        ...urgencia,
+        activo: true,
+        preset: this.PRESETS_DEMO_URGENCIA[urgencia.preset] ? urgencia.preset : '48h',
+      };
+    }
+
+    if (usaEstadisticas && !(Array.isArray(demoData.prueba_social?.items) && demoData.prueba_social.items.length)) {
+      demoData.prueba_social = {
+        activo: true,
+        items: [
+          { valor: '94%', etiqueta: 'se sintió más liviano' },
+          { valor: '91%', etiqueta: 'lo recomendaría' },
+          { valor: '90%', etiqueta: 'mejoró su rutina' },
+        ],
+      };
+    }
+
+    return { ...codigo, demo_data: demoData };
+  }
+
+  // Horas por preset que la IA puede proponer para el countdown de demo — el
+  // LLM NUNCA calcula fechas, solo elige la intensidad de la oferta; Node
+  // resuelve "ahora + preset" acá, del lado del servidor.
+  static PRESETS_DEMO_URGENCIA = { '24h': 24, '48h': 48, '72h': 72 };
+
+  /**
+   * Solo llena huecos, nunca pisa nada que ya exista — haya sido confirmado
+   * o no. Si el comercio ya tiene CUALQUIER config para ese bloque (aunque
+   * siga en estado "demo" sin confirmar), la IA no la toca al regenerar: es
+   * lo que evita que "el comercio edita la fecha pero no aprieta Confirmar,
+   * regenera la landing, y la IA le pisa la fecha por la suya".
+   */
+  static fusionarDemoData(ventaBase, demoData) {
+    if (!ventaBase || !demoData) return ventaBase;
+    const venta = { ...ventaBase };
+    if (demoData.urgencia?.activo && !ventaBase.urgencia) {
+      const horas = this.PRESETS_DEMO_URGENCIA[demoData.urgencia.preset] || 48;
+      venta.urgencia = {
+        activo: true,
+        fin_at: new Date(Date.now() + horas * 3600 * 1000).toISOString(),
+        estado: 'demo',
+      };
+    }
+    if (Array.isArray(demoData.prueba_social?.items) && demoData.prueba_social.items.length && !ventaBase.prueba_social) {
+      venta.prueba_social = { activo: true, items: demoData.prueba_social.items, estado: 'demo' };
+    }
+    return venta;
   }
 
   /**
@@ -396,8 +648,10 @@ class AILandingService {
         ? 'vender una ficha de producto con alto foco en conversión'
         : 'presentar tienda/catalogo y llevar a fichas de producto',
       rules: [
-        'Este plan es una guía comercial, no un layout rígido ni una lista obligatoria de componentes.',
-        'Podés fusionar, reordenar o representar visualmente las secciones de manera creativa.',
+        'El pedido del comerciante manda sobre este plan. Si pegó una plantilla, referencia, HTML, CSS o estructura de secciones, respetá esa estructura, orden y dirección visual como contrato.',
+        'El plan interno solo completa criterio comercial cuando el pedido no especifica una estructura. No lo uses para rediseñar una plantilla que el comerciante pidió rellenar.',
+        'Si el pedido del comerciante especifica qué secciones quiere (o cuáles no quiere), construí solo lo que pidió, sin sumarle secciones de acá que no mencionó.',
+        'Podés fusionar o representar visualmente secciones de manera creativa solo cuando el comerciante no haya pedido una plantilla/estructura concreta.',
         'No inventes testimonios, certificaciones, comparaciones, stock, precios, descuentos ni claims médicos.',
         'Los datos comerciales deben salir de data-gesicomm-* y de las listas del runtime.',
         'Si una sección no tiene datos reales suficientes, omitila o dejá un marcador editable claramente marcado.',
@@ -413,19 +667,72 @@ class AILandingService {
         has_product_benefits: hayBeneficios,
         has_product_faq: hayFaq,
       },
+      merchant_brief: comercio?.brief_comercial || null,
       sections,
     };
   }
 
   static promptConPlanLanding(prompt, plan) {
-    return [
-      String(prompt || '').trim(),
+    const promptUsuario = String(prompt || '').trim();
+    const hayPlantillaReferencia = promptPideRespetarPlantilla(promptUsuario);
+    const merchantBrief = plan?.merchant_brief && typeof plan.merchant_brief === 'object'
+      ? plan.merchant_brief
+      : null;
+    const planSinBrief = plan && typeof plan === 'object' ? { ...plan } : plan;
+    if (planSinBrief && typeof planSinBrief === 'object') delete planSinBrief.merchant_brief;
+    const planJson = JSON.stringify(planSinBrief);
+    const bloqueBrief = merchantBrief
+      ? [
+          '',
+          'BRIEF_COMERCIAL_DEL_COMERCIANTE:',
+          JSON.stringify(merchantBrief),
+          '',
+          'Usá estos datos con prioridad porque responden preguntas faltantes. No inventes prueba social, beneficios, FAQs, modo de uso ni datos técnicos si no aparecen acá o en el catálogo real.',
+        ].join('\n')
+      : '';
+    const bloqueContrato = [
+      '',
+      'CONTRATO_DE_GENERACION_GESICOMM:',
+      '- El texto del comerciante es la fuente principal. El plan interno es secundario y no puede contradecirlo.',
+      '- Si el comerciante pegó una plantilla, HTML, CSS, referencia visual, estructura o lista de secciones, NO la rediseñes desde cero: rellená esa estructura con datos reales de Gesicomm.',
+      '- Conservá el orden, jerarquía visual, intención de layout, ritmo de secciones y CTAs de la referencia salvo que el comerciante pida cambiarlos.',
+      '- Reemplazá placeholders de productos por primitivas reales: data-gesicomm-lista, data-gesicomm-bind, data-gesicomm-ver, data-gesicomm-agregar o data-gesicomm-comprar según corresponda.',
+      '- Si la landing vende varios productos/catalogo/e-commerce, no fuerces un producto principal: mostrálos con listas del runtime y acciones claras para ver ficha o comprar.',
+      '- No dejes esqueletos vacíos, tarjetas genéricas ni secciones decorativas sin datos. Si falta información real, omití la sección o dejá un texto editable explícito.',
+      `- referencia_estructural_detectada: ${hayPlantillaReferencia ? 'si' : 'no'}.`,
+    ].join('\n');
+    const bloquePlan = [
       '',
       'PLAN_INTERNO_DE_LANDING_GESICOMM:',
-      JSON.stringify(plan, null, 2),
+      planJson,
       '',
-      'Usá el plan como criterio de estructura comercial adaptable. La salida sigue siendo HTML/CSS/JS libre: no devuelvas JSON, no nombres el plan al usuario y no conviertas esto en una plantilla rígida.',
+      'Usá el plan como criterio comercial adaptable solo donde el pedido no defina una estructura. La salida sigue siendo HTML/CSS/JS ejecutable: no devuelvas JSON ni nombres el plan al usuario.',
     ].join('\n');
+
+    const completoConPlan = [promptUsuario, bloqueBrief, bloqueContrato, bloquePlan].filter(Boolean).join('\n');
+    if (completoConPlan.length <= RAG_MAX_STRING_CHARS) return completoConPlan;
+
+    const completoConBrief = [promptUsuario, bloqueBrief, bloqueContrato].filter(Boolean).join('\n');
+    if (completoConBrief.length <= RAG_MAX_STRING_CHARS) return completoConBrief;
+
+    const bloquesPrioritarios = [bloqueBrief, bloqueContrato].filter(Boolean).join('\n');
+    const espacioParaPrompt = RAG_MAX_STRING_CHARS - bloquesPrioritarios.length - 2;
+    if (espacioParaPrompt > 1200) {
+      const promptCompactado = compactarPromptSemanticamente(promptUsuario, espacioParaPrompt);
+      const compactoConContrato = [promptCompactado, bloquesPrioritarios].filter(Boolean).join('\n');
+      if (compactoConContrato.length <= RAG_MAX_STRING_CHARS) return compactoConContrato;
+    }
+
+    // Si ni compactando alcanza, la prioridad final es el pedido del
+    // comercio completo. El brief/plan también viajan estructurados en
+    // context, pero el texto original del comerciante no.
+    if (promptUsuario.length <= RAG_MAX_STRING_CHARS) return promptUsuario;
+
+    // Si el prompt del comercio solo ya supera el schema del RAG,
+    // compactamos por requisitos/secciones en vez de cortar inicio/final.
+    const compactado = compactarPromptSemanticamente(promptUsuario, RAG_MAX_STRING_CHARS);
+    if (compactado.length <= RAG_MAX_STRING_CHARS) return compactado;
+    return compactado.slice(0, RAG_MAX_STRING_CHARS);
   }
 
   static _textoClasificacion(texto) {
@@ -452,8 +759,8 @@ class AILandingService {
     if (/(ropa|moda|calzado)/.test(rubros)) return 'moda';
     const t = `${texto} ${categorias}`;
     if (/(suplement|proteina|creatina|colageno|vitamina|capsula|adelgaz|fitness|gimnas|nutric|omega|magnesio|probio)/.test(t)) return 'suplementos';
-    if (/(electrodom|licuadora|freidora|air fryer|cafetera|aspiradora|cortador|procesador|batidora|cocina)/.test(t)) return 'electrodomesticos';
-    if (/(bazar|hogar|cocina|utensilio|organizador|recipiente|mesa|decoracion|limpieza|jardin)/.test(t)) return 'bazar_hogar';
+    if (/(electrodom|licuadora|freidora|air fryer|cafetera|aspiradora|procesador|batidora|horno|microondas)/.test(t)) return 'electrodomesticos';
+    if (/(bazar|hogar|cocina|utensilio|organizador|recipiente|cortador|mesa|decoracion|limpieza|jardin)/.test(t)) return 'bazar_hogar';
     if (/(tech|tecnolog|electron|auricular|smart|celular|notebook|gadget|parlante|reloj|camara)/.test(t)) return 'tecnologia';
     if (/(beauty|belleza|skincare|piel|cabello|cosmetic|maquill|serum|crema|shampoo)/.test(t)) return 'belleza';
     if (/(ropa|moda|calzado|remera|camisa|vestido|jean|zapatilla|talle)/.test(t)) return 'moda';
@@ -695,6 +1002,9 @@ class AILandingService {
       .filter(p => idsDestacados.has(String(p.content_id || '')))
       .map(p => ({ content_id: p.content_id, nombre: p.nombre, tipo: p.tipo || 'producto', precio: p.precio }))
       .slice(0, 12);
+    const brief = venta?.brief_comercial?.respuestas && typeof venta.brief_comercial.respuestas === 'object'
+      ? venta.brief_comercial.respuestas
+      : null;
     return {
       tipo_venta: venta?.tipo || 'catalogo',
       seleccion: venta?.seleccion || 'manual',
@@ -713,6 +1023,14 @@ class AILandingService {
       destacados_seleccionados: destacadosSeleccionados,
       recomendados_max: venta?.recomendados?.max || 4,
       recomendados_titulo: venta?.recomendados?.titulo || '',
+      brief_comercial: brief || {},
+      brief_comercial_reglas: brief
+        ? [
+            'Estos datos fueron escritos por el comercio para completar faltantes: usarlos con prioridad.',
+            'Si prueba_social está vacío, no inventar testimonios ni cifras.',
+            'Si beneficios/faq/modo_uso/detalles técnicos están vacíos, usar solo datos reales del producto o dejar marcador editable.',
+          ]
+        : [],
       hay_order_bumps: hayBumps,
       hay_paquetes: hayPaquetes,
       hay_combos: hayCombos,
@@ -794,8 +1112,18 @@ class AILandingService {
     if (anterior) {
       errores.push(...AICodeValidator.validarPreservacion(anterior, nuevo, instruccion).errores);
     }
-    errores.push(...AICodeValidator.validar(nuevo.html, { vista, categoriasReales, contentIdsPermitidos }).errores);
+    errores.push(...AICodeValidator.validar(nuevo.html, { vista, categoriasReales, contentIdsPermitidos, demoData: nuevo.demo_data }).errores);
     return errores;
+  }
+
+  static conservarCssDelTemplate(codigo, anterior) {
+    if (!anterior?.css || !codigo) return codigo;
+    return {
+      ...codigo,
+      css: anterior.css,
+      fonts: Array.isArray(anterior.fonts) ? anterior.fonts : codigo.fonts,
+      design_context: anterior.design_context || codigo.design_context,
+    };
   }
 
   /**
@@ -813,24 +1141,38 @@ class AILandingService {
    * tokensOutput, modelo } — el detalle es para AiGenerationLog (ver
    * registrarLog más abajo), no hace falta en el camino feliz.
    */
-  static async _conRepairAutomatico({ generar, anterior, instruccion, vista, tienda, productos, pageType, producto, comercio = null }) {
+  static async _conRepairAutomatico({ generar, anterior, instruccion, vista, tienda, productos, pageType, producto, comercio = null, preservarCssBase = false }) {
     // Las categorías que el HTML puede usar como filtro son las de los
     // productos de ESTA landing: cualquier otra deja la grilla vacía.
     const categoriasReales = [...new Set((productos || []).map(p => p.categoria).filter(Boolean))];
     // Identidad de los items: el content_id es lo único que el runtime sabe
     // resolver, y es lo único que le pasamos al modelo (ver catalogoParaRAG).
     const contentIdsPermitidos = [...new Set((productos || []).map(p => p.content_id).filter(Boolean))];
-    let codigo = await generar();
+    // Mismo cálculo que planLandingIA — se repite acá (no se reusa el plan
+    // ya armado) porque _conRepairAutomatico no lo recibe, y es liviano.
+    // Se usa para chequeos de calidad específicos de rubro (ver
+    // AICodeValidator.validarCalidad, ej. moda: talle = variante).
+    const familia = this.inferirFamiliaProducto(
+      this._textoClasificacion([instruccion, producto?.nombre, producto?.categoria, producto?.ficha_rubro].join(' ')),
+      productos,
+    );
+    let codigo = this.asegurarDemoDataVisual(
+      preservarCssBase ? this.conservarCssDelTemplate(await generar(), anterior) : await generar(),
+    );
     let errores = this.validarTodo(anterior, codigo, instruccion, vista, categoriasReales, contentIdsPermitidos);
     // Calidad (dirección de arte): se le pide al repair junto con los
     // errores reales, pero si sigue sin cumplir NO se bloquea el guardado
     // — ver AICodeValidator.validarCalidad.
-    let mejorables = AICodeValidator.validarCalidad(codigo);
+    let mejorables = AICodeValidator.validarCalidad(codigo, familia);
     const erroresPreRepair = [...errores, ...mejorables];
     let repairUsed = false;
     let tokensInput = codigo._tokensInput || 0;
     let tokensOutput = codigo._tokensOutput || 0;
     let modelo = codigo._modelo || null;
+    let productFamily = codigo._productFamily || null;
+    let referenceTemplate = codigo._referenceTemplate || null;
+    let referenceTemplateChars = codigo._referenceTemplateChars || 0;
+    let systemPromptChars = codigo._systemPromptChars || 0;
 
     if (errores.length || mejorables.length) {
       try {
@@ -841,13 +1183,20 @@ class AILandingService {
         tokensInput += reparado._tokensInput || 0;
         tokensOutput += reparado._tokensOutput || 0;
         modelo = reparado._modelo || modelo;
-        const erroresReparado = this.validarTodo(anterior, reparado, instruccion, vista, categoriasReales, contentIdsPermitidos);
+        productFamily = reparado._productFamily || productFamily;
+        referenceTemplate = reparado._referenceTemplate || referenceTemplate;
+        referenceTemplateChars = reparado._referenceTemplateChars || referenceTemplateChars;
+        systemPromptChars = reparado._systemPromptChars || systemPromptChars;
+        const reparadoConDemo = this.asegurarDemoDataVisual(
+          preservarCssBase ? this.conservarCssDelTemplate(reparado, anterior) : reparado,
+        );
+        const erroresReparado = this.validarTodo(anterior, reparadoConDemo, instruccion, vista, categoriasReales, contentIdsPermitidos);
         // El repair solo se acepta si no empeoró lo importante: si vuelve
         // con errores reales que antes no estaban, se queda el original.
         if (!erroresReparado.length || errores.length) {
-          codigo = reparado;
+          codigo = reparadoConDemo;
           errores = erroresReparado;
-          mejorables = AICodeValidator.validarCalidad(codigo);
+          mejorables = AICodeValidator.validarCalidad(codigo, familia);
         }
       } catch (err) {
         if (err.status !== 404) throw err;
@@ -866,14 +1215,17 @@ class AILandingService {
       err.telemetria = { repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo };
       throw err;
     }
-    return { codigo, repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo };
+    return {
+      codigo, repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo,
+      metadata: { productFamily, referenceTemplate, referenceTemplateChars, systemPromptChars },
+    };
   }
 
   /**
    * Crea un borrador de landing generado por IA en Gesicomm.
    * La landing se guarda con activo: false (borrador) para revisión previa.
    */
-  static async crearDesdeIA({ tienda_id, inquilino_id, prompt, items = [], venta = null }) {
+  static async crearDesdeIA({ tienda_id, inquilino_id, prompt, items = [], venta = null, base = null }) {
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 5) {
       throw new Error('Escribí una descripción de al menos 5 caracteres para que la IA arme tu landing.');
     }
@@ -882,6 +1234,7 @@ class AILandingService {
     if (!tienda) throw new Error('Tienda no encontrada.');
 
     const ventaLimpia = LandingCodigoService.limpiarVenta(venta);
+    const basesCodigo = this.basesCodigoDesdePayload(base);
     const catalogoRAG = await this.catalogoParaRAG(inquilino_id, items);
     // El wizard del chat ya trae la configuración de venta (ofertas que
     // se muestran, combos, recomendados, tipo de venta): con eso el modelo
@@ -906,12 +1259,26 @@ class AILandingService {
     let tokensInput = 0;
     let tokensOutput = 0;
     let modelo = null;
+    let metadata = {};
     const vistasProductos = {};
     let vistaProductoGeneral = null;
+    const esProductoUnico = ventaLimpia?.abrir_en === 'producto' || ventaLimpia?.tipo === 'producto_unico';
     try {
+      const instruccionInicio = basesCodigo.inicio
+        ? this.instruccionEdicionDeTemplate(instruccion, 'inicio')
+        : instruccion;
       const resultado = await this._conRepairAutomatico({
-        generar: () => this.solicitarCodigoRAG({ prompt: instruccion, tienda, productos: catalogoRAG, pageType: 'landing', comercio }),
-        anterior: null,
+        generar: () => (basesCodigo.inicio
+          ? this.solicitarEdicionRAG({
+              instruction: instruccionInicio,
+              current: basesCodigo.inicio,
+              tienda,
+              productos: catalogoRAG,
+              pageType: 'landing',
+              comercio,
+            })
+          : this.solicitarCodigoRAG({ prompt: instruccion, tienda, productos: catalogoRAG, pageType: 'landing', comercio })),
+        anterior: basesCodigo.inicio || null,
         instruccion,
         vista: 'inicio',
         tienda,
@@ -919,13 +1286,17 @@ class AILandingService {
         pageType: 'landing',
         producto: null,
         comercio,
+        preservarCssBase: !!basesCodigo.inicio,
       });
-      ({ codigo, repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo } = resultado);
+      ({ codigo, repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo, metadata = {} } = resultado);
+      if (esProductoUnico) {
+        Object.assign(codigo, aplicarBloquesCanonicos(codigo));
+      }
       codigo.design_context = this.designContextDesdeCodigo(codigo, tienda);
 
       // En paralelo, no en fila: son independientes entre sí y encadenarlas
       // multiplicaba el tiempo total de la request por la cantidad de fichas.
-      const fichasIniciales = this.productosParaFichasIniciales(catalogoRAG, ventaLimpia);
+      const fichasIniciales = esProductoUnico ? [] : this.productosParaFichasIniciales(catalogoRAG, ventaLimpia);
       const conFichaPropia = new Set(fichasIniciales.map(p => p.content_id));
       const tareasFichas = fichasIniciales.map(async (productoFicha) => {
         const instruccionFicha = [
@@ -935,17 +1306,30 @@ class AILandingService {
           'Si el prompt del comercio menciona este producto o pide timer, urgencia, paquetes, order bump, upsell o una oferta agresiva, aplicalo en esta ficha.',
           'Usá datos reales con data-gesicomm-bind, data-gesicomm-comprar y las listas comerciales disponibles; no inventes precios.',
         ].join('\n');
+        const instruccionFichaRAG = basesCodigo.producto
+          ? this.instruccionEdicionDeTemplate(instruccionFicha, 'ficha')
+          : instruccionFicha;
         try {
           const ficha = await this._conRepairAutomatico({
-            generar: () => this.solicitarCodigoRAG({
-              prompt: instruccionFicha,
-              tienda,
-              productos: catalogoRAG,
-              pageType: 'product',
-              producto: productoFicha,
-              comercio,
-            }),
-            anterior: null,
+            generar: () => (basesCodigo.producto
+              ? this.solicitarEdicionRAG({
+                  instruction: instruccionFichaRAG,
+                  current: basesCodigo.producto,
+                  tienda,
+                  productos: catalogoRAG,
+                  pageType: 'product',
+                  producto: productoFicha,
+                  comercio,
+                })
+              : this.solicitarCodigoRAG({
+                  prompt: instruccionFicha,
+                  tienda,
+                  productos: catalogoRAG,
+                  pageType: 'product',
+                  producto: productoFicha,
+                  comercio,
+                })),
+            anterior: basesCodigo.producto || null,
             instruccion: instruccionFicha,
             vista: 'ficha',
             tienda,
@@ -953,6 +1337,7 @@ class AILandingService {
             pageType: 'product',
             producto: productoFicha,
             comercio,
+            preservarCssBase: !!basesCodigo.producto,
           });
           const codigoFicha = ficha.codigo;
           // El order bump y los paquetes los pone Gesicomm con su bloque
@@ -976,6 +1361,10 @@ class AILandingService {
       const referencia = catalogoRAG.find(p => !conFichaPropia.has(p.content_id)) || catalogoRAG[0] || null;
       const tareaGeneral = (async () => {
         if (!referencia) return;
+        if (esProductoUnico) {
+          vistaProductoGeneral = { ...codigo };
+          return;
+        }
         const instruccionGeneral = [
           instruccion,
           '',
@@ -983,14 +1372,28 @@ class AILandingService {
           'Todo sale de binds y listas (no menciones un producto puntual por su nombre en los textos fijos).',
           'Tiene que funcionar igual para el producto más caro y el más barato, con y sin ofertas.',
         ].join('\n');
+        const instruccionGeneralRAG = basesCodigo.producto
+          ? this.instruccionEdicionDeTemplate(instruccionGeneral, 'ficha')
+          : instruccionGeneral;
         try {
           const general = await this._conRepairAutomatico({
-            generar: () => this.solicitarCodigoRAG({
-              prompt: instruccionGeneral, tienda, productos: catalogoRAG,
-              pageType: 'product', producto: referencia, comercio,
-            }),
-            anterior: null, instruccion: instruccionGeneral, vista: 'ficha',
+            generar: () => (basesCodigo.producto
+              ? this.solicitarEdicionRAG({
+                  instruction: instruccionGeneralRAG,
+                  current: basesCodigo.producto,
+                  tienda,
+                  productos: catalogoRAG,
+                  pageType: 'product',
+                  producto: referencia,
+                  comercio,
+                })
+              : this.solicitarCodigoRAG({
+                  prompt: instruccionGeneral, tienda, productos: catalogoRAG,
+                  pageType: 'product', producto: referencia, comercio,
+                })),
+            anterior: basesCodigo.producto || null, instruccion: instruccionGeneral, vista: 'ficha',
             tienda, productos: catalogoRAG, pageType: 'product', producto: referencia, comercio,
+            preservarCssBase: !!basesCodigo.producto,
           });
           vistaProductoGeneral = general.codigo;
           Object.assign(vistaProductoGeneral, aplicarBloquesCanonicos(vistaProductoGeneral));
@@ -1050,13 +1453,16 @@ class AILandingService {
       // Si el wizard ya pasó por el panel de venta, se guarda lo que el
       // comercio eligió ahí. Si no vino nada, la landing queda SIN venta
       // configurada a propósito: el editor abre en "Configurar venta" en
-      // vez de saltear ese paso con valores por defecto.
-      ...(ventaLimpia ? { venta: ventaLimpia } : {}),
+      // vez de saltear ese paso con valores por defecto. Si la IA propuso
+      // countdown/estadísticas de ejemplo (demo_data) y todavía no hay nada
+      // cargado para esos bloques, se suman en estado "demo" — nunca pisan
+      // algo que el comercio ya haya definido.
+      ...(ventaLimpia ? { venta: this.fusionarDemoData(ventaLimpia, codigo.demo_data) } : {}),
     });
     await AiGenerationLogService.registrar({
       tiendaId: tienda_id, landingId: guardada.id, operacion: 'generate', pageType: 'landing', target: 'inicio',
       prompt: instruccion, modelo, latenciaMs: Date.now() - inicio, tokensInput, tokensOutput,
-      repairUsed, exitoso: true, validationErrorsPreRepair: erroresPreRepair,
+      repairUsed, exitoso: true, validationErrorsPreRepair: erroresPreRepair, metadata,
     });
     return guardada;
   }
@@ -1136,6 +1542,7 @@ class AILandingService {
     let tokensInput = 0;
     let tokensOutput = 0;
     let modelo = null;
+    let metadata = {};
     const logBase = { tiendaId: tienda_id, landingId: landing_id, operacion: actual?.html?.trim() ? 'edit' : 'generate', pageType, target, contentId, prompt: instruccion };
     try {
       const resultado = await this._conRepairAutomatico({
@@ -1154,7 +1561,7 @@ class AILandingService {
         producto: productoContexto,
         comercio,
       });
-      ({ codigo, repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo } = resultado);
+      ({ codigo, repairUsed, erroresPreRepair, tokensInput, tokensOutput, modelo, metadata = {} } = resultado);
       codigo.design_context = this.designContextDesdeCodigo(codigo, tienda);
     } catch (err) {
       await AiGenerationLogService.registrar({
@@ -1186,14 +1593,24 @@ class AILandingService {
         vistas: { producto: codigo },
       });
     } else {
+      // Igual que en crearDesdeIA: demo_data solo llena urgencia/prueba_social
+      // si la landing todavía no tiene NADA cargado para ese bloque — nunca
+      // pisa lo que el comercio ya haya editado, esté confirmado o no. Y solo
+      // si la landing YA pasó por "Configurar venta": si nunca se configuró
+      // venta, se deja así a propósito (ver comentario en crearDesdeIA) en
+      // vez de crear una venta mínima como efecto secundario de un demo_data.
+      const ventaConDemo = codigo.demo_data && landingModel.content?.venta
+        ? this.fusionarDemoData(landingModel.content.venta, codigo.demo_data)
+        : null;
       guardada = await LandingSimpleService.actualizarCodigo(landingModel, tienda_id, inquilino_id, {
         titulo,
         codigo,
+        ...(ventaConDemo && ventaConDemo !== landingModel.content?.venta ? { venta: ventaConDemo } : {}),
       });
     }
     await AiGenerationLogService.registrar({
       ...logBase, modelo, latenciaMs: Date.now() - inicio, tokensInput, tokensOutput,
-      repairUsed, exitoso: true, validationErrorsPreRepair: erroresPreRepair,
+      repairUsed, exitoso: true, validationErrorsPreRepair: erroresPreRepair, metadata,
     });
     return guardada;
   }

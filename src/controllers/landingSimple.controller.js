@@ -24,12 +24,11 @@ const { Tienda } = require('../models');
 const LandingSimpleService = require('../services/landingSimple.service');
 const ImagenService = require('../services/imagen.service');
 const AuthTracking = require('../services/authTracking.service');
-
-const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
+const { destinoUploadsTmp } = require('../utils/uploadTmp');
 
 const uploadImagenLandingSimple = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOADS_TMP),
+    destination: destinoUploadsTmp,
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
       cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
@@ -51,12 +50,33 @@ function subirImagenMiddleware(req, res, next) {
   });
 }
 
+function textoError(valor, fallback) {
+  if (!valor) return fallback;
+  if (typeof valor === 'string') return valor;
+  if (Array.isArray(valor)) {
+    const partes = valor.map(item => textoError(item, '')).filter(Boolean);
+    return partes.length ? partes.join(' | ') : fallback;
+  }
+  if (typeof valor === 'object') {
+    if (valor.message || valor.mensaje || valor.msg || valor.error || valor.detail) {
+      return textoError(valor.message || valor.mensaje || valor.msg || valor.error || valor.detail, fallback);
+    }
+    try {
+      return JSON.stringify(valor);
+    } catch {
+      return fallback;
+    }
+  }
+  return String(valor);
+}
+
 function manejarError(res, err, defaultMsg) {
-  console.error('[landing-simple]', err.message);
+  const message = textoError(err?.message, defaultMsg);
+  console.error('[landing-simple]', message);
   const status = err.message === 'Landing no encontrada.' || err.message === 'Template no encontrado.'
     ? 404
     : (err.errores ? 422 : 400);
-  return res.status(status).json({ message: err.message || defaultMsg, errores: err.errores });
+  return res.status(status).json({ message, errores: err.errores });
 }
 
 /** @returns {Promise<import('../models').Tienda|null>} null si ya respondió el error */
@@ -145,6 +165,9 @@ async function crearDesdeIA(req, res) {
       // combos, recomendados, tipo de venta). Opcional: sin esto la
       // landing se crea sin venta configurada y el editor la pide.
       venta: req.body.venta || null,
+      // Template HTML/CSS/JS que el frontend usa como molde visual. La IA
+      // debe editarlo/rellenarlo, no rediseñar desde cero.
+      base: req.body.base || null,
     });
     
     // Registrar evento
@@ -156,7 +179,7 @@ async function crearDesdeIA(req, res) {
       metadata: {
         tienda_id: tienda.id,
         landing_id: landing.id,
-        prompt: prompt.slice(0, 100)
+        prompt: String(prompt || '').slice(0, 100)
       }
     });
     

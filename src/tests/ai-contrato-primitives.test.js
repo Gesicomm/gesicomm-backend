@@ -87,6 +87,31 @@ describe('listas', () => {
   });
 });
 
+// El bug real: "beneficios" es nombre de data-gesicomm-lista (array), pero
+// el modelo lo usó como data-gesicomm-bind suelto fuera de cualquier lista
+// — la tarjeta queda vacía y antes esto solo generaba una advertencia, que
+// el repair automático ignora (ver aiLanding.service.js, solo lee .errores).
+describe('binds', () => {
+  it('rechaza un bind que en realidad es nombre de lista, y dispara repair', () => {
+    const { errores, advertencias } = validar('<div data-gesicomm-bind="beneficios" class="benefit-card"></div>');
+    expect(errores).toHaveLength(1);
+    expect(errores[0]).toContain('data-gesicomm-lista="beneficios"');
+    expect(advertencias).toHaveLength(0);
+  });
+
+  it('sigue aceptando un campo documentado', () => {
+    const { errores, advertencias } = validar('<span data-gesicomm-bind="precio"></span>');
+    expect(errores).toHaveLength(0);
+    expect(advertencias).toHaveLength(0);
+  });
+
+  it('un bind inventado (no es campo ni lista) sigue siendo solo advertencia', () => {
+    const { errores, advertencias } = validar('<span data-gesicomm-bind="garantiaInventada"></span>');
+    expect(errores).toHaveLength(0);
+    expect(advertencias).toHaveLength(1);
+  });
+});
+
 describe('campos condicionales y de tienda', () => {
   it('acepta campos reales del producto', () => {
     const { errores } = validar('<div data-gesicomm-si="beneficios"></div><div data-gesicomm-sin="stock"></div>');
@@ -129,5 +154,34 @@ describe('secciones vacías (calidad)', () => {
     const motivos = AICodeValidator.validarCalidad({ html, css: CSS_OK });
     expect(motivos).toHaveLength(1);
     expect(motivos[0]).toContain('placeholder');
+  });
+
+  it('marca paquetes sin imagen porque el runtime solo pinta fotos si existe el bind imagen', () => {
+    const html = '<div data-gesicomm-lista="paquetes"><template><article><span data-gesicomm-bind="precio"></span></article></template></div>';
+    const motivos = AICodeValidator.validarCalidad({ html, css: CSS_OK });
+    expect(motivos).toHaveLength(1);
+    expect(motivos[0]).toContain('data-gesicomm-bind="imagen"');
+  });
+
+  it('acepta paquetes con imagen dentro del template', () => {
+    const html = '<div data-gesicomm-lista="paquetes"><template><article><img data-gesicomm-bind="imagen" alt=""><span data-gesicomm-bind="precio"></span></article></template></div>';
+    expect(AICodeValidator.validarCalidad({ html, css: CSS_OK })).toHaveLength(0);
+  });
+});
+
+describe('preservacion de estructura de template', () => {
+  it('rechaza que la IA borre secciones criticas del template base', () => {
+    const anterior = {
+      html: '<section data-template-section="ingredientes"></section><section data-template-section="prueba-social"></section><button data-gesicomm-comprar></button>',
+    };
+    const nuevo = {
+      html: '<section data-template-section="prueba-social"></section><button data-gesicomm-comprar></button>',
+    };
+
+    const { errores } = AICodeValidator.validarPreservacion(anterior, nuevo, 'optimizá textos');
+
+    expect(errores).toEqual(expect.arrayContaining([
+      expect.stringContaining('ingredientes'),
+    ]));
   });
 });

@@ -29,6 +29,7 @@ class AiGenerationLogService {
         exitoso: !!datos.exitoso,
         validation_errors: datos.validationErrors?.length ? datos.validationErrors : null,
         validation_errors_pre_repair: datos.validationErrorsPreRepair?.length ? datos.validationErrorsPreRepair : null,
+        metadata: datos.metadata && Object.keys(datos.metadata).length ? datos.metadata : null,
       });
     } catch (err) {
       console.error('[AiGenerationLog] no se pudo guardar el log:', err.message);

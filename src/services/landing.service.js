@@ -2587,14 +2587,10 @@ class LandingService {
         // arranca con estos colores (ver --tienda-* en construirDocumentoCodigo).
         colores: coloresDeTienda(tienda),
       },
-      // primario/fondo: null en la landing = hereda el default de Tienda.
-      // "claro" nunca hereda el fondo oscuro de la tienda (pensado para
-      // dark mode) — si no hay override, usa un neutro claro razonable.
-      // Para landings rígidas NUNCA se hereda el color de Tienda: cada una
-      // de las 4 tiene su propia paleta por defecto (ver DEFAULT_TEMA en
-      // templates/*.jsx del frontend) que el frontend aplica cuando estos
-      // 3 campos vienen null. Heredar de Tienda acá mezclaría el branding
-      // del sistema flexible con el de un template que nunca lo pidió.
+      // primario/fondo: null en la landing = hereda de Mi Tienda. En los
+      // templates rígidos el comercio espera que el branding configurado en
+      // "Mi tienda" pinte también sus fichas, catálogo y contacto; si una
+      // landing quiere apartarse de esa marca, guarda sus propios colores.
       // Un embudo (esFunnel) es rígido igual que las landings de tienda: su
       // paleta default vive en el FRONTEND por slug de template (ver
       // funnelThemeUtils.js), nunca en Tienda.color_fondo — antes caía en
@@ -2603,13 +2599,12 @@ class LandingService {
       // la tienda y el embudo salía negro sin que el comercio lo pidiera.
       tema: (esRigida || esFunnel) ? {
         modo: landing.tema_modo,
-        primario: landing.color_primario || null,
+        primario: landing.color_primario || (esRigida ? tienda.color_primario : null),
         secundario: tienda.color_secundario || null,
-        fondo: landing.color_fondo || null,
-        // texto: sin override propio, las rígidas sí heredan el color
-        // secundario de Branding (a diferencia de primario/fondo, que
-        // mantienen la paleta default del template) para que el texto
-        // nunca quede negro fijo sobre un fondo oscuro configurado.
+        fondo: landing.color_fondo || (esRigida ? tienda.color_fondo : null),
+        // texto: sin override propio, las rígidas heredan el color
+        // secundario de Branding para que toda la página acompañe los
+        // colores configurados en Mi Tienda.
         texto: landing.color_texto || (esRigida ? (tienda.color_secundario || null) : null),
         tarjeta: landing.color_tarjeta || null,
       } : {
@@ -3012,9 +3007,9 @@ class LandingService {
       tienda: { nombre: tienda.nombre, subdominio: tienda.subdominio, logo_imagen: tienda.logo_imagen || null, colores: coloresDeTienda(tienda) },
       tema: (esRigida || esFunnel) ? {
         modo: landing.tema_modo,
-        primario: landing.color_primario || null,
+        primario: landing.color_primario || (esRigida ? tienda.color_primario : null),
         secundario: tienda.color_secundario || null,
-        fondo: landing.color_fondo || null,
+        fondo: landing.color_fondo || (esRigida ? tienda.color_fondo : null),
         texto: landing.color_texto || (esRigida ? (tienda.color_secundario || null) : null),
         tarjeta: landing.color_tarjeta || null,
       } : {

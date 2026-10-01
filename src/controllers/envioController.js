@@ -13,13 +13,13 @@ const multer = require('multer');
 const AbastecimientoFlujo = require('../services/abastecimiento/abastecimientoFlujo.service');
 const TarifaDelivery = require('../services/tarifaDelivery.service');
 const ProveedorLogisticoService = require('../services/proveedorLogistico.service');
+const { destinoUploadsTmp } = require('../utils/uploadTmp');
 
-const UPLOADS_TMP_ABASTECIMIENTO = path.join(process.cwd(), 'tmp', 'uploads');
 const MAX_COMPROBANTE_ABASTECIMIENTO_BYTES = 5 * 1024 * 1024; // 5MB
 
 const uploadComprobanteAbastecimiento = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOADS_TMP_ABASTECIMIENTO),
+    destination: destinoUploadsTmp,
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
       cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);

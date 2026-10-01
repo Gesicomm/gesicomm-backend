@@ -32,7 +32,8 @@
 const ATRIBUTOS_AUTOR = [
   'data-gesicomm-agregar', 'data-gesicomm-bind', 'data-gesicomm-bump', 'data-gesicomm-buscar',
   'data-gesicomm-cantidad-input', 'data-gesicomm-cargando', 'data-gesicomm-cargar-mas',
-  'data-gesicomm-categoria', 'data-gesicomm-comprar', 'data-gesicomm-evento', 'data-gesicomm-filtro',
+  'data-gesicomm-categoria', 'data-gesicomm-comprar', 'data-gesicomm-countdown',
+  'data-gesicomm-countdown-parte', 'data-gesicomm-evento', 'data-gesicomm-filtro',
   'data-gesicomm-form', 'data-gesicomm-form-ok', 'data-gesicomm-imagen-principal', 'data-gesicomm-inicio',
   'data-gesicomm-limite', 'data-gesicomm-link', 'data-gesicomm-lista', 'data-gesicomm-oferta',
   'data-gesicomm-pagina', 'data-gesicomm-paginacion', 'data-gesicomm-redes', 'data-gesicomm-si',
@@ -53,7 +54,7 @@ const ATRIBUTOS_VALIDOS = new Set([...ATRIBUTOS_AUTOR, ...ATRIBUTOS_RUNTIME]);
 const LISTAS_VALIDAS = new Set([
   'catalogo', 'productos', 'solo_productos', 'combos', 'combos_producto', 'recomendados',
   'ofertas', 'ofertas_bump', 'ofertas_pack', 'variantes', 'imagenes',
-  'beneficios', 'confianza', 'preguntas', 'combo_incluye', 'paquetes',
+  'beneficios', 'confianza', 'preguntas', 'combo_incluye', 'paquetes', 'estadisticas',
 ]);
 
 // Documentados en promptsCodigo.js / runtimeGesicomm.js aplicarBind(). No es
@@ -63,6 +64,7 @@ const BINDS_DOCUMENTADOS = new Set([
   'nombre', 'descripcion', 'descripcion_larga', 'precio', 'precio_antes', 'precio_separado',
   'por_unidad', 'descuento', 'ahorro', 'ahorro_texto', 'stock', 'incluye', 'imagen', 'url',
   'categoria', 'etiqueta', 'propuesta_valor', 'sobre', 'titulo', 'texto', 'pregunta', 'respuesta',
+  'valor',
 ]);
 
 // Acciones que cuentan como "se puede comprar desde acá".
@@ -102,6 +104,14 @@ function contarOcurrencias(html, patron) {
 // una lista de raíces sin acento final, sin \b de cierre.
 const PATRON_EDIT_DESTRUCTIVE_ALLOWED = /\b(rehac|reemplaz|empez[aá]r?\s+de\s+cero|desde\s+cero|arm[aá]\s+de\s+nuevo|reescrib|dise[ñn]o\s+nuevo|nueva\s+landing|simplific|minimalista|reduc|menos\s+secciones|sac[aá]\s|quit[aá]\s|elimin|borr|dej[aá]\s+solo)/i;
 
+const SECCIONES_TEMPLATE_CRITICAS = [
+  'timeline-resultados',
+  'ingredientes',
+  'prueba-social',
+  'comparacion',
+  'tabla-comparativa',
+];
+
 // Atributos cuyo valor es la IDENTIDAD de un item de la landing. Todos se
 // resuelven con buscar() en el runtime, que solo acepta el content_id
 // exacto o "principal". data-gesicomm-oferta-id / -variante-id / -paquete
@@ -137,14 +147,18 @@ function modoEdicion(instruccion) {
 class AICodeValidator {
   /**
    * @param {string} html
-   * @param {{ contentIdsPermitidos?: string[], vista?: 'inicio'|'ficha' }} [opciones]
+   * @param {{ contentIdsPermitidos?: string[], vista?: 'inicio'|'ficha', demoData?: object }} [opciones]
    *   `contentIdsPermitidos`: content_id (slug producto / "combo-ID") de los
    *   items que esta landing tiene cargados — para validar IDs fijos.
    *   `vista`: 'ficha' no exige acción de compra propia si ya hereda un
    *   contexto de producto (el bind vive fuera de listas).
+   *   `demoData`: el `demo_data` que devolvió el RAG junto con este HTML —
+   *   para chequear que countdown/estadísticas vengan respaldados (ver
+   *   detectarBloquesSinConfirmar, que hace lo mismo del lado de venta ya
+   *   guardada; esto corre ANTES de guardar, sobre la respuesta cruda).
    * @returns {{ errores: string[], advertencias: string[] }}
    */
-  static validar(html, { contentIdsPermitidos = null, vista = 'inicio', categoriasReales = null } = {}) {
+  static validar(html, { contentIdsPermitidos = null, vista = 'inicio', categoriasReales = null, demoData = null } = {}) {
     const texto = String(html || '');
     const errores = [];
     const advertencias = [];
@@ -167,8 +181,38 @@ class AICodeValidator {
       }
     }
 
+    // Countdown/estadísticas SIN demo_data: la primitiva queda en el HTML
+    // pero Gesicomm no tiene con qué activarla (venta.urgencia/prueba_social
+    // se guardan en false por default) — el runtime la oculta sola y el
+    // comercio nunca ve el preview que se le prometió al tildar "que la IA
+    // proponga ejemplos". Es un error real, no una advertencia: se manda al
+    // repair para que declare el demo_data que le faltó, o saque la
+    // primitiva si de verdad no la necesitaba.
+    if (/data-gesicomm-countdown(?!-parte)/.test(texto) && !demoData?.urgencia?.activo) {
+      errores.push(
+        'Usaste data-gesicomm-countdown pero no declaraste demo_data.urgencia (con activo:true y un preset). '
+        + 'Sin eso, Gesicomm no puede activar el countdown y el bloque queda oculto siempre. '
+        + 'Agregá demo_data.urgencia = {"activo": true, "preset": "24h"|"48h"|"72h"}, o sacá el countdown del HTML si esta composición no lo necesita.',
+      );
+    }
+    if (/data-gesicomm-lista=["']estadisticas["']/.test(texto) && !(Array.isArray(demoData?.prueba_social?.items) && demoData.prueba_social.items.length)) {
+      errores.push(
+        'Usaste data-gesicomm-lista="estadisticas" pero no declaraste demo_data.prueba_social.items. '
+        + 'Sin eso, Gesicomm no tiene con qué llenar la lista y la sección queda oculta siempre. '
+        + 'Agregá demo_data.prueba_social.items con 2 a 4 cifras de ejemplo, o sacá esa lista del HTML si esta composición no la necesita.',
+      );
+    }
+
     for (const valor of extraerValores(texto, 'data-gesicomm-bind')) {
-      if (valor && !BINDS_DOCUMENTADOS.has(valor)) {
+      if (valor && LISTAS_VALIDAS.has(valor)) {
+        // Confusión confirmada, no "probablemente vacío": "beneficios",
+        // "confianza", etc. son nombres de LISTA (arrays), nunca un campo
+        // escalar de data-gesicomm-bind. Pasa a error para que dispare el
+        // repair — a diferencia de un nombre inventado cualquiera (ver
+        // comentario del punto 3 arriba), acá se sabe con certeza que el
+        // autor confundió un data-gesicomm-lista con un bind.
+        errores.push(`data-gesicomm-bind="${valor}" es el nombre de una LISTA (data-gesicomm-lista="${valor}"), no un campo de data-gesicomm-bind: envolvé ese bloque en <template data-gesicomm-lista="${valor}"> en vez de usarlo como bind suelto.`);
+      } else if (valor && !BINDS_DOCUMENTADOS.has(valor)) {
         advertencias.push(`data-gesicomm-bind="${valor}" no es un campo documentado: probablemente se muestre vacío.`);
       }
     }
@@ -286,6 +330,13 @@ class AICodeValidator {
       );
     }
 
+    for (const seccion of SECCIONES_TEMPLATE_CRITICAS) {
+      const marcador = new RegExp(`data-template-section=["']${seccion}["']`, 'i');
+      if (marcador.test(htmlAnterior) && !marcador.test(htmlNuevo)) {
+        errores.push(`El código nuevo eliminó la sección obligatoria del template "${seccion}". Conservá esa estructura y optimizá/rellená su contenido en vez de borrarla.`);
+      }
+    }
+
     return { errores };
   }
 
@@ -299,7 +350,7 @@ class AICodeValidator {
    *
    * @returns {string[]} motivos (vacío = OK)
    */
-  static validarCalidad(codigo) {
+  static validarCalidad(codigo, familia = null) {
     const css = String(codigo?.css || '');
     const html = String(codigo?.html || '');
     const motivos = [];
@@ -311,6 +362,38 @@ class AICodeValidator {
     if (placeholdersVacios) {
       motivos.push(
         `Hay ${placeholdersVacios} elemento(s) "placeholder" vacíos: en la página publicada son un rectángulo de color. Poné la imagen real del producto con <img data-gesicomm-bind="imagen"> o sacá el bloque.`,
+      );
+    }
+
+    const listasPaquetes = html.match(/<([a-z]+)[^>]*data-gesicomm-lista=["']paquetes["'][^>]*>[\s\S]*?<\/\1>/gi) || [];
+    const paquetesSinImagen = listasPaquetes.filter(bloque => /<template[\s>]/i.test(bloque) && !/data-gesicomm-bind=["']imagen["']/i.test(bloque)).length;
+    if (paquetesSinImagen) {
+      motivos.push(
+        `La lista "paquetes" tiene ${paquetesSinImagen} template(s) sin imagen: agregá <img data-gesicomm-bind="imagen" alt=""> dentro de cada tarjeta para mostrar la foto del paquete/producto.`,
+      );
+    }
+
+    // Moda: el talle tiene que ser una variante real (data-gesicomm-lista=
+    // "variantes"), nunca un texto fijo ni un input de cantidad disfrazado
+    // de selector de talle — ver INSTRUCCIONES_MODA del lado RAG. Es una
+    // página con acción de compra real (no un catálogo/inicio) la que
+    // necesita el selector, por eso se chequea junto a data-gesicomm-comprar.
+    if (familia === 'moda' && /data-gesicomm-comprar/i.test(html) && !/data-gesicomm-lista=["']variantes["']/i.test(html)) {
+      motivos.push(
+        'Es un producto de moda con acción de compra pero no se encontró data-gesicomm-lista="variantes": el talle tiene que ser un selector de variante real, no un texto fijo ni un input de cantidad.',
+      );
+    }
+
+    // El contenedor completo de "estadisticas" (el que itera los 2-4 items
+    // de demo_data.prueba_social) repetido en dos lugares del documento
+    // produce un hero con 4 grupos de estrellas amontonados en vez de un
+    // rating único — ver CONTRATO_BASE del lado RAG. Se detecta contando
+    // aperturas del atributo, no aperturas de sección, porque el bug
+    // concreto es "el mismo contenedor iterable puesto dos veces".
+    const repeticionesEstadisticas = (html.match(/data-gesicomm-lista=["']estadisticas["']/gi) || []).length;
+    if (repeticionesEstadisticas > 1) {
+      motivos.push(
+        `El contenedor data-gesicomm-lista="estadisticas" aparece ${repeticionesEstadisticas} veces: cada uno va a iterar los mismos 2-4 items completos, así que un rating "de adorno" en el hero termina mostrando todas las cifras con sus estrellas repetidas. Dejalo UNA sola vez, en la sección de prueba social dedicada; si el hero quiere una insignia, usá texto fijo sin número (ej. "★★★★★ Calificado por nuestros clientes").`,
       );
     }
 
@@ -331,6 +414,35 @@ class AICodeValidator {
       motivos.push('La tipografía no usa clamp(): pasá al menos los títulos a una escala fluida con clamp().');
     }
     return motivos;
+  }
+
+  /**
+   * Bloques de urgencia/prueba social que el HTML usa (data-gesicomm-countdown,
+   * data-gesicomm-lista="estadisticas") pero que todavía no tienen datos
+   * reales confirmados por el comercio en `venta` — no se puede publicar
+   * mientras existan. Chequeo estricto: si la primitiva está en el HTML, el
+   * bloque tiene que estar activo, completo Y en estado "confirmado" — no
+   * alcanza con "activo && no confirmado", porque así se cubre también el
+   * caso de `venta.urgencia`/`venta.prueba_social` inexistente o corrupto
+   * con el atributo igual presente en el HTML (la sola presencia de la
+   * primitiva significa "esta landing depende de este dato").
+   *
+   * No valida si `fin_at` ya venció: la expiración es comportamiento normal
+   * de runtime (el countdown vencido se oculta solo, mismo criterio que
+   * cualquier lista vacía), no un motivo para bloquear publicación.
+   */
+  static detectarBloquesSinConfirmar(htmls, venta) {
+    const texto = (Array.isArray(htmls) ? htmls : [htmls]).filter(Boolean).join('\n');
+    const pendientes = [];
+    if (/data-gesicomm-countdown(?!-parte)/.test(texto)) {
+      const u = venta?.urgencia;
+      if (!u?.activo || !u?.fin_at || u?.estado !== 'confirmado') pendientes.push('urgencia');
+    }
+    if (/data-gesicomm-lista=["']estadisticas["']/.test(texto)) {
+      const p = venta?.prueba_social;
+      if (!p?.activo || !Array.isArray(p?.items) || !p.items.length || p?.estado !== 'confirmado') pendientes.push('prueba_social');
+    }
+    return pendientes;
   }
 }
 

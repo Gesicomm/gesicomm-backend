@@ -580,10 +580,56 @@ class LandingCodigoService {
 const TIPOS_VENTA = ['catalogo', 'producto_unico', 'combos'];
 const MODOS_SELECCION = ['manual', 'categoria', 'todos'];
 const MODOS_RECOMENDADOS = ['auto', 'manual'];
+// String, no boolean, a propósito: el día que haga falta un tercer estado
+// real (dato importado de otra plataforma, marcado incompleto, etc.) alcanza
+// con sumarlo acá, sin migrar nada. 'confirmado' NUNCA sale de lo que manda
+// el cliente en `venta` — ver limpiarUrgencia/limpiarPruebaSocial abajo y el
+// mecanismo dedicado de confirmación en landingSimple.service.js.
+const ESTADOS_CONFIRMACION = ['demo', 'confirmado'];
 
 function textoCorto(valor, max) {
   if (typeof valor !== 'string') return '';
   return valor.trim().slice(0, max);
+}
+
+function fechaValidaISO(valor) {
+  if (typeof valor !== 'string' || !valor) return null;
+  const t = Date.parse(valor);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+// El comercio (o la IA vía demo_data) puede mandar `estado`, pero acá se
+// ignora siempre: un guardado normal de "Configurar venta" jamás puede dejar
+// `confirmado` por accidente. La única puerta hacia 'confirmado' es el flag
+// `confirmaciones` que procesa LandingSimpleService.actualizarCodigo DESPUÉS
+// de esta limpieza.
+// `null` cuando el bloque JAMÁS se configuró (ni el comercio ni una fusión de
+// demo_data previa) — a diferencia de un objeto con `activo:false`, que
+// significa "se configuró y se dejó/puso apagado". La diferencia importa: es
+// la señal que usa AILandingService.fusionarDemoData para decidir si puede
+// llenar el hueco con la propuesta de la IA o si ya hay algo del comercio que
+// no se debe pisar (ver ese método).
+function limpiarUrgencia(urgencia) {
+  if (!urgencia || typeof urgencia !== 'object') return null;
+  return {
+    activo: urgencia.activo === true,
+    fin_at: fechaValidaISO(urgencia.fin_at),
+    estado: 'demo',
+  };
+}
+
+function limpiarPruebaSocial(pruebaSocial) {
+  if (!pruebaSocial || typeof pruebaSocial !== 'object') return null;
+  return {
+    activo: pruebaSocial.activo === true,
+    items: listaDe(pruebaSocial.items, 8, it => {
+      if (!it || typeof it !== 'object') return null;
+      const valor = textoCorto(it.valor, 20);
+      const etiqueta = textoCorto(it.etiqueta, 120);
+      return valor && etiqueta ? { valor, etiqueta } : null;
+    }),
+    estado: 'demo',
+  };
 }
 
 function listaDe(valor, max, mapear) {
@@ -619,14 +665,42 @@ function limpiarPaquetes(paquetes) {
   return salida;
 }
 
+const CAMPOS_BRIEF_COMERCIAL = [
+  'prueba_social',
+  'objeciones',
+  'beneficios',
+  'faq',
+  'modo_uso_ingredientes',
+  'detalles_tecnicos',
+  'usos_concretos',
+  'guia_talles',
+];
+
+function limpiarBriefComercial(brief) {
+  const fuente = brief?.respuestas && typeof brief.respuestas === 'object' && !Array.isArray(brief.respuestas)
+    ? brief.respuestas
+    : brief;
+  if (!fuente || typeof fuente !== 'object' || Array.isArray(fuente)) return null;
+  const respuestas = {};
+  for (const campo of CAMPOS_BRIEF_COMERCIAL) {
+    const texto = textoCorto(fuente[campo], 1800);
+    if (texto) respuestas[campo] = texto;
+  }
+  return Object.keys(respuestas).length
+    ? { completado: true, respuestas }
+    : null;
+}
+
 LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
   if (!venta || typeof venta !== 'object' || Array.isArray(venta)) return null;
   const cross = venta.cross_sell || {};
   const reco = venta.recomendados || {};
   const max = Number(reco.max);
+  const briefComercial = limpiarBriefComercial(venta.brief_comercial);
+  const tipo = TIPOS_VENTA.includes(venta.tipo) ? venta.tipo : 'catalogo';
   return {
     configurado: true,
-    tipo: TIPOS_VENTA.includes(venta.tipo) ? venta.tipo : 'catalogo',
+    tipo,
     seleccion: MODOS_SELECCION.includes(venta.seleccion) ? venta.seleccion : 'manual',
     categorias: listaDe(venta.categorias, 30, v => textoCorto(v, 100)),
     incluir_combos: venta.incluir_combos !== false,
@@ -634,7 +708,7 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
     // producto principal. `tipo` se sigue guardando por compatibilidad.
     abrir_en: venta.abrir_en === 'producto' ? 'producto' : 'tienda',
     combos_primero: venta.combos_primero === true,
-    principal_id: enteroPositivo(venta.principal_id),
+    principal_id: tipo === 'producto_unico' ? enteroPositivo(venta.principal_id) : null,
     // Por paquete (oferta 'normal'): la etiqueta que muestra la ficha
     // ("Más elegido", "Mayor ahorro"…) y cuál se destaca (arranca elegido).
     paquetes: limpiarPaquetes(venta.paquetes),
@@ -649,6 +723,9 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
       max: Number.isInteger(max) && max >= 1 && max <= 8 ? max : 4,
       titulo: textoCorto(reco.titulo, 80),
     },
+    urgencia: limpiarUrgencia(venta.urgencia),
+    prueba_social: limpiarPruebaSocial(venta.prueba_social),
+    ...(briefComercial ? { brief_comercial: briefComercial } : {}),
   };
 };
 
@@ -656,3 +733,4 @@ module.exports = LandingCodigoService;
 module.exports.MAX_HTML = MAX_HTML;
 module.exports.MAX_CSS = MAX_CSS;
 module.exports.MAX_JS = MAX_JS;
+module.exports.ESTADOS_CONFIRMACION = ESTADOS_CONFIRMACION;

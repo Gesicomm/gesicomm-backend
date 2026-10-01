@@ -17,12 +17,12 @@ const CostoGastoService = require('../services/costoGasto.service');
 const ComprobanteService = require('../services/comprobante.service');
 const ImagenService = require('../services/imagen.service');
 const { generarExcelReporteFinanciero, generarPdfReporteFinanciero } = require('../services/reporteFinanciero.export');
+const { destinoUploadsTmp } = require('../utils/uploadTmp');
 
-const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
 const MAX_COMPROBANTE_BYTES = 5 * 1024 * 1024; // 5MB (facturas escaneadas/PDF)
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOADS_TMP),
+  destination: destinoUploadsTmp,
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);

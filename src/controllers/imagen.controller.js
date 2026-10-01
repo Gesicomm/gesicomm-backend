@@ -12,11 +12,10 @@ const ImagenService = require('../services/imagen.service');
 const { R2StorageError } = require('../services/r2/r2.errors');
 const { R2ConfigError } = require('../services/r2/r2.config');
 const { logger } = require('../utils/logger');
-
-const UPLOADS_TMP = path.join(process.cwd(), 'tmp', 'uploads');
+const { destinoUploadsTmp } = require('../utils/uploadTmp');
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOADS_TMP),
+  destination: destinoUploadsTmp,
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);

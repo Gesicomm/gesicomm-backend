@@ -24,6 +24,7 @@ const AiGenerationLog = sequelize.define('AiGenerationLog', {
   exitoso: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   validation_errors: { type: DataTypes.JSONB, allowNull: true },
   validation_errors_pre_repair: { type: DataTypes.JSONB, allowNull: true },
+  metadata: { type: DataTypes.JSONB, allowNull: true },
 }, {
   tableName: 'ai_generation_logs',
   timestamps: true,
