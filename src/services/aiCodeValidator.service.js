@@ -52,7 +52,7 @@ const ATRIBUTOS_RUNTIME = [
 const ATRIBUTOS_VALIDOS = new Set([...ATRIBUTOS_AUTOR, ...ATRIBUTOS_RUNTIME]);
 
 const LISTAS_VALIDAS = new Set([
-  'catalogo', 'productos', 'solo_productos', 'combos', 'combos_producto', 'recomendados',
+  'catalogo', 'productos', 'productos_destacados', 'solo_productos', 'combos', 'combos_producto', 'recomendados',
   'ofertas', 'ofertas_bump', 'ofertas_pack', 'variantes', 'imagenes',
   'beneficios', 'confianza', 'preguntas', 'combo_incluye', 'paquetes', 'estadisticas',
 ]);
@@ -181,20 +181,10 @@ class AICodeValidator {
       }
     }
 
-    // Countdown/estadísticas SIN demo_data: la primitiva queda en el HTML
-    // pero Gesicomm no tiene con qué activarla (venta.urgencia/prueba_social
-    // se guardan en false por default) — el runtime la oculta sola y el
-    // comercio nunca ve el preview que se le prometió al tildar "que la IA
-    // proponga ejemplos". Es un error real, no una advertencia: se manda al
-    // repair para que declare el demo_data que le faltó, o saque la
-    // primitiva si de verdad no la necesitaba.
-    if (/data-gesicomm-countdown(?!-parte)/.test(texto) && !demoData?.urgencia?.activo) {
-      errores.push(
-        'Usaste data-gesicomm-countdown pero no declaraste demo_data.urgencia (con activo:true y un preset). '
-        + 'Sin eso, Gesicomm no puede activar el countdown y el bloque queda oculto siempre. '
-        + 'Agregá demo_data.urgencia = {"activo": true, "preset": "24h"|"48h"|"72h"}, o sacá el countdown del HTML si esta composición no lo necesita.',
-      );
-    }
+    // Estadísticas SIN demo_data: la primitiva queda en el HTML pero
+    // Gesicomm no tiene con qué llenarla para preview. Countdown es distinto:
+    // no requiere demo_data.urgencia; el runtime lo pinta igual con fallback
+    // visual cuando todavía no hay fecha real confirmada.
     if (/data-gesicomm-lista=["']estadisticas["']/.test(texto) && !(Array.isArray(demoData?.prueba_social?.items) && demoData.prueba_social.items.length)) {
       errores.push(
         'Usaste data-gesicomm-lista="estadisticas" pero no declaraste demo_data.prueba_social.items. '
@@ -267,7 +257,7 @@ class AICodeValidator {
       }
     }
 
-    const muestraProductos = /data-gesicomm-lista=["'](catalogo|productos|solo_productos|combos)["']/.test(texto);
+    const muestraProductos = /data-gesicomm-lista=["'](catalogo|productos|productos_destacados|solo_productos|combos)["']/.test(texto);
     const tieneAccionCompra = ACCIONES_COMPRA.some(a => new RegExp(`${a}(\\s|=|/|>)`).test(texto));
     if (vista === 'inicio' && muestraProductos && !tieneAccionCompra) {
       errores.push('La página muestra productos pero no tiene ningún botón de compra, agregar o ver ficha (data-gesicomm-comprar/agregar/ver).');
@@ -419,17 +409,17 @@ class AICodeValidator {
   /**
    * Bloques de urgencia/prueba social que el HTML usa (data-gesicomm-countdown,
    * data-gesicomm-lista="estadisticas") pero que todavía no tienen datos
-   * reales confirmados por el comercio en `venta` — no se puede publicar
-   * mientras existan. Chequeo estricto: si la primitiva está en el HTML, el
+   * reales confirmados por el comercio en `venta` — requieren aceptación
+   * explícita al publicar. Chequeo estricto: si la primitiva está en el HTML, el
    * bloque tiene que estar activo, completo Y en estado "confirmado" — no
    * alcanza con "activo && no confirmado", porque así se cubre también el
    * caso de `venta.urgencia`/`venta.prueba_social` inexistente o corrupto
    * con el atributo igual presente en el HTML (la sola presencia de la
    * primitiva significa "esta landing depende de este dato").
    *
-   * No valida si `fin_at` ya venció: la expiración es comportamiento normal
-   * de runtime (el countdown vencido se oculta solo, mismo criterio que
-   * cualquier lista vacía), no un motivo para bloquear publicación.
+   * No valida si `fin_at` ya venció: el runtime puede mostrar un countdown
+   * generado cuando no hay una fecha real aplicable. Lo importante acá es
+   * pedir aceptación explícita si el dato no está confirmado.
    */
   static detectarBloquesSinConfirmar(htmls, venta) {
     const texto = (Array.isArray(htmls) ? htmls : [htmls]).filter(Boolean).join('\n');

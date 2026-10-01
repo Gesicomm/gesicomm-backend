@@ -308,7 +308,9 @@ async function cambiarEstado(req, res) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
     if (!tienda) return;
-    const landing = await LandingSimpleService.cambiarEstado(req.params.id, tienda.id, !!req.body.activo);
+    const landing = await LandingSimpleService.cambiarEstado(req.params.id, tienda.id, !!req.body.activo, {
+      aceptarContenidoIA: req.body?.aceptar_contenido_ia === true,
+    });
     return res.json(landing);
   } catch (err) {
     return manejarError(res, err, 'Error al cambiar el estado de la landing.');

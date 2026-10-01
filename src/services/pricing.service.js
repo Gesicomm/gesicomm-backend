@@ -230,7 +230,7 @@ class PricingService {
     // Canal de esta línea. Se registra en EnvioItem.origen_venta para que la
     // reportería pueda separar venta normal de venta incremental sin volver
     // a unir contra la oferta (que puede cambiar después).
-    let origenVenta = 'normal';
+    let origenVenta = esCombo ? 'combo' : 'normal';
     let precioNormalUnitario = precioFinal;
 
     if (ofertaResuelta) {

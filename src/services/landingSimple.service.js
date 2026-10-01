@@ -648,10 +648,10 @@ class LandingSimpleService {
     return this.obtener(landing.id, tienda_id);
   }
 
-  static async cambiarEstado(id, tienda_id, activo) {
+  static async cambiarEstado(id, tienda_id, activo, opciones = {}) {
     const landing = await this.buscarPropia(id, tienda_id);
 
-    if (activo) {
+    if (activo && opciones.aceptarContenidoIA !== true) {
       const htmls = [
         landing.content?.codigo?.html,
         landing.content?.vistas?.producto?.html,
@@ -661,16 +661,8 @@ class LandingSimpleService {
       if (pendientes.length) {
         const NOMBRES = { urgencia: 'el countdown de oferta', prueba_social: 'las estadísticas/prueba social' };
         const detalle = pendientes.map(p => NOMBRES[p] || p).join(' y ');
-        // El mensaje nombra la política de Meta Ads y la Ley 1334 (Defensa
-        // del Consumidor, Paraguay) a propósito: countdown falso y cifras
-        // inventadas publicadas como hecho están prohibidos en ambas, y
-        // Gesicomm no puede quedar expuesta a que una cuenta de anuncios se
-        // suspenda o a un reclamo por publicidad engañosa por un dato de
-        // ejemplo que nunca se confirmó como real.
         throw new Error(
-          `No se puede publicar: ${detalle} todavía están en modo "ejemplo" (los generó la IA para que veas cómo queda, no son datos reales). `
-          + 'Meta prohíbe countdowns falsos y estadísticas inventadas en anuncios (puede suspender tu cuenta publicitaria), y la Ley 1334 de Defensa del Consumidor prohíbe la publicidad engañosa. '
-          + 'Confirmá estos datos con información real en "Configurar venta" antes de publicar.',
+          `${detalle} todavía no están confirmados como datos reales. Revisá la advertencia de publicación y aceptá explícitamente si querés publicar igual.`,
         );
       }
     }

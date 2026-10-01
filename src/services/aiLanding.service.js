@@ -509,24 +509,12 @@ class AILandingService {
   static asegurarDemoDataVisual(codigo) {
     if (!codigo || typeof codigo !== 'object') return codigo;
     const html = String(codigo.html || '');
-    const usaCountdown = /data-gesicomm-countdown(?!-parte)/.test(html);
     const usaEstadisticas = /data-gesicomm-lista=["']estadisticas["']/.test(html);
-    if (!usaCountdown && !usaEstadisticas) return codigo;
+    if (!usaEstadisticas) return codigo;
 
     const demoData = codigo.demo_data && typeof codigo.demo_data === 'object' && !Array.isArray(codigo.demo_data)
       ? { ...codigo.demo_data }
       : {};
-
-    if (usaCountdown) {
-      const urgencia = demoData.urgencia && typeof demoData.urgencia === 'object' && !Array.isArray(demoData.urgencia)
-        ? { ...demoData.urgencia }
-        : {};
-      demoData.urgencia = {
-        ...urgencia,
-        activo: true,
-        preset: this.PRESETS_DEMO_URGENCIA[urgencia.preset] ? urgencia.preset : '48h',
-      };
-    }
 
     if (usaEstadisticas && !(Array.isArray(demoData.prueba_social?.items) && demoData.prueba_social.items.length)) {
       demoData.prueba_social = {
@@ -542,11 +530,6 @@ class AILandingService {
     return { ...codigo, demo_data: demoData };
   }
 
-  // Horas por preset que la IA puede proponer para el countdown de demo — el
-  // LLM NUNCA calcula fechas, solo elige la intensidad de la oferta; Node
-  // resuelve "ahora + preset" acá, del lado del servidor.
-  static PRESETS_DEMO_URGENCIA = { '24h': 24, '48h': 48, '72h': 72 };
-
   /**
    * Solo llena huecos, nunca pisa nada que ya exista — haya sido confirmado
    * o no. Si el comercio ya tiene CUALQUIER config para ese bloque (aunque
@@ -557,14 +540,6 @@ class AILandingService {
   static fusionarDemoData(ventaBase, demoData) {
     if (!ventaBase || !demoData) return ventaBase;
     const venta = { ...ventaBase };
-    if (demoData.urgencia?.activo && !ventaBase.urgencia) {
-      const horas = this.PRESETS_DEMO_URGENCIA[demoData.urgencia.preset] || 48;
-      venta.urgencia = {
-        activo: true,
-        fin_at: new Date(Date.now() + horas * 3600 * 1000).toISOString(),
-        estado: 'demo',
-      };
-    }
     if (Array.isArray(demoData.prueba_social?.items) && demoData.prueba_social.items.length && !ventaBase.prueba_social) {
       venta.prueba_social = { activo: true, items: demoData.prueba_social.items, estado: 'demo' };
     }

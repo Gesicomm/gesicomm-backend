@@ -212,7 +212,7 @@ describe('AILandingService._codigoConMetadata', () => {
 });
 
 describe('AILandingService.asegurarDemoDataVisual', () => {
-  it('agrega demo_data.urgencia cuando el HTML usa countdown', () => {
+  it('no agrega demo_data.urgencia cuando el HTML usa countdown', () => {
     const codigo = AILandingService.asegurarDemoDataVisual({
       html: '<section data-gesicomm-countdown></section>',
       css: '',
@@ -220,10 +220,10 @@ describe('AILandingService.asegurarDemoDataVisual', () => {
       demo_data: null,
     });
 
-    expect(codigo.demo_data.urgencia).toEqual({ activo: true, preset: '48h' });
+    expect(codigo.demo_data?.urgencia).toBeUndefined();
   });
 
-  it('respeta presets validos existentes', () => {
+  it('ignora presets existentes de urgencia demo', () => {
     const codigo = AILandingService.asegurarDemoDataVisual({
       html: '<section data-gesicomm-countdown></section>',
       css: '',
@@ -232,6 +232,7 @@ describe('AILandingService.asegurarDemoDataVisual', () => {
     });
 
     expect(codigo.demo_data.urgencia).toEqual({ activo: true, preset: '24h' });
+    expect(AILandingService.fusionarDemoData({ configurado: true }, codigo.demo_data).urgencia).toBeUndefined();
   });
 
   it('agrega demo_data.prueba_social cuando el HTML usa estadisticas', () => {

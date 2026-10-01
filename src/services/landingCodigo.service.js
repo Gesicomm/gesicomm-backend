@@ -155,6 +155,7 @@ const OPCIONES_HTML = {
   // suelto dentro del body.
   nonTextTags: ['script', 'style', 'textarea', 'option', 'noscript'],
   disallowedTagsMode: 'discard',
+  exclusiveFilter: frame => esAvisoIaVisible(frame.text),
 };
 
 // Construcciones prohibidas en el CSS. url() con http(s)/data: se permite
@@ -192,6 +193,20 @@ const JS_PROHIBIDO = [
   { re: /\bserviceWorker\b/i, motivo: 'serviceWorker' },
   { re: /<\s*\/?\s*script\b/i, motivo: 'etiquetas <script> dentro del JS' },
 ];
+
+const AVISOS_IA_EN_LANDING = [
+  /experiencias?\s+mostradas?/i,
+  /no\s+corresponden\s+necesariamente/i,
+  /resultados?\s+individuales?\s+pueden\s+variar/i,
+  /resultados?\s+pueden\s+variar\s+seg[uú]n\s+cada\s+persona/i,
+];
+
+function esAvisoIaVisible(texto) {
+  const limpio = String(texto || '').replace(/\s+/g, ' ').trim();
+  return limpio.length > 0
+    && limpio.length <= 1200
+    && AVISOS_IA_EN_LANDING.some(re => re.test(limpio));
+}
 
 function jsSinComentarios(js) {
   const texto = String(js || '');
@@ -259,6 +274,7 @@ function jsSinComentarios(js) {
 // página entera. Es el caso normal: el comercio copia una plantilla de
 // afuera (o se la genera una IA) y la pega tal cual en el primer campo.
 const ES_DOCUMENTO_COMPLETO = /<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]/i;
+const TIENE_BLOQUES_EMBEBIDOS = /<\s*(style|script)\b|<link\b/i;
 
 /** Concatena dos bloques de código sin dejar líneas en blanco de más. */
 function unir(existente, agregado) {
@@ -337,7 +353,9 @@ class LandingCodigoService {
    */
   static separarDocumentoCompleto(htmlOriginal) {
     const original = String(htmlOriginal || '');
-    if (!ES_DOCUMENTO_COMPLETO.test(original)) {
+    const esDocumentoCompleto = ES_DOCUMENTO_COMPLETO.test(original);
+    const tieneBloquesEmbebidos = TIENE_BLOQUES_EMBEBIDOS.test(original);
+    if (!esDocumentoCompleto && !tieneBloquesEmbebidos) {
       return { html: original, css: '', js: '', fonts: [], advertencias: [] };
     }
 
@@ -378,9 +396,10 @@ class LandingCodigoService {
     }
     resto = extraerFontsDeHtml(resto).html;
 
-    if (estilos.length) advertencias.push(`Pegaste una página completa: el contenido de ${estilos.length === 1 ? 'su <style>' : `sus ${estilos.length} <style>`} se movió a la pestaña CSS.`);
-    if (scripts.length) advertencias.push(`Pegaste una página completa: el contenido de ${scripts.length === 1 ? 'su <script>' : `sus ${scripts.length} <script>`} se movió a la pestaña JavaScript.`);
-    if (!estilos.length && !scripts.length) advertencias.push('Pegaste una página completa: se conservó solo lo que había dentro del <body>.');
+    const origen = esDocumentoCompleto ? 'una página completa' : 'HTML con bloques embebidos';
+    if (estilos.length) advertencias.push(`Pegaste ${origen}: el contenido de ${estilos.length === 1 ? 'su <style>' : `sus ${estilos.length} <style>`} se movió a la pestaña CSS.`);
+    if (scripts.length) advertencias.push(`Pegaste ${origen}: el contenido de ${scripts.length === 1 ? 'su <script>' : `sus ${scripts.length} <script>`} se movió a la pestaña JavaScript.`);
+    if (esDocumentoCompleto && !estilos.length && !scripts.length) advertencias.push('Pegaste una página completa: se conservó solo lo que había dentro del <body>.');
 
     return {
       html: resto.trim(),
@@ -614,6 +633,7 @@ function limpiarUrgencia(urgencia) {
   return {
     activo: urgencia.activo === true,
     fin_at: fechaValidaISO(urgencia.fin_at),
+    producto_id: contentId(urgencia.producto_id || urgencia.content_id),
     estado: 'demo',
   };
 }
@@ -622,6 +642,7 @@ function limpiarPruebaSocial(pruebaSocial) {
   if (!pruebaSocial || typeof pruebaSocial !== 'object') return null;
   return {
     activo: pruebaSocial.activo === true,
+    producto_id: contentId(pruebaSocial.producto_id || pruebaSocial.content_id),
     items: listaDe(pruebaSocial.items, 8, it => {
       if (!it || typeof it !== 'object') return null;
       const valor = textoCorto(it.valor, 20);
@@ -657,10 +678,11 @@ function limpiarPaquetes(paquetes) {
     const id = enteroPositivo(clave);
     if (!id || !conf || typeof conf !== 'object') continue;
     const etiqueta = String(conf.etiqueta ?? '').replace(/\s+/g, ' ').trim().slice(0, 24);
+    const activo = conf.activo !== false;
     // Un solo paquete destacado por landing.
-    const esDestacado = conf.destacado === true && !destacado;
+    const esDestacado = activo && conf.destacado === true && !destacado;
     if (esDestacado) destacado = true;
-    if (etiqueta || esDestacado) salida[id] = { etiqueta, destacado: esDestacado };
+    if (etiqueta || esDestacado || !activo) salida[id] = { etiqueta, destacado: esDestacado, ...(activo ? {} : { activo: false }) };
   }
   return salida;
 }
@@ -709,6 +731,10 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
     abrir_en: venta.abrir_en === 'producto' ? 'producto' : 'tienda',
     combos_primero: venta.combos_primero === true,
     principal_id: tipo === 'producto_unico' ? enteroPositivo(venta.principal_id) : null,
+    // Productos destacados del inicio: content_id públicos, elegidos en
+    // Configurar venta. Si queda vacío, el runtime usa los primeros de la
+    // selección para conservar compatibilidad con landings anteriores.
+    destacados: listaDe(venta.destacados, 12, contentId),
     // Por paquete (oferta 'normal'): la etiqueta que muestra la ficha
     // ("Más elegido", "Mayor ahorro"…) y cuál se destaca (arranca elegido).
     paquetes: limpiarPaquetes(venta.paquetes),

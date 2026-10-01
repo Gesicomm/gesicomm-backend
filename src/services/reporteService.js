@@ -4,6 +4,12 @@ const { ESTADOS_ANALITICA } = require('../utils/analyticsConstants');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 class ReporteService {
+  static _filasQuery(resultado) {
+    if (Array.isArray(resultado?.[0])) return resultado[0];
+    if (Array.isArray(resultado)) return resultado;
+    return [];
+  }
+
   /**
    * Asegura el scope del tenant filtrando envíos por los usuarios que pertenecen al inquilino,
    * o si se pasa usuario_id, filtra por ese usuario directamente.
@@ -26,6 +32,96 @@ class ReporteService {
       ];
     }
     return whereEnvio;
+  }
+
+  static async _calcularMetricasPorOrigen(usuario_id, filtros = {}) {
+    const replacements = { usuario_id, estados_exitosos: ESTADOS_ANALITICA.EXITOSOS };
+    const condiciones = ['e.usuario_id = :usuario_id'];
+
+    if (filtros.estado && filtros.estado !== 'TODOS') {
+      condiciones.push('e.estado = :estado');
+      replacements.estado = filtros.estado;
+    } else {
+      condiciones.push('e.estado IN (:estados_exitosos)');
+    }
+    if (filtros.fecha_desde && filtros.fecha_hasta) {
+      condiciones.push('e.fecha BETWEEN :desde AND :hasta');
+      replacements.desde = filtros.fecha_desde;
+      replacements.hasta = filtros.fecha_hasta;
+    }
+    if (filtros.producto_id && filtros.producto_id !== 'TODOS') {
+      condiciones.push('ei.producto_id = :producto_id');
+      replacements.producto_id = filtros.producto_id;
+    }
+    if (filtros.metodo_pago && filtros.metodo_pago !== 'TODOS') {
+      condiciones.push('e.metodo_pago = :metodo_pago');
+      replacements.metodo_pago = filtros.metodo_pago;
+    }
+    if (filtros.canal_venta_id && filtros.canal_venta_id !== 'TODOS') {
+      condiciones.push('e.canal_venta_id = :canal_venta_id');
+      replacements.canal_venta_id = filtros.canal_venta_id;
+    }
+    if (filtros.ciudad) {
+      condiciones.push('e.ciudad ILIKE :ciudad');
+      replacements.ciudad = `%${filtros.ciudad}%`;
+    }
+    if (filtros.buscador) {
+      condiciones.push(`(
+        e.cliente ILIKE :buscador
+        OR e.telefono ILIKE :buscador
+        OR CAST(e.id AS TEXT) LIKE :buscador
+        OR CAST(e.numero_pedido AS TEXT) LIKE :buscador
+      )`);
+      replacements.buscador = `%${filtros.buscador}%`;
+    }
+
+    const resultado = await Envio.sequelize.query(`
+      SELECT
+        COALESCE(NULLIF(ei.origen_venta, ''), 'normal') AS origen_venta,
+        COUNT(*) AS lineas,
+        COALESCE(SUM(ei.cantidad), 0) AS unidades,
+        COALESCE(SUM(ei.subtotal), 0) AS importe_cobrado,
+        COALESCE(SUM(COALESCE(ei.precio_normal, ei.precio_unitario, 0) * ei.cantidad), 0) AS importe_normal
+      FROM envio_items ei
+      INNER JOIN envios e ON e.id = ei.envio_id
+      WHERE ${condiciones.join(' AND ')}
+      GROUP BY COALESCE(NULLIF(ei.origen_venta, ''), 'normal')
+    `, { replacements });
+
+    const porOrigen = {};
+    for (const fila of this._filasQuery(resultado)) {
+      const origen = fila.origen_venta || 'normal';
+      const lineas = Number(fila.lineas) || 0;
+      const unidades = Number(fila.unidades) || 0;
+      const importeCobrado = Number(fila.importe_cobrado) || 0;
+      const importeNormal = Number(fila.importe_normal) || 0;
+      porOrigen[origen] = {
+        lineas,
+        unidades,
+        importe_cobrado: importeCobrado,
+        importe_normal: importeNormal,
+        descuento_concedido: Math.max(0, importeNormal - importeCobrado),
+      };
+    }
+
+    const de = origen => porOrigen[origen] || {
+      lineas: 0,
+      unidades: 0,
+      importe_cobrado: 0,
+      importe_normal: 0,
+      descuento_concedido: 0,
+    };
+    const incrementales = ['order_bump', 'combo', 'upsell'].map(de);
+
+    return {
+      ventas_normales: de('normal').unidades,
+      order_bumps: de('order_bump').lineas,
+      bundles: de('combo').unidades,
+      upsells: de('upsell').lineas,
+      importe_incremental: incrementales.reduce((s, r) => s + r.importe_cobrado, 0),
+      descuento_incremental: incrementales.reduce((s, r) => s + r.descuento_concedido, 0),
+      por_origen: porOrigen,
+    };
   }
 
   static async _calcularMetricasBase(usuario_id, filtros = {}) {
@@ -98,8 +194,8 @@ class ReporteService {
       repUnidades.canal_venta_id = filtros.canal_venta_id;
     }
     
-    const [unidadesResult] = await sequelize.query(queryUnidades, { replacements: repUnidades });
-    const unidadesVendidas = parseInt(unidadesResult[0]?.unidades || 0, 10);
+    const unidadesResult = await sequelize.query(queryUnidades, { replacements: repUnidades });
+    const unidadesVendidas = parseInt(this._filasQuery(unidadesResult)[0]?.unidades || 0, 10);
 
     // 4. Clientes únicos (de concretados)
     // sequelize count con col y distinct
@@ -135,7 +231,7 @@ class ReporteService {
       whereDesglose['$items.producto_id$'] = filtros.producto_id;
     }
     const desglose = await Envio.findAll({
-      attributes: ['estado', [sequelize.fn('COUNT', sequelize.fn('DISTINCT', sequelize.col('Envio.id'))), 'total']],
+      attributes: ['estado', [fn('COUNT', fn('DISTINCT', col('Envio.id'))), 'total']],
       where: whereDesglose,
       include: includeQuery,
       group: ['estado'],
@@ -148,6 +244,8 @@ class ReporteService {
       else pend += parseInt(d.total);
     });
 
+    const metricasOrigen = await this._calcularMetricasPorOrigen(usuario_id, filtros);
+
     return {
       ventas_netas: ventasNetas,
       pedidos: totalPedidos,
@@ -156,7 +254,8 @@ class ReporteService {
       clientes: clientesUnicos,
       cancelados_devueltos: canceladosDevueltos,
       tasa_cancelacion: tasaCancelacion,
-      desglose_pedidos: { entregados: ent, pendientes: pend, cancelados: canc }
+      desglose_pedidos: { entregados: ent, pendientes: pend, cancelados: canc },
+      ...metricasOrigen,
     };
   }
 
@@ -204,9 +303,24 @@ class ReporteService {
     }
 
     return {
+      ventas_totales: actual.ventas_netas,
+      pedidos: actual.pedidos,
+      ticket_promedio: actual.ticket_promedio,
+      unidades_vendidas: actual.unidades_vendidas,
+      clientes: actual.clientes,
+      cancelados_devueltos: actual.cancelados_devueltos,
+      tasa_cancelacion: actual.tasa_cancelacion,
+      desglose_pedidos: actual.desglose_pedidos,
+      ventas_normales: actual.ventas_normales,
+      order_bumps: actual.order_bumps,
+      bundles: actual.bundles,
+      upsells: actual.upsells,
+      importe_incremental: actual.importe_incremental,
+      descuento_incremental: actual.descuento_incremental,
+      por_origen: actual.por_origen,
       actual,
       anterior,
-      variaciones
+      variaciones,
     };
   }
 

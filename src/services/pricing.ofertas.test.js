@@ -25,6 +25,14 @@ const PRODUCTO = {
   cantidad_disponible: 10,
 };
 
+const PRODUCTO_COMBO = {
+  id: 501,
+  nombre: 'Kit bienestar',
+  precio_total: 288000,
+  precio_minimo: null,
+  producto_padre: { cantidad_disponible: 5 },
+};
+
 const BUMP = {
   id: 1,
   estrategia: 'order_bump',
@@ -34,6 +42,17 @@ const BUMP = {
   precio_order_bump: 5000,
   precio: 60000,
   componentes: [{ producto_id: 178, cantidad: 1 }],
+};
+
+const UPSELL = {
+  id: 4,
+  estrategia: 'upsell',
+  tipo_contenido: 'combo',
+  producto_ancla_id: 75,
+  precio_normal: 90000,
+  precio_order_bump: 70000,
+  precio: 90000,
+  componentes: [{ producto_id: 179, cantidad: 1 }],
 };
 
 // Combo: se elige en la FICHA del producto (no en el checkout). Conserva un
@@ -61,7 +80,7 @@ const PACK_NORMAL = {
   componentes: [{ producto_id: 75, cantidad: 2 }],
 };
 
-const OFERTAS = [BUMP, COMBO_CHECKOUT, PACK_NORMAL];
+const OFERTAS = [BUMP, UPSELL, COMBO_CHECKOUT, PACK_NORMAL];
 
 function resolver(extra = {}) {
   return PricingService.resolverPrecioItem({
@@ -80,6 +99,7 @@ describe('precioDeOferta — los dos precios de una oferta', () => {
 
   test('solo el order bump cobra el promocional', () => {
     expect(PricingService.precioDeOferta(BUMP, 'order_bump')).toEqual({ aplicado: 5000, normal: 60000 });
+    expect(PricingService.precioDeOferta(UPSELL, 'upsell')).toEqual({ aplicado: 70000, normal: 90000 });
     // Un combo se elige en la ficha del producto, antes de comprar: siempre
     // se cobra su precio normal, aunque tuviera un promocional guardado de
     // cuando los combos vivían en el checkout.
@@ -131,6 +151,13 @@ describe('resolverPrecioItem — el bump no puede pisar el precio normal', () =>
     expect(principal.subtotal + bump.subtotal).toBe(227222);
   });
 
+  test('la línea del upsell se cobra al promocional y queda separada para reportes', () => {
+    const r = resolver({ ofertaId: UPSELL.id });
+    expect(r.precio_unitario).toBe(70000);
+    expect(r.precio_normal).toBe(90000);
+    expect(r.origen_venta).toBe('upsell');
+  });
+
   test('un combo se cobra a su precio normal, no al promocional', () => {
     const r = resolver({ ofertaId: COMBO_CHECKOUT.id });
     expect(r.precio_unitario).toBe(150000);
@@ -138,6 +165,21 @@ describe('resolverPrecioItem — el bump no puede pisar el precio normal', () =>
     // El origen igual queda registrado: la reportería sigue pudiendo separar
     // una venta por combo de una venta suelta.
     expect(r.origen_venta).toBe('combo');
+  });
+
+  test('un ProductoCombo de catálogo queda marcado como combo para reportes', () => {
+    const r = PricingService.resolverPrecioItem({
+      entidad: PRODUCTO_COMBO,
+      esCombo: true,
+      cantidad: 1,
+      precioUsuario: undefined,
+      ofertasDelProducto: [],
+      variantesDelProducto: [],
+    });
+    expect(r.precio_unitario).toBe(288000);
+    expect(r.precio_normal).toBe(288000);
+    expect(r.origen_venta).toBe('combo');
+    expect(r.es_combo).toBe(true);
   });
 
   test('el pack normal se cobra al normal aunque exista un bump en el producto', () => {

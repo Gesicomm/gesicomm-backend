@@ -121,7 +121,7 @@ async function exportarPdf(req, res) {
 
 async function crear(req, res) {
   try {
-    const registro = await CostoGastoService.crear(req.body, req.usuario.id);
+    const registro = await CostoGastoService.crear(req.body, req.usuario.id, req.usuario.tenantId);
     return res.status(201).json(registro);
   } catch (err) {
     console.error(err);
@@ -143,7 +143,7 @@ async function detalle(req, res) {
 
 async function actualizar(req, res) {
   try {
-    const registro = await CostoGastoService.actualizar(req.params.id, req.body, req.usuario.id);
+    const registro = await CostoGastoService.actualizar(req.params.id, req.body, req.usuario.id, req.usuario.tenantId);
     return res.json(registro);
   } catch (err) {
     console.error(err);

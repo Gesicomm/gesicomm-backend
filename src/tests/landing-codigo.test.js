@@ -22,13 +22,10 @@ describe('LandingCodigoService.sanitizar', () => {
       expect(advertencias).toHaveLength(0);
     });
 
-    it('descarta <script> y su contenido', () => {
-      const { html, advertencias } = LandingCodigoService.sanitizar({
+    it('rechaza un <script> embebido si usa JavaScript prohibido', () => {
+      expect(() => LandingCodigoService.sanitizar({
         html: '<div>ok</div><script>alert(document.cookie)</script>',
-      });
-      expect(html).toBe('<div>ok</div>');
-      expect(html).not.toContain('alert');
-      expect(advertencias.join(' ')).toMatch(/script/i);
+      })).toThrow('Validación fallida.');
     });
 
     // Ver el CONTRATO en la cabecera del servicio: los onclick sobreviven
@@ -77,6 +74,23 @@ describe('LandingCodigoService.sanitizar', () => {
       });
       expect(html).toContain('<svg');
       expect(html).toContain('d="M4 4h16"');
+    });
+
+    it('quita avisos/disclaimers visibles generados por IA dentro de la landing', () => {
+      const { html } = LandingCodigoService.sanitizar({
+        html: `
+          <section><h1>AdelFit</h1></section>
+          <div class="ai-warning">
+            <span>i</span>
+            <p>Las experiencias mostradas fueron publicadas por comercios que comercializan AdelFit y no corresponden necesariamente a compradores de esta tienda. Los resultados individuales pueden variar.</p>
+          </div>
+          <section><button data-gesicomm-comprar>Comprar</button></section>
+        `,
+      });
+      expect(html).toContain('AdelFit');
+      expect(html).toContain('data-gesicomm-comprar');
+      expect(html).not.toMatch(/experiencias mostradas/i);
+      expect(html).not.toMatch(/resultados individuales/i);
     });
 
     it('rechaza un HTML por encima del límite de tamaño', () => {
@@ -218,6 +232,22 @@ describe('LandingCodigoService.sanitizar', () => {
       expect(r.js.indexOf('const inicial')).toBeLessThan(r.js.indexOf('function siguiente'));
     });
 
+    it('también reparte un fragmento largo con <style> y <script> embebidos', () => {
+      const r = LandingCodigoService.sanitizar({
+        html: [
+          '<section class="hero"><h1>Hola</h1></section>',
+          '<style>.hero { color: green; }</style>',
+          '<script>document.querySelector(".hero")?.classList.add("ok");</script>',
+        ].join('\n'),
+      });
+
+      expect(r.html).toContain('<section class="hero">');
+      expect(r.html).not.toMatch(/<style|<script/i);
+      expect(r.css).toContain('.hero { color: green; }');
+      expect(r.js).toContain('classList.add("ok")');
+      expect(r.advertencias.join(' ')).toMatch(/HTML con bloques embebidos/i);
+    });
+
     it('descarta <script src> externo y lo avisa', () => {
       const r = LandingCodigoService.sanitizar({
         html: '<html><body><p>x</p><script src="https://cdn.test/a.js"></script></body></html>',
@@ -296,6 +326,7 @@ describe('LandingCodigoService.limpiarVenta', () => {
       seleccion: 'categoria',
       categorias: ['Cocina', 'Cocina', ' Fitness ', 42],
       cross_sell: { activo: true, ofertas: [3, '4', -1, 'x', 3] },
+      destacados: ['adelfit', 'combo-12', 'adelfit', '<script>'],
       recomendados: { modo: 'manual', items: ['air-fryer', '<script>'], max: 20, titulo: 'x'.repeat(200) },
       __proto__hack: true,
     });
@@ -308,7 +339,10 @@ describe('LandingCodigoService.limpiarVenta', () => {
       abrir_en: 'tienda',
       combos_primero: false,
       principal_id: null,
+      destacados: ['adelfit', 'combo-12'],
       paquetes: {},
+      urgencia: null,
+      prueba_social: null,
       cross_sell: { activo: true, ofertas: [3, 4] },
       recomendados: { activo: true, modo: 'manual', items: ['air-fryer'], max: 4, titulo: 'x'.repeat(80) },
     });
@@ -321,5 +355,18 @@ describe('LandingCodigoService.limpiarVenta', () => {
     expect(v.cross_sell.activo).toBe(false);
     expect(LandingCodigoService.limpiarVenta('texto')).toBeNull();
     expect(LandingCodigoService.limpiarVenta([1])).toBeNull();
+  });
+
+  it('conserva paquetes ocultos y no deja destacado un paquete desactivado', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      paquetes: {
+        21: { etiqueta: 'Mayor ahorro', destacado: true },
+        22: { etiqueta: 'Oculto', destacado: true, activo: false },
+      },
+    });
+    expect(v.paquetes).toEqual({
+      21: { etiqueta: 'Mayor ahorro', destacado: true },
+      22: { etiqueta: 'Oculto', destacado: false, activo: false },
+    });
   });
 });

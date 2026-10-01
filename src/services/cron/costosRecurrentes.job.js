@@ -28,40 +28,45 @@ async function generarOcurrenciasRecurrentes() {
     },
   });
 
+  let ocurrenciasGeneradas = 0;
+
   for (const plantilla of plantillas) {
     try {
-      await CostoGasto.create({
-        usuario_id: plantilla.usuario_id,
-        tipo: plantilla.tipo,
-        categoria_id: plantilla.categoria_id,
-        concepto: plantilla.concepto,
-        descripcion: plantilla.descripcion,
-        importe: plantilla.importe,
-        moneda: plantilla.moneda,
-        fecha: plantilla.proxima_fecha,
-        fecha_pago: null,
-        estado: 'pendiente',
-        clasificacion: plantilla.clasificacion,
-        es_recurrente: false,
-        frecuencia: null,
-        proxima_fecha: null,
-        parent_recurring_id: plantilla.id,
-        metodo_pago_id: plantilla.metodo_pago_id,
-        proveedor_id: plantilla.proveedor_id,
-        producto_id: plantilla.producto_id,
-        variante_id: plantilla.variante_id,
-        envio_id: null,
-      });
+      while (plantilla.proxima_fecha && plantilla.proxima_fecha <= hoy) {
+        await CostoGasto.create({
+          usuario_id: plantilla.usuario_id,
+          tipo: plantilla.tipo,
+          categoria_id: plantilla.categoria_id,
+          concepto: plantilla.concepto,
+          descripcion: plantilla.descripcion,
+          importe: plantilla.importe,
+          moneda: plantilla.moneda,
+          fecha: plantilla.proxima_fecha,
+          fecha_pago: null,
+          estado: 'pendiente',
+          clasificacion: plantilla.clasificacion,
+          es_recurrente: false,
+          frecuencia: null,
+          proxima_fecha: null,
+          parent_recurring_id: plantilla.id,
+          metodo_pago_id: plantilla.metodo_pago_id,
+          proveedor_id: plantilla.proveedor_id,
+          producto_id: plantilla.producto_id,
+          variante_id: plantilla.variante_id,
+          envio_id: null,
+        });
+        ocurrenciasGeneradas += 1;
 
-      plantilla.proxima_fecha = calcularProximaFecha(plantilla.proxima_fecha, plantilla.frecuencia);
+        plantilla.proxima_fecha = calcularProximaFecha(plantilla.proxima_fecha, plantilla.frecuencia);
+      }
       await plantilla.save();
     } catch (err) {
       logger.error(`[costosRecurrentes] Error generando ocurrencia de la plantilla #${plantilla.id}:`, err);
     }
   }
 
-  if (plantillas.length > 0) {
-    logger.info(`[costosRecurrentes] ${plantillas.length} ocurrencia(s) de gastos recurrentes generada(s).`);
+  if (ocurrenciasGeneradas > 0) {
+    logger.info(`[costosRecurrentes] ${ocurrenciasGeneradas} ocurrencia(s) de gastos recurrentes generada(s).`);
   }
 }
 

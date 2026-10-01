@@ -99,6 +99,42 @@ const INCLUDES_DETALLE = [
 const TIPOS_MOVIMIENTO = ['ingreso', 'costo', 'gasto'];
 const TIPOS_EGRESO = ['costo', 'gasto'];
 
+function ivaDesdeImporte(importe, impuestosIncluidos = true) {
+  const n = Number(importe) || 0;
+  if (n <= 0) return 0;
+  return impuestosIncluidos === false ? n * 0.10 : n - (n / 1.10);
+}
+
+function calcularIvaFacturadoEnvio(envio) {
+  if (!envio?.quiere_factura) return 0;
+  const items = envio.items || [];
+  const ventaProducto = montoNumero(desgloseDelivery(envio).venta_producto);
+  const sumaSubtotales = items.reduce(
+    (acc, item) => acc + montoNumero(item.subtotal || ((Number(item.precio_unitario) || 0) * (Number(item.cantidad) || 1))),
+    0
+  );
+  if (!items.length || !sumaSubtotales) return Math.round(ivaDesdeImporte(ventaProducto, true));
+
+  return Math.round(items.reduce((acc, item) => {
+    const subtotal = montoNumero(item.subtotal || ((Number(item.precio_unitario) || 0) * (Number(item.cantidad) || 1)));
+    const importeItem = ventaProducto * (subtotal / sumaSubtotales);
+    const impuestosIncluidos = item.Producto?.impuestos_incluidos ?? true;
+    return acc + ivaDesdeImporte(importeItem, impuestosIncluidos);
+  }, 0));
+}
+
+function dineroEnManoCourier(envio) {
+  const custodia = envio.MetodoPago ? envio.MetodoPago.custodia_cobro : 'negocio';
+  if (custodia !== 'courier' || envio.estado_financiero !== 'pendiente_liquidacion') return 0;
+  return montoNumero(envio.monto) + montoNumero(desgloseDelivery(envio).envio_fuera_del_monto);
+}
+
+function saldoCourierPorRendir(envio) {
+  const dineroCourier = dineroEnManoCourier(envio);
+  if (!dineroCourier) return 0;
+  return dineroCourier - montoNumero(envio.costo_envio);
+}
+
 class CostoGastoService {
   static serializar(row) {
     const data = row.toJSON ? row.toJSON() : row;
@@ -147,7 +183,34 @@ class CostoGastoService {
     };
   }
 
-  static async crear(datos, usuario_id) {
+  static async validarReferencias(datos, usuario_id, inquilino_id) {
+    if (datos.categoria_id) {
+      const alcances = [{ inquilino_id: null }];
+      if (inquilino_id !== undefined && inquilino_id !== null) alcances.push({ inquilino_id });
+      const categoria = await CategoriaCostoGasto.findOne({
+        where: {
+          id: datos.categoria_id,
+          activo: true,
+          [Op.or]: alcances,
+        },
+      });
+      if (!categoria) throw new Error('Categoría no encontrada.');
+    }
+    if (datos.metodo_pago_id) {
+      const metodo = await MetodoPago.findOne({ where: { id: datos.metodo_pago_id, usuario_id, activo: true } });
+      if (!metodo) throw new Error('Método de pago no encontrado.');
+    }
+    if (datos.proveedor_id) {
+      const proveedor = await Proveedor.findOne({ where: { id: datos.proveedor_id, usuario_id, activo: true } });
+      if (!proveedor) throw new Error('Proveedor no encontrado.');
+    }
+    if (datos.producto_id) {
+      const producto = await Producto.findOne({ where: { id: datos.producto_id, activo: true, creado_por: usuario_id } });
+      if (!producto) throw new Error('Producto no encontrado.');
+    }
+  }
+
+  static async crear(datos, usuario_id, inquilino_id) {
     const { concepto, tipo, categoria_id, importe } = datos;
     if (!concepto || !concepto.trim()) throw new Error('El concepto es requerido.');
     if (!TIPOS_MOVIMIENTO.includes(tipo)) throw new Error('El tipo debe ser "ingreso", "costo" o "gasto".');
@@ -156,8 +219,7 @@ class CostoGastoService {
       throw new Error('El importe es requerido y debe ser mayor a 0.');
     }
 
-    const categoria = await CategoriaCostoGasto.findOne({ where: { id: categoria_id, activo: true } });
-    if (!categoria) throw new Error('Categoría no encontrada.');
+    await this.validarReferencias(datos, usuario_id, inquilino_id);
 
     const fecha = datos.fecha || hoyISO();
     const esRecurrente = !!datos.es_recurrente;
@@ -201,13 +263,14 @@ class CostoGastoService {
     return this.serializar(registro);
   }
 
-  static async actualizar(id, datos, usuario_id) {
+  static async actualizar(id, datos, usuario_id, inquilino_id) {
     const registro = await CostoGasto.findOne({ where: { id, usuario_id } });
     if (!registro) throw new Error('Movimiento financiero no encontrado.');
 
     if (datos.tipo !== undefined && !TIPOS_MOVIMIENTO.includes(datos.tipo)) {
       throw new Error('El tipo debe ser "ingreso", "costo" o "gasto".');
     }
+    await this.validarReferencias(datos, usuario_id, inquilino_id);
 
     const campos = [
       'tipo', 'categoria_id', 'concepto', 'descripcion', 'importe', 'moneda',
@@ -462,7 +525,7 @@ class CostoGastoService {
     const wherePeriodo = {};
     if (fecha_desde && fecha_hasta) wherePeriodo.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
 
-    const [envios, gastos, metaAds, productos, cuentasPendientes, cuentasPorCobrar] = await Promise.all([
+    const [envios, gastos, metaAds, productos, cuentasPendientes] = await Promise.all([
       Envio.findAll({
         where: { usuario_id, ...wherePeriodo },
         attributes: [
@@ -472,12 +535,13 @@ class CostoGastoService {
         ],
         include: [
           { model: CanalVenta, as: 'canal_venta', attributes: ['id', 'nombre', 'slug'], required: false },
+          { model: MetodoPago, attributes: ['id', 'custodia_cobro'], required: false },
           {
             model: EnvioItem,
             as: 'items',
             attributes: ['id', 'cantidad', 'precio_unitario', 'subtotal'],
             include: [
-              { model: Producto, attributes: ['id', 'precio_base', 'precio_costo'], required: false },
+              { model: Producto, attributes: ['id', 'precio_base', 'precio_costo', 'impuestos_incluidos'], required: false },
               {
                 model: EnvioItemComponente,
                 as: 'componentes_vendidos',
@@ -511,13 +575,6 @@ class CostoGastoService {
           ...(fecha_hasta ? { fecha: { [Op.lte]: fecha_hasta } } : {}),
         },
       }),
-      Envio.sum('monto', {
-        where: {
-          usuario_id,
-          estado: { [Op.in]: ['Confirmado', 'Preparado', 'Despachado', 'Reprogramado'] },
-          ...(fecha_hasta ? { fecha: { [Op.lte]: fecha_hasta } } : {}),
-        },
-      }),
     ]);
 
     const entregados = envios.filter(e => normalizarTexto(e.estado) === 'entregado');
@@ -530,17 +587,27 @@ class CostoGastoService {
     let cobrosReales = 0;
     let comisionesPasarela = 0;
     let logistica = 0;
+    let salidasLogistica = 0;
     let ivaFacturado = 0;
     let costoProductosVendidos = 0;
+    let courierPorRendir = 0;
+    let courierPorPagar = 0;
 
     for (const envio of entregados) {
       const monto = montoNumero(envio.monto);
-      const ventaProducto = montoNumero(desgloseDelivery(envio).venta_producto);
+      const desglose = desgloseDelivery(envio);
+      const ventaProducto = montoNumero(desglose.venta_producto);
+      const cobroTotalCliente = monto + montoNumero(desglose.envio_fuera_del_monto);
+      const retenidoCourier = dineroEnManoCourier(envio);
+      const saldoCourier = saldoCourierPorRendir(envio);
       ventasTotales += ventaProducto;
-      cobrosReales += monto;
-      comisionesPasarela += Math.round(monto * ((Number(envio.comision_pct_aplicada) || 0) / 100));
-      logistica += montoNumero(envio.costo_envio);
-      if (envio.quiere_factura) ivaFacturado += Math.round(monto * 0.10);
+      cobrosReales += Math.max(0, cobroTotalCliente - retenidoCourier);
+      courierPorRendir += Math.max(0, saldoCourier);
+      courierPorPagar += Math.max(0, -saldoCourier);
+      comisionesPasarela += Math.round(cobroTotalCliente * ((Number(envio.comision_pct_aplicada) || 0) / 100));
+      logistica += montoNumero(desglose.envio_absorbido);
+      if (!retenidoCourier) salidasLogistica += montoNumero(desglose.envio_pagado);
+      ivaFacturado += calcularIvaFacturadoEnvio(envio);
 
       for (const item of envio.items || []) {
         costoProductosVendidos += this._costoDeItem(item);
@@ -555,46 +622,37 @@ class CostoGastoService {
     const registros = gastos.map(g => this.serializar(g));
     const ingresosManuales = registros.filter(g => g.tipo === 'ingreso');
     const egresosManuales = registros.filter(g => TIPOS_EGRESO.includes(g.tipo));
-    const variableManual = egresosManuales.filter(g => g.clasificacion === 'variable' || g.tipo === 'costo');
+    const variableManual = egresosManuales.filter(g => g.clasificacion === 'variable' || (g.tipo === 'costo' && g.clasificacion !== 'fijo'));
     const fijoManual = egresosManuales.filter(g => g.clasificacion === 'fijo' || (g.tipo === 'gasto' && g.clasificacion !== 'variable'));
-
-    const coincide = (g, patrones) => {
-      const texto = normalizarTexto(`${g.concepto} ${g.categoria?.nombre || ''} ${g.categoria?.grupo || ''}`);
-      return patrones.some(p => texto.includes(p));
+    const agruparPorCategoria = (items, prefijo) => {
+      const grupos = new Map();
+      for (const item of items) {
+        const categoria = item.categoria || {};
+        const id = categoria.id ? `${prefijo}_categoria_${categoria.id}` : `${prefijo}_sin_categoria`;
+        if (!grupos.has(id)) {
+          grupos.set(id, {
+            id,
+            categoria_id: categoria.id || null,
+            label: categoria.nombre || 'Sin categoría',
+            valor: 0,
+            origen: 'control_financiero',
+          });
+        }
+        grupos.get(id).valor += montoNumero(item.importe);
+      }
+      return [...grupos.values()].map(item => ({ ...item, valor: montoNumero(item.valor) }));
     };
-
-    const publicidadManual = variableManual.filter(g => coincide(g, ['publicidad', 'meta', 'ads', 'marketing']));
-    const logisticaManual = variableManual.filter(g => coincide(g, ['envio', 'logistica', 'courier', 'flete', 'delivery']));
-    const comisionComercial = variableManual.filter(g => coincide(g, ['comision', 'vendedor', 'comercial', 'afiliado']) && !coincide(g, ['pasarela', 'tarjeta', 'banco']));
-    const usadosVariables = new Set([...publicidadManual, ...logisticaManual, ...comisionComercial].map(g => g.id));
-    const otrosVariables = variableManual.filter(g => !usadosVariables.has(g.id));
-
-    const nomina = fijoManual.filter(g => coincide(g, ['nomina', 'salario', 'sueldo', 'jornal']));
-    const alquiler = fijoManual.filter(g => coincide(g, ['alquiler']));
-    const software = fijoManual.filter(g => coincide(g, ['software', 'sistema', 'hosting', 'dominio']));
-    const servicios = fijoManual.filter(g => coincide(g, ['servicio', 'ande', 'internet', 'telefono', 'agua', 'luz']));
-    const administracion = fijoManual.filter(g => coincide(g, ['administracion', 'contabilidad', 'oficina']));
-    const usadosFijos = new Set([...nomina, ...alquiler, ...software, ...servicios, ...administracion].map(g => g.id));
-    const otrosFijos = fijoManual.filter(g => !usadosFijos.has(g.id));
 
     const totalOtrosIngresos = sumarImporte(ingresosManuales);
     const ingresosNetos = ventasTotales + totalOtrosIngresos - devoluciones;
     const costosVariables = [
       { id: 'costo_productos_vendidos', label: 'Costo de productos vendidos', valor: montoNumero(costoProductosVendidos) },
-      { id: 'publicidad_meta_ads', label: 'Publicidad Meta Ads', valor: montoNumero(metaAds + sumarImporte(publicidadManual)) },
+      { id: 'publicidad_meta_ads', label: 'Publicidad Meta Ads', valor: montoNumero(metaAds) },
       { id: 'comisiones_pasarela', label: 'Comisiones de pasarela', valor: montoNumero(comisionesPasarela) },
-      { id: 'envios_logistica', label: 'Envíos/logística', valor: montoNumero(logistica + sumarImporte(logisticaManual)) },
-      { id: 'comisiones_comerciales', label: 'Comisiones comerciales', valor: sumarImporte(comisionComercial) },
-      { id: 'otros_costos_variables', label: 'Otros costos variables', valor: sumarImporte(otrosVariables) },
+      { id: 'envios_logistica', label: 'Envíos/logística', valor: montoNumero(logistica) },
+      ...agruparPorCategoria(variableManual, 'costo_variable'),
     ];
-    const gastosFijos = [
-      { id: 'nomina', label: 'Nómina', valor: sumarImporte(nomina) },
-      { id: 'alquiler', label: 'Alquiler', valor: sumarImporte(alquiler) },
-      { id: 'software', label: 'Software', valor: sumarImporte(software) },
-      { id: 'servicios', label: 'Servicios', valor: sumarImporte(servicios) },
-      { id: 'administracion', label: 'Administración', valor: sumarImporte(administracion) },
-      { id: 'otros_gastos', label: 'Otros gastos', valor: sumarImporte(otrosFijos) },
-    ];
+    const gastosFijos = agruparPorCategoria(fijoManual, 'gasto_fijo');
 
     const totalCostosVariables = costosVariables.reduce((acc, item) => acc + item.valor, 0);
     const totalGastosFijos = gastosFijos.reduce((acc, item) => acc + item.valor, 0);
@@ -606,7 +664,7 @@ class CostoGastoService {
 
     const salidasReales = registros
       .filter(g => TIPOS_EGRESO.includes(g.tipo) && g.estado === 'pagado')
-      .reduce((acc, g) => acc + montoNumero(g.importe), 0) + comisionesPasarela + logistica;
+      .reduce((acc, g) => acc + montoNumero(g.importe), 0) + comisionesPasarela + salidasLogistica;
     const entradasReales = cobrosReales + ingresosManuales
       .filter(g => g.estado === 'pagado')
       .reduce((acc, g) => acc + montoNumero(g.importe), 0);
@@ -618,20 +676,14 @@ class CostoGastoService {
     }, 0);
 
     const activos = [
-      { id: 'caja_efectivo', label: 'Caja / efectivo', valor: montoNumero(flujoCajaNeto), derivado: true },
-      { id: 'bancos', label: 'Bancos', valor: 0, pendiente: true },
-      { id: 'cuentas_cobrar', label: 'Cuentas por cobrar', valor: montoNumero(cuentasPorCobrar) },
+      { id: 'caja_efectivo', label: 'Caja estimada del período', valor: montoNumero(flujoCajaNeto), derivado: true },
+      { id: 'cuentas_cobrar', label: 'Cuentas por cobrar', valor: montoNumero(courierPorRendir) },
       { id: 'inventario', label: 'Inventario', valor: montoNumero(valorInventario) },
-      { id: 'equipos', label: 'Equipos', valor: 0, pendiente: true },
-      { id: 'otros_activos', label: 'Otros activos', valor: 0, pendiente: true },
     ];
     const pasivos = [
       { id: 'proveedores', label: 'Cuentas por pagar a proveedores', valor: montoNumero(cuentasPendientes) },
-      { id: 'tarjetas', label: 'Tarjetas', valor: 0, pendiente: true },
-      { id: 'prestamos', label: 'Préstamos', valor: 0, pendiente: true },
-      { id: 'impuestos', label: 'Impuestos pendientes', valor: montoNumero(ivaFacturado) },
-      { id: 'obligaciones', label: 'Obligaciones', valor: 0, pendiente: true },
-      { id: 'otros_pasivos', label: 'Otros pasivos', valor: 0, pendiente: true },
+      ...(courierPorPagar > 0 ? [{ id: 'courier_por_pagar', label: 'Courier por pagar', valor: montoNumero(courierPorPagar) }] : []),
+      { id: 'iva_facturado', label: 'IVA estimado de ventas facturadas', valor: montoNumero(ivaFacturado) },
     ];
 
     return {
@@ -674,7 +726,7 @@ class CostoGastoService {
         entradas_reales: entradasReales,
         salidas_reales: salidasReales,
         saldo_final_caja: flujoCajaNeto,
-        nota: 'Saldo inicial y bancos quedan en cero hasta que exista un módulo de caja/bancos. Los cobros reales incluyen pedidos entregados y otros ingresos cobrados; las salidas reales usan egresos pagados, comisiones y logística del período.',
+        nota: 'Caja estimada del período: cobros directos de la tienda menos salidas pagadas, comisiones y logística. El dinero retenido por courier queda en cuentas por cobrar hasta rendición. No incluye saldos bancarios iniciales porque todavía no existe un módulo de bancos.',
       },
       activos: {
         items: activos,
@@ -687,7 +739,7 @@ class CostoGastoService {
       fuentes: {
         ventas: 'Pedidos entregados y otros ingresos registrados',
         costos: 'Costo de producto, Meta Ads, logística, comisiones y Control financiero',
-        activos_pasivos: 'Inventario, pedidos pendientes y obligaciones registradas',
+        activos_pasivos: 'Inventario, pedidos pendientes, proveedores e IVA estimado de ventas facturadas',
       },
     };
   }
@@ -793,12 +845,8 @@ class CostoGastoService {
       }),
       Envio.findAll({
         where: { usuario_id, estado: { [Op.iLike]: 'entregado' }, fecha: { [Op.between]: [desde, hasta] } },
-        attributes: [
-          [Envio.sequelize.fn('LEFT', Envio.sequelize.col('fecha'), 7), 'mes'],
-          [Envio.sequelize.fn('SUM', Envio.sequelize.col('monto')), 'total'],
-        ],
-        group: ['mes'],
-        raw: true,
+        attributes: ['id', 'fecha', 'monto', 'costo_envio', 'delivery_a_cargo', 'cupon_descuento'],
+        include: [{ model: EnvioItem, as: 'items', attributes: ['cantidad', 'precio_unitario', 'subtotal'], required: false }],
       }),
     ]);
 
@@ -819,9 +867,11 @@ class CostoGastoService {
       if (fila.tipo === 'costo') mesesMap[fila.mes].costos = Number(fila.total);
       else mesesMap[fila.mes].gastos = Number(fila.total);
     }
-    for (const fila of ingresosPorMesRaw) {
-      if (!mesesMap[fila.mes]) mesesMap[fila.mes] = { mes: fila.mes, ingresos: 0, costos: 0, gastos: 0 };
-      mesesMap[fila.mes].ingresos = Number(fila.total);
+    for (const envio of ingresosPorMesRaw) {
+      const mes = String(envio.fecha || '').slice(0, 7);
+      if (!mes) continue;
+      if (!mesesMap[mes]) mesesMap[mes] = { mes, ingresos: 0, costos: 0, gastos: 0 };
+      mesesMap[mes].ingresos += montoNumero(desgloseDelivery(envio).venta_producto);
     }
     const evolucionMensual = Object.values(mesesMap)
       .map(m => ({ ...m, ganancia_neta: m.ingresos - m.costos - m.gastos }))
@@ -844,3 +894,6 @@ class CostoGastoService {
 
 module.exports = CostoGastoService;
 module.exports.calcularProximaFecha = calcularProximaFecha;
+module.exports.calcularIvaFacturadoEnvio = calcularIvaFacturadoEnvio;
+module.exports.dineroEnManoCourier = dineroEnManoCourier;
+module.exports.saldoCourierPorRendir = saldoCourierPorRendir;
