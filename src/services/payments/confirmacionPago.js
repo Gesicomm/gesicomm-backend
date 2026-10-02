@@ -87,6 +87,7 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
     envioFila.estado_comercial = 'Confirmado';
     envioFila.estado_logistico = 'Confirmado';
     await envioFila.save({ transaction: t });
+    await require('../speedbox/service').queueConfirmedOrder(envioFila, t);
 
     // Reflejar en el objeto del caller, que sigue leyendolo despues.
     Object.assign(envio, {

@@ -27,6 +27,7 @@ jest.mock('../../controllers/envioController', () => ({
   }),
 }));
 jest.mock('../../utils/historial', () => ({ registrarHistorial: jest.fn() }));
+jest.mock('../../services/speedbox/service', () => ({ queueConfirmedOrder: jest.fn() }));
 jest.mock('../../models', () => ({
   // Transacciones reales serializadas: se ejecutan tal cual, como haria
   // Postgres si NO hubiera lock de fila.
@@ -81,6 +82,7 @@ describe('confirmarPedidoPagado — relectura con bloqueo', () => {
 
     expect(r).toBe('ya_pagado');
     expect(descontarStockYSnapshot).not.toHaveBeenCalled();
+    expect(require('../../services/speedbox/service').queueConfirmedOrder).not.toHaveBeenCalled();
   });
 
   it('NO bloquea el Envio con include: FOR UPDATE sobre un LEFT JOIN falla en Postgres', async () => {
@@ -89,5 +91,14 @@ describe('confirmarPedidoPagado — relectura con bloqueo', () => {
 
     const opciones = Envio.findByPk.mock.calls.at(-1)[1];
     expect(opciones.include).toBeUndefined();
+  });
+
+  it('queues Speedbox inside the same transaction after paid order confirmation', async () => {
+    const { filaTrx, filaEnvio } = armarEscenario();
+    await confirmarPedidoPagado(filaEnvio, { ...filaTrx });
+    expect(require('../../services/speedbox/service').queueConfirmedOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 42, estado: 'Confirmado', stock_descontado: true }),
+      expect.objectContaining({ LOCK: { UPDATE: 'UPDATE' } }),
+    );
   });
 });

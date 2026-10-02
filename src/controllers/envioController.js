@@ -1510,6 +1510,7 @@ exports.createEnvio = async (req, res) => {
       const abastecimiento = await aplicarAbastecimientoCalculado(nuevoEnvio, nuevoEnvio.items || [], usuario_id, t);
       await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id);
       await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
+      await require('../services/speedbox/service').queueConfirmedOrder(nuevoEnvio, t);
       await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
       if (abastecimiento.requiere) {
         await registrarHistorial(
@@ -1884,6 +1885,9 @@ exports.updateEstado = async (req, res) => {
     }
 
     await envio.update(updateData, { transaction: t });
+    if (updateData.estado === 'Confirmado' || (courier_id !== undefined && envio.estado === 'Confirmado')) {
+      await require('../services/speedbox/service').queueConfirmedOrder(envio, t);
+    }
     await t.commit();
 
     if (updateData.estado) {

@@ -72,3 +72,20 @@ No se borran archivos ni bases existentes.
 
 Ver el recorrido, resultados y checklist contra sandbox real en
 [SPEEDBOX-WALKTHROUGH.md](../docs/SPEEDBOX-WALKTHROUGH.md).
+
+## Preview interactiva aislada
+
+```powershell
+Set-Location C:\Proyectos\Gesicom\speedbox-backend
+npm run preview:speedbox
+```
+
+Ejecuta los 24 escenarios y luego conserva Vite, API, simulador y PostgreSQL
+exclusivamente locales. Imprime PREVIEW, la cuenta ficticia para iniciar sesion
+y una URL POST para detenerlo. El envio automatico queda habilitado contra el
+simulador. El registro queda deshabilitado porque no hay URL oficial configurada.
+No es el sandbox real y no usar datos personales ni credenciales verdaderas.
+
+Para cerrar usar Ctrl+C en su terminal o enviar POST a la URL STOP impresa.
+El finally cerrara los servicios y el cluster propios. report.json indica
+preview.running=true mientras se conserva el entorno y false despues del cierre.

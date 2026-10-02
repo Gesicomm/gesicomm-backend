@@ -9,6 +9,41 @@ const { buildOrder } = require('./payload');
 function environment() { return process.env.SPEEDBOX_ENVIRONMENT || 'sandbox'; }
 function fail(message, status = 400) { throw Object.assign(new Error(message), { status }); }
 
+function registrationUrl() {
+  try {
+    const raw = process.env.SPEEDBOX_REGISTRATION_URL;
+    if (!raw || raw.length > 2048) return null;
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.username || url.password ||
+        [...url.searchParams.keys()].some(key => /secret|token|authorization|api.?key/i.test(key))) return null;
+    return url.href;
+  } catch { return null; }
+}
+
+async function dispatchConfirmedOrder(usuarioId, envioId) {
+  if (process.env.SPEEDBOX_ENABLED !== 'true') return;
+  try {
+    const queued = await SpeedboxPedido.findOne({ where: { usuario_id: usuarioId, envio_id: envioId, environment: environment(), estado: 'pendiente' } });
+    if (queued) await sendOrder(usuarioId, envioId);
+  } catch (error) {
+    require('../../utils/logger').logger.warn({ evento: 'SPEEDBOX_CONFIRMATION_DISPATCH_FAILED', envioId,
+      message: client.redact(error.message) });
+  }
+}
+
+async function queueConfirmedOrder(envio, transaction) {
+  if (process.env.SPEEDBOX_ENABLED !== 'true' || envio.estado !== 'Confirmado' || !envio.stock_descontado || envio.stock_liberado) return null;
+  const connection = await SpeedboxTienda.findOne({ where: { usuario_id: envio.usuario_id, environment: environment(), activo: true }, transaction });
+  if (!connection?.tienda_id || connection.courier_id !== envio.courier_id) return null;
+  const [mapping] = await SpeedboxPedido.findOrCreate({ where: { environment: environment(), envio_id: envio.id },
+    defaults: { usuario_id: envio.usuario_id, external_order_id: `GESICOMM-${environment()}-${envio.usuario_id}-${envio.id}` }, transaction });
+  if (mapping.estado === 'pendiente') {
+    // Commit the outbox with confirmation; never send an uncommitted order.
+    transaction.afterCommit(() => { setImmediate(() => { void dispatchConfirmedOrder(envio.usuario_id, envio.id); }); });
+  }
+  return mapping;
+}
+
 async function connectionFor(usuarioId, options = {}) {
   const connection = await SpeedboxTienda.findOne({ where: { usuario_id: usuarioId, environment: environment() }, ...options });
   if (!connection) fail('Vincula primero tu tienda con Speedbox.', 409);
@@ -33,6 +68,7 @@ async function status(usuarioId) {
   let credentials = false;
   try { client.configuration(); credentials = true; } catch { /* Configuration is private and may be incomplete. */ }
   return { environment: environment(), credentials_configured: credentials,
+    registration_url: registrationUrl(),
     automatic_enabled: process.env.SPEEDBOX_ENABLED === 'true',
     webhook_configured: Boolean(process.env.SPEEDBOX_WEBHOOK_TOKEN?.length >= 32),
     connection, orders, events, available_orders: availableOrders,
@@ -153,7 +189,8 @@ async function runCycle() {
     SELECT e.id, e.usuario_id FROM envios e
     JOIN speedbox_tiendas s ON s.usuario_id = e.usuario_id AND s.environment = :environment
     LEFT JOIN speedbox_pedidos p ON p.envio_id = e.id AND p.environment = s.environment
-    WHERE s.activo = TRUE AND e.courier_id = s.courier_id AND e.created_at >= s.enabled_at
+    WHERE s.activo = TRUE AND e.courier_id = s.courier_id
+      AND (e.created_at >= s.enabled_at OR p.estado = 'pendiente')
       AND e.estado IN ('Confirmado', 'Preparado', 'Despachado', 'Reprogramado')
       AND e.stock_descontado = TRUE AND e.stock_liberado = FALSE
       AND (p.id IS NULL OR p.estado = 'pendiente')
@@ -178,4 +215,5 @@ async function assertCanChange(envio, changes, transaction) {
   }
 }
 
-module.exports = { environment, connectionFor, status, configure, registerStore, verifySpec, sendOrder, runCycle, assertCanChange };
+module.exports = { environment, registrationUrl, queueConfirmedOrder, dispatchConfirmedOrder,
+  connectionFor, status, configure, registerStore, verifySpec, sendOrder, runCycle, assertCanChange };

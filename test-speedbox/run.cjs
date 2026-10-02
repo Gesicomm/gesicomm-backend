@@ -17,6 +17,7 @@ const dataDir = path.join(artifacts, 'postgres');
 const nativeFetch = global.fetch;
 const report = { started_at: new Date().toISOString(), scope: 'real browser + production routes/services + disposable PostgreSQL + local HTTP Speedbox simulator', steps: [], artifacts };
 const resources = { servers: [] };
+const previewMode = process.argv.includes('--preview');
 const remote = { calls: [], orders: [], updates: [], next: null, failNext: false };
 
 function pg(command, args) {
@@ -74,9 +75,10 @@ async function main() {
     NODE_ENV: 'test', DB_HOST: '127.0.0.1', DB_PORT: String(dbPort), DB_NAME: dbName,
     DB_USER: 'speedbox_e2e', DB_PASSWORD: '', JWT_SECRET: crypto.randomBytes(32).toString('hex'),
     REFRESH_TOKEN_SECRET: crypto.randomBytes(32).toString('hex'),
-    SPEEDBOX_ENABLED: 'true', SPEEDBOX_ENVIRONMENT: 'sandbox',
+    SPEEDBOX_ENABLED: 'false', SPEEDBOX_ENVIRONMENT: 'sandbox',
     SPEEDBOX_API_URL: 'https://speedboxpy.com/api/speedbox_sandbox.php',
     SPEEDBOX_API_KEY: 'e2e-dummy-key', SPEEDBOX_API_SECRET: 'e2e-dummy-secret',
+    SPEEDBOX_REGISTRATION_URL: 'https://registration.example.test/register',
     SPEEDBOX_WEBHOOK_TOKEN: crypto.randomBytes(32).toString('hex'),
   });
   const express = require('express');
@@ -159,6 +161,8 @@ async function main() {
   const api = await listen(app);
   const frontendPort = await freePort();
   const preview = `http://127.0.0.1:${frontendPort}`;
+  resources.preview = { url: preview, api, email: user.correo_electronico, password };
+  resources.app = app;
   const viteLog = fs.createWriteStream(path.join(artifacts, 'vite.log'));
   resources.viteLog = viteLog;
   resources.vite = spawn(process.execPath, [path.join(frontend, 'node_modules', 'vite', 'bin', 'vite.js'), '--host', '127.0.0.1', '--port', String(frontendPort), '--strictPort'], { cwd: frontend, env: { ...process.env, VITE_API_URL: `${api}/api` }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -199,6 +203,7 @@ async function main() {
     assert((await context.cookies()).some(cookie => cookie.name === 'accessToken' && cookie.httpOnly));
     await page.goto(`${preview}/mi-tienda?tab=speedbox`);
     await expect(page.getByLabel('Courier Speedbox')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Crear cuenta en Speedy' })).toHaveAttribute('href', 'https://registration.example.test/register');
     return { login: 'production auth route, real bcrypt and JWT', screenshot: 'desktop.png (captured below)' };
   });
   await step('04 Browser spec, store association, courier selection and activation', async () => {
@@ -310,7 +315,9 @@ async function main() {
     const excluded = await order({ courier_id: alternate.id });
     const pending = await order({ estado: 'Pendiente' });
     remote.updates = [];
-    await require('../src/services/speedbox/service').runCycle();
+    process.env.SPEEDBOX_ENABLED = 'true';
+    try { await require('../src/services/speedbox/service').runCycle(); }
+    finally { process.env.SPEEDBOX_ENABLED = 'false'; }
     assert.equal((await m.SpeedboxPedido.findOne({ where: { envio_id: automatic.id } })).estado, 'enviado');
     assert.equal(await m.SpeedboxPedido.count({ where: { envio_id: excluded.id } }), 0);
     assert.equal(await m.SpeedboxPedido.count({ where: { envio_id: pending.id } }), 0);
@@ -421,7 +428,61 @@ async function main() {
     assert.equal((await m.Envio.findByPk(first.id)).estado_financiero, 'pendiente_liquidacion');
     return { observations_after_two_queries: 1, estado: 'revision', local_financial_status: 'pendiente_liquidacion' };
   });
-  await step('21 Desktop/mobile evidence, persistent UI state and no uncaught browser errors', async () => {
+  await step('21 Pending order created before activation sends immediately on confirmation, even with procurement pending', async () => {
+    const waiting = await order({ estado: 'Pendiente' });
+    await m.Envio.update({ created_at: new Date(Date.now() - 86400000) }, { where: { id: waiting.id } });
+    await product.update({ creado_por: null });
+    process.env.SPEEDBOX_ENABLED = 'true';
+    try {
+      const confirmed = await request('put', `envios/${waiting.id}/estado`, { estado: 'Confirmado' });
+      assert.equal(confirmed.estado, 'Confirmado');
+      await expect.poll(async () => (await m.SpeedboxPedido.findOne({ where: { envio_id: waiting.id } }))?.estado, { timeout: 10000 }).toBe('enviado');
+      assert.equal((await m.Envio.findByPk(waiting.id)).abastecimiento_estado, 'pendiente_pago');
+      assert.equal(remote.calls.filter(call => call.action === 'order' && call.body.external_order_id === `GESICOMM-sandbox-${user.id}-${waiting.id}`).length, 1);
+      return { envio_id: waiting.id, estado_speedbox: 'enviado', abastecimiento_estado: 'pendiente_pago', waited_for_cron: false };
+    } finally { process.env.SPEEDBOX_ENABLED = 'false'; await product.update({ creado_por: user.id }); }
+  });
+  await step('22 Transaction rollback removes outbox; recovery sends committed old orders', async () => {
+    const deferred = await order();
+    await m.Envio.update({ created_at: new Date(Date.now() - 86400000) }, { where: { id: deferred.id } });
+    const envio = await m.Envio.findByPk(deferred.id);
+    const service = require('../src/services/speedbox/service');
+    const count = remote.calls.filter(call => call.action === 'order').length;
+    process.env.SPEEDBOX_ENABLED = 'true';
+    try {
+      const rolledBack = await m.sequelize.transaction();
+      try { await service.queueConfirmedOrder(envio, rolledBack); }
+      finally { await rolledBack.rollback(); }
+      assert.equal(await m.SpeedboxPedido.count({ where: { envio_id: deferred.id } }), 0);
+      assert.equal(remote.calls.filter(call => call.action === 'order').length, count);
+      const committed = await m.sequelize.transaction();
+      try {
+        await service.queueConfirmedOrder(envio, committed);
+        process.env.SPEEDBOX_ENABLED = 'false';
+        await committed.commit();
+      } finally { if (!committed.finished) await committed.rollback(); }
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal((await m.SpeedboxPedido.findOne({ where: { envio_id: deferred.id } })).estado, 'pendiente');
+      process.env.SPEEDBOX_ENABLED = 'true';
+      await service.runCycle();
+      assert.equal((await m.SpeedboxPedido.findOne({ where: { envio_id: deferred.id } })).estado, 'enviado');
+      return { rollback_remote_calls: 0, rollback_outbox_rows: 0, recovery: 'enviado', old_created_at: true };
+    } finally { process.env.SPEEDBOX_ENABLED = 'false'; }
+  });
+  await step('23 New confirmed order persists successfully despite immediate provider failure', async () => {
+    process.env.SPEEDBOX_ENABLED = 'true';
+    remote.failNext = true;
+    try {
+      const confirmed = await order();
+      assert.equal(confirmed.estado, 'Confirmado');
+      await expect.poll(async () => (await m.SpeedboxPedido.findOne({ where: { envio_id: confirmed.id } }))?.estado, { timeout: 10000 }).toBe('incierto');
+      const saved = await m.Envio.findByPk(confirmed.id);
+      assert.equal(saved.estado, 'Confirmado');
+      assert.equal(saved.stock_descontado, true);
+      return { creation_http_status: 201, estado: saved.estado, stock_reserved: true, speedbox: 'incierto' };
+    } finally { process.env.SPEEDBOX_ENABLED = 'false'; }
+  });
+  await step('24 Desktop/mobile evidence, persistent UI state and no uncaught browser errors', async () => {
     await page.getByRole('button', { name: 'Actualizar panel', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Pendientes de revision' })).toBeVisible();
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
@@ -431,6 +492,9 @@ async function main() {
       await expect(page.getByLabel('Courier Speedbox')).toHaveValue(String(courier.id));
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
       assert(await page.locator('.dashboard-main').evaluate(el => el.scrollWidth <= el.clientWidth));
+      await page.evaluate(() => Promise.all(document.getAnimations()
+        .filter(animation => Number.isFinite(animation.effect?.getTiming().iterations))
+        .map(animation => animation.finished.catch(() => {}))));
       await page.screenshot({ path: path.join(artifacts, `${name}.png`), fullPage: true });
       await page.getByRole('heading', { name: 'Pedidos enviados', exact: true }).scrollIntoViewIfNeeded();
       await page.screenshot({ path: path.join(artifacts, `${name}-orders.png`) });
@@ -447,7 +511,26 @@ async function main() {
 }
 
 (async () => {
-  try { await main(); report.status = 'passed'; }
+  try {
+    await main(); report.status = 'passed';
+    if (previewMode) {
+      await resources.browser.close(); resources.browser = null;
+      // Interactive preview stays entirely fictional; no invented signup URL.
+      process.env.SPEEDBOX_ENABLED = 'true';
+      delete process.env.SPEEDBOX_REGISTRATION_URL;
+      report.preview = { ...resources.preview, running: true };
+      fs.writeFileSync(path.join(artifacts, 'report.json'), JSON.stringify(report, null, 2));
+      console.log(`PREVIEW ${resources.preview.url}`);
+      console.log(`DEMO LOGIN ${resources.preview.email} / ${resources.preview.password}`);
+      console.log(`STOP: POST ${resources.preview.api}/__e2e/stop (or Ctrl+C)`);
+      await new Promise(resolve => {
+        resources.app.post('/__e2e/stop', (req, res) => { res.on('finish', resolve); res.json({ ok: true }); });
+        process.once('SIGINT', resolve);
+        process.once('SIGTERM', resolve);
+      });
+      report.preview.running = false;
+    }
+  }
   catch (error) {
     report.status = 'failed'; report.error = error.stack; console.error(error); process.exitCode = 1;
     if (resources.page) {

@@ -1,7 +1,10 @@
 # Speedbox: walkthrough y plan completo de pruebas
 
-Fecha: 02/10/2026. Resultado final local: **21 escenarios E2E aprobados**,
-**85 tests backend + 7 tests frontend aprobados**, build frontend aprobado.
+Fecha: 02/10/2026. Ultima actualizacion: **24 escenarios E2E aprobados**,
+**106 tests backend + 9 tests frontend aprobados**, build frontend aprobado.
+La seccion 9 describe el envio al confirmar y el registro externo. Las
+secciones anteriores conservan la evidencia historica de la primera corrida
+de 21 escenarios y 85 tests backend + 7 frontend.
 Esto NO certifica el sandbox externo ni habilita produccion en Speedbox.
 
 ## 1. Aislamiento del trabajo
@@ -243,8 +246,8 @@ reales ni activar esta rama en produccion para hacer la validacion.
 16. En staging, probar un webhook sin token y con ambiente equivocado:
     esperar 401 y 409. No desproteger el receptor para obtener el check.
 17. Validar envio automatico: SPEEDBOX_ENABLED=true requiere reiniciar el
-    backend. Crear un pedido NUEVO despues de activar y esperar el tick de
-    un minuto. Confirmar una sola creacion remota y exclusion de Pendiente
+    backend. Confirmar un pedido despues de activar: debe enviarse tras el
+    commit, sin esperar el tick de un minuto. Confirmar una sola creacion remota y exclusion de Pendiente
     y otros couriers. Probar un pedido antiguo solo con envio manual.
 18. Ante un error ambiguo real, detenerse y buscar external_order_id en el
     portal. Solo autorizar retry si no existe. Si existe y se perdio el ID,
@@ -281,3 +284,79 @@ reales ni activar esta rama en produccion para hacer la validacion.
 Conclusion: los escenarios locales ejecutados estan aprobados y son
 repetibles. La integracion externa y el despliegue permanecen pendientes de
 la prueba real descrita arriba; no se afirma que este habilitada para produccion.
+
+## 9. Regla acordada: envio al confirmar y acceso al registro
+
+El propietario indico que el pedido debe enviarse al confirmarlo. El envio
+NO depende de finalizar el abastecimiento. Implementacion actualizada en la
+misma rama aislada, sin cambiar los estados de abastecimiento ni las reglas
+de recepcion fisica de inventario.
+
+Con SPEEDBOX_ENABLED=true, tienda vinculada/activa y courier Speedbox:
+
+1. Crear un pedido ya Confirmado, confirmar uno Pendiente o confirmar un
+   pago guarda SpeedboxPedido.pendiente dentro de la misma transaccion.
+2. El callback afterCommit agenda la llamada inmediatamente, fuera de la
+   transaccion y sin bloquear la respuesta del checkout.
+3. Si se revierte la confirmacion tambien desaparece el registro pendiente;
+   nunca se envia un pedido cuya confirmacion no se guardo.
+4. Si se interrumpe el proceso despues del commit, el barrido de recuperacion
+   toma los pendientes, incluso si el pedido se creo antes de activar.
+5. Un error remoto no desconfirma la venta. Timeout/HTTP 5xx siguen dejando
+   un resultado incierto que requiere conciliacion manual, sin retry ciego.
+6. Si se asigna Speedbox a un pedido ya Confirmado, el mismo hook lo agenda
+   cuando cumple las condiciones. Otros couriers siguen excluidos.
+
+Se agrego **Cuenta en Speedy > Crear cuenta en Speedy** en el panel.
+`SPEEDBOX_REGISTRATION_URL` permite configurar el enlace publico oficial.
+Abre otra pestana sin enviar datos personales, tokens ni cookies de Gesicom.
+Sin enlace oficial queda deshabilitado. Sigue pendiente que el propietario
+provea esa URL y confirme si Speedy es el mismo sistema Speedbox. El enlace
+de ejemplo usado por los tests NO es una URL de registro real.
+
+La documentacion recibida no incluye una API de alta de usuarios ni SSO;
+por eso no se implemento un formulario que cree cuentas externas. Registrarse
+en el portal tampoco vincula automaticamente esa identidad con la tienda que
+crea la API: esa vinculacion debe verificarse con el proveedor.
+
+### Verificacion nueva
+
+Corrida cerrada: `C:\Proyectos\Gesicom\tmp\speedbox-e2e-1790978934783\report.json`,
+02/10/2026 de 19:08:54 a 19:09:13 hora de Asuncion. Los 24 escenarios pasaron
+y cleanup_errors quedo vacio. Conserva las capturas desktop/mobile actualizadas.
+
+Ademas de los 20 escenarios operativos anteriores, se verificaron:
+
+| Paso actual | Verificacion | Resultado |
+| --- | --- | --- |
+| 03 | Enlace de registro desde API real a panel real | href HTTPS ficticio exacto, sin datos personales |
+| 21 | Pedido Pendiente antiguo se confirma con abastecimiento pendiente_pago | Envio inmediato, una sola llamada order, abastecimiento sigue pendiente_pago |
+| 22 | Rollback de cola y recuperacion despues de commit sin dispatch | Rollback: cero filas y llamadas; recuperacion: enviado aunque created_at sea antiguo |
+| 23 | Alta Confirmado y HTTP 500 inmediato del proveedor | Alta responde 201, reserva permanece, Speedbox incierto |
+| 24 | Desktop/mobile con apartado Cuenta en Speedy | Capturas, estado persistido y sin errores JS no capturados |
+
+Pruebas focalizadas: 106/106 backend (ocho suites), 9/9 frontend (dos suites),
+build aprobado. El enlace sin configurar, HTTPS inseguro, URLs con credenciales
+y confirmacion por pago tambien se verificaron con pruebas unitarias.
+
+Al ampliar la regresion a fulfillment.test.js y pagoparFlujo.test.js hubo
+31 tests aprobados y 4 fallidos. Se repitieron contra un archivo limpio del
+commit anterior 44f779d y dieron LOS MISMOS cuatro fallos:
+
+- PagoPar: el test espera ciudad null y el servicio devuelve "1".
+- Callback PagoPar documentado: PAID esperado, PENDING observado; el mock
+  no incluye un modelo que el controller consulta.
+- Callback PagoPar con firma vieja: espera 400 y obtiene 500 por ese mock.
+- Fulfillment: el test no encuentra el deposito 10 en el resultado esperado.
+
+No se modificaron esos modulos ni sus tests para ocultar los fallos. No se
+afirma que toda la suite del proyecto este verde ni que se haya probado el
+proveedor PagoPar real. La copia de comparacion se conserva en
+`C:\Proyectos\Gesicom\tmp\speedbox-baseline-44f779d`.
+
+### Preview del panel
+
+`npm run preview:speedbox` repite las pruebas y deja servicios locales con
+datos ficticios para revisar el panel. Muestra URL, login demo y comando STOP.
+El registro no tiene un destino real hasta contar con la URL oficial; en la
+preview queda deshabilitado. No usar esa base o esos IDs en produccion.

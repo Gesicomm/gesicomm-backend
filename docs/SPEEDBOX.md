@@ -8,7 +8,8 @@ La documentacion recibida no incluye consulta de catalogo ni stock del proveedor
 ## Configuracion privada
 
 Agregar al entorno del backend las variables de `.env.speedbox.example`.
-`SPEEDBOX_ENABLED=true` inicia el barrido automatico cada minuto. La integracion
+`SPEEDBOX_ENABLED=true` dispara el envio despues de confirmar cada pedido y
+mantiene un barrido de recuperacion cada minuto. La integracion
 tambien debe estar activa por comercio y tener un courier seleccionado.
 La API Key y el API Secret solo se leen en el backend; el panel no los recibe.
 No copiar el entorno de produccion a las carpetas aisladas para probar.
@@ -23,17 +24,38 @@ Desde **Mi tienda > Speedbox**:
 1. Probar conexion (GET remoto `action=spec`).
 2. Vincular tienda (POST remoto `action=store`, conserva `tienda_id`).
 3. Seleccionar el courier que representa Speedbox y activar la integracion.
-4. Confirmar un pedido con direccion completa, telefono y SKU validos.
-5. Asignarlo al courier Speedbox. El job lo envia en el siguiente minuto.
+4. Asignar el courier Speedbox al pedido y completar direccion, telefono y SKU.
+5. Confirmar el pedido: al guardar la confirmacion se dispara el envio.
 6. Consultar novedades y registrar el webhook en el portal de Speedbox.
 
 La respuesta de store admite `tienda_id`, `store.tienda_id` o
 `tienda.tienda_id`: el ejemplo recibido no especifica esa respuesta. Debe
 comprobarse en sandbox con las credenciales reales.
 
-Solo se envian automaticamente pedidos creados desde la ultima activacion.
-Los pedidos anteriores aparecen en el selector para enviarlos expresamente.
+La confirmacion guarda un registro pendiente en la misma transaccion que
+reserva stock. Solo despues del commit se inicia la llamada al proveedor.
+Esto cubre el alta ya confirmada, la confirmacion manual y la confirmacion
+por pago. No espera a pagar o recibir el abastecimiento: esa es la regla
+acordada con el propietario. Tampoco cambia sus estados de abastecimiento.
+Un pedido pendiente creado antes de activar tambien se envia si se confirma
+despues. El job recupera esos registros pendientes si el proceso se interrumpe.
+Los pedidos que ya estaban confirmados antes de activar no se exportan
+retroactivamente sin una accion explicita; siguen en el selector manual.
 No se exportan pedidos de otros couriers. Las fallas no bloquean el checkout.
+
+## Registro en Speedy
+
+El apartado **Cuenta en Speedy** permite abrir el registro externo desde
+Gesicom. Configurar `SPEEDBOX_REGISTRATION_URL` con la URL publica OFICIAL
+que informe el proveedor. Solo admite HTTPS, sin usuario/password ni parametros
+de secretos. El enlace abre otra pestana con noopener/noreferrer y sin enviar
+datos personales, cookies de Gesicom o tokens al proveedor.
+
+Sin URL configurada el boton queda deshabilitado. No se invento una URL de
+registro. Sigue pendiente confirmar si el nombre Speedy corresponde al mismo
+Speedbox de la documentacion recibida. La API documentada no incluye alta de
+usuarios, SSO, autorizacion delegada ni conexion automatica de una cuenta
+recien creada: el registro no reemplaza Vincular tienda ni crea credenciales.
 
 ## Pedido y dinero
 
