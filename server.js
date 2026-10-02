@@ -260,6 +260,7 @@ app.use('/api/config', configRoutes);
 app.use('/api/afiliados', afiliadosRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/brevo', brevoRoutes);
+app.use('/api/integraciones/speedbox', require('./src/routes/speedbox'));
 // Planes y suscripciones de Gesicomm (publicas: son el paso previo al alta)
 app.use('/api', suscripcionesRoutes);
 
@@ -325,6 +326,7 @@ const CanalVentaService = require('./src/services/canalVenta.service');
 const { iniciarJobCostosRecurrentes } = require('./src/services/cron/costosRecurrentes.job');
 const { iniciarJobReconciliacionSuscripciones } = require('./src/services/cron/reconciliacionSuscripciones.job');
 const { iniciarJobReconciliacionRecordatorios } = require('./src/services/cron/reconciliacionRecordatorios.job');
+const { iniciarJobSpeedbox } = require('./src/services/cron/speedbox.job');
 
 sequelize.authenticate().then(async () => {
   try {
@@ -338,6 +340,7 @@ sequelize.authenticate().then(async () => {
     await migrarAuthTracking();
     await migrarNumeroPedido();
     await migrarComboImagenes();
+    await require('./migrations/20261002150000-speedbox-integration').up(sequelize.getQueryInterface(), require('sequelize'));
     await CategoriaCostoGastoService.seedDefaults();
     await CanalVentaService.seedDefaults();
     // Después del seed: necesita los canales ya creados para mapearles los
@@ -361,6 +364,7 @@ sequelize.authenticate().then(async () => {
   iniciarJobCostosRecurrentes();
   iniciarJobReconciliacionSuscripciones();
   iniciarJobReconciliacionRecordatorios();
+  iniciarJobSpeedbox();
   servidorHttp = app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });

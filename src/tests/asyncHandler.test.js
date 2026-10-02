@@ -219,6 +219,8 @@ describe('controllers cubiertos por la red de contencion', () => {
       'costoParaComerciante',
       'esProductoCargadoPorAdmin',
       'subirComprobanteAbastecimientoMulter',
+      'moverAReservadoATransito',
+      'consumirTransito',
     ],
   };
 

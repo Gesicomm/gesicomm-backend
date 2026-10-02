@@ -1617,6 +1617,8 @@ exports.updateEstado = async (req, res) => {
       return res.status(404).json({ error: 'Envío no encontrado' });
     }
 
+    await require('../services/speedbox/service').assertCanChange(bloqueo, { estado, courier_id }, t);
+
     const envio = await Envio.findOne({
       where: filtro,
       include: [{ model: EnvioItem, as: 'items' }],
@@ -2943,6 +2945,8 @@ exports.deleteEnvio = async (req, res) => {
       return res.status(404).json({ error: 'Pedido no encontrado' });
     }
 
+    await require('../services/speedbox/service').assertCanChange(bloqueoBorrado, { delete: true }, t);
+
     const envio = await Envio.findOne({
       where: { id, usuario_id: req.usuario.tenantId },
       include: [{ model: EnvioItem, as: 'items' }],
@@ -2980,7 +2984,7 @@ exports.deleteEnvio = async (req, res) => {
   } catch (error) {
     if (!t.finished) await t.rollback();
     console.error('Error al eliminar pedido:', error);
-    res.status(500).json({ error: 'Error interno al eliminar el pedido' });
+    res.status(error.status || 500).json({ error: error.status ? error.message : 'Error interno al eliminar el pedido' });
   }
 };
 
@@ -3084,6 +3088,8 @@ exports.costoParaComerciante = costoParaComerciante;
 exports.esProductoCargadoPorAdmin = esProductoCargadoPorAdmin;
 exports.subirComprobanteAbastecimientoMulter = subirComprobanteAbastecimientoMulter;
 exports.calcularAbastecimientoDesdeItems = calcularAbastecimientoDesdeItems;
+exports.moverAReservadoATransito = moverAReservadoATransito;
+exports.consumirTransito = consumirTransito;
 
 // Todo lo que estos handlers no atrapen termina en el middleware de errores
 // de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
@@ -3092,5 +3098,5 @@ exports.calcularAbastecimientoDesdeItems = calcularAbastecimientoDesdeItems;
 // su propia firma (items, transacción, usuario_id), así que el tercer
 // argumento no es `next` y envolverlas se tragaría el error del llamador.
 envolverControlador(module.exports, {
-  excluir: ['descontarStockYSnapshot', 'calcularAbastecimientoDesdeItems', 'costoParaComerciante', 'esProductoCargadoPorAdmin', 'subirComprobanteAbastecimientoMulter'],
+  excluir: ['descontarStockYSnapshot', 'calcularAbastecimientoDesdeItems', 'costoParaComerciante', 'esProductoCargadoPorAdmin', 'subirComprobanteAbastecimientoMulter', 'moverAReservadoATransito', 'consumirTransito'],
 });

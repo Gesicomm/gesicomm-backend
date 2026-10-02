@@ -42,9 +42,13 @@ const LiquidacionEnvio = require('./LiquidacionEnvio');
 const EnvioHistorial = require('./EnvioHistorial');
 const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
+const SpeedboxTienda = require('./SpeedboxTienda');
+const SpeedboxPedido = require('./SpeedboxPedido');
+const SpeedboxEvento = require('./SpeedboxEvento');
 const Page = require('./Page');
 const PageVersion = require('./PageVersion');
 const AiGenerationLog = require('./AiGenerationLog');
+SpeedboxPedido.belongsTo(Envio, { as: 'envio', foreignKey: 'envio_id' });
 const ProveedorDns = require('./ProveedorDns');
 const LandingTemplate = require('./LandingTemplate');
 const Landing = require('./Landing');
@@ -790,6 +794,9 @@ module.exports = {
   EnvioHistorial,
   PrecioUsuario,
   Tienda,
+  SpeedboxTienda,
+  SpeedboxPedido,
+  SpeedboxEvento,
   LandingTemplate,
   Landing,
   TiendaPagina,
