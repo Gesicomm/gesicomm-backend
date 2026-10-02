@@ -2353,6 +2353,8 @@ class LandingService {
         ficha_tech: !esCombo ? (override?.ficha_tech || null) : null,
         // Ídem para la ficha de Beauty & Skin Care
         ficha_beauty: !esCombo ? (override?.ficha_beauty || null) : null,
+        ficha_bazar: !esCombo ? (override?.ficha_bazar || null) : null,
+        ficha_moda: !esCombo ? (override?.ficha_moda || null) : null,
         // Ídem para la ficha del template Básico
         ficha_basico: !esCombo ? (override?.ficha_basico || null) : null,
         // Ficha propia del Combo (ver templates/combo/fichaCombo.js en el
@@ -2556,8 +2558,13 @@ class LandingService {
         // configuraba en el armador no llegaban a la landing publicada y la
         // ficha caía en los textos de fábrica.
         ficha_beauty: landing.content?.ficha_beauty || null,
+        ficha_bazar: landing.content?.ficha_bazar || null,
+        ficha_moda: landing.content?.ficha_moda || null,
         ficha_basico: landing.content?.ficha_basico || null,
         ficha_combo: landing.content?.ficha_combo || null,
+        // Textos de la portada que no tienen columna propia (rótulo sobre
+        // el título del encabezado, título de "Preguntas frecuentes").
+        portada: landing.content?.portada || null,
       }),
       titulo: landing.titulo,
       descripcion: landing.descripcion,

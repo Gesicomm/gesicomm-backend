@@ -31,6 +31,8 @@ router.delete('/:id', verificarPermiso('eliminar_productos'), ctrl.eliminar);
 
 // Imágenes de un producto
 router.post('/:id/imagenes', verificarPermiso('editar_productos'), imgCtrl.subirImagenMiddleware, imgCtrl.subirImagen);
+// Fotos de la ficha (Vista del producto): sube a R2 y devuelve { url }, sin tocar la galería.
+router.post('/:id/ficha-imagen', verificarPermiso('editar_productos'), imgCtrl.subirImagenMiddleware, imgCtrl.subirImagenFicha);
 router.put('/:id/imagenes/:imgId', verificarPermiso('editar_productos'), imgCtrl.actualizarImagen);
 router.post('/:id/imagenes/:imgId/reprocesar', verificarPermiso('editar_productos'), imgCtrl.reprocesarImagen);
 router.delete('/:id/imagenes/:imgId', verificarPermiso('eliminar_productos'), imgCtrl.eliminarImagen);

@@ -76,6 +76,8 @@ const DEFAULTS_POR_TEMPLATE = {
 };
 
 const TEMPLATES_RIGIDOS = [
+  { slug: 'moda-indumentaria', name: 'Moda e Indumentaria', description: 'Diseño editorial para prendas, talles reales, telas, looks y guía de medidas editable.', funnel_type: 'direct_sale', schema: ['header', 'hero', 'productos', 'beneficios', 'contenido_adicional', 'faq', 'footer'], design_tokens: { acento: '#E4513D', fondo: '#FBFAF7', texto: '#171615', modo: 'claro' } },
+  { slug: 'bazar-hogar', name: 'Bazar Jobar · Hogar y Decoración', description: 'Bazar, textiles, cocina y decoración: materiales, medidas, ambientes y paquetes editables.', funnel_type: 'direct_sale', schema: ['header', 'hero', 'productos', 'beneficios', 'faq', 'footer'], design_tokens: { acento: '#A95843', acento_secundario: '#66705A', fondo: '#FBFAF7', texto: '#292722', modo: 'claro' } },
   {
     slug: 'fitness-suplementos',
     name: 'Fitness & Suplementos',

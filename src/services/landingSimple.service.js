@@ -51,6 +51,8 @@ const MAX_BENEFICIOS = 6;
 // momento (mismo texto que antes estaba hardcodeado en cada componente de
 // React). De ahí en adelante es contenido editable como cualquier otro.
 const DEFAULTS_POR_TEMPLATE = {
+  'moda-indumentaria': { contenido_titulo: '', contenido_texto: '', beneficios: [] },
+  'bazar-hogar': { contenido_titulo: '', contenido_texto: '', beneficios: [] },
   'fitness-suplementos': {
     contenido_titulo: 'Nutrición pensada para tu objetivo',
     contenido_texto: 'Ya sea que busques ganar masa, definir o mejorar tu rendimiento, tenemos la combinación de suplementos justa para vos.',

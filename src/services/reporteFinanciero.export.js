@@ -8,6 +8,7 @@
  */
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
+const { METRIC_TERMS } = require('../utils/metricGlossary');
 
 const TIPO_LABEL = { ingreso: 'Ingreso', costo: 'Costo', gasto: 'Gasto' };
 const ESTADO_GASTO_LABEL = { pendiente: 'Pendiente', pagado: 'Pagado', cancelado: 'Cancelado' };
@@ -47,19 +48,19 @@ async function generarExcelReporteFinanciero({ resumen, gastos, ingresos, report
 
   const rv = reporte_visual;
   const filasResumen = rv ? [
-    ['Ingresos netos', gs(rv.indicadores.ventas)],
-    ['Utilidad neta', gs(rv.indicadores.utilidad_neta)],
-    ['Margen neto', pct(rv.indicadores.margen_neto)],
-    ['Flujo de caja neto', gs(rv.indicadores.flujo_caja_neto)],
+    [METRIC_TERMS.ventasNetas, gs(rv.indicadores.ventas)],
+    [METRIC_TERMS.utilidadNeta, gs(rv.indicadores.utilidad_neta)],
+    [METRIC_TERMS.margen, pct(rv.indicadores.margen_neto)],
+    [METRIC_TERMS.flujoCajaNeto, gs(rv.indicadores.flujo_caja_neto)],
     ['ROI', pct(rv.indicadores.roi)],
-    ['Caja disponible', gs(rv.indicadores.caja_disponible)],
+    [METRIC_TERMS.cajaDisponible, gs(rv.indicadores.caja_disponible)],
   ] : [
-    ['Ingresos netos del período', gs(resumen.ingresos)],
+    [METRIC_TERMS.ventasNetas, gs(resumen.ingresos)],
     ['Egresos del período', gs(resumen.total_egresos)],
     ['  · Costos', gs(resumen.costos_periodo)],
     ['  · Gastos', gs(resumen.gastos_periodo)],
-    ['Te queda disponible (ganancia neta aprox.)', gs(resumen.resultado)],
-    ['Margen', `${resumen.margen}%`],
+    [`Te queda disponible (${METRIC_TERMS.utilidadNeta})`, gs(resumen.resultado)],
+    [METRIC_TERMS.margen, `${resumen.margen}%`],
   ];
   filasResumen.forEach(fila => hojaResumen.addRow(fila));
   hojaResumen.getRow(3).font = { bold: true };
@@ -75,13 +76,13 @@ async function generarExcelReporteFinanciero({ resumen, gastos, ingresos, report
     hojaFlujo.columns = [{ width: 34 }, { width: 18 }, { width: 34 }, { width: 18 }];
     hojaFlujo.addRow(['INGRESOS', '', 'GASTOS', '']).font = { bold: true, size: 13 };
     [
-      ['Ventas netas', rv.ingresos.ventas_totales, 'Costos variables', rv.gastos.total_costos_variables],
+      [METRIC_TERMS.ventasNetas, rv.ingresos.ventas_totales, METRIC_TERMS.costosVariables, rv.gastos.total_costos_variables],
       ['Ventas Web', rv.ingresos.ventas_web, 'Gastos fijos', rv.gastos.total_gastos_fijos],
       ['Ventas WhatsApp', rv.ingresos.ventas_whatsapp, 'Gastos totales', rv.gastos.gastos_totales],
       ['Ventas orgánicas', rv.ingresos.ventas_organicas, 'Margen de contribución', rv.resultado_operativo.margen_contribucion],
-      ['Otros ingresos registrados', rv.ingresos.otros_ingresos, 'Utilidad operativa', rv.resultado_operativo.utilidad_operativa],
-      ['Reembolsos/devoluciones (-)', rv.ingresos.devoluciones, 'Margen neto', `${rv.resultado_operativo.margen_neto}%`],
-      ['INGRESOS NETOS', rv.ingresos.ingresos_netos, '', ''],
+      ['Otros ingresos registrados', rv.ingresos.otros_ingresos, METRIC_TERMS.utilidadNeta, rv.resultado_operativo.utilidad_operativa],
+      ['Reembolsos/devoluciones (-)', rv.ingresos.devoluciones, METRIC_TERMS.margen, `${rv.resultado_operativo.margen_neto}%`],
+      [METRIC_TERMS.ventasNetas.toUpperCase(), rv.ingresos.ingresos_netos, '', ''],
     ].forEach(row => hojaFlujo.addRow([row[0], row[1], row[2], row[3]]));
 
     hojaFlujo.addRow([]);
@@ -258,12 +259,12 @@ function generarPdfReporteFinanciero({ resumen, gastos, ingresos, reporte_visual
       const anchoTarjeta = 168;
       const yTarjetas = doc.y;
       [
-        ['Ingresos netos', gs(rv.indicadores.ventas)],
-        ['Utilidad neta', gs(rv.indicadores.utilidad_neta)],
-        ['Margen neto', pct(rv.indicadores.margen_neto)],
-        ['Flujo de caja neto', gs(rv.indicadores.flujo_caja_neto)],
+        [METRIC_TERMS.ventasNetas, gs(rv.indicadores.ventas)],
+        [METRIC_TERMS.utilidadNeta, gs(rv.indicadores.utilidad_neta)],
+        [METRIC_TERMS.margen, pct(rv.indicadores.margen_neto)],
+        [METRIC_TERMS.flujoCajaNeto, gs(rv.indicadores.flujo_caja_neto)],
         ['ROI', pct(rv.indicadores.roi)],
-        ['Caja disponible', gs(rv.indicadores.caja_disponible)],
+        [METRIC_TERMS.cajaDisponible, gs(rv.indicadores.caja_disponible)],
       ].forEach((card, i) => {
         const col = i % 3;
         const row = Math.floor(i / 3);
@@ -280,13 +281,13 @@ function generarPdfReporteFinanciero({ resumen, gastos, ingresos, reporte_visual
       const ancho = (doc.page.width - doc.page.margins.left - doc.page.margins.right - gap) / 2;
       const yBloques = doc.y;
       const altoIngresos = dibujarListaConceptos(doc, 'INGRESOS', [
-        { label: 'Ventas netas', valor: rv.ingresos.ventas_totales },
+        { label: METRIC_TERMS.ventasNetas, valor: rv.ingresos.ventas_totales },
         { label: 'Ventas Web', valor: rv.ingresos.ventas_web },
         { label: 'Ventas WhatsApp', valor: rv.ingresos.ventas_whatsapp },
         { label: 'Ventas orgánicas', valor: rv.ingresos.ventas_organicas },
         { label: 'Otros ingresos registrados', valor: rv.ingresos.otros_ingresos },
         { label: 'Reembolsos/devoluciones (-)', valor: rv.ingresos.devoluciones },
-      ], margenIzq, yBloques, ancho, 'INGRESOS NETOS', rv.ingresos.ingresos_netos);
+      ], margenIzq, yBloques, ancho, METRIC_TERMS.ventasNetas.toUpperCase(), rv.ingresos.ingresos_netos);
       const altoGastos = dibujarListaConceptos(
         doc,
         'GASTOS',
@@ -335,7 +336,7 @@ function generarPdfReporteFinanciero({ resumen, gastos, ingresos, reporte_visual
       doc.font('Helvetica-Bold').fontSize(11).text('Resumen del período');
       doc.moveDown(0.3);
       doc.font('Helvetica').fontSize(10);
-      doc.text(`Ingresos netos:  ${gs(resumen.ingresos)}`);
+      doc.text(`${METRIC_TERMS.ventasNetas}:  ${gs(resumen.ingresos)}`);
       doc.text(`Egresos:  ${gs(resumen.total_egresos)}   ·   Costos: ${gs(resumen.costos_periodo)}   ·   Gastos: ${gs(resumen.gastos_periodo)}`);
       doc.font('Helvetica-Bold');
       doc.fillColor(resumen.resultado >= 0 ? '#16A34A' : '#DC2626');

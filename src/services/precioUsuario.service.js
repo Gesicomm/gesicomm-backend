@@ -14,13 +14,25 @@
  */
 
 const { Op } = require('sequelize');
-const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca } = require('../models');
+const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca, ProductoVariante, Oferta } = require('../models');
 const ComboConfiguracionService = require('./comboConfiguracion.service');
 const ComboService = require('./combo.service');
 const comboPricing = require('../utils/comboPricing');
 const ImagenService = require('./imagen.service');
 
 class PrecioUsuarioService {
+
+  // La tarjeta del armador debe ofrecer las mismas opciones que la pública.
+  // Solo consultamos los IDs visibles, en dos consultas por catálogo.
+  static async idsConOpciones(productos, inquilino_id) {
+    const ids = productos.map(p => p.id);
+    if (!ids.length) return new Set();
+    const [variantes, ofertas] = await Promise.all([
+      ProductoVariante.findAll({ where: { producto_id: { [Op.in]: ids }, inquilino_id, activo: true }, attributes: ['producto_id'], raw: true }),
+      Oferta.findAll({ where: { producto_ancla_id: { [Op.in]: ids }, inquilino_id, activo: true, estrategia: 'normal' }, attributes: ['producto_ancla_id'], raw: true }),
+    ]);
+    return new Set([...variantes.map(v => v.producto_id), ...ofertas.map(o => o.producto_ancla_id)]);
+  }
 
   static async obtenerPrecioPersonalizado(usuario_id, tipo, referencia_id) {
     return PrecioUsuario.findOne({ where: { usuario_id, tipo, referencia_id } });
@@ -107,6 +119,10 @@ class PrecioUsuarioService {
     )`;
   }
 
+  static origenCatalogo(creadoPor, usuarioId) {
+    return creadoPor != null && Number(creadoPor) === Number(usuarioId) ? 'PROPIO' : 'GESICOMM';
+  }
+
   static async listarCatalogo(usuario_id, inquilino_id, esAdmin = false) {
     const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
     const visibilidadProducto = this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds);
@@ -129,7 +145,7 @@ class PrecioUsuarioService {
       ProductoCombo.findAll({
         where: { inquilino_id, estado: 'ACTIVO', ...this.visibilidadComboWhere(usuario_id, esAdmin, false, administradoresIds) },
         attributes: [
-          'id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at',
+          'id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at', 'creado_por',
           // Vista del combo — para que el armador de landings pueda armar
           // la ficha del combo (template "Combo") sin pegarle a un
           // endpoint admin-only (ver ComboEditor "Vista del combo").
@@ -233,6 +249,7 @@ class PrecioUsuarioService {
     }
     const imgMap = new Map([...galeriaMap].map(([id, urls]) => [id, urls[0]]));
 
+    const idsConOpciones = await this.idsConOpciones(productos, inquilino_id);
     const productosDto = productos.map(p => {
       const precioUsuario = mapaPrecios.has(`producto:${p.id}`) ? mapaPrecios.get(`producto:${p.id}`) : null;
       const precioBase = parseFloat(p.precio_base);
@@ -252,9 +269,11 @@ class PrecioUsuarioService {
         categoria: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
         stock: p.cantidad_disponible,
+        tiene_opciones: idsConOpciones.has(p.id),
         destacado: !!p.destacado,
         creado_en: p.created_at,
         creado_por: p.creado_por,
+        origen_catalogo: this.origenCatalogo(p.creado_por, usuario_id),
         slug: p.slug,
       };
     });
@@ -291,7 +310,8 @@ class PrecioUsuarioService {
         stock: padre?.cantidad_disponible ?? null,
         destacado: false,
         creado_en: c.created_at,
-        creado_por: padre?.creado_por ?? null,
+        creado_por: c.creado_por,
+        origen_catalogo: this.origenCatalogo(c.creado_por, usuario_id),
         // Vista del combo — alimenta la ficha (template "Combo") en el
         // armador de landings sin pegarle a un endpoint admin-only.
         propuesta_valor: c.propuesta_valor || null,
@@ -423,7 +443,7 @@ class PrecioUsuarioService {
       }) : [],
       idsCombos.length ? ProductoCombo.findAll({
         where: { id: { [require('sequelize').Op.in]: idsCombos } },
-        attributes: ['id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at',
+        attributes: ['id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at', 'creado_por',
           'propuesta_valor', 'beneficios', 'confianza', 'preguntas_frecuentes', 'faq_titulo', 'ficha_rubro', 'ficha_datos',
         ],
         include: [
@@ -560,6 +580,7 @@ class PrecioUsuarioService {
     }
     const imgMap = new Map([...galeriaMap].map(([id, urls]) => [id, urls[0]]));
 
+    const idsConOpciones = await this.idsConOpciones(productos, inquilino_id);
     const mapaProductosDto = new Map(productos.map(p => {
       const precioUsuario = mapaPrecios.has(`producto:${p.id}`) ? mapaPrecios.get(`producto:${p.id}`) : null;
       const esProductoPropio = (p.creado_por != null && Number(p.creado_por) === Number(usuario_id));
@@ -585,9 +606,11 @@ class PrecioUsuarioService {
         marca: p.Marca?.nombre || null,
         proveedor: p.proveedor?.nombre || null,
         stock: p.cantidad_disponible,
+        tiene_opciones: idsConOpciones.has(p.id),
         destacado: !!p.destacado,
         creado_en: p.created_at,
         creado_por: p.creado_por,
+        origen_catalogo: this.origenCatalogo(p.creado_por, usuario_id),
         slug: p.slug,
       }];
     }));
@@ -625,7 +648,8 @@ class PrecioUsuarioService {
         stock: padre?.cantidad_disponible ?? null,
         destacado: false,
         creado_en: c.created_at,
-        creado_por: padre?.creado_por ?? null,
+        creado_por: c.creado_por,
+        origen_catalogo: this.origenCatalogo(c.creado_por, usuario_id),
         // Vista del combo — alimenta la ficha (template "Combo") en el armador.
         propuesta_valor: c.propuesta_valor || null,
         beneficios: c.beneficios || [],

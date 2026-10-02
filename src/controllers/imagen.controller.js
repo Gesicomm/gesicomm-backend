@@ -96,6 +96,47 @@ async function subirImagen(req, res) {
   }
 }
 
+/**
+ * Foto suelta de la ficha del producto (antes/después, opiniones, "por qué
+ * elegirnos"…), cargada en Mis Productos → Vista del producto.
+ *
+ * No es una imagen de la GALERÍA: no crea fila en ProductoImagen ni aparece
+ * en las fotos del producto. Solo sube a R2 y devuelve { url }; la URL queda
+ * guardada dentro de Producto.ficha_datos cuando el formulario se guarda.
+ * Mismo permiso que la galería: admin o quien creó el producto.
+ */
+async function subirImagenFicha(req, res) {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
+
+    const producto = await productoEditablePorUsuario(req, res);
+    if (!producto) {
+      await ImagenService.borrarArchivoSeguro(req.file.path);
+      return;
+    }
+
+    const imagenData = await ImagenService.procesarArchivoParaR2(
+      req.file,
+      `productos/${producto.id}/ficha`,
+      { width: 1600, quality: 82 },
+    );
+    return res.status(201).json({ url: imagenData.url });
+  } catch (err) {
+    await ImagenService.borrarArchivoSeguro(req.file?.path);
+    logger.error({
+      mensaje: 'Error al subir imagen de ficha de producto',
+      producto_id: req.params.id,
+      operation: err.operation,
+      errorCode: err.code || err.name,
+    });
+    const status = err instanceof R2StorageError && err.status < 500 ? err.status : 500;
+    const message = err instanceof R2ConfigError || err instanceof R2StorageError
+      ? 'No se pudo almacenar el archivo.'
+      : (err.message || 'Error al procesar la imagen.');
+    return res.status(status).json({ message });
+  }
+}
+
 async function actualizarImagen(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
@@ -159,4 +200,4 @@ async function eliminarImagen(req, res) {
   }
 }
 
-module.exports = { upload, subirImagenMiddleware, subirImagen, actualizarImagen, reprocesarImagen, eliminarImagen };
+module.exports = { upload, subirImagenMiddleware, subirImagen, subirImagenFicha, actualizarImagen, reprocesarImagen, eliminarImagen };

@@ -18,6 +18,7 @@ const {
 } = require('../models');
 const MetaReportesService = require('./metaReportes.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
+const { METRIC_TERMS } = require('../utils/metricGlossary');
 
 function hoyISO() {
   return new Date().toISOString().slice(0, 10);
@@ -755,21 +756,21 @@ class CostoGastoService {
     const anterior = await this._datosReporteVisualPeriodo(anteriorRango, usuario_id, inquilino_id);
     const filas = [
       {
-        indicador: 'Ingresos netos',
+        indicador: METRIC_TERMS.ventasNetas,
         actual: actual.indicadores.ventas,
         anterior: anterior.indicadores.ventas,
         variacion: variacion(actual.indicadores.ventas, anterior.indicadores.ventas),
         tipo: 'moneda',
       },
       {
-        indicador: 'Utilidad',
+        indicador: METRIC_TERMS.utilidadNeta,
         actual: actual.indicadores.utilidad_neta,
         anterior: anterior.indicadores.utilidad_neta,
         variacion: variacion(actual.indicadores.utilidad_neta, anterior.indicadores.utilidad_neta),
         tipo: 'moneda',
       },
       {
-        indicador: 'Margen',
+        indicador: METRIC_TERMS.margen,
         actual: actual.indicadores.margen_neto,
         anterior: anterior.indicadores.margen_neto,
         variacion: variacion(actual.indicadores.margen_neto, anterior.indicadores.margen_neto, 'pp'),

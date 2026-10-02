@@ -1,7 +1,31 @@
 const { Op } = require('sequelize');
-const { sequelize, Courier, DeliveryZonaTarifa } = require('../models');
+const bcrypt = require('bcryptjs');
+const { sequelize, Courier, CourierAcceso, DeliveryZonaTarifa } = require('../models');
 const RedFulfillmentService = require('../services/redFulfillment.service');
 const { envolverControlador } = require('../utils/asyncHandler');
+
+const ACCESS_ATTRIBUTES = ['id', 'courier_id', 'usuario_id', 'username', 'activo', 'ultimo_acceso', 'created_at', 'updated_at'];
+
+function usernameLimpio(username) {
+  return String(username || '').trim().toLowerCase();
+}
+
+function accesoSeguro(acceso) {
+  if (!acceso) return null;
+  const plain = acceso.toJSON ? acceso.toJSON() : acceso;
+  delete plain.password_hash;
+  return plain;
+}
+
+function validarPassword(password) {
+  const clean = String(password || '');
+  if (clean.length < 6) return 'La contraseña debe tener al menos 6 caracteres.';
+  return null;
+}
+
+async function courierDelUsuario(courierId, usuarioId) {
+  return Courier.findOne({ where: { id: courierId, usuario_id: usuarioId } });
+}
 
 /** Las tarifas del comercio, tal como las consumen el listado y el guardado. */
 function zonasDelUsuario(usuario_id) {
@@ -65,12 +89,91 @@ function normalizarZonaDelivery(t, usuarioId, couriersPermitidos) {
 exports.listCouriers = async (req, res) => {
   try {
     const usuario_id = req.usuario.id; // Asumiendo autenticación por token en req.user
-    const couriers = await Courier.findAll({ where: { usuario_id } });
+    const couriers = await Courier.findAll({
+      where: { usuario_id },
+      include: [{ model: CourierAcceso, as: 'acceso', attributes: ACCESS_ATTRIBUTES, required: false }],
+      order: [['nombre', 'ASC'], ['id', 'ASC']],
+    });
     res.json(couriers);
   } catch (error) {
     console.error('Error listing couriers:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
+};
+
+exports.getAccesoCourier = async (req, res) => {
+  const usuario_id = req.usuario.id;
+  const courier = await courierDelUsuario(req.params.id, usuario_id);
+  if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
+
+  const acceso = await CourierAcceso.findOne({
+    where: { courier_id: courier.id, usuario_id },
+    attributes: ACCESS_ATTRIBUTES,
+  });
+  res.json(accesoSeguro(acceso));
+};
+
+exports.createAccesoCourier = async (req, res) => {
+  const usuario_id = req.usuario.id;
+  const courier = await courierDelUsuario(req.params.id, usuario_id);
+  if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
+
+  const username = usernameLimpio(req.body?.username);
+  const password = String(req.body?.password || '');
+  const confirmPassword = req.body?.confirm_password !== undefined ? String(req.body.confirm_password || '') : password;
+  const activo = req.body?.activo === undefined ? true : !!req.body.activo;
+
+  if (!username) return res.status(400).json({ error: 'El usuario de acceso es obligatorio.' });
+  const passwordError = validarPassword(password);
+  if (passwordError) return res.status(400).json({ error: passwordError });
+  if (password !== confirmPassword) return res.status(400).json({ error: 'Las contraseñas no coinciden.' });
+
+  const existenteCourier = await CourierAcceso.findOne({ where: { courier_id: courier.id } });
+  if (existenteCourier) return res.status(409).json({ error: 'Este courier ya tiene acceso creado.' });
+
+  const existenteUsername = await CourierAcceso.findOne({ where: { username } });
+  if (existenteUsername) return res.status(409).json({ error: 'Ese usuario ya está en uso.' });
+
+  const password_hash = await bcrypt.hash(password, 10);
+  const acceso = await CourierAcceso.create({
+    courier_id: courier.id,
+    usuario_id,
+    username,
+    password_hash,
+    activo,
+  });
+
+  res.status(201).json(accesoSeguro(acceso));
+};
+
+exports.updatePasswordAccesoCourier = async (req, res) => {
+  const usuario_id = req.usuario.id;
+  const courier = await courierDelUsuario(req.params.id, usuario_id);
+  if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
+
+  const password = String(req.body?.password || '');
+  const confirmPassword = req.body?.confirm_password !== undefined ? String(req.body.confirm_password || '') : password;
+  const passwordError = validarPassword(password);
+  if (passwordError) return res.status(400).json({ error: passwordError });
+  if (password !== confirmPassword) return res.status(400).json({ error: 'Las contraseñas no coinciden.' });
+
+  const acceso = await CourierAcceso.findOne({ where: { courier_id: courier.id, usuario_id } });
+  if (!acceso) return res.status(404).json({ error: 'Este courier todavía no tiene acceso.' });
+
+  await acceso.update({ password_hash: await bcrypt.hash(password, 10) });
+  res.json(accesoSeguro(acceso));
+};
+
+exports.updateEstadoAccesoCourier = async (req, res) => {
+  const usuario_id = req.usuario.id;
+  const courier = await courierDelUsuario(req.params.id, usuario_id);
+  if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
+
+  const acceso = await CourierAcceso.findOne({ where: { courier_id: courier.id, usuario_id } });
+  if (!acceso) return res.status(404).json({ error: 'Este courier todavía no tiene acceso.' });
+
+  await acceso.update({ activo: !!req.body?.activo });
+  res.json(accesoSeguro(acceso));
 };
 
 exports.createCourier = async (req, res) => {

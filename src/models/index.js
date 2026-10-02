@@ -23,6 +23,7 @@ const ComboConfiguracion = require('./ComboConfiguracion');
 const Oferta = require('./Oferta');
 const OfertaComponente = require('./OfertaComponente');
 const Courier = require('./Courier');
+const CourierAcceso = require('./CourierAcceso');
 const DeliveryZonaTarifa = require('./DeliveryZonaTarifa');
 const Pais = require('./Pais');
 const Departamento = require('./Departamento');
@@ -121,6 +122,10 @@ Permiso.belongsToMany(Rol, { through: RolPermiso, foreignKey: 'permiso_id' });
 // ============================================================
 Usuario.hasMany(Courier, { foreignKey: 'usuario_id' });
 Courier.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+Usuario.hasMany(CourierAcceso, { as: 'accesos_courier', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+CourierAcceso.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+Courier.hasOne(CourierAcceso, { as: 'acceso', foreignKey: 'courier_id', onDelete: 'CASCADE' });
+CourierAcceso.belongsTo(Courier, { as: 'courier', foreignKey: 'courier_id' });
 
 Usuario.hasMany(DeliveryZonaTarifa, { as: 'delivery_zonas', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 DeliveryZonaTarifa.belongsTo(Usuario, { foreignKey: 'usuario_id' });
@@ -766,6 +771,7 @@ module.exports = {
   Oferta,
   OfertaComponente,
   Courier,
+  CourierAcceso,
   DeliveryZonaTarifa,
   Pais,
   Departamento,

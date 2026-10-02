@@ -187,12 +187,14 @@ class TiendaService {
     // existian quedaron sin el dato y lo cargan desde /mi-tienda, por eso
     // actualizar() no lo exige.
     if (!payload.documento?.trim()) throw new Error('El número de cédula es obligatorio.');
-    // Ídem: obligatorio solo al crear. Sin esto el admin no sabe adónde
-    // devolverle la mercadería que el usuario venda.
-    if (!payload.deposito_departamento?.trim()) throw new Error('El departamento de tu depósito es obligatorio.');
-    if (!payload.deposito_ciudad?.trim()) throw new Error('La ciudad de tu depósito es obligatoria.');
-    if (!payload.deposito_direccion?.trim()) throw new Error('La dirección de tu depósito es obligatoria.');
-    if (!payload.deposito_telefono?.trim()) throw new Error('El teléfono de contacto de tu depósito es obligatorio.');
+    // Zona operativa minima: alcanza para configurar cobertura y servicios
+    // iniciales. Direccion exacta y telefono quedan como configuracion
+    // progresiva para no tratar esta zona como deposito/sucursal.
+    if (!payload.deposito_departamento?.trim()) throw new Error('El departamento donde opera tu negocio es obligatorio.');
+    if (!payload.deposito_ciudad?.trim()) throw new Error('La ciudad donde opera tu negocio es obligatoria.');
+    // Las landings usan este número para consultas y compra asistida. En
+    // tiendas existentes sigue siendo editable/opcional para no bloquearlas.
+    if (!payload.whatsapp?.trim()) throw new Error('El WhatsApp público de tu tienda es obligatorio.');
 
     const subdominio = payload.subdominio.trim().toLowerCase();
     const { valido, motivo } = validarFormatoSubdominio(subdominio);

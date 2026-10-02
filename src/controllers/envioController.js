@@ -2507,26 +2507,40 @@ exports.conteoPorEstado = async (req, res) => {
       conteos.abastecimiento_pagado = 0;
     }
 
-    // Suma real (monto + costo de envio) de TODOS los pedidos que matchean
-    // los filtros activos, sin importar la pagina ni la pestana de estado
-    // seleccionada -- a diferencia del calculo anterior en el frontend, que
-    // sumaba solo lo que habia cargado en memoria (10 filas en la tabla,
-    // o solo el estado activo en el kanban) y por eso el 'Total visible a
-    // cobrar' mostraba numeros distintos entre Tabla y Kanban.
+    // Totales operativos sobre TODOS los pedidos que matchean los filtros
+    // activos, sin importar la pagina ni la pestana de estado seleccionada.
+    // "visible a cobrar" excluye Entregado porque eso ya fue cobrado; los
+    // estados terminales negativos tampoco son dinero por cobrar al cliente.
     try {
       const totalesFila = await Envio.findOne({
         where,
         include,
         attributes: [
-          [Sequelize.fn('COALESCE', Sequelize.fn('SUM', Sequelize.col('Envio.monto')), 0), 'total_monto'],
-          [Sequelize.fn('COALESCE', Sequelize.fn('SUM', Sequelize.col('Envio.costo_envio')), 0), 'total_costo_envio'],
+          [
+            Sequelize.literal(`COALESCE(SUM(CASE
+              WHEN "Envio"."estado" NOT IN ('Entregado', 'Cancelado', 'Devuelto', 'Perdido')
+              THEN COALESCE("Envio"."monto", 0) + COALESCE("Envio"."costo_envio", 0)
+              ELSE 0
+            END), 0)`),
+            'total_por_cobrar',
+          ],
+          [
+            Sequelize.literal(`COALESCE(SUM(CASE
+              WHEN "Envio"."estado" = 'Entregado'
+              THEN COALESCE("Envio"."monto", 0) + COALESCE("Envio"."costo_envio", 0)
+              ELSE 0
+            END), 0)`),
+            'total_cobrado',
+          ],
         ],
         raw: true,
       });
-      conteos.total_visible_a_cobrar = (Number(totalesFila?.total_monto) || 0) + (Number(totalesFila?.total_costo_envio) || 0);
+      conteos.total_visible_a_cobrar = Number(totalesFila?.total_por_cobrar) || 0;
+      conteos.total_cobrado = Number(totalesFila?.total_cobrado) || 0;
     } catch (errTotales) {
-      console.error('Error calculando total_visible_a_cobrar en conteoPorEstado:', errTotales);
+      console.error('Error calculando totales operativos en conteoPorEstado:', errTotales);
       conteos.total_visible_a_cobrar = 0;
+      conteos.total_cobrado = 0;
     }
 
     res.json(conteos);
