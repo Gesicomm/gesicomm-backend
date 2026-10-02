@@ -12,7 +12,8 @@
     "create-admin": "node scripts/create-admin.js",
     "verify:pricing-parity": "node scripts/verify-pricing-parity.js",
     "test": "jest src/tests --runInBand --detectOpenHandles",
-    "test:integration": "jest --config test-integration/jest.config.js --runInBand --detectOpenHandles"
+    "test:integration": "jest --config test-integration/jest.config.js --runInBand --detectOpenHandles",
+    "test:speedbox:e2e": "node test-speedbox/run.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1131.0",

@@ -135,10 +135,13 @@ Todas pertenecen al usuario de la sesion; no aceptan un usuario desde el body.
 
 ## Validacion y produccion
 
-Las pruebas locales usan HTTP y modelos simulados, sin acceder a la base
-existente ni enviar pedidos reales. El panel solo marca checks a partir de
-respuestas reales procesadas por la integracion. Las pruebas locales no
-completan las cuatro validaciones del portal Speedbox.
+Las pruebas unitarias usan modelos simulados. El E2E de `test-speedbox/run.cjs`
+usa navegador, rutas de produccion y PostgreSQL real en un cluster nuevo;
+solo Speedbox se reemplaza por un servidor HTTP local. No accede a la base
+existente ni envia pedidos al proveedor. Las cuatro marcas del panel durante
+esa prueba pertenecen exclusivamente a los datos ficticios del cluster local;
+no completan las cuatro validaciones del portal Speedbox. Ver resultados,
+evidencias y pasos en [SPEEDBOX-WALKTHROUGH.md](SPEEDBOX-WALKTHROUGH.md).
 
 Faltan credenciales de sandbox, comprobar la respuesta real de store, realizar
 el pedido de prueba, consultar updates y verificar un webhook desde Speedbox.
