@@ -70,7 +70,7 @@ async function apply(event, transaction) {
     if (envio.stock_descontado && !envio.stock_liberado && !envio.stock_despachado && ['Confirmado', 'Preparado'].includes(envio.estado)) {
       const inventory = require('../../controllers/envioController');
       const items = await EnvioItem.findAll({ where: { envio_id: envio.id }, transaction });
-      await inventory.moverAReservadoATransito(items, transaction);
+      await inventory.moverAReservadoATransito(items, transaction, envio.usuario_id);
       await envio.update({ stock_despachado: true, estado: 'Despachado' }, { transaction });
     }
   } else if (envio.estado !== target) {
@@ -82,7 +82,7 @@ async function apply(event, transaction) {
       const inventory = require('../../controllers/envioController');
       const items = await EnvioItem.findAll({ where: { envio_id: envio.id }, transaction });
       if (['Despachado', 'Entregado'].includes(target) && !envio.stock_despachado) {
-        await inventory.moverAReservadoATransito(items, transaction);
+        await inventory.moverAReservadoATransito(items, transaction, envio.usuario_id);
         await envio.update({ stock_despachado: true, dispatchedAt: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Asuncion' }) }, { transaction });
       }
       if (target === 'Entregado') {
@@ -108,9 +108,10 @@ async function ingest(input, source) {
   return sequelize.transaction(async transaction => {
     const key = crypto.createHash('sha256').update(`${normalized.environment}:${normalized.event_key}`).digest().readInt32BE(0);
     await sequelize.query('SELECT pg_advisory_xact_lock(84271005, :key)', { replacements: { key }, transaction });
+    const { data, hasId, ...persisted } = normalized;
     const [event, created] = await SpeedboxEvento.findOrCreate({
       where: { environment: normalized.environment, event_key: normalized.event_key },
-      defaults: { ...normalized, data: undefined, hasId: undefined }, transaction,
+      defaults: persisted, transaction,
     });
     if (!created && event.estado !== 'pendiente') {
       // The same event may first arrive through updates, then via webhook.

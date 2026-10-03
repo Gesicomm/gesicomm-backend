@@ -78,6 +78,7 @@ async function main() {
     SPEEDBOX_ENABLED: 'false', SPEEDBOX_ENVIRONMENT: 'sandbox',
     SPEEDBOX_API_URL: 'https://speedboxpy.com/api/speedbox_sandbox.php',
     SPEEDBOX_API_KEY: 'e2e-dummy-key', SPEEDBOX_API_SECRET: 'e2e-dummy-secret',
+    SMTP_USER: '', SMTP_PASS: '', BREVO_API_KEY: '', BREVO_ADMIN_EMAIL: '', BREVO_FROM_EMAIL: '',
     SPEEDBOX_REGISTRATION_URL: 'https://registration.example.test/register',
     SPEEDBOX_WEBHOOK_TOKEN: crypto.randomBytes(32).toString('hex'),
   });
@@ -130,6 +131,10 @@ async function main() {
     await migration.down(qi);
     await migration.up(qi, require('sequelize'));
     await migration.up(qi, require('sequelize'));
+    const abastecimientoMigration = require('../migrations/20261002200000-speedbox-abastecimiento');
+    await m.sequelize.query('ALTER TABLE envios ALTER COLUMN abastecimiento_estado TYPE VARCHAR(30)');
+    await abastecimientoMigration.up(qi, require('sequelize'));
+    await abastecimientoMigration.up(qi, require('sequelize'));
     await require('../scripts/migrar-numero-pedido').migrarNumeroPedido();
     return { tables: (await qi.showAllTables()).length, migration_idempotent: true };
   });
@@ -154,7 +159,7 @@ async function main() {
   app.use(require('cors')({ origin: true, credentials: true }));
   app.use(express.json());
   app.use(require('cookie-parser')());
-  for (const [mount, file] of [['auth', 'auth'], ['mi-tienda', 'tienda'], ['couriers', 'courierRoutes'], ['envios', 'envioRoutes'], ['integraciones/speedbox', 'speedbox'], ['webhooks', 'webhooks']]) app.use(`/api/${mount}`, require(`../src/routes/${file}`));
+  for (const [mount, file] of [['auth', 'auth'], ['mi-tienda', 'tienda'], ['couriers', 'courierRoutes'], ['envios', 'envioRoutes'], ['solicitudes-abastecimiento', 'solicitudAbastecimientoRoutes'], ['inventario', 'inventarioRoutes'], ['integraciones/speedbox', 'speedbox'], ['webhooks', 'webhooks']]) app.use(`/api/${mount}`, require(`../src/routes/${file}`));
   app.use('/api', require('../src/routes/suscripciones'));
   app.get('/api/educacion/progreso-sidebar', (req, res) => res.json({ menusDesbloqueados: [], bloqueos: {} }));
   app.use((error, req, res, next) => res.status(error.status || 500).json({ message: error.message }));
@@ -482,9 +487,293 @@ async function main() {
       return { creation_http_status: 201, estado: saved.estado, stock_reserved: true, speedbox: 'incierto' };
     } finally { process.env.SPEEDBOX_ENABLED = 'false'; }
   });
-  await step('24 Desktop/mobile evidence, persistent UI state and no uncaught browser errors', async () => {
+  // Replace only external file storage; multipart, file processing and payment state transitions stay real.
+  const uploaded = [];
+  require('../src/services/r2/r2.service').R2Service.uploadObject = async options => {
+    uploaded.push({ key: options.key, contentType: options.contentType, bytes: options.body.length });
+    return { url: `${api}/__fixtures/receipts/${encodeURIComponent(options.key)}` };
+  };
+  await adminRole.update({ nombre: 'administrador' });
+  const adminContext = await resources.browser.newContext();
+  const otherContext = await resources.browser.newContext();
+  await request('post', 'auth/login', { email: admin.correo_electronico, password }, 200, adminContext.request);
+  await request('post', 'auth/login', { email: other.correo_electronico, password }, 200, otherContext.request);
+  const ownDepot = await m.Deposito.create({ usuario_id: user.id, nombre: 'Deposito propio E2E', ciudad: 'Asuncion', departamento: 'Central', direccion: 'Deposito 1', alcance: 'PROPIO' });
+  const otherDepot = await m.Deposito.create({ usuario_id: other.id, nombre: 'Deposito ajeno E2E', ciudad: 'Asuncion', departamento: 'Central', direccion: 'Deposito 2', alcance: 'PROPIO' });
+  const center = await m.Deposito.create({ usuario_id: admin.id, nombre: 'Centro Gesicomm E2E', ciudad: 'Asuncion', departamento: 'Central', direccion: 'Centro 1', alcance: 'GESICOMM' });
+  const provider = await m.ProveedorLogistico.create({ nombre: 'Proveedor E2E', capacidades: [], activo: true });
+  await m.CentroProveedorLogistico.create({ centro_id: center.id, proveedor_logistico_id: provider.id });
+  await m.DeliveryZonaTarifa.create({ proveedor_logistico_id: provider.id, centro_id: center.id, ciudad: 'Asuncion', departamento: 'Central', costo: 12000 });
+  const catalog = await m.Producto.create({ inquilino_id: inquilino.id, creado_por: admin.id, nombre: 'Catalogo variantes E2E', slug: 'catalogo-variantes-e2e', sku: 'CAT-001', precio_base: 50000, precio_costo: 30000, stock_salon: 0, stock_deposito: 20, cantidad_disponible: 20 });
+  const red = await m.ProductoVariante.create({ inquilino_id: inquilino.id, producto_id: catalog.id, nombre: 'Rojo', sku_variante: 'CAT-ROJO', stock_salon: 0, stock_deposito: 10, stock: 10 });
+  const blue = await m.ProductoVariante.create({ inquilino_id: inquilino.id, producto_id: catalog.id, nombre: 'Azul', sku_variante: 'CAT-AZUL', stock_salon: 0, stock_deposito: 10, stock: 10 });
+  const procurement = require('../src/services/solicitudAbastecimiento.service');
+  const base = 'solicitudes-abastecimiento';
+  const createSupply = (extra = {}, requestContext = context.request) => request('post', base, { producto_id: catalog.id, variante_id: red.id, cantidad: 2, tipoLogistica: 'GESICOMM', ...extra }, 201, requestContext);
+  const inventory = (owner, variant, depot) => m.InventarioUbicacion.findOne({ where: { usuario_id: owner, producto_id: catalog.id, variante_id: variant, deposito_id: depot } });
+  async function receipt(id, requestContext = context.request) {
+    const response = await requestContext.post(`${api}/api/${base}/${id}/comprobante`, { multipart: {
+      comprobante: { name: 'comprobante-e2e.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nE2E fictional transfer receipt\n%%EOF') } } });
+    assert.equal(response.status(), 200, await response.text());
+  }
+  async function advanceTo(id, target) {
+    for (let i = 0; i < 10; i++) {
+      const current = await m.SolicitudAbastecimiento.findByPk(id);
+      if (current.estado === target) return;
+      await request('post', `${base}/${id}/avanzar`, { centroGesicommId: center.id }, 200, adminContext.request);
+    }
+    throw new Error(`Solicitud ${id} did not reach ${target}`);
+  }
+  let ownSupply, centerSupply, financialSupply;
+  await step('24 Procurement pending/rejected/validated payment cannot credit inventory early', async () => {
+    await request('post', base, { producto_id: catalog.id, cantidad: 1, tipoLogistica: 'GESICOMM' }, 400);
+    await request('post', base, { producto_id: catalog.id, variante_id: red.id, cantidad: 1.5, tipoLogistica: 'GESICOMM' }, 400);
+    await request('post', base, { producto_id: catalog.id, variante_id: red.id, cantidad: 2, tipoLogistica: 'PROPIA', depositoId: otherDepot.id }, 400);
+    ownSupply = await createSupply({ tipoLogistica: 'PROPIA', depositoId: ownDepot.id });
+    assert.equal(ownSupply.costo_producto, 100000);
+    assert.equal(ownSupply.costo_logistico, 12000);
+    await request('post', `${base}/${ownSupply.id}/confirmar-recepcion`, {}, 400);
+    await request('post', `${base}/${ownSupply.id}/avanzar`, {}, 400, adminContext.request);
+    await receipt(ownSupply.id);
+    await request('post', `${base}/${ownSupply.id}/validar-pago`, {}, 403);
+    await request('post', `${base}/${ownSupply.id}/rechazar-pago`, { motivo: 'Comprobante ilegible E2E' }, 200, adminContext.request);
+    assert.equal((await m.SolicitudAbastecimiento.findByPk(ownSupply.id)).estado, 'pago_rechazado');
+    assert.equal(await inventory(user.id, red.id, ownDepot.id), null);
+    await receipt(ownSupply.id);
+    await request('post', `${base}/${ownSupply.id}/validar-pago`, {}, 200, adminContext.request);
+    assert.equal(await inventory(user.id, red.id, ownDepot.id), null);
+    await red.reload(); assert.equal(red.stock, 10);
+    return { solicitud_id: ownSupply.id, states: ['pendiente_pago', 'pago_enviado', 'pago_rechazado', 'pago_enviado', 'pago_validado'], stock_before_physical_receipt: 10, uploaded_receipts: uploaded.length, costs: { goods: 100000, logistics: 12000 } };
+  });
+  await step('25 Own logistics: physical reception credits exact variant/depot/owner only once concurrently', async () => {
+    await advanceTo(ownSupply.id, 'en_transito_a_deposito_cliente');
+    await request('post', `${base}/${ownSupply.id}/confirmar-recepcion`, {}, 404, otherContext.request);
+    const responses = await Promise.all([1, 2].map(() => context.request.post(`${api}/api/${base}/${ownSupply.id}/confirmar-recepcion`, { data: {} })));
+    assert.deepEqual(responses.map(response => response.status()).sort(), [200, 400]);
+    await red.reload(); await blue.reload(); await catalog.reload();
+    assert.equal(red.stock, 12); assert.equal(blue.stock, 10); assert.equal(catalog.cantidad_disponible, 22);
+    assert.equal((await inventory(user.id, red.id, ownDepot.id)).cantidad_disponible, 2);
+    return { concurrent_statuses: [200, 400], red_stock: 12, blue_stock: 10, parent_stock: 22, location_stock: 2 };
+  });
+  await step('26 Gesicomm logistics: center receipt validates destination and isolates two owners', async () => {
+    centerSupply = await createSupply({ variante_id: blue.id, cantidad: 3 });
+    await receipt(centerSupply.id);
+    await request('post', `${base}/${centerSupply.id}/validar-pago`, {}, 200, adminContext.request);
+    await advanceTo(centerSupply.id, 'recibido_en_gesicomm');
+    assert.equal(await inventory(user.id, blue.id, center.id), null);
+    await request('post', `${base}/${centerSupply.id}/avanzar`, { centroGesicommId: ownDepot.id }, 400, adminContext.request);
+    await request('post', `${base}/${centerSupply.id}/avanzar`, { centroGesicommId: center.id }, 200, adminContext.request);
+    await request('post', `${base}/${centerSupply.id}/avanzar`, { centroGesicommId: center.id }, 400, adminContext.request);
+    const otherSupply = await createSupply({ variante_id: blue.id, cantidad: 4 }, otherContext.request);
+    await receipt(otherSupply.id, otherContext.request);
+    await request('post', `${base}/${otherSupply.id}/validar-pago`, {}, 200, adminContext.request);
+    await advanceTo(otherSupply.id, 'disponible_en_gesicomm');
+    assert.equal((await inventory(user.id, blue.id, center.id)).cantidad_disponible, 3);
+    assert.equal((await inventory(other.id, blue.id, center.id)).cantidad_disponible, 4);
+    await catalog.reload(); assert.equal(catalog.cantidad_disponible, 22);
+    return { user_units: 3, other_units: 4, shared_center: center.id, catalog_not_inflated: 22 };
+  });
+  await step('27 Concurrent independent receipts do not lose stock; NULL-variant uniqueness is enforced', async () => {
+    const helper = require('../src/services/inventarioUbicacion.service');
+    await Promise.all([1, 2].map(() => m.sequelize.transaction(t => helper.acreditar({ usuario_id: user.id,
+      producto_id: product.id, deposito_id: center.id, cantidad: 1, alcance: 'GESICOMM' }, t))));
+    const where = { usuario_id: user.id, producto_id: product.id, variante_id: null, deposito_id: center.id };
+    assert.equal(await m.InventarioUbicacion.count({ where }), 1);
+    assert.equal((await m.InventarioUbicacion.findOne({ where })).cantidad_disponible, 2);
+    await assert.rejects(m.InventarioUbicacion.create(where), /Validation error/);
+    return { rows: 1, available: 2, duplicate_row_rejected: true };
+  });
+  await step('28 Mixed deposits roll back all reservations and never send a remote order', async () => {
+    const redBefore = red.stock;
+    const blueBefore = blue.stock;
+    const beforeRemote = remote.orders.length;
+    await request('post', 'envios', { cliente: 'Sin variante E2E', monto: 50000, items: [{ producto_id: catalog.id, cantidad: 1, precio_unitario: 50000 }] }, 400);
+    const response = await context.request.post(`${api}/api/envios`, { data: { nombre_cliente: 'Mezclado', apellido_cliente: 'E2E', telefono: '0981000000', ciudad: 'Asuncion', departamento: 'Central', direccion: 'Direccion E2E', courier_id: courier.id, metodo_pago_id: payment.id, monto: 100000,
+      items: [{ producto_id: catalog.id, variante_id: red.id, cantidad: 1, precio_unitario: 50000 }, { producto_id: catalog.id, variante_id: blue.id, cantidad: 1, precio_unitario: 50000 }] } });
+    assert.equal(response.status(), 409, await response.text());
+    await red.reload(); await blue.reload();
+    assert.equal(red.stock, redBefore); assert.equal(blue.stock, blueBefore); assert.equal(remote.orders.length, beforeRemote);
+    assert.equal((await inventory(user.id, red.id, ownDepot.id)).cantidad_disponible, 2);
+    assert.equal((await inventory(user.id, blue.id, center.id)).cantidad_disponible, 3);
+    return { http_status: 409, variant_stock_unchanged: true, location_stock_unchanged: true, remote_orders: 0 };
+  });
+  await step('29 Gesicomm variant order reserves only its owner; returned goods require complete inspection', async () => {
+    await m.Tienda.update({ modalidad_fulfillment: 'GESICOMM' }, { where: { usuario_id: user.id } });
+    const returned = await order({ monto: 100000, items: [{ producto_id: catalog.id, variante_id: blue.id, nombre_producto: 'Azul', cantidad: 2, precio_unitario: 50000 }] });
+    assert.equal((await m.Envio.findByPk(returned.id)).abastecimiento_estado, 'no_requiere');
+    const mapping = await request('post', `integraciones/speedbox/pedidos/${returned.id}/enviar`);
+    assert.equal(remote.orders.at(-1).payload.items[0].sku, 'CAT-AZUL');
+    assert.equal((await inventory(user.id, blue.id, center.id)).cantidad_disponible, 1);
+    assert.equal((await inventory(other.id, blue.id, center.id)).cantidad_disponible, 4);
+    await webhook(event(mapping.order_id, 'devuelto', 'evt-variant-return', 20000));
+    await blue.reload(); assert.equal(blue.stock, 8);
+    const item = await m.EnvioItem.findOne({ where: { envio_id: returned.id } });
+    const component = await m.EnvioItemComponente.findOne({ where: { envio_item_id: item.id } });
+    const inspect = (cantidad, condicion, marcar_estado) => ({ items: [{ envio_item_componente_id: component.id, cantidad, condicion }], marcar_estado });
+    await request('post', `envios/${returned.id}/devolucion`, inspect(1, 'vendible', true), 400);
+    await blue.reload(); assert.equal(blue.stock, 8);
+    await request('post', `envios/${returned.id}/devolucion`, inspect(1, 'vendible', false));
+    await request('post', `envios/${returned.id}/devolucion`, inspect(1, 'dañado', true));
+    await blue.reload(); assert.equal(blue.stock, 9);
+    assert.equal((await inventory(user.id, blue.id, center.id)).cantidad_disponible, 2);
+    assert.equal((await inventory(other.id, blue.id, center.id)).cantidad_disponible, 4);
+    assert.equal((await m.SpeedboxEvento.findOne({ where: { event_key: 'id:evt-variant-return' } })).estado, 'procesado');
+    await request('post', `envios/${returned.id}/devolucion`, inspect(1, 'vendible', true), 400);
+    await m.Tienda.update({ modalidad_fulfillment: 'PROPIA' }, { where: { usuario_id: user.id } });
+    return { sku: 'CAT-AZUL', available_after_inspection: 9, vendible: 1, damaged: 1, own_location_units: 2, other_owner_unchanged: 4, review_closed: true };
+  });
+  await step('30 Browser wallet reconciliation is explicit, durable and does not settle customer/provider payments', async () => {
+    financialSupply = await createSupply({ variante_id: blue.id, cantidad: 1 });
+    const movement = { event: 'wallet.transaction', event_id: 'evt-wallet-provider', occurred_at: new Date().toISOString(), data: { tienda_id: 54, amount: 100000, direction: 'debit', currency: 'PYG' } };
+    await webhook(movement);
+    const row = await m.SpeedboxEvento.findOne({ where: { event_key: 'id:evt-wallet-provider' } });
     await page.getByRole('button', { name: 'Actualizar panel', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Pendientes de revision' })).toBeVisible();
+    await page.getByRole('button', { name: `Conciliar movimiento ${row.id}` }).click();
+    const modal = page.getByRole('dialog', { name: `Conciliar movimiento ${row.id}` });
+    await modal.getByLabel('Concepto').selectOption('pago_proveedor');
+    await modal.getByLabel('Referencia').selectOption(`solicitud:${financialSupply.id}`);
+    await modal.getByLabel('Nota de conciliacion').fill('Pago cotejado con comprobante SOL E2E');
+    await page.screenshot({ path: path.join(artifacts, 'reconciliation-desktop.png') });
+    await modal.getByRole('button', { name: 'Conciliar', exact: true }).click();
+    await expect(page.getByText('Movimiento conciliado.', { exact: true })).toBeVisible();
+    await row.reload(); assert.equal(row.conciliacion.concepto, 'pago_proveedor');
+    assert.equal(row.conciliacion.solicitud_id, financialSupply.id);
+    const result = await request('post', `integraciones/speedbox/eventos/${row.id}/conciliar`, { concepto: 'pago_proveedor', solicitud_id: financialSupply.id, envio_id: null, nota: 'Pago cotejado con comprobante SOL E2E' });
+    assert.equal(result.duplicate, true);
+    await webhook(movement); await row.reload(); assert.equal(row.conciliacion.solicitud_id, financialSupply.id);
+    const state = await request('get', 'integraciones/speedbox');
+    assert.equal(state.orders.find(order => order.envio_id === first.id).finanzas.estado_financiero, 'pendiente_liquidacion');
+    assert.equal((await m.SolicitudAbastecimiento.findByPk(financialSupply.id)).estado, 'pendiente_pago');
+    return { wallet_event: row.id, manual_reference: financialSupply.id, replay_idempotent: true, no_automatic_liquidation: true, procurement_payment_unchanged: 'pendiente_pago' };
+  });
+  await step('31 Reconciliation rejects wrong owner, direction, reference, missing ID and changed classification', async () => {
+    const row = await m.SpeedboxEvento.findOne({ where: { event_key: 'id:evt-wallet-provider' } });
+    const payload = { concepto: 'pago_proveedor', envio_id: null, solicitud_id: financialSupply.id, nota: 'Pago cotejado con comprobante SOL E2E' };
+    await request('post', `integraciones/speedbox/eventos/${row.id}/conciliar`, payload, 404, otherContext.request);
+    await request('post', `integraciones/speedbox/eventos/${row.id}/conciliar`, { ...payload, nota: 'Cambio sin auditoria' }, 409);
+    const debit = await m.SpeedboxEvento.findOne({ where: { event_key: 'id:evt-wallet-replay' } });
+    await request('post', `integraciones/speedbox/eventos/${debit.id}/conciliar`, { ...payload, concepto: 'cobro_cliente', envio_id: first.id, solicitud_id: null }, 400);
+    await request('post', `integraciones/speedbox/eventos/${debit.id}/conciliar`, { ...payload, concepto: 'envio', envio_id: first.id, solicitud_id: ownSupply.id }, 400);
+    await request('post', `integraciones/speedbox/eventos/${debit.id}/conciliar`, { ...payload, solicitud_id: 999999 }, 404);
+    const observation = await m.SpeedboxEvento.findOne({ where: { tipo: 'wallet.transaction', estado: 'revision' } });
+    await request('post', `integraciones/speedbox/eventos/${observation.id}/conciliar`, { concepto: 'otro', envio_id: null, solicitud_id: null, nota: 'Sin ID verificable' }, 409);
+    return { owner: 404, changed_classification: 409, invalid_direction: 400, two_references: 400, unknown_reference: 404, missing_remote_id: 409 };
+  });
+  await step('32 Same-origin mixed lines deliver without procuring twice or crediting physical stock', async () => {
+    const recipeCost = await m.sequelize.transaction(t => require('../src/controllers/envioController').calcularAbastecimientoDesdeItems([
+      { producto_id: catalog.id, variante_id: red.id, cantidad: 2 },
+      { producto_id: catalog.id, variante_id: red.id, cantidad: 2 }], user.id, t));
+    assert.equal(recipeCost.costo, 100000);
+    await m.Tienda.update({ modalidad_fulfillment: 'GESICOMM' }, { where: { usuario_id: user.id } });
+    const mixed = await order({ monto: 100000, items: [1, 2].map(() => ({ producto_id: catalog.id, variante_id: blue.id, cantidad: 1, precio_unitario: 50000 })) });
+    assert.equal((await m.Envio.findByPk(mixed.id)).abastecimiento_costo, 0);
+    const mapping = await request('post', `integraciones/speedbox/pedidos/${mixed.id}/enviar`);
+    assert.equal(remote.orders.at(-1).payload.items.length, 2);
+    assert(remote.orders.at(-1).payload.items.every(item => item.sku === 'CAT-AZUL'));
+    assert.equal((await inventory(user.id, blue.id, center.id)).cantidad_reservada, 2);
+    await webhook(event(mapping.order_id, 'entregado', 'evt-mixed-delivered', 25000));
+    await webhook(event(mapping.order_id, 'entregado', 'evt-mixed-delivered', 25000));
+    const location = await inventory(user.id, blue.id, center.id);
+    assert.equal(location.cantidad_disponible, 0); assert.equal(location.cantidad_reservada, 0);
+    assert.equal((await inventory(other.id, blue.id, center.id)).cantidad_disponible, 4);
+    assert.equal((await m.SolicitudAbastecimiento.findByPk(financialSupply.id)).estado, 'pendiente_pago');
+    await m.Tienda.update({ modalidad_fulfillment: 'PROPIA' }, { where: { usuario_id: user.id } });
+    return { stock_credited_by_delivery: 0, new_procurement_cost: 0, other_owner_units: 4, remote_lines: 2,
+      repeated_recipe_quantity: 4, already_owned: 2, incremental_purchase_cost: recipeCost.costo };
+  });
+  await step('33 Inbound physical reception counts differences and enables only accepted units once', async () => {
+    const ingresso = await request('post', 'inventario/ingresos', { centro_gesicomm_id: center.id, items: [
+      { producto_id: catalog.id, variante_id: red.id, cantidad_declarada: 3 },
+      { producto_id: catalog.id, variante_id: blue.id, cantidad_declarada: 2 }] }, 201);
+    const prefix = `inventario/ingresos/${ingresso.id}`;
+    const before = (await inventory(user.id, blue.id, center.id)).cantidad_disponible;
+    await request('post', `${prefix}/habilitar-stock`, {}, 400, adminContext.request);
+    await request('post', `${prefix}/confirmar-envio`, {});
+    await request('post', `${prefix}/marcar-en-transito`, {}, 404, otherContext.request);
+    await request('post', `${prefix}/marcar-en-transito`, { transportista: 'Transporte E2E' });
+    await request('post', `${prefix}/recepcion`, {}, 403);
+    await request('post', `${prefix}/recepcion`, {}, 200, adminContext.request);
+    const redItem = ingresso.items.find(item => item.variante_id === red.id);
+    const blueItem = ingresso.items.find(item => item.variante_id === blue.id);
+    await request('post', `${prefix}/resolver-diferencias`, { conteos: [{ item_id: redItem.id, cantidad_recibida: 1, cantidad_aceptada: 2 }] }, 400, adminContext.request);
+    await request('post', `${prefix}/resolver-diferencias`, { conteos: [{ item_id: redItem.id, cantidad_recibida: 2, cantidad_aceptada: 2 }] }, 200, adminContext.request);
+    await request('post', `${prefix}/habilitar-stock`, {}, 400, adminContext.request);
+    assert.equal((await inventory(user.id, blue.id, center.id)).cantidad_disponible, before);
+    await request('post', `${prefix}/resolver-diferencias`, { conteos: [{ item_id: blueItem.id, cantidad_recibida: 1, cantidad_aceptada: 1 }] }, 200, adminContext.request);
+    await request('post', `${prefix}/habilitar-stock`, {}, 200, adminContext.request);
+    await request('post', `${prefix}/habilitar-stock`, {}, 200, adminContext.request);
+    assert.equal((await inventory(user.id, red.id, center.id)).cantidad_disponible, 2);
+    assert.equal((await inventory(user.id, blue.id, center.id)).cantidad_disponible, before + 1);
+    return { ingreso_id: ingresso.id, declared: 5, received_and_accepted: 3, duplicate_enable: 'idempotent', incomplete_count_rejected: true };
+  });
+  await step('34 Migration blocks historical duplicates without merging or changing quantities', async () => {
+    const qi = m.sequelize.getQueryInterface();
+    const migration = require('../migrations/20261002200000-speedbox-abastecimiento');
+    await m.sequelize.query('DROP INDEX idx_inventario_propietario_simple');
+    const where = { usuario_id: user.id, producto_id: product.id, variante_id: null, deposito_id: center.id };
+    const duplicate = await m.InventarioUbicacion.create({ ...where, cantidad_disponible: 7 });
+    await assert.rejects(migration.up(qi, require('sequelize')), /Inventario duplicado/);
+    assert.deepEqual((await m.InventarioUbicacion.findAll({ where, order: [['id', 'ASC']] })).map(row => row.cantidad_disponible), [2, 7]);
+    // Remove only the deliberately injected test fixture, then restore the index.
+    await duplicate.destroy();
+    await migration.up(qi, require('sequelize'));
+    assert.equal((await m.InventarioUbicacion.findOne({ where })).cantidad_disponible, 2);
+    return { duplicate_quantities_untouched: [2, 7], migration_rejected: true, corrected_fixture_index_restored: true };
+  });
+  await step('35 Sale-linked procurement completes both logistics without crediting already reserved stock again', async () => {
+    const goods = await m.Producto.create({ inquilino_id: inquilino.id, creado_por: admin.id, nombre: 'Abastecimiento por venta E2E', slug: 'abasto-venta-e2e', sku: 'SUPPLY-SALE', precio_base: 50000, stock_deposito: 10, stock_salon: 0, cantidad_disponible: 10 });
+    const results = [];
+    for (const type of ['PROPIA', 'GESICOMM']) {
+      process.env.SPEEDBOX_ENABLED = 'true';
+      const sale = await order({ monto: 50000, costo_envio: 7000, costo_fulfillment: 1000,
+        items: [{ producto_id: goods.id, cantidad: 1, precio_unitario: 50000 }] });
+      await expect.poll(async () => (await m.SpeedboxPedido.findOne({ where: { envio_id: sale.id } }))?.estado).toBe('enviado');
+      process.env.SPEEDBOX_ENABLED = 'false';
+      const mapping = await m.SpeedboxPedido.findOne({ where: { envio_id: sale.id } });
+      const prefix = `envios/${sale.id}/abastecimiento`;
+      assert.equal(sale.abastecimiento_estado, 'pendiente_pago');
+      await request('put', `${prefix}/logistica`, { tipoLogistica: type, ...(type === 'PROPIA' ? { depositoId: ownDepot.id } : {}) });
+      await request('post', `${prefix}/confirmar-recepcion`, {}, 400);
+      const proof = async () => {
+        const response = await context.request.post(`${api}/api/${prefix}/comprobante`, { multipart: { comprobante: {
+          name: 'pago-venta.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nFictional sale procurement receipt\n%%EOF') } } });
+        assert.equal(response.status(), 200, await response.text());
+      };
+      await proof();
+      if (type === 'PROPIA') {
+        await request('post', `${prefix}/pago/rechazar`, { motivo: 'Revisar comprobante E2E' }, 200, adminContext.request);
+        await proof();
+      }
+      await request('post', `${prefix}/pago/validar`, {}, 200, adminContext.request);
+      const target = type === 'PROPIA' ? 'en_transito_a_deposito_cliente' : 'disponible_en_gesicomm';
+      for (let i = 0; i < 10; i++) {
+        if ((await m.Envio.findByPk(sale.id)).abastecimiento_estado === target) break;
+        await request('post', `${prefix}/avanzar`, {}, 200, adminContext.request);
+      }
+      await goods.reload(); const available = goods.cantidad_disponible;
+      if (type === 'PROPIA') {
+        await request('post', `${prefix}/confirmar-recepcion`, {}, 404, otherContext.request);
+        await request('post', `${prefix}/confirmar-recepcion`, {});
+        await request('post', `${prefix}/confirmar-recepcion`, {}, 400);
+      }
+      await goods.reload(); assert.equal(goods.cantidad_disponible, available);
+      assert.equal(await m.InventarioUbicacion.count({ where: { producto_id: goods.id } }), 0);
+      const saved = await m.Envio.findByPk(sale.id);
+      assert.equal(saved.abastecimiento_estado, type === 'PROPIA' ? 'recibido_en_deposito_cliente' : 'disponible_en_gesicomm');
+      assert(saved.abastecimiento_pagado_at);
+      assert.equal(saved.estado_financiero, 'pendiente_liquidacion');
+      assert.equal(remote.calls.filter(call => call.action === 'order' && call.body.external_order_id === mapping.external_order_id).length, 1);
+      await webhook(event(mapping.order_id, 'entregado', `evt-sale-procurement-${type}`, 30000));
+      await goods.reload(); assert.equal(goods.cantidad_disponible, available);
+      results.push({ logistics: type, final_procurement: saved.abastecimiento_estado, available_stock: available,
+        procurement_cost: saved.abastecimiento_costo, last_mile: saved.costo_envio, fulfillment: saved.costo_fulfillment, remote_order_calls: 1 });
+    }
+    return { routes: results, receipt_stock_credit: 0, duplicate_receipt_rejected: true, provider_payment_separate_from_customer_liquidation: true };
+  });
+  await adminContext.close(); await otherContext.close();
+  await step('36 Desktop/mobile evidence, persistent UI state and no uncaught browser errors', async () => {
+    await page.getByRole('button', { name: 'Actualizar panel', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Importes por pedido' })).toBeVisible();
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
       const name = viewport.width === 1440 ? 'desktop' : 'mobile';
       await page.setViewportSize(viewport);
@@ -506,6 +795,9 @@ async function main() {
     report.remote_calls = remote.calls;
     report.orders = await m.SpeedboxPedido.findAll({ attributes: ['envio_id', 'order_id', 'external_order_id', 'estado', 'status', 'intentos'], raw: true });
     report.events = await m.SpeedboxEvento.findAll({ attributes: ['event_key', 'tipo', 'estado', 'detalle', 'source'], raw: true });
+    report.inventory_locations = await m.InventarioUbicacion.findAll({ raw: true, order: [['id', 'ASC']] });
+    report.procurements = await m.SolicitudAbastecimiento.findAll({ attributes: ['id', 'usuario_id', 'producto_id', 'variante_id', 'cantidad', 'tipo_logistica', 'estado', 'costo_producto', 'costo_logistico'], raw: true });
+    report.reconciliations = await m.SpeedboxEvento.findAll({ where: { conciliacion: { [require('sequelize').Op.ne]: null } }, attributes: ['event_key', 'conciliacion'], raw: true });
     return { screenshots: ['desktop.png', 'desktop-orders.png', 'desktop-wallet.png', 'mobile.png', 'mobile-orders.png', 'mobile-wallet.png', 'retry-desktop.png'], browser_errors: pageErrors };
   });
 }

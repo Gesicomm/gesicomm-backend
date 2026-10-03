@@ -2,7 +2,7 @@
 const { Op } = require('sequelize');
 const { z } = require('zod');
 const { sequelize, Tienda, Courier, Envio, EnvioItem, EnvioItemComponente, Producto, ProductoVariante,
-  SpeedboxTienda, SpeedboxPedido, SpeedboxEvento } = require('../../models');
+  SpeedboxTienda, SpeedboxPedido, SpeedboxEvento, SolicitudAbastecimiento } = require('../../models');
 const client = require('./client');
 const { buildOrder } = require('./payload');
 
@@ -54,10 +54,13 @@ async function status(usuarioId) {
   const connection = await SpeedboxTienda.findOne({ where: { usuario_id: usuarioId, environment: environment() } });
   const orders = await SpeedboxPedido.findAll({ where: { usuario_id: usuarioId, environment: environment() },
     attributes: ['id', 'envio_id', 'external_order_id', 'order_id', 'estado', 'status', 'intentos', 'error', 'updated_at'],
-    include: [{ model: Envio, as: 'envio', attributes: ['numero_pedido'] }], order: [['updated_at', 'DESC']], limit: 50 });
+    include: [{ model: Envio, as: 'envio', attributes: ['numero_pedido', 'monto', 'costo_envio', 'costo_fulfillment',
+      'delivery_a_cargo', 'pago_anticipado', 'abastecimiento_estado', 'abastecimiento_costo', 'abastecimiento_pagado_at', 'estado_financiero'] }], order: [['updated_at', 'DESC']], limit: 50 });
   const events = await SpeedboxEvento.findAll({ where: { usuario_id: usuarioId, environment: environment() },
-    attributes: ['id', 'tipo', 'order_id', 'occurred_at', 'estado', 'detalle', 'payload', 'source'], order: [['id', 'DESC']], limit: 50 });
+    attributes: ['id', 'event_key', 'tipo', 'order_id', 'occurred_at', 'estado', 'detalle', 'payload', 'source', 'conciliacion'], order: [['id', 'DESC']], limit: 50 });
   const orderVerified = await SpeedboxPedido.count({ where: { usuario_id: usuarioId, environment: environment(), order_id: { [Op.ne]: null } } });
+  const solicitudes = await SolicitudAbastecimiento.findAll({ where: { usuario_id: usuarioId },
+    attributes: ['id', 'costo_producto', 'costo_logistico', 'estado'], order: [['id', 'DESC']], limit: 100 });
   const [availableOrders] = await sequelize.query(`
     SELECT e.id, e.numero_pedido, e.cliente FROM envios e
     LEFT JOIN speedbox_pedidos p ON p.envio_id = e.id AND p.environment = :environment
@@ -71,7 +74,8 @@ async function status(usuarioId) {
     registration_url: registrationUrl(),
     automatic_enabled: process.env.SPEEDBOX_ENABLED === 'true',
     webhook_configured: Boolean(process.env.SPEEDBOX_WEBHOOK_TOKEN?.length >= 32),
-    connection, orders, events, available_orders: availableOrders,
+    connection, orders: orders.map(order => ({ ...order.toJSON(), finanzas: order.envio ? require('./finanzas').desglose(order.envio) : null })),
+    events, solicitudes_abastecimiento: solicitudes, available_orders: availableOrders,
     checks: { spec: Boolean(connection?.spec_verified_at), order: orderVerified > 0,
       updates: Boolean(connection?.updates_verified_at), webhook: Boolean(connection?.webhook_verified_at) } };
 }

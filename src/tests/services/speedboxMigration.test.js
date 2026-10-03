@@ -20,8 +20,10 @@ it('creates every model column with the correct storage type', async () => {
   await migration.up(qi, S);
   for (const model of models) {
     const columns = tables.get(model.tableName);
-    expect(Object.keys(columns).sort()).toEqual(Object.keys(model.rawAttributes).sort());
-    for (const [key, attribute] of Object.entries(model.rawAttributes)) {
+    // The later procurement migration adds reconciliation to existing installations.
+    const attributes = Object.entries(model.rawAttributes).filter(([key]) => key !== 'conciliacion');
+    expect(Object.keys(columns).sort()).toEqual(attributes.map(([key]) => key).sort());
+    for (const [key, attribute] of attributes) {
       expect(columns[key].type.key).toBe(attribute.type.key);
       if (attribute.type.key === 'STRING') expect(columns[key].type.options.length).toBe(attribute.type.options.length);
     }

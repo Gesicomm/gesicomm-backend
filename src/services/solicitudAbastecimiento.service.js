@@ -3,13 +3,21 @@
 const { Transaction, Op } = require('sequelize');
 const {
   sequelize, SolicitudAbastecimiento, HistorialSolicitudAbastecimiento,
-  Producto, ProductoVariante, Deposito, Usuario, Rol, InventarioUbicacion,
+  Producto, ProductoVariante, Deposito, Usuario, Rol,
 } = require('../models');
 const { ACTORES, validarTransicion, resolverSiguienteEstadoUnico, ESTADOS_FINALES, errorHttp } = require('./abastecimiento/estadoMachine');
 const TarifaDelivery = require('./tarifaDelivery.service');
 const ProveedorLogisticoService = require('./proveedorLogistico.service');
 const ComprobanteService = require('./comprobante.service');
 const parametros = require('./parametros.service');
+const Inventario = require('./inventarioUbicacion.service');
+const ProductoService = require('./producto.service');
+
+function cantidadValida(cantidad) {
+  const value = Number(cantidad);
+  if (!Number.isSafeInteger(value) || value <= 0) throw errorHttp('La cantidad debe ser un entero positivo.');
+  return value;
+}
 const { costoParaComerciante, esProductoCargadoPorAdmin } = require('../controllers/envioController');
 
 const TEXTOS = {
@@ -31,14 +39,9 @@ const TEXTOS = {
 
 class SolicitudAbastecimientoService {
   static async registrarHistorial(solicitud_id, usuario_id, estado, comentario, t) {
-    try {
-      return await HistorialSolicitudAbastecimiento.create({
-        solicitud_id, usuario_id: usuario_id || null, estado, comentario,
-      }, { transaction: t });
-    } catch (err) {
-      console.error('No se pudo registrar historial de solicitud de abastecimiento:', err.message);
-      return null;
-    }
+    return HistorialSolicitudAbastecimiento.create({
+      solicitud_id, usuario_id: usuario_id || null, estado, comentario,
+    }, { transaction: t });
   }
 
   /** Cotiza el costo logístico de traer `cantidad` unidades a un depósito propio. */
@@ -80,7 +83,12 @@ class SolicitudAbastecimientoService {
       throw errorHttp('Este producto es propio del comercio: el abastecimiento es solo para productos del catálogo Gesicomm.');
     }
 
-    const cant = Math.max(1, Number(cantidad) || 1);
+    const cant = cantidadValida(cantidad);
+    const tieneVariantes = await ProductoVariante.count({ where: { producto_id, activo: true } });
+    if (tieneVariantes && !variante_id) throw errorHttp('Selecciona la variante del producto.');
+    if (variante_id && !await ProductoVariante.findOne({ where: { id: variante_id, producto_id, activo: true } })) {
+      throw errorHttp('La variante indicada no pertenece al producto o esta inactiva.');
+    }
     const costoProducto = Math.max(0, Math.round(costoParaComerciante(prod, usuario_id) * cant));
 
     if (tipoLogistica === 'GESICOMM') {
@@ -103,7 +111,7 @@ class SolicitudAbastecimientoService {
 
   /** Crea la solicitud ya con la cotización resuelta (mismo cálculo de `cotizar`, snapshot). */
   static async crear({ usuario_id, producto_id, variante_id, cantidad, tipoLogistica, depositoId }) {
-    const cant = Math.max(1, Number(cantidad) || 1);
+    const cant = cantidadValida(cantidad);
     if (variante_id) {
       const variante = await ProductoVariante.findOne({ where: { id: variante_id, producto_id } });
       if (!variante) throw errorHttp('La variante indicada no pertenece a este producto.');
@@ -324,12 +332,8 @@ class SolicitudAbastecimientoService {
         const fila = await SolicitudAbastecimiento.findByPk(solicitud_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
         validarTransicion(fila.estado, ACTORES.ADMIN, nuevoEstado, fila.tipo_logistica);
 
-        const [ubicacion] = await InventarioUbicacion.findOrCreate({
-          where: { producto_id: fila.producto_id, variante_id: fila.variante_id || null, deposito_id: centroGesicommId },
-          defaults: { usuario_id: fila.usuario_id, cantidad_disponible: 0, cantidad_reservada: 0 },
-          transaction: t,
-        });
-        await ubicacion.update({ cantidad_disponible: ubicacion.cantidad_disponible + fila.cantidad }, { transaction: t });
+        await Inventario.acreditar({ usuario_id: fila.usuario_id, producto_id: fila.producto_id,
+          variante_id: fila.variante_id, deposito_id: centroGesicommId, cantidad: fila.cantidad, alcance: 'GESICOMM' }, t);
 
         await fila.update({ estado: nuevoEstado, centro_gesicomm_id: centroGesicommId }, { transaction: t });
         await this.registrarHistorial(fila.id, usuario_id, nuevoEstado, TEXTOS.disponible_en_gesicomm, t);
@@ -360,19 +364,24 @@ class SolicitudAbastecimientoService {
       validarTransicion(solicitud.estado, ACTORES.USUARIO, 'recibido_en_deposito_cliente', solicitud.tipo_logistica);
 
       const prod = await Producto.findByPk(solicitud.producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
-      if (prod) {
+      if (!prod) throw errorHttp('Producto no encontrado.', 404);
+      if (solicitud.variante_id) {
+        const variante = await ProductoVariante.findOne({ where: { id: solicitud.variante_id, producto_id: prod.id, activo: true },
+          transaction: t, lock: Transaction.LOCK.UPDATE });
+        if (!variante) throw errorHttp('Variante no disponible para recepcion.');
+        await variante.update({ stock_deposito: variante.stock_deposito + solicitud.cantidad,
+          stock: variante.stock + solicitud.cantidad }, { transaction: t });
+        await ProductoService.recalcularStockPadre(prod.id, t);
+      } else {
         await prod.update({
           stock_deposito: (parseInt(prod.stock_deposito) || 0) + solicitud.cantidad,
           cantidad_disponible: (parseInt(prod.cantidad_disponible) || 0) + solicitud.cantidad,
         }, { transaction: t });
       }
 
-      const [ubicacion] = await InventarioUbicacion.findOrCreate({
-        where: { producto_id: solicitud.producto_id, variante_id: solicitud.variante_id || null, deposito_id: solicitud.deposito_destino_id },
-        defaults: { usuario_id: solicitud.usuario_id, cantidad_disponible: 0, cantidad_reservada: 0 },
-        transaction: t,
-      });
-      await ubicacion.update({ cantidad_disponible: ubicacion.cantidad_disponible + solicitud.cantidad }, { transaction: t });
+      await Inventario.acreditar({ usuario_id: solicitud.usuario_id, producto_id: solicitud.producto_id,
+        variante_id: solicitud.variante_id, deposito_id: solicitud.deposito_destino_id,
+        cantidad: solicitud.cantidad, alcance: 'PROPIO' }, t);
 
       await solicitud.update({ estado: 'recibido_en_deposito_cliente' }, { transaction: t });
       await this.registrarHistorial(solicitud.id, usuario_id, 'recibido_en_deposito_cliente', TEXTOS.recibido_en_deposito_cliente, t);

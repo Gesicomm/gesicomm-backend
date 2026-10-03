@@ -14,5 +14,6 @@ module.exports = sequelize.define('SpeedboxEvento', {
   payload: { type: DataTypes.JSONB, allowNull: false },
   estado: { type: DataTypes.STRING(30), allowNull: false, defaultValue: 'pendiente' },
   detalle: { type: DataTypes.TEXT, allowNull: true },
+  conciliacion: { type: DataTypes.JSONB, allowNull: true },
 }, { tableName: 'speedbox_eventos', timestamps: true, createdAt: 'created_at', updatedAt: 'updated_at',
   indexes: [{ unique: true, fields: ['environment', 'event_key'] }, { fields: ['usuario_id', 'tipo'] }] });

@@ -351,6 +351,12 @@ sequelize.authenticate().then(async () => {
     logger.error('Error al aplicar migraciones de estructura:', mErr);
   }
   logger.info('Migraciones iniciales aplicadas exitosamente.');
+  try {
+    await require('./migrations/20261002200000-speedbox-abastecimiento').up(sequelize.getQueryInterface(), require('sequelize'));
+  } catch (error) {
+    logger.error('No se puede iniciar sin aislamiento del inventario por propietario:', error);
+    process.exit(1);
+  }
 
   // Validar que el esquema de la BD coincide con los modelos
   try {

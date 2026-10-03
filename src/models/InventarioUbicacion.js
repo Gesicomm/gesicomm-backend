@@ -1,6 +1,6 @@
 'use strict';
 
-const { DataTypes } = require('sequelize');
+const { DataTypes, Op } = require('sequelize');
 const sequelize = require('../config/database');
 
 /**
@@ -47,8 +47,15 @@ const InventarioUbicacion = sequelize.define('InventarioUbicacion', {
   indexes: [
     {
       unique: true,
-      fields: ['producto_id', 'variante_id', 'deposito_id'],
-      name: 'idx_inventario_ubicacion_unica',
+      fields: ['usuario_id', 'producto_id', 'variante_id', 'deposito_id'],
+      where: { variante_id: { [Op.ne]: null } },
+      name: 'idx_inventario_propietario_variante',
+    },
+    {
+      unique: true,
+      fields: ['usuario_id', 'producto_id', 'deposito_id'],
+      where: { variante_id: null },
+      name: 'idx_inventario_propietario_simple',
     },
     {
       fields: ['usuario_id', 'deposito_id'],

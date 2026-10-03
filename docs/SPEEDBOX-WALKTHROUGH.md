@@ -259,6 +259,10 @@ reales ni activar esta rama en produccion para hacer la validacion.
 
 ## 8. Limites y observaciones para analizar
 
+Esta seccion describe la corrida original. La ampliacion de abastecimiento,
+inventario y conciliacion se documenta en la seccion 10; resuelve las
+observaciones originales de variantes, cierre de devoluciones y defaults.
+
 - No se probo Speedbox real, TLS del receptor, proxy/hosting, forma real de
   store, preservacion del token por el portal ni sus cuatro checks oficiales.
 - No se automatizo la UI del checkout publico ni la carga de lotes. El alta
@@ -360,3 +364,13 @@ proveedor PagoPar real. La copia de comparacion se conserva en
 datos ficticios para revisar el panel. Muestra URL, login demo y comando STOP.
 El registro no tiene un destino real hasta contar con la URL oficial; en la
 preview queda deshabilitado. No usar esa base o esos IDs en produccion.
+
+## 10. Abastecimiento, inventario y finanzas (puntos 3, 4 y 5)
+
+Ver `docs/SPEEDBOX-ABASTECIMIENTO.md`: explica la implementacion, la migracion,
+los recorridos manuales y los 36 escenarios E2E. La nueva corrida incluye
+recepcion propia/Gesicomm, dos propietarios en el mismo centro, variantes,
+pagos rechazados/validados, ingresos con diferencias, pedidos mezclados,
+devoluciones y conciliacion desde el navegador.
+
+El registro de clientes en Speedy queda expresamente para la siguiente etapa.

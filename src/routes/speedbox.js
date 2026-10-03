@@ -26,6 +26,7 @@ router.get('/', handle(req => service.status(req.usuario.id)));
 router.put('/', handle(req => service.configure(req.usuario.id, req.body)));
 router.post('/store', handle(req => service.registerStore(req.usuario.id)));
 router.post('/spec', handle(req => service.verifySpec(req.usuario.id)));
+router.post('/eventos/:id/conciliar', handle(req => require('../services/speedbox/finanzas').conciliar(req.usuario.id, Number(req.params.id), req.body)));
 router.post('/updates', handle(async req => {
   await service.connectionFor(req.usuario.id);
   await events.retryPending();
