@@ -81,6 +81,7 @@ async function main() {
     SMTP_USER: '', SMTP_PASS: '', BREVO_API_KEY: '', BREVO_ADMIN_EMAIL: '', BREVO_FROM_EMAIL: '',
     SPEEDBOX_REGISTRATION_URL: 'https://registration.example.test/register',
     SPEEDBOX_WEBHOOK_TOKEN: crypto.randomBytes(32).toString('hex'),
+    RAHA_PRIVATE_BUCKET: '', RAHA_PRIVATE_STORAGE_PATH: path.join(artifacts, 'private-raha'),
   });
   const express = require('express');
   const simulator = express();
@@ -135,6 +136,10 @@ async function main() {
     await m.sequelize.query('ALTER TABLE envios ALTER COLUMN abastecimiento_estado TYPE VARCHAR(30)');
     await abastecimientoMigration.up(qi, require('sequelize'));
     await abastecimientoMigration.up(qi, require('sequelize'));
+    const rahaMigration = require('../migrations/20261003010000-raha-solicitudes');
+    await rahaMigration.down(qi);
+    await rahaMigration.up(qi, require('sequelize'));
+    await rahaMigration.up(qi, require('sequelize'));
     await require('../scripts/migrar-numero-pedido').migrarNumeroPedido();
     return { tables: (await qi.showAllTables()).length, migration_idempotent: true };
   });
@@ -161,6 +166,7 @@ async function main() {
   app.use(require('cookie-parser')());
   for (const [mount, file] of [['auth', 'auth'], ['mi-tienda', 'tienda'], ['couriers', 'courierRoutes'], ['envios', 'envioRoutes'], ['solicitudes-abastecimiento', 'solicitudAbastecimientoRoutes'], ['inventario', 'inventarioRoutes'], ['integraciones/speedbox', 'speedbox'], ['webhooks', 'webhooks']]) app.use(`/api/${mount}`, require(`../src/routes/${file}`));
   app.use('/api', require('../src/routes/suscripciones'));
+  app.use('/api/integraciones/raha', require('../src/routes/raha'));
   app.get('/api/educacion/progreso-sidebar', (req, res) => res.json({ menusDesbloqueados: [], bloqueos: {} }));
   app.use((error, req, res, next) => res.status(error.status || 500).json({ message: error.message }));
   const api = await listen(app);
@@ -800,6 +806,7 @@ async function main() {
     report.reconciliations = await m.SpeedboxEvento.findAll({ where: { conciliacion: { [require('sequelize').Op.ne]: null } }, attributes: ['event_key', 'conciliacion'], raw: true });
     return { screenshots: ['desktop.png', 'desktop-orders.png', 'desktop-wallet.png', 'mobile.png', 'mobile-orders.png', 'mobile-wallet.png', 'retry-desktop.png'], browser_errors: pageErrors };
   });
+  await require('../src/tests/rahaE2E.cjs')({ step, request, page, context, browser: resources.browser, api, preview, expect, m, user, other, admin, password, artifacts, pageErrors, report });
 }
 
 (async () => {

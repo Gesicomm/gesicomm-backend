@@ -261,6 +261,7 @@ app.use('/api/afiliados', afiliadosRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/brevo', brevoRoutes);
 app.use('/api/integraciones/speedbox', require('./src/routes/speedbox'));
+app.use('/api/integraciones/raha', require('./src/routes/raha'));
 // Planes y suscripciones de Gesicomm (publicas: son el paso previo al alta)
 app.use('/api', suscripcionesRoutes);
 
@@ -355,6 +356,12 @@ sequelize.authenticate().then(async () => {
     await require('./migrations/20261002200000-speedbox-abastecimiento').up(sequelize.getQueryInterface(), require('sequelize'));
   } catch (error) {
     logger.error('No se puede iniciar sin aislamiento del inventario por propietario:', error);
+    process.exit(1);
+  }
+  try {
+    await require('./migrations/20261003010000-raha-solicitudes').up(sequelize.getQueryInterface(), require('sequelize'));
+  } catch (error) {
+    logger.error('No se puede iniciar sin las tablas de solicitudes Raha:', error);
     process.exit(1);
   }
 
