@@ -47,7 +47,7 @@ class OfertaService {
    * fija o marcar `permite_elegir_variante`: dejarlo sin definir sería
    * ambiguo al momento de agregarlo al carrito.
    */
-  static async normalizarComponentes(componentesPayload = []) {
+  static async normalizarComponentes(componentesPayload = [], transaction) {
     const mapa = new Map();
     for (const c of componentesPayload) {
       const productoId = Number(c.producto_id);
@@ -59,10 +59,10 @@ class OfertaService {
       if (cantidad < 1) throw new Error('La cantidad de cada componente debe ser al menos 1.');
 
       if (varianteId) {
-        const variante = await ProductoVariante.findOne({ where: { id: varianteId, producto_id: productoId, activo: true } });
+        const variante = await ProductoVariante.findOne({ where: { id: varianteId, producto_id: productoId, activo: true }, transaction });
         if (!variante) throw new Error('La variante elegida no pertenece a ese producto.');
       } else if (!permiteElegirVariante) {
-        const tieneVariantes = await ProductoVariante.count({ where: { producto_id: productoId, activo: true } });
+        const tieneVariantes = await ProductoVariante.count({ where: { producto_id: productoId, activo: true }, transaction });
         if (tieneVariantes > 0) {
           throw new Error('Ese producto tiene variantes: elegí una fija o permití que el cliente la elija.');
         }
@@ -386,12 +386,39 @@ class OfertaService {
     return oferta;
   }
 
+  // Resuelve las referencias al producto que acaba de crearse dentro de
+  // la misma transacción. Si falla una oferta, se revierte el alta completa.
+  static async crearBorradores(productoId, borradores, inquilino_id, transaction) {
+    try {
+      if (!Array.isArray(borradores)) throw new Error('Las ofertas deben ser una lista.');
+      const creadas = [];
+      for (const borrador of borradores) {
+        if (!borrador || !Array.isArray(borrador.componentes)) throw new Error('La oferta necesita sus componentes de stock.');
+        const componentes = borrador.componentes.map(({ es_producto_actual, ...c }) => ({
+          ...c, producto_id: es_producto_actual === true ? productoId : Number(c.producto_id),
+        }));
+        const ids = [...new Set(componentes.map(c => c.producto_id))];
+        if (ids.some(id => !Number.isInteger(id) || id <= 0)) throw new Error('Cada componente necesita un producto válido.');
+        const productos = await Producto.findAll({ where: { id: ids, inquilino_id, activo: true }, attributes: ['id'], transaction });
+        // El producto nuevo puede guardarse inactivo; las referencias a
+        // otros productos sí deben estar disponibles en este inquilino.
+        const disponibles = new Set([productoId, ...productos.map(p => Number(p.id))]);
+        if (ids.some(id => !disponibles.has(id))) throw new Error('Uno de los productos de la oferta no está disponible.');
+        creadas.push(await this.crear(productoId, { ...borrador, componentes }, inquilino_id, transaction));
+      }
+      return creadas;
+    } catch (err) {
+      err.seccion = 'venta';
+      throw err;
+    }
+  }
+
   static async crear(producto_ancla_id, payload, inquilino_id, transaction) {
     const precios = this.normalizarPrecios(payload);
     this.validarPayload({ ...payload, ...precios });
     const estrategia = payload.estrategia || 'normal';
     const tipoContenido = this.resolverTipoContenido(estrategia, payload.tipo_contenido);
-    let componentes = await this.normalizarComponentes(payload.componentes);
+    let componentes = await this.normalizarComponentes(payload.componentes, transaction);
     componentes = this.excluirAnclaDeBumpOUpsell(componentes, estrategia, producto_ancla_id);
     this.validarComponentesParaTipo(tipoContenido, producto_ancla_id, componentes);
 
@@ -461,7 +488,7 @@ class OfertaService {
     // guardado un pack con productos que no son el ancla).
     const tipoContenidoEfectivo = updates.tipo_contenido;
     const estrategiaEfectiva = payload.estrategia ?? oferta.estrategia;
-    let componentesNuevos = payload.componentes !== undefined ? await this.normalizarComponentes(payload.componentes) : null;
+    let componentesNuevos = payload.componentes !== undefined ? await this.normalizarComponentes(payload.componentes, transaction) : null;
     if (componentesNuevos !== null) {
       componentesNuevos = this.excluirAnclaDeBumpOUpsell(componentesNuevos, estrategiaEfectiva, oferta.producto_ancla_id);
     }

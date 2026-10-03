@@ -16,6 +16,7 @@ const { rollbackSeguro } = require('../utils/transaction');
 const ProductoService = require('../services/producto.service');
 const ProductoVarianteService = require('../services/productoVariante.service');
 const ProductoOpcionService = require('../services/productoOpcion.service');
+const OfertaService = require('../services/oferta.service');
 const ImagenService = require('../services/imagen.service');
 
 async function buscar(req, res) {
@@ -63,18 +64,22 @@ async function crear(req, res) {
       await ProductoService.sincronizarFaq(producto.id, inquilino_id, req.body.faq, t);
     }
 
+    const ofertas = req.body.ofertas === undefined ? []
+      : await OfertaService.crearBorradores(producto.id, req.body.ofertas, inquilino_id, t);
+
     await t.commit();
-    return res.status(201).json(producto);
+    return res.status(201).json(req.body.ofertas === undefined ? producto : { ...producto, ofertas });
   } catch (err) {
     await rollbackSeguro(t);
     console.error('[crear producto]', err);
     if (err.name === 'SequelizeValidationError' || err.name === 'SequelizeUniqueConstraintError') {
       const mensajes = err.errors?.map(e => e.message) || [err.message];
-      return res.status(422).json({ message: 'Error de validación.', errores: mensajes });
+      return res.status(422).json({ message: 'Error de validación.', errores: mensajes, seccion: err.seccion });
     }
     return res.status(err.message.includes('Validación') ? 422 : 400).json({ 
       message: err.message || 'Error al crear producto.', 
-      errores: err.errores 
+      errores: err.errores,
+      seccion: err.seccion,
     });
   }
 }
