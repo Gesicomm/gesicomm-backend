@@ -573,7 +573,12 @@ class LandingService {
     };
   }
 
-  static construirSeccionesPublicas(landing, { items, testimonios, faq, banner }) {
+  // La seccion `productos` NO lleva el catalogo embebido: el render publico lo
+  // toma de la raiz de la respuesta (items/catalogo_items) via
+  // data.itemsFiltrados — ver legacyBlocks.jsx#ProductsAdapter. Inyectarlo aca
+  // serializaba el mismo array de 40 productos una tercera vez: 137 KB de los
+  // 498 KB que pesaba la respuesta, el 27,7%, que nadie leia.
+  static construirSeccionesPublicas(landing, { testimonios, faq, banner }) {
     // FASE 5: Commerce Engine para Funnels
     // Si la landing es un funnel impulsado por schema, ignoramos LandingSeccion y mapeamos el esquema virtual
     if (landing.tipo_pagina === 'funnel' && landing.template?.schema) {
@@ -600,7 +605,6 @@ class LandingService {
 
     if (guardadas.length) {
       const mapeadas = guardadas.map(seccion => {
-        if (seccion.tipo === 'productos') return this.seccionDto(seccion, { items });
         if (seccion.tipo === 'testimonios') return this.seccionDto(seccion, { items: testimonios });
         if (seccion.tipo === 'faq') return this.seccionDto(seccion, { items: faq });
         if (seccion.tipo === 'banner') {
@@ -630,7 +634,7 @@ class LandingService {
       secciones.push(this.seccionDto({ tipo: 'banner', page_type: 'landing', nombre_interno: 'Banner', activo: true, orden: 50, config_json: {}, contenido_json: banner }));
     }
     secciones.push(
-      this.seccionDto({ tipo: 'productos', page_type: 'landing', nombre_interno: 'Catalogo', activo: true, orden: 60, config_json: {}, contenido_json: { titulo: 'Todos los productos' } }, { items }),
+      this.seccionDto({ tipo: 'productos', page_type: 'landing', nombre_interno: 'Catalogo', activo: true, orden: 60, config_json: {}, contenido_json: { titulo: 'Todos los productos' } }),
       this.seccionDto({ tipo: 'testimonios', page_type: 'landing', nombre_interno: 'Opiniones', activo: testimonios.length > 0, orden: 70, config_json: {}, contenido_json: { titulo: 'Opiniones de clientes' } }, { items: testimonios }),
       this.seccionDto({ tipo: 'faq', page_type: 'landing', nombre_interno: 'Preguntas frecuentes', activo: faq.length > 0, orden: 80, config_json: {}, contenido_json: { titulo: 'Preguntas frecuentes' } }, { items: faq }),
       this.seccionDto({ tipo: 'footer', page_type: 'landing', nombre_interno: 'Footer', activo: true, orden: 90, config_json: {}, contenido_json: { titulo: landing.titulo, descripcion: landing.descripcion } })
@@ -1690,7 +1694,12 @@ class LandingService {
         const ya = new Set(items.map(i => `${i.tipo}:${i.referencia_id}`));
         extra.forEach(i => { if (!ya.has(`${i.tipo}:${i.referencia_id}`)) items.push({ ...i, orden: items.length }); });
       }
-      return items;
+      const ajustes = new Map((landing.items || []).map(i => [`${i.tipo}:${Number(i.referencia_id)}`, i]));
+      return items.map(i => {
+        const ajuste = ajustes.get(`${i.tipo}:${Number(i.referencia_id)}`);
+        return ajuste ? { ...i, precio_ancla: ajuste.precio_ancla, etiqueta: ajuste.etiqueta,
+          mostrar_en_inicio: ajuste.mostrar_en_inicio !== false, envio_incluido: ajuste.envio_incluido === true } : i;
+      });
     }
 
     items = (landing.items || []).length
@@ -1746,10 +1755,11 @@ class LandingService {
     if (!tienda.activo || !tienda.Usuario?.activo) return { disponible: false };
     if (!landing.activo && !preview) return { disponible: false };
 
-    // No se awaitea — ver comentario en registrarVisita(). Una landing
-    // pública nunca debe tardar más porque falló (o tardó) un INSERT de
-    // tracking.
-    this.registrarVisita(landing.id);
+    // La visita NO se registra acá: la cuenta el navegador contra
+    // POST /api/l/:slug/visita. Mientras vivía en este GET, cada visita exigía
+    // un hit en Node y hacía incacheable la respuesta — un HIT de CDN no
+    // contaba la visita. Ver registrarVisitaPublica en
+    // landingPublica.controller.js.
 
     // Tipo de template: se necesita antes de sintetizar items para el
     // lienzo en blanco y se reutiliza más abajo para el DTO.
@@ -2490,7 +2500,6 @@ class LandingService {
     const { secciones, secciones_producto } = esRigida
       ? { secciones: [], secciones_producto: [] }
       : this.construirSeccionesPublicas(landing, {
-        items: itemsDto,
         testimonios: testimoniosDto,
         faq: faqDto,
         banner: bannerDto,
@@ -2681,7 +2690,14 @@ class LandingService {
         google_analytics_id: tienda.google_analytics_id || null,
         tiktok_pixel_id: tienda.tiktok_pixel_id || null,
       },
-      items: esRigida ? itemsHomeDto : itemsDto,
+      // `items` viaja SOLO cuando difiere de catalogo_items, o sea en las
+      // plantillas rígidas, donde son los destacados del home. En el resto
+      // (flexible, funnel, código) era el mismo array serializado dos veces:
+      // 138 KB de los 498 KB que pesaba esta respuesta. Los consumidores lo
+      // resuelven con `items ?? catalogo_items` — ver el `itemsHome` de
+      // TiendaPaginaView.jsx y FunnelView.jsx. `undefined` desaparece del
+      // JSON, no viaja como null.
+      items: esRigida ? itemsHomeDto : undefined,
       catalogo_items: itemsDto,
       secciones: secciones,
       secciones_producto: secciones_producto,
@@ -2738,10 +2754,12 @@ class LandingService {
       orden = 'destacados',
       disponibilidad = 'todos',
       categoria = 'todas',
+      marca = 'todas',
       etiqueta = 'todas',
       precioMin = null,
       precioMax = null,
       busqueda = '',
+      soloInicio = false,
     } = opciones;
 
     const where = { tienda_id: tienda.id };
@@ -2759,7 +2777,8 @@ class LandingService {
     if (!tienda.activo || !tienda.Usuario?.activo) return { disponible: false };
     if (!landing.activo && !preview) return { disponible: false };
 
-    this.registrarVisita(landing.id);
+    // Sin registrarVisita, por lo mismo que en obtenerPublica: la cuenta el
+    // navegador para que esta respuesta pueda vivir en el CDN.
 
     // Lienzo en blanco: la misma lista que vende (regla, manual o fallback).
     const items = landing.template?.kind === 'codigo'
@@ -2895,7 +2914,9 @@ class LandingService {
     // la página, el desplegable iría perdiendo opciones a medida que el
     // visitante filtra o pagina.
     const categoriasDisponibles = [...new Set(listado.map(i => i.categoria).filter(Boolean))].sort();
-    const etiquetasDisponibles = [...new Set(listado.map(i => i.etiqueta).filter(Boolean))].sort();
+    const etiquetasDe = i => String(i.etiqueta || '').split(',').map(t => t.trim()).filter(Boolean);
+    const etiquetasDisponibles = [...new Set(listado.flatMap(etiquetasDe))].sort();
+    const marcasDisponibles = [...new Set(listado.map(i => i.marca).filter(Boolean))].sort();
 
     const min = precioMin !== null && precioMin !== '' && !Number.isNaN(Number(precioMin)) ? Number(precioMin) : null;
     const max = precioMax !== null && precioMax !== '' && !Number.isNaN(Number(precioMax)) ? Number(precioMax) : null;
@@ -2905,7 +2926,8 @@ class LandingService {
     const termino = sinTildes(String(busqueda || '').trim().slice(0, 80));
 
     const filtrado = listado.filter(i => {
-      if (termino && !sinTildes(`${i.nombre} ${i.categoria || ''} ${i.marca || ''}`).includes(termino)) return false;
+      if (soloInicio && !i.mostrar_en_inicio) return false;
+      if (termino && !sinTildes(`${i.nombre} ${i.categoria || ''} ${i.marca || ''} ${i.etiqueta || ''}`).includes(termino)) return false;
       if (min !== null && i.precio < min) return false;
       if (max !== null && i.precio > max) return false;
       // stock null = no rastrea stock (siempre disponible) — solo se filtra
@@ -2913,7 +2935,8 @@ class LandingService {
       if (disponibilidad === 'en_stock' && i.stock != null && i.stock <= 0) return false;
       if (disponibilidad === 'agotado' && !(i.stock != null && i.stock <= 0)) return false;
       if (categoria && categoria !== 'todas' && i.categoria !== categoria) return false;
-      if (etiqueta && etiqueta !== 'todas' && i.etiqueta !== etiqueta) return false;
+      if (marca && marca !== 'todas' && i.marca !== marca) return false;
+      if (etiqueta && etiqueta !== 'todas' && !etiquetasDe(i).includes(etiqueta)) return false;
       return true;
     });
 
@@ -3058,11 +3081,13 @@ class LandingService {
         google_analytics_id: tienda.google_analytics_id || null,
         tiktok_pixel_id: tienda.tiktok_pixel_id || null,
       },
-      items: itemsDto,
+      // Acá `items` y `catalogo_items` eran siempre el mismo array (este
+      // endpoint no distingue destacados del home): se manda una sola vez.
       catalogo_items: itemsDto,
       paginacion: { pagina: paginaFinal, porPagina: porPaginaFinal, total, totalPaginas },
       categorias_disponibles: categoriasDisponibles,
       etiquetas_disponibles: etiquetasDisponibles,
+      marcas_disponibles: marcasDisponibles,
       secciones: [],
       secciones_producto: [],
       testimonios: [],
@@ -3109,7 +3134,13 @@ class LandingService {
       {
         // Los relacionados elegidos EN ESTA LANDING mandan sobre la curación
         // global del producto — ver overrideDeProducto().
-        const override = this.overrideDeProducto(landing.content, productoId);
+        // obtenerPublica devuelve un DTO con content sanitizado: los overrides
+        // del editor deben leerse del registro autorizado de esta tienda.
+        const configuracion = await Landing.findOne({
+          where: { tienda_id: tienda.id, slug: landing.slug },
+          attributes: ['content'],
+        });
+        const override = this.overrideDeProducto(configuracion?.content, productoId);
         const [propias, relacionadosDto] = await Promise.all([
           LandingSeccion.findAll({
             where: { producto_id: productoId, page_type: 'product', activo: true },
@@ -3140,7 +3171,8 @@ class LandingService {
             if (lItem) {
               return {
                 ...relItem,
-                precio_ancla: lItem.precio_ancla || relItem.precio_tachado || null,
+                precio: lItem.precio,
+                precio_ancla: lItem.precio_antes ?? lItem.precio_ancla ?? null,
                 etiqueta: lItem.etiqueta || null
               };
             }

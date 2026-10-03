@@ -48,6 +48,21 @@ const limiteEventos = rateLimit({
   },
 });
 
+// Presupuesto propio, separado de limiteEventos: si una visita compartiera el
+// cupo con los eventos de Meta, un visitante activo podía agotarlo y las
+// visitas empezaban a devolver 429 en silencio — justo el sub-conteo invisible
+// que este endpoint existe para evitar.
+const limiteVisita = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    console.warn(`[landing-publica] 429 rate limit visita — ip=${req.ip} host=${req.hostname}`);
+    res.status(429).json({ message: 'Demasiadas solicitudes. Por favor intenta más tarde.' });
+  },
+});
+
 // Más estricto todavía que /eventos: a diferencia de un evento de
 // tracking, esto crea una fila real (Envío) con datos personales del
 // visitante — nombre, teléfono, dirección. Sin límite, es trivial de
@@ -69,6 +84,7 @@ const limiteCheckout = rateLimit({
 router.get('/', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);   // landing es_home de la tienda del hostname
 router.post('/buscar', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug); // busqueda catalogo
 router.post('/eventos', limiteEventos, resolverTiendaOpcional, ctrl.registrarEvento);
+router.post('/visita', limiteVisita, resolverTiendaOpcional, ctrl.registrarVisitaPublica);
 router.post('/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheckout);
 // Recálculo de carrito en vivo: mismo rate limit que el GET (limitePublico)
 // y no limiteCheckout — no crea ningún pedido, es solo lectura, y el
@@ -81,6 +97,7 @@ router.get('/:slug', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug)
 router.post('/:slug/buscar', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug); // busqueda catalogo
 router.get('/:slug/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 router.post('/:slug/eventos', limiteEventos, resolverTiendaOpcional, ctrl.registrarEvento);
+router.post('/:slug/visita', limiteVisita, resolverTiendaOpcional, ctrl.registrarVisitaPublica);
 router.post('/:slug/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheckout);
 router.post('/:slug/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
 router.post('/:slug/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);

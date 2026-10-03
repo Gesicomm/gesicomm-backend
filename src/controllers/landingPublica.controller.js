@@ -38,6 +38,36 @@ function tipoPaginaPublica(valor) {
   return TIPOS_PAGINA_PUBLICA.has(normalizado) ? normalizado : null;
 }
 
+/**
+ * Marca la respuesta como cacheable por el CDN. La landing pública se
+ * reconstruía desde la base en CADA visita: con esto un HIT de borde no toca
+ * Node.
+ *
+ * `s-maxage` habla al CDN y `max-age=0` al navegador, que así revalida y
+ * aprovecha el ETag débil de Express (304 sin cuerpo). `stale-while-revalidate`
+ * evita que al vencer el TTL una ráfaga de visitas caiga toda junta sobre el
+ * origen: el borde sirve lo viejo y refresca por detrás.
+ *
+ * NUNCA cachear el preview. `preview` sale de la cookie accessToken de la
+ * dueña (ver obtenerPorSlug) y muestra contenido no publicado — si entrara al
+ * cache compartido, el borde se lo serviría a cualquier visitante. Por eso el
+ * preview se marca `private, no-store` de forma explícita en vez de confiar en
+ * que la regla del CDN excluya las requests con cookie.
+ *
+ * Solo GET: un POST (/buscar) no lo cachea ningún CDN.
+ */
+function aplicarCacheDeBorde(req, res, { preview, disponible }) {
+  if (req.method !== 'GET') return;
+  if (preview) {
+    res.set('Cache-Control', 'private, no-store');
+    return;
+  }
+  // Una tienda caída o pausada se cachea poco: que vuelva rápido cuando se
+  // reactiva, pero sin dejar a Node atendiendo cada visita mientras está así.
+  const sMaxAge = disponible ? 60 : 30;
+  res.set('Cache-Control', `public, max-age=0, s-maxage=${sMaxAge}, stale-while-revalidate=300`);
+}
+
 async function resolverTiendaYLanding(req) {
   let tienda = req.tienda;
   let landing_id = null;
@@ -134,15 +164,18 @@ async function obtenerPorSlug(req, res) {
           orden: options.orden,
           disponibilidad: options.disponibilidad,
           categoria: options.categoria,
+          marca: options.marca,
           etiqueta: options.etiqueta,
           precioMin: options.precioMin,
           precioMax: options.precioMax,
+          soloInicio: options.soloInicio === true || options.soloInicio === 'true',
           busqueda: typeof options.busqueda === 'string' ? options.busqueda : (typeof options.q === 'string' ? options.q : ''),
         })
       : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview, { tipoPagina });
     if (resultado === null) {
       return res.status(404).json({ message: 'Landing no encontrada.' });
     }
+    aplicarCacheDeBorde(req, res, { preview, disponible: resultado.disponible !== false });
     return res.status(200).json(resultado);
   } catch (err) {
     console.error('[landing-publica] obtenerPorSlug:', err.message);
@@ -176,6 +209,9 @@ async function obtenerProducto(req, res) {
     if (resultado === null) {
       return res.status(404).json({ message: 'Producto no encontrado.' });
     }
+    // Esta ruta no tiene rama de preview (no lee la cookie de la dueña), así
+    // que su respuesta es siempre la pública y se puede cachear sin más.
+    aplicarCacheDeBorde(req, res, { preview: false, disponible: resultado.disponible !== false });
     return res.status(200).json(resultado);
   } catch (err) {
     console.error('[landing-publica] obtenerProducto:', err.message);
@@ -569,4 +605,31 @@ async function registrarEvento(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, crearCheckout, recalcularCarrito, validarCupon, resultadoPago };
+/**
+ * Registra una visita a la landing.
+ *
+ * Vive en un POST propio y no en /eventos porque una visita no es un evento de
+ * Meta: /eventos valida contra EVENTOS_PERMITIDOS y reenvía a la CAPI.
+ *
+ * Antes la visita se contaba con un INSERT dentro del GET público. Eso ataba
+ * cada visita a un hit en Node, así que cachear ese GET en el CDN (que es el
+ * objetivo: el GET reconstruía la landing desde la base en cada visita) habría
+ * dejado de contar todos los HIT en silencio. Contándola desde el navegador el
+ * GET queda cacheable. Efecto lateral buscado: los bots que no ejecutan JS
+ * dejan de contar como visita — antes sí lo hacían, era un límite conocido.
+ *
+ * Siempre 202: el visitante nunca ve un error por un fallo de tracking.
+ */
+async function registrarVisitaPublica(req, res) {
+  try {
+    const { tienda, landing_id } = await resolverTiendaYLanding(req);
+    if (!tienda || !landing_id) return res.status(202).json({ ok: false });
+    LandingService.registrarVisita(landing_id);
+    return res.status(202).json({ ok: true });
+  } catch (err) {
+    console.error('[landing-publica] registrarVisitaPublica:', err.message);
+    return res.status(202).json({ ok: false });
+  }
+}
+
+module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago };
