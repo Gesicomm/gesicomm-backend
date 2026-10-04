@@ -90,6 +90,8 @@ const UserSession = require('./UserSession');
 const AuthNotification = require('./AuthNotification');
 const NotificationEvent = require('./NotificationEvent');
 const WhatsappPlantilla = require('./WhatsappPlantilla');
+const WhatsappFlujo = require('./WhatsappFlujo');
+const WhatsappFlujoFase = require('./WhatsappFlujoFase');
 const SeguimientoEtiqueta = require('./SeguimientoEtiqueta');
 const EnvioEtiqueta = require('./EnvioEtiqueta');
 const SeguimientoContacto = require('./SeguimientoContacto');
@@ -102,6 +104,7 @@ const IngresoInventarioItem = require('./IngresoInventarioItem');
 const HistorialIngresoInventario = require('./HistorialIngresoInventario');
 const SolicitudAbastecimiento = require('./SolicitudAbastecimiento');
 const HistorialSolicitudAbastecimiento = require('./HistorialSolicitudAbastecimiento');
+const GsqlModulo = require('./GsqlModulo');
 // ============================================================
 // Relaciones existentes
 // ============================================================
@@ -272,6 +275,25 @@ WhatsappPlantilla.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 Usuario.hasMany(SeguimientoEtiqueta, { as: 'etiquetas_seguimiento', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 SeguimientoEtiqueta.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
+// Flujos de WhatsApp: el flujo es la unidad principal, la fase es el mensaje
+// con su intencion dentro del flujo. CASCADE en las fases porque una fase no
+// tiene sentido fuera de su flujo.
+Usuario.hasMany(WhatsappFlujo, { as: 'flujos_whatsapp', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+WhatsappFlujo.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+
+WhatsappFlujo.hasMany(WhatsappFlujoFase, { as: 'fases', foreignKey: 'flujo_id', onDelete: 'CASCADE' });
+WhatsappFlujoFase.belongsTo(WhatsappFlujo, { as: 'flujo', foreignKey: 'flujo_id' });
+
+// La plantilla suelta de la que salio el flujo al migrar. SET NULL: borrar la
+// plantilla vieja no se lleva el flujo que la reemplazo.
+WhatsappPlantilla.hasOne(WhatsappFlujo, { as: 'flujo_migrado', foreignKey: 'plantilla_origen_id', onDelete: 'SET NULL' });
+WhatsappFlujo.belongsTo(WhatsappPlantilla, { as: 'plantilla_origen', foreignKey: 'plantilla_origen_id' });
+
+// Igual que con las plantillas: borrar una etiqueta deja la fase sin
+// auto-etiquetado, no la tumba.
+SeguimientoEtiqueta.hasMany(WhatsappFlujoFase, { foreignKey: 'etiqueta_id', onDelete: 'SET NULL' });
+WhatsappFlujoFase.belongsTo(SeguimientoEtiqueta, { as: 'etiqueta', foreignKey: 'etiqueta_id' });
+
 // SET NULL: borrar una etiqueta no puede tumbar la plantilla que la usaba,
 // simplemente queda sin auto-etiquetado.
 SeguimientoEtiqueta.hasMany(WhatsappPlantilla, { foreignKey: 'etiqueta_id', onDelete: 'SET NULL' });
@@ -288,6 +310,14 @@ Envio.hasMany(SeguimientoContacto, { as: 'contactos_seguimiento', foreignKey: 'e
 SeguimientoContacto.belongsTo(Envio, { foreignKey: 'envio_id' });
 WhatsappPlantilla.hasMany(SeguimientoContacto, { foreignKey: 'plantilla_id', onDelete: 'SET NULL' });
 SeguimientoContacto.belongsTo(WhatsappPlantilla, { as: 'plantilla', foreignKey: 'plantilla_id' });
+
+// SET NULL y no CASCADE: borrar un flujo o una fase NUNCA puede borrar el
+// historial de lo que ya se le mando al cliente. El contacto conserva
+// mensaje_generado como snapshot, asi que la timeline sobrevive igual.
+WhatsappFlujo.hasMany(SeguimientoContacto, { foreignKey: 'flujo_id', onDelete: 'SET NULL' });
+SeguimientoContacto.belongsTo(WhatsappFlujo, { as: 'flujo', foreignKey: 'flujo_id' });
+WhatsappFlujoFase.hasMany(SeguimientoContacto, { as: 'envios', foreignKey: 'fase_id', onDelete: 'SET NULL' });
+SeguimientoContacto.belongsTo(WhatsappFlujoFase, { as: 'fase', foreignKey: 'fase_id' });
 SeguimientoEtiqueta.hasMany(SeguimientoContacto, { foreignKey: 'etiqueta_id', onDelete: 'SET NULL' });
 SeguimientoContacto.belongsTo(SeguimientoEtiqueta, { as: 'etiqueta', foreignKey: 'etiqueta_id' });
 Usuario.hasMany(SeguimientoContacto, { foreignKey: 'usuario_id' });
@@ -805,6 +835,7 @@ module.exports = {
   PreguntaExamen,
   ProgresoUsuarioModulo,
   ProgresoUsuarioLeccion,
+  GsqlModulo,
   SolicitudEliminacion,
   MensajeContacto,
   MetaCampanaInterna,
@@ -839,6 +870,8 @@ module.exports = {
   AuthNotification,
   NotificationEvent,
   WhatsappPlantilla,
+  WhatsappFlujo,
+  WhatsappFlujoFase,
   SeguimientoEtiqueta,
   EnvioEtiqueta,
   SeguimientoContacto,

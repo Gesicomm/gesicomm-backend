@@ -14,6 +14,8 @@ function valorTexto(body, ...campos) {
 }
 
 function normalizarPayload(body = {}) {
+  const tipoPedido = String(body.tipo_ubicacion || body.tipoUbicacion || 'DEPOSITO').trim().toUpperCase();
+  const tipo_ubicacion = ['SALON', 'DEPOSITO', 'FULFILLMENT'].includes(tipoPedido) ? tipoPedido : 'DEPOSITO';
   return {
     nombre: String(body.nombre || '').trim(),
     departamento: valorTexto(body, 'departamento'),
@@ -23,6 +25,7 @@ function normalizarPayload(body = {}) {
     persona_contacto: valorTexto(body, 'personaContacto', 'persona_contacto'),
     telefono_contacto: valorTexto(body, 'telefonoContacto', 'telefono_contacto'),
     google_maps_url: valorTexto(body, 'googleMapsUrl', 'google_maps_url'),
+    tipo_ubicacion,
   };
 }
 
@@ -42,6 +45,7 @@ exports.listar = async (req, res) => {
       ciudad,
       departamento,
       personaContacto,
+      tipo_ubicacion,
       activo,
     } = req.body || {};
 
@@ -58,6 +62,9 @@ exports.listar = async (req, res) => {
     }
     if (personaContacto && String(personaContacto).trim()) {
       where.persona_contacto = { [Op.iLike]: `%${String(personaContacto).trim()}%` };
+    }
+    if (tipo_ubicacion && String(tipo_ubicacion).trim()) {
+      where.tipo_ubicacion = String(tipo_ubicacion).trim().toUpperCase();
     }
     if (typeof activo === 'boolean') {
       where.activo = activo;

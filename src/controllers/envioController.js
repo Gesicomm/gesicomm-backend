@@ -143,21 +143,12 @@ function costoParaComerciante(prod, usuario_id) {
 // confirmar un pedido pagado con el MISMO descuento de stock que usa el
 // cambio de estado manual, en vez de duplicar la lógica.
 /**
- * Reserva stock desde un Centro de Fulfillment de Gesicomm para una venta,
- * ANTES de tocar stock_salon/stock_deposito. Es una reserva puramente
- * informativa/de ruteo: nunca cambia Producto.cantidad_disponible ni
- * stock_deposito (esos siguen siendo, sin excepcion, la unica fuente de
- * verdad de cuanto hay para vender en todo el resto del sistema — catalogo,
- * landing, dashboard, alertas de stock bajo). Lo unico que decide es de
- * donde sale FISICAMENTE lo vendido, para poder avisarle a Gesicomm que
- * tiene que prepararlo (ver EnvioItemComponente.origen_centro_id).
- *
- * Si InventarioUbicacion queda desincronizada de stock_deposito con el
- * tiempo, el peor caso es que un pedido no se rutee a la cola de Gesicomm
- * cuando deberia (se prepara como si fuera stock propio) — nunca se vende
- * de mas ni de menos, porque el total vendible nunca depende de esta tabla.
+ * Reserva stock físico de depósito para una venta, DESPUÉS de calcular qué
+ * parte sale del salón y qué parte sale de depósito. No se llama con la
+ * cantidad total vendida, sino con `desdeDeposito`: si la venta sale completa
+ * del salón, InventarioUbicacion no se toca.
  */
-async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadNecesaria, t, permiteGesicomm) {
+async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadNecesaria, t, permiteGesicomm, usuario_id, origenPreferidoId = null) {
   if (cantidadNecesaria <= 0) return null;
 
   // Un deposito propio trackeado (llego por Abastecimiento a "mi deposito")
@@ -169,16 +160,45 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
 
   const ubicacion = await InventarioUbicacion.findOne({
     where: {
+      usuario_id,
       producto_id,
       variante_id: variante_id || null,
-      cantidad_disponible: { [Op.gt]: 0 },
+      cantidad_disponible: { [Op.gte]: cantidadNecesaria },
+      ...(origenPreferidoId ? { deposito_id: origenPreferidoId } : {}),
     },
-    include: [{ model: Deposito, as: 'Deposito', where: depositoWhere, attributes: ['alcance'] }],
+    include: [{ model: Deposito, as: 'Deposito', where: { ...depositoWhere, activo: true }, attributes: ['alcance', 'tipo_ubicacion'] }],
     order: [['cantidad_disponible', 'DESC']],
     transaction: t,
     lock: Transaction.LOCK.UPDATE,
   });
-  if (!ubicacion) return null;
+  if (!ubicacion) {
+    const ubicacionesTrackeadas = await InventarioUbicacion.findAll({
+      where: {
+        usuario_id,
+        producto_id,
+        variante_id: variante_id || null,
+        cantidad_disponible: { [Op.gt]: 0 },
+        ...(origenPreferidoId ? { deposito_id: origenPreferidoId } : {}),
+      },
+      attributes: ['cantidad_disponible'],
+      include: [{ model: Deposito, as: 'Deposito', where: { ...depositoWhere, activo: true }, attributes: ['id'] }],
+      transaction: t,
+    });
+    const disponibleTrackeado = ubicacionesTrackeadas
+      .reduce((acc, fila) => acc + (parseInt(fila.cantidad_disponible, 10) || 0), 0);
+
+    if (origenPreferidoId || disponibleTrackeado > 0) {
+      const err = new Error(origenPreferidoId
+        ? 'La ubicación de despacho elegida no tiene stock suficiente para este pedido.'
+        : 'Hay stock suficiente, pero está distribuido entre varias ubicaciones.');
+      err.status = 409;
+      err.code = 'STOCK_DISTRIBUIDO_ENTRE_UBICACIONES';
+      err.requiresSplit = true;
+      throw err;
+    }
+
+    return null;
+  }
 
   const cantidad = Math.min(ubicacion.cantidad_disponible, cantidadNecesaria);
   if (cantidad <= 0) return null;
@@ -188,7 +208,7 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
     cantidad_reservada: ubicacion.cantidad_reservada + cantidad,
   }, { transaction: t });
 
-  return { centro_id: ubicacion.deposito_id, cantidad };
+  return { centro_id: ubicacion.deposito_id, cantidad, tipo_ubicacion: ubicacion.Deposito?.tipo_ubicacion || 'DEPOSITO' };
 }
 
 /**
@@ -204,7 +224,7 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
  * se puede despachar en un solo paquete: se rechaza con 409
  * PEDIDO_REQUIERE_SPLIT antes de tocar stock.
  */
-async function resolverPlanFulfillment(items, t) {
+async function resolverPlanFulfillment(items, t, usuario_id) {
   const totalPorClave = new Map();
   for (const item of items || []) {
     const receta = await resolverReceta(item, t);
@@ -220,7 +240,12 @@ async function resolverPlanFulfillment(items, t) {
   const especificos = new Map(); // deposito_id -> alcance
   for (const { producto_id, variante_id } of totalPorClave.values()) {
     const ubicacion = await InventarioUbicacion.findOne({
-      where: { producto_id, variante_id: variante_id || null, cantidad_disponible: { [Op.gt]: 0 } },
+      where: {
+        usuario_id,
+        producto_id,
+        variante_id: variante_id || null,
+        cantidad_disponible: { [Op.gt]: 0 },
+      },
       include: [{ model: Deposito, as: 'Deposito', attributes: ['alcance'] }],
       order: [['cantidad_disponible', 'DESC']],
       transaction: t,
@@ -244,8 +269,9 @@ async function resolverPlanFulfillment(items, t) {
   }
 }
 
-async function descontarStockYSnapshot(items, t, usuario_id) {
-  await resolverPlanFulfillment(items, t);
+async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
+  const origenPreferidoId = opciones.origenPreferidoId ? Number(opciones.origenPreferidoId) : null;
+  await resolverPlanFulfillment(items, t, usuario_id);
 
   // Si la tienda eligio despachar con logistica PROPIA, no tiene sentido
   // reservar de un Centro Gesicomm aunque tenga stock ahi: sus couriers
@@ -274,12 +300,10 @@ async function descontarStockYSnapshot(items, t, usuario_id) {
 
   const productosPorId = new Map();
   const productosConDescuentoDeVariante = new Set();
-  const origenGesicommPorClave = new Map();
+  const origenUbicacionPorClave = new Map();
 
   for (const { producto_id, variante_id, cantidad: cantidadTotal } of totalPorClave.values()) {
     const clave = `${producto_id}:${variante_id || ''}`;
-    const origenGesicomm = await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm);
-    if (origenGesicomm) origenGesicommPorClave.set(clave, origenGesicomm);
 
     if (variante_id) {
       const variante = await ProductoVariante.findByPk(variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
@@ -287,7 +311,22 @@ async function descontarStockYSnapshot(items, t, usuario_id) {
 
       const salonActual = parseInt(variante.stock_salon) || 0;
       const depositoActual = parseInt(variante.stock_deposito) || 0;
-      const { desdeSalon, desdeDeposito } = repartoSalonDeposito(salonActual, depositoActual, cantidadTotal);
+      const origenUbicacion = origenPreferidoId
+        ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId)
+        : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id);
+      const { desdeSalon, desdeDeposito } = origenPreferidoId
+        ? {
+          desdeSalon: origenUbicacion?.tipo_ubicacion === 'SALON' ? cantidadTotal : 0,
+          desdeDeposito: origenUbicacion?.tipo_ubicacion === 'SALON' ? 0 : cantidadTotal,
+        }
+        : repartoSalonDeposito(salonActual, depositoActual, cantidadTotal);
+      if (desdeSalon > salonActual || desdeDeposito > depositoActual) {
+        const err = new Error('El stock agregado del producto está desincronizado con sus ubicaciones. Revisá la distribución de stock.');
+        err.status = 409;
+        err.code = 'STOCK_AGREGADO_DESINCRONIZADO';
+        throw err;
+      }
+      if (origenUbicacion) origenUbicacionPorClave.set(clave, origenUbicacion);
       const nuevoSalon = salonActual - desdeSalon;
       const nuevoDeposito = depositoActual - desdeDeposito;
       await variante.update({
@@ -333,7 +372,22 @@ async function descontarStockYSnapshot(items, t, usuario_id) {
     // para decidir cuándo reponer.
     const salonActual = parseInt(prod.stock_salon) || 0;
     const depositoActual = parseInt(prod.stock_deposito) || 0;
-    const { desdeSalon, desdeDeposito } = repartoSalonDeposito(salonActual, depositoActual, cantidadTotal);
+    const origenUbicacion = origenPreferidoId
+      ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId)
+      : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id);
+    const { desdeSalon, desdeDeposito } = origenPreferidoId
+      ? {
+        desdeSalon: origenUbicacion?.tipo_ubicacion === 'SALON' ? cantidadTotal : 0,
+        desdeDeposito: origenUbicacion?.tipo_ubicacion === 'SALON' ? 0 : cantidadTotal,
+      }
+      : repartoSalonDeposito(salonActual, depositoActual, cantidadTotal);
+    if (desdeSalon > salonActual || desdeDeposito > depositoActual) {
+      const err = new Error('El stock agregado del producto está desincronizado con sus ubicaciones. Revisá la distribución de stock.');
+      err.status = 409;
+      err.code = 'STOCK_AGREGADO_DESINCRONIZADO';
+      throw err;
+    }
+    if (origenUbicacion) origenUbicacionPorClave.set(clave, origenUbicacion);
 
     const actualizacion = {
       cantidad_disponible: nuevoStock,
@@ -366,14 +420,14 @@ async function descontarStockYSnapshot(items, t, usuario_id) {
     for (const { producto_id, variante_id, cantidad } of receta) {
       const prod = productosPorId.get(producto_id);
       const clave = `${producto_id}:${variante_id || ''}`;
-      const origenGesicomm = origenGesicommPorClave.get(clave);
+      const origenUbicacion = origenUbicacionPorClave.get(clave);
       let origen_centro_id = null;
       let cantidad_desde_centro = null;
-      if (origenGesicomm && origenGesicomm.cantidad > 0) {
-        const tomado = Math.min(origenGesicomm.cantidad, cantidad);
-        origen_centro_id = origenGesicomm.centro_id;
+      if (origenUbicacion && origenUbicacion.cantidad > 0) {
+        const tomado = Math.min(origenUbicacion.cantidad, cantidad);
+        origen_centro_id = origenUbicacion.centro_id;
         cantidad_desde_centro = tomado;
-        origenGesicomm.cantidad -= tomado;
+        origenUbicacion.cantidad -= tomado;
       }
       await EnvioItemComponente.create({
         envio_item_id: item.id,
@@ -393,6 +447,15 @@ async function obtenerComponentesDeItems(items, t) {
   const itemIds = items.map(i => i.id);
   if (itemIds.length === 0) return [];
   return EnvioItemComponente.findAll({ where: { envio_item_id: { [Op.in]: itemIds } }, transaction: t });
+}
+
+async function bucketLegacyPorOrigen(componente, t) {
+  if (!componente.origen_centro_id) return 'stock_salon';
+  const origen = await Deposito.findByPk(componente.origen_centro_id, {
+    attributes: ['tipo_ubicacion'],
+    transaction: t,
+  });
+  return origen?.tipo_ubicacion === 'SALON' ? 'stock_salon' : 'stock_deposito';
 }
 
 /**
@@ -501,20 +564,45 @@ async function liberarStock(envio, items, t) {
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (!prod) continue;
     const origenActual = Math.max(0, (parseInt(prod[campoOrigen]) || 0) - cantidad);
-    const disponible = (parseInt(prod.cantidad_disponible) || 0) + cantidad;
-    // Vuelve al SALÓN: la mercadería que se recupera de un pedido cancelado
-    // regresa al mostrador, no al depósito. Es también lo prudente para el
-    // aviso de reposición — deja el salón surtido en vez de pedir reponer
-    // algo que ya está a mano.
-    const actualizacion = {
-      cantidad_disponible: disponible,
-      [campoOrigen]: origenActual,
-      stock_salon: (parseInt(prod.stock_salon) || 0) + cantidad,
-    };
-    if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') {
-      actualizacion.estado_venta = 'en_venta';
+    await prod.update({ [campoOrigen]: origenActual }, { transaction: t });
+  }
+
+  const productosConVariante = new Set();
+  for (const c of componentes) {
+    const bucket = await bucketLegacyPorOrigen(c, t);
+    const cantidad = parseInt(c.cantidad, 10) || 0;
+    if (cantidad <= 0) continue;
+
+    if (c.variante_id) {
+      const variante = await ProductoVariante.findByPk(c.variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+      if (!variante) continue;
+      const siguienteBucket = (parseInt(variante[bucket], 10) || 0) + cantidad;
+      await variante.update({
+        [bucket]: siguienteBucket,
+        stock: (parseInt(variante.stock, 10) || 0) + cantidad,
+      }, { transaction: t });
+      productosConVariante.add(c.producto_id);
+    } else {
+      const prod = await Producto.findByPk(c.producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+      if (!prod) continue;
+      const disponible = (parseInt(prod.cantidad_disponible) || 0) + cantidad;
+      const actualizacion = {
+        cantidad_disponible: disponible,
+        [bucket]: (parseInt(prod[bucket], 10) || 0) + cantidad,
+      };
+      if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') {
+        actualizacion.estado_venta = 'en_venta';
+      }
+      await prod.update(actualizacion, { transaction: t });
     }
-    await prod.update(actualizacion, { transaction: t });
+  }
+
+  for (const producto_id of productosConVariante) {
+    const total = await ProductoService.recalcularStockPadre(producto_id, t);
+    const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (prod && total > 0 && prod.estado_venta === 'fuera_de_stock') {
+      await prod.update({ estado_venta: 'en_venta' }, { transaction: t });
+    }
   }
 }
 
@@ -561,16 +649,33 @@ async function registrarDevolucionComponentes(envio, itemsPayload, t) {
     const prod = await Producto.findByPk(componente.producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (prod) {
       const transito = Math.max(0, (parseInt(prod.cantidad_transito) || 0) - cant);
-      const actualizacion = { cantidad_transito: transito };
-      if (condicion === 'vendible') {
+      await prod.update({ cantidad_transito: transito }, { transaction: t });
+    }
+
+    if (condicion === 'vendible') {
+      const bucket = await bucketLegacyPorOrigen(componente, t);
+      if (componente.variante_id) {
+        const variante = await ProductoVariante.findByPk(componente.variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+        if (variante) {
+          await variante.update({
+            [bucket]: (parseInt(variante[bucket], 10) || 0) + cant,
+            stock: (parseInt(variante.stock, 10) || 0) + cant,
+          }, { transaction: t });
+          const total = await ProductoService.recalcularStockPadre(componente.producto_id, t);
+          const prodActualizado = await Producto.findByPk(componente.producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+          if (prodActualizado && total > 0 && prodActualizado.estado_venta === 'fuera_de_stock') {
+            await prodActualizado.update({ estado_venta: 'en_venta' }, { transaction: t });
+          }
+        }
+      } else if (prod) {
         const disponible = (parseInt(prod.cantidad_disponible) || 0) + cant;
-        actualizacion.cantidad_disponible = disponible;
-        // Una devolución en buen estado vuelve al mostrador (mismo criterio
-        // que liberarStock). La dañada no suma a ningún lado: no es vendible.
-        actualizacion.stock_salon = (parseInt(prod.stock_salon) || 0) + cant;
+        const actualizacion = {
+          cantidad_disponible: disponible,
+          [bucket]: (parseInt(prod[bucket], 10) || 0) + cant,
+        };
         if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') actualizacion.estado_venta = 'en_venta';
+        await prod.update(actualizacion, { transaction: t });
       }
-      await prod.update(actualizacion, { transaction: t });
     }
 
     // Espejo en InventarioUbicacion: si esta devolucion (o parte de ella)
@@ -1168,7 +1273,9 @@ exports.listEnviosPaginados = async (req, res) => {
       abastecimiento_estado_exacto,
       // --- Filtros de seguimiento WhatsApp (BE-10) ---
       etiqueta_id,             // pedidos con esa etiqueta activa
-      plantilla_id,            // pedidos donde se usó esa plantilla al menos una vez
+      flujo_id,                // pedidos donde se abrió al menos una fase de ese flujo
+      fase_id,                 // pedidos donde se abrió esa fase puntual
+      plantilla_id,            // legacy: pedidos donde se usó esa plantilla suelta (pre-flujos)
       seguimiento_responsable_id, // usuario_id del recordatorio (no confundir con "confirmador", que es texto libre)
       seguimiento_pendiente,   // true = tiene un recordatorio PENDIENTE (no vencido)
       seguimiento_vencido,     // true = tiene un recordatorio PENDIENTE cuyo ejecutar_en ya pasó
@@ -1264,6 +1371,19 @@ exports.listEnviosPaginados = async (req, res) => {
         WHERE ee.envio_id = "Envio"."id" AND ee.activa = true AND ee.etiqueta_id = ${Number(etiqueta_id) || 0}
       )`));
     }
+    if (flujo_id) {
+      filtrosAnd.push(Sequelize.literal(`EXISTS (
+        SELECT 1 FROM seguimiento_contactos sc
+        WHERE sc.envio_id = "Envio"."id" AND sc.flujo_id = ${Number(flujo_id) || 0}
+      )`));
+    }
+    if (fase_id) {
+      filtrosAnd.push(Sequelize.literal(`EXISTS (
+        SELECT 1 FROM seguimiento_contactos sc
+        WHERE sc.envio_id = "Envio"."id" AND sc.fase_id = ${Number(fase_id) || 0}
+      )`));
+    }
+    // Legacy: los contactos anteriores a los flujos solo tienen plantilla_id.
     if (plantilla_id) {
       filtrosAnd.push(Sequelize.literal(`EXISTS (
         SELECT 1 FROM seguimiento_contactos sc
@@ -1399,6 +1519,7 @@ exports.createEnvio = async (req, res) => {
       razon_social,
       ruc,
       nro_comprobante,
+      origen_preferido_id,
       items
     } = req.body;
 
@@ -1489,6 +1610,8 @@ exports.createEnvio = async (req, res) => {
           const oferta = item.oferta_id ? ofertasPorId.get(Number(item.oferta_id)) : null;
           return {
             producto_id: item.producto_id || null,
+            variante_id: item.variante_id || null,
+            componente_variante_id: item.componente_variante_id || null,
             oferta_id: oferta ? oferta.id : null,
             oferta_codigo: oferta ? oferta.codigo : null,
             oferta_nombre: oferta ? oferta.nombre : null,
@@ -1508,7 +1631,7 @@ exports.createEnvio = async (req, res) => {
     // Si nace en "Confirmado", reserva stock real desde la creación.
     if (nuevoEnvio.estado === 'Confirmado') {
       const abastecimiento = await aplicarAbastecimientoCalculado(nuevoEnvio, nuevoEnvio.items || [], usuario_id, t);
-      await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id);
+      await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id, { origenPreferidoId: origen_preferido_id });
       await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
       await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
       if (abastecimiento.requiere) {
@@ -1537,7 +1660,11 @@ exports.createEnvio = async (req, res) => {
   } catch (error) {
     if (t) await t.rollback();
     console.error('Error creating envio:', error);
-    res.status(error.status || 500).json({ error: error.message || 'Error al crear el envío' });
+    res.status(error.status || 500).json({
+      error: error.message || 'Error al crear el envío',
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.requiresSplit ? { requiresSplit: true } : {}),
+    });
   }
 };
 
@@ -1582,7 +1709,7 @@ exports.updateEstado = async (req, res) => {
       ruc, direccion, referencia, link_maps, costo_envio, delivery_a_cargo, pago_anticipado, metodo_pago,
       quiere_factura, razon_social, nro_comprobante, metodo_pago_id, comision_pct_aplicada,
       ciudad, departamento, nombre_cliente, apellido_cliente, telefono,
-      confirmador, origen, canal_venta_id, campaign_name, observaciones, monto,
+      confirmador, origen, canal_venta_id, campaign_name, observaciones, monto, origen_preferido_id,
       // Obligatorio para pasar a Reprogramado — ver TRANSICIONES_VALIDAS.
       fecha_reprogramada, motivo_reprogramacion,
       // Lo que cuesta el viaje en falso que se acaba de hacer. Se acumula en
@@ -1759,7 +1886,7 @@ exports.updateEstado = async (req, res) => {
             t
           );
         }
-        await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id);
+        await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id, { origenPreferidoId: origen_preferido_id });
         updateData.stock_descontado = true;
       }
       if (estado === 'Despachado' && !envio.stock_despachado) {
@@ -1901,7 +2028,12 @@ exports.updateEstado = async (req, res) => {
     console.error('Error updating estado:', error);
     const status = error.status || 500;
     const message = error.message || 'Error interno del servidor';
-    res.status(status).json({ error: message, message, ...(error.code ? { code: error.code } : {}) });
+    res.status(status).json({
+      error: message,
+      message,
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.requiresSplit ? { requiresSplit: true } : {}),
+    });
   }
 };
 

@@ -320,6 +320,26 @@ describe('Runtime de Gesicomm en el HTML', () => {
 });
 
 describe('LandingCodigoService.limpiarVenta', () => {
+  it('guarda galerías propias y conserva la lista vacía sin aceptar URLs inseguras', () => {
+    const venta = LandingCodigoService.limpiarVenta({ presentacion_productos: {
+      'producto:10': { imagenes_landing: ['https://cdn.test/foto.webp', 'javascript:alert(1)', '//externo.test/foto', '/uploads/foto.jpg', 'https://cdn.test/foto.webp'] },
+      'combo:15': { imagenes_landing: [] },
+      'producto:20': { titulo_comercial: 'Sin galería propia' },
+    } });
+    expect(venta.presentacion_productos['producto:10'].imagenes_landing).toEqual(['https://cdn.test/foto.webp', '/uploads/foto.jpg']);
+    expect(venta.presentacion_productos['combo:15'].imagenes_landing).toEqual([]);
+    expect(venta.presentacion_productos['producto:20']).not.toHaveProperty('imagenes_landing');
+  });
+  it('conserva la presentación comercial por ID entero y limita los textos', () => {
+    const venta = LandingCodigoService.limpiarVenta({ presentacion_productos: {
+      'producto:1370': { titulo_comercial: 'Cacerola práctica', mensaje_comercial: 'x'.repeat(200), insignia_principal: 'Oferta', insignia_secundaria: 'Exclusivo online', etiqueta: 'No comercial' },
+      'combo:15': { titulo_comercial: 'Kit de cocina' },
+      'producto:abc': { titulo_comercial: 'Inválido' },
+      'producto:0': { titulo_comercial: 'Inválido' },
+    } });
+    expect(Object.keys(venta.presentacion_productos)).toEqual(['producto:1370', 'combo:15']);
+    expect(venta.presentacion_productos['producto:1370']).toEqual({ titulo_comercial: 'Cacerola práctica', mensaje_comercial: 'x'.repeat(160), insignia_principal: 'Oferta', insignia_secundaria: 'Exclusivo online' });
+  });
   it('arma la configuración campo por campo y descarta lo que no está en la lista blanca', () => {
     const v = LandingCodigoService.limpiarVenta({
       tipo: 'combos',
@@ -355,6 +375,15 @@ describe('LandingCodigoService.limpiarVenta', () => {
     expect(v.cross_sell.activo).toBe(false);
     expect(LandingCodigoService.limpiarVenta('texto')).toBeNull();
     expect(LandingCodigoService.limpiarVenta([1])).toBeNull();
+  });
+
+  it('conserva solamente controles de catálogo conocidos con valores booleanos', () => {
+    const v = LandingCodigoService.limpiarVenta({ catalogo_filtros: {
+      buscador: false, categoria: true, marca: false, etiqueta: true, precio: true, disponibilidad: false, orden: true,
+      inventado: true, color: '<script>',
+    } });
+    expect(v.catalogo_filtros).toEqual({ buscador: false, categoria: true, marca: false, etiqueta: true, precio: true, disponibilidad: false, orden: true });
+    expect(LandingCodigoService.limpiarVenta({ catalogo_filtros: { buscador: 'false' } }).catalogo_filtros).toEqual({});
   });
 
   it('conserva paquetes ocultos y no deja destacado un paquete desactivado', () => {

@@ -31,7 +31,9 @@ const EnvioEtiqueta = sequelize.define('EnvioEtiqueta', {
     type: DataTypes.STRING(20),
     allowNull: false,
     defaultValue: 'manual',
-    validate: { isIn: [['manual', 'plantilla']] },
+    // 'fase' = la aplicó automáticamente una fase del flujo de WhatsApp;
+    // 'plantilla' queda para el historial anterior a los flujos.
+    validate: { isIn: [['manual', 'plantilla', 'fase']] },
   },
   activa: {
     type: DataTypes.BOOLEAN,

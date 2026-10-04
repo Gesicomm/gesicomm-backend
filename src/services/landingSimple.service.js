@@ -292,9 +292,30 @@ class LandingSimpleService {
     });
   }
 
-  static async crear(tienda_id, inquilino_id, template_id) {
+  static async crear(tienda_id, inquilino_id, template_id, colores = null, items = []) {
     const template = await this.obtenerTemplateRigido(template_id);
     const defaults = DEFAULTS_POR_TEMPLATE[template.slug];
+    const paleta = {};
+    if (colores !== null && colores !== undefined) {
+      if (!colores || typeof colores !== 'object' || Array.isArray(colores)
+        || !['fondo', 'texto', 'acento'].every(k => typeof colores[k] === 'string' && /^#[0-9a-fA-F]{6}$/.test(colores[k]))) {
+        throw new Error('La paleta del template debe incluir fondo, texto y acento en formato hexadecimal (#rrggbb).');
+      }
+      paleta.color_fondo = colores.fondo;
+      paleta.color_texto = colores.texto;
+      paleta.color_primario = colores.acento;
+    }
+
+    if (!Array.isArray(items)) throw new Error('Los productos deben enviarse como una lista.');
+    if (items.length) {
+      const erroresItems = LandingService.validarPayload({ items });
+      if (erroresItems.length) {
+        const err = new Error('Validación fallida.');
+        err.errores = erroresItems;
+        throw err;
+      }
+      await LandingService.resolverItemsCatalogo(items, inquilino_id);
+    }
 
     const landing = await this._crearFila(tienda_id, inquilino_id, template, {
       // FAQ y Hero(banner) son secciones fijas en los 4 templates rígidos
@@ -304,11 +325,14 @@ class LandingSimpleService {
       mostrar_banner: true,
       contenido_titulo: defaults?.contenido_titulo || null,
       contenido_texto: defaults?.contenido_texto || null,
+      ...paleta,
     });
 
     if (defaults?.beneficios?.length) {
       await this.sincronizarBeneficios(landing.id, defaults.beneficios);
     }
+
+    if (items.length) await LandingService.sincronizarItems(landing.id, items);
 
     return this.obtener(landing.id, tienda_id);
   }

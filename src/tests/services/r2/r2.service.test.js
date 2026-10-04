@@ -124,6 +124,36 @@ describe('R2Service', () => {
     });
   });
 
+  test.each([
+    ['EACCES', 503, false],
+    ['EPERM', 503, false],
+    ['ECONNREFUSED', 503, true],
+    ['ENOTFOUND', 503, true],
+    ['ETIMEDOUT', 504, true],
+  ])('normaliza AggregateError con %s al eliminar', async (code, status, retryable) => {
+    const connectionError = Object.assign(new Error('internal connection details'), { code });
+    mockSend.mockRejectedValueOnce(new AggregateError([connectionError], 'internal aggregate details'));
+
+    await expect(R2Service.deleteObject('landings/banner/193/test.webp')).rejects.toMatchObject({
+      name: 'R2StorageError', code, status, retryable,
+      operation: 'DeleteObject', key: 'landings/banner/193/test.webp',
+      message: code === 'EACCES' || code === 'EPERM'
+        ? 'El servidor no tiene permiso para conectarse al almacenamiento.'
+        : code === 'ETIMEDOUT'
+          ? 'Tiempo de espera agotado al contactar almacenamiento.'
+          : 'Error de red al contactar almacenamiento.',
+    });
+  });
+
+  test('normaliza una causa de red anidada', async () => {
+    mockSend.mockRejectedValueOnce(new Error('internal details', {
+      cause: Object.assign(new Error('internal cause'), { code: 'ECONNRESET' }),
+    }));
+    await expect(R2Service.deleteObject('landings/test.webp')).rejects.toMatchObject({
+      code: 'ECONNRESET', status: 503, retryable: true,
+    });
+  });
+
   test('elimina objetos por key', async () => {
     mockSend.mockResolvedValueOnce({});
 

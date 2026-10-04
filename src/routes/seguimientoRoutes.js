@@ -1,11 +1,21 @@
 const express = require('express');
 const router = express.Router();
 const seguimientoController = require('../controllers/seguimientoController');
+const flujoController = require('../controllers/seguimientoFlujoController');
 const { verificarToken } = require('../middleware/autenticacion');
 
 router.use(verificarToken);
 
-// Plantillas de WhatsApp (BE-02)
+// Flujos de mensajes de WhatsApp: el proceso y sus fases ordenadas. Es la
+// unidad principal del seguimiento; las plantillas sueltas de abajo quedan
+// por compatibilidad con lo ya cargado.
+router.get('/flujos', flujoController.listar);
+router.get('/flujos/:id', flujoController.obtener);
+router.post('/flujos', flujoController.crear);
+router.put('/flujos/:id', flujoController.actualizar);
+router.delete('/flujos/:id', flujoController.eliminar);
+
+// Plantillas de WhatsApp sueltas (BE-02, legacy pre-flujos)
 router.get('/plantillas', seguimientoController.listarPlantillas);
 router.get('/plantillas/:id', seguimientoController.obtenerPlantilla);
 router.post('/plantillas', seguimientoController.crearPlantilla);

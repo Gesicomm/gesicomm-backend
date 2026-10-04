@@ -679,7 +679,7 @@ class CostoGastoService {
     const activos = [
       { id: 'caja_efectivo', label: 'Caja estimada del período', valor: montoNumero(flujoCajaNeto), derivado: true },
       { id: 'cuentas_cobrar', label: 'Cuentas por cobrar', valor: montoNumero(courierPorRendir) },
-      { id: 'inventario', label: 'Inventario', valor: montoNumero(valorInventario) },
+      { id: 'inventario', label: METRIC_TERMS.valorStockActual, valor: montoNumero(valorInventario) },
     ];
     const pasivos = [
       { id: 'proveedores', label: 'Cuentas por pagar a proveedores', valor: montoNumero(cuentasPendientes) },
@@ -740,7 +740,7 @@ class CostoGastoService {
       fuentes: {
         ventas: 'Pedidos entregados y otros ingresos registrados',
         costos: 'Costo de producto, Meta Ads, logística, comisiones y Control financiero',
-        activos_pasivos: 'Inventario, pedidos pendientes, proveedores e IVA estimado de ventas facturadas',
+        activos_pasivos: `${METRIC_TERMS.valorStockActual}, pedidos pendientes, proveedores e IVA estimado de ventas facturadas`,
       },
     };
   }

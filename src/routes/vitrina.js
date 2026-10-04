@@ -12,15 +12,15 @@ const router = express.Router();
 const { verificarToken } = require('../middleware/autenticacion');
 const { verificarPermiso } = require('../middleware/autorizacion');
 const ctrl = require('../controllers/precioUsuario.controller');
-const excelCtrl = require('../controllers/precioUsuarioExcel.controller');
+const preciosCtrl = require('../controllers/precioUsuarioMasivo.controller');
 
 router.use(verificarToken);
 
 router.get('/catalogo', verificarPermiso('ver_productos'), ctrl.catalogo);
 router.post('/catalogo-paginado', verificarPermiso('ver_productos'), ctrl.catalogoPaginado);
 
-router.get('/precios/exportar', verificarPermiso('ver_productos'), excelCtrl.exportar);
-router.post('/precios/importar', verificarPermiso('gestionar_precio_propio'), excelCtrl.subirXlsxMiddleware, excelCtrl.importar);
+router.post('/precios/buscar', verificarPermiso('ver_productos'), preciosCtrl.buscar);
+router.post('/precios/actualizar', verificarPermiso('gestionar_precio_propio'), preciosCtrl.actualizar);
 
 router.put('/productos/:id/precio', verificarPermiso('gestionar_precio_propio'), ctrl.guardarPrecioProducto);
 router.put('/combos/:id/precio', verificarPermiso('gestionar_precio_propio'), ctrl.guardarPrecioCombo);

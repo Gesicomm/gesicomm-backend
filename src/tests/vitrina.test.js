@@ -21,6 +21,8 @@ jest.mock('../models', () => ({
   ProductoImagen: {
     findAll: jest.fn(),
   },
+  ProductoVariante: { findAll: jest.fn().mockResolvedValue([]) },
+  Oferta: { findAll: jest.fn().mockResolvedValue([]) },
   PrecioUsuario: {
     findAll: jest.fn(),
     findOne: jest.fn(),
@@ -149,6 +151,50 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     expect(PrecioUsuario.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
       where: { usuario_id: 42, tipo: 'producto', referencia_id: 10 },
     }));
+  });
+
+  test.each([false, true])('Mis combos conserva un combo propio cuyo principal es del administrador (admin=%s)', async (esAdmin) => {
+    sequelize.query
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([{ id: 50, tipo: 'combo' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    ProductoCombo.findAll.mockImplementationOnce(async ({ include }) => {
+      const padreWhere = include.find(i => i.as === 'producto_padre').where;
+      // Reproduce el INNER JOIN: un filtro del dueño del combo aplicado al
+      // principal de Gesicom elimina el combo aunque el conteo SQL lo incluya.
+      if (padreWhere.creado_por === 42) return [];
+      return [{
+        id: 50, nombre: 'Mi combo', creado_por: 42, precio_total: '190000', precio_minimo: null,
+        producto_padre: { id: 10, nombre: 'Principal Gesicom', creado_por: 1, precio_base: '100000' },
+        items: [], imagenes: [],
+      }];
+    });
+    ProductoImagen.findAll.mockResolvedValueOnce([]);
+
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { tipo: 'combo', solamenteMios: true }, esAdmin);
+
+    expect(resultado.total).toBe(1);
+    expect(resultado.items).toEqual([expect.objectContaining({ id: 50, creado_por: 42, origen_catalogo: 'PROPIO' })]);
+    const consulta = ProductoCombo.findAll.mock.calls.at(-1)[0];
+    expect(consulta.where).toMatchObject({ inquilino_id: 1, creado_por: 42 });
+    const padreWhere = consulta.include.find(i => i.as === 'producto_padre').where;
+    expect(padreWhere.creado_por).toBeUndefined();
+    if (!esAdmin) expect(padreWhere[Op.or]).toContainEqual({ creado_por: { [Op.in]: [42, 1] } });
+    expect(sequelize.query.mock.calls[1][0]).toContain('c.creado_por = :usuario_id');
+  });
+
+  test.each(['producto', 'combo', 'todos'])('el origen Gesicom filtra antes de paginar y contar (%s)', async (tipo) => {
+    sequelize.query.mockResolvedValueOnce([{ total: 0 }]).mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { tipo, origenCatalogo: 'GESICOMM' });
+    for (const [sql] of sequelize.query.mock.calls.slice(0, 2)) {
+      if (tipo !== 'combo') expect(sql).toContain('p.creado_por IS DISTINCT FROM :usuario_id');
+      if (tipo !== 'producto') {
+        expect(sql).toContain('c.creado_por IS DISTINCT FROM :usuario_id');
+        expect(sql).toContain('p.categoria_id, c.creado_por');
+      }
+    }
   });
 });
 

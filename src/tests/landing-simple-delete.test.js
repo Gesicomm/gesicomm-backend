@@ -39,6 +39,17 @@ describe('LandingSimpleService.eliminar', () => {
     Testimonio.findAll.mockResolvedValue([]);
   });
 
+  test('conserva la landing si falla la limpieza de almacenamiento', async () => {
+    const actual = { id: 193, tienda_id: 7, banner_imagen: 'https://cdn.gesicomm.com/banner.webp' };
+    const storageError = Object.assign(new Error('Error de red al contactar almacenamiento.'), { status: 503 });
+    Landing.findOne.mockResolvedValue(actual);
+    Landing.findAll.mockResolvedValue([actual]);
+    ImagenService.eliminarObjetoStorage.mockRejectedValueOnce(storageError);
+
+    await expect(LandingSimpleService.eliminar(193, 7)).rejects.toBe(storageError);
+    expect(Landing.destroy).not.toHaveBeenCalled();
+  });
+
   test('borra todas las landings simples residuales de la tienda', async () => {
     const actual = {
       id: 10,

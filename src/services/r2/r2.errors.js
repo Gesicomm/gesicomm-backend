@@ -19,6 +19,28 @@ function getAwsErrorCode(error) {
 function normalizeR2Error(error, { operation, key } = {}) {
   if (error instanceof R2StorageError) return error;
 
+  // Node agrupa los fallos de conexión IPv4/IPv6 en AggregateError.
+  // Revisar también sus errores internos evita perder el código de red real.
+  const networkCodes = ['EACCES', 'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'ETIMEDOUT'];
+  const connectionErrors = [error, error?.cause, ...(Array.isArray(error?.errors) ? error.errors : [])];
+  const networkError = connectionErrors.find(item => networkCodes.includes(item?.code));
+  if (networkError) {
+    const blocked = ['EACCES', 'EPERM'].includes(networkError.code);
+    const timeout = networkError.code === 'ETIMEDOUT';
+    const message = blocked
+      ? 'El servidor no tiene permiso para conectarse al almacenamiento.'
+      : timeout
+        ? 'Tiempo de espera agotado al contactar almacenamiento.'
+        : 'Error de red al contactar almacenamiento.';
+    return new R2StorageError(message, {
+      code: networkError.code,
+      operation,
+      key,
+      status: timeout ? 504 : 503,
+      retryable: !blocked,
+    });
+  }
+
   const code = getAwsErrorCode(error);
   const statusCode = error?.$metadata?.httpStatusCode;
   const retryable = !!error?.$retryable;
@@ -69,16 +91,6 @@ function normalizeR2Error(error, { operation, key } = {}) {
       operation,
       key,
       status: 504,
-      retryable: true,
-    });
-  }
-
-  if (['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN'].includes(error?.code)) {
-    return new R2StorageError('Error de red al contactar almacenamiento.', {
-      code: error.code,
-      operation,
-      key,
-      status: 503,
       retryable: true,
     });
   }

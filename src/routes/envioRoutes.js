@@ -69,6 +69,8 @@ router.get('/:id/historial', envioController.obtenerHistorial);
 router.delete('/:id', envioController.deleteEnvio);
 
 // --- Seguimiento de pedidos por WhatsApp (RF Seguimiento WhatsApp) ---
+// Flujos activos + lo que ya se abrio de cada fase en ESTE pedido.
+router.get('/:id/seguimiento/flujos', seguimientoController.flujosDelPedido);
 router.post('/:id/seguimiento/contactos', seguimientoController.registrarContacto);
 router.get('/:id/seguimiento/contactos', seguimientoController.listarContactos);
 router.get('/:id/seguimiento/etiquetas', seguimientoController.listarEtiquetasDelPedido);

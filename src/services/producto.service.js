@@ -2,7 +2,7 @@
 
 const { Op } = require('sequelize');
 const slugify = require('slugify');
-const { sequelize, Producto, HistorialPrecio, ProductoVariante, Oferta, OfertaComponente, ProductoFaq, PrecioUsuario } = require('../models');
+const { sequelize, Producto, HistorialPrecio, ProductoVariante, Oferta, OfertaComponente, ProductoFaq, PrecioUsuario, Deposito, InventarioUbicacion } = require('../models');
 const { calcularPrecioEfectivo, validarPrecioMinimo } = require('../utils/precio');
 const PricingService = require('./pricing.service');
 
@@ -270,7 +270,154 @@ class ProductoService {
 
     if (!producto) throw new Error('Producto no encontrado.');
 
-    return this.serializar(producto, esAdmin, usuarioId);
+    const data = this.serializar(producto, esAdmin, usuarioId);
+    if (usuarioId != null) {
+      data.stock_depositos = await this.obtenerStockPorDeposito(producto.id, usuarioId);
+    }
+    return data;
+  }
+
+  static async obtenerDepositosPropiosIds(usuarioId, transaction) {
+    const depositos = await Deposito.findAll({
+      where: { usuario_id: usuarioId },
+      attributes: ['id'],
+      transaction,
+    });
+    return depositos.map((d) => d.id);
+  }
+
+  static async obtenerStockPorDeposito(productoId, usuarioId, transaction) {
+    const depositoIds = await this.obtenerDepositosPropiosIds(usuarioId, transaction);
+    if (depositoIds.length === 0) return [];
+
+    const filas = await InventarioUbicacion.findAll({
+      where: {
+        producto_id: productoId,
+        deposito_id: { [Op.in]: depositoIds },
+      },
+      attributes: ['deposito_id', 'variante_id', 'cantidad_disponible'],
+      transaction,
+    });
+
+    return filas.map((f) => ({
+      deposito_id: Number(f.deposito_id),
+      variante_id: f.variante_id == null ? null : Number(f.variante_id),
+      cantidad: parseInt(f.cantidad_disponible, 10) || 0,
+    }));
+  }
+
+  static async sincronizarStockDeposito(productoId, usuarioId, stockDepositosPayload, transaction) {
+    const [producto, variantes] = await Promise.all([
+      Producto.findByPk(productoId, { transaction }),
+      ProductoVariante.findAll({ where: { producto_id: productoId, activo: true }, transaction }),
+    ]);
+    if (!producto) throw new Error('Producto no encontrado.');
+
+    const stockEsperado = variantes.length > 0
+      ? variantes.map((v) => ({
+        variante_id: v.id,
+        cantidad: Math.max(0, (parseInt(v.stock_salon, 10) || 0) + (parseInt(v.stock_deposito, 10) || 0)),
+      }))
+      : [{
+        variante_id: null,
+        cantidad: Math.max(0, (parseInt(producto.stock_salon, 10) || 0) + (parseInt(producto.stock_deposito, 10) || 0)),
+      }];
+
+    const totalDeposito = stockEsperado.reduce((acc, fila) => acc + fila.cantidad, 0);
+    const depositoIdsPropios = await this.obtenerDepositosPropiosIds(usuarioId, transaction);
+    const depositosPermitidos = new Set(depositoIdsPropios.map(Number));
+    const normalizadas = Array.isArray(stockDepositosPayload)
+      ? stockDepositosPayload
+        .map((fila) => ({
+          deposito_id: Number(fila.deposito_id),
+          variante_id: fila.variante_id == null ? null : Number(fila.variante_id),
+          cantidad: Math.max(0, parseInt(fila.cantidad, 10) || 0),
+        }))
+        .filter((fila) => fila.deposito_id && fila.cantidad > 0)
+      : [];
+
+    if (totalDeposito > 0 && normalizadas.length === 0) {
+      const err = new Error('Distribuí el stock entre tus ubicaciones.');
+      err.seccion = 'stock';
+      throw err;
+    }
+
+    const totalDistribuido = normalizadas.reduce((acc, fila) => acc + fila.cantidad, 0);
+    if (totalDistribuido !== totalDeposito) {
+      const err = new Error(`La distribución por ubicación (${totalDistribuido}) debe sumar el stock total (${totalDeposito}).`);
+      err.seccion = 'stock';
+      throw err;
+    }
+
+    if (normalizadas.some((fila) => !depositosPermitidos.has(fila.deposito_id))) {
+      const err = new Error('Uno de los depósitos seleccionados no existe, está inactivo o no pertenece a este comercio.');
+      err.seccion = 'stock';
+      throw err;
+    }
+
+    if (variantes.length > 0) {
+      const variantesPermitidas = new Set(variantes.map((v) => Number(v.id)));
+      if (normalizadas.some((fila) => !fila.variante_id || !variantesPermitidas.has(fila.variante_id))) {
+        const err = new Error('Distribuí el stock de depósito por variante y depósito.');
+        err.seccion = 'stock';
+        throw err;
+      }
+
+      const totalPorVariante = normalizadas.reduce((acc, fila) => {
+        acc.set(fila.variante_id, (acc.get(fila.variante_id) || 0) + fila.cantidad);
+        return acc;
+      }, new Map());
+      const varianteDesbalanceada = stockEsperado.find((fila) => (totalPorVariante.get(fila.variante_id) || 0) !== fila.cantidad);
+      if (varianteDesbalanceada) {
+        const esperado = varianteDesbalanceada.cantidad;
+        const recibido = totalPorVariante.get(varianteDesbalanceada.variante_id) || 0;
+        const err = new Error(`La distribución de una variante (${recibido}) debe sumar su stock en depósito (${esperado}).`);
+        err.seccion = 'stock';
+        throw err;
+      }
+    }
+
+    const existentes = depositoIdsPropios.length > 0
+      ? await InventarioUbicacion.findAll({
+        where: {
+          producto_id: productoId,
+          deposito_id: { [Op.in]: depositoIdsPropios },
+        },
+        transaction,
+      })
+      : [];
+
+    const clave = (deposito, variante) => `${deposito}:${variante || 'SIN_VARIANTE'}`;
+    const deseadas = new Map(
+      normalizadas.map((fila) => [clave(fila.deposito_id, fila.variante_id), fila]),
+    );
+
+    for (const fila of existentes) {
+      const filaDeseada = deseadas.get(clave(fila.deposito_id, fila.variante_id));
+
+      if (filaDeseada) {
+        await fila.update({ cantidad_disponible: filaDeseada.cantidad }, { transaction });
+        deseadas.delete(clave(fila.deposito_id, fila.variante_id));
+      } else if ((parseInt(fila.cantidad_reservada, 10) || 0) > 0) {
+        await fila.update({ cantidad_disponible: 0 }, { transaction });
+      } else {
+        await fila.destroy({ transaction });
+      }
+    }
+
+    if (deseadas.size === 0) return;
+
+    await InventarioUbicacion.bulkCreate(
+      [...deseadas.values()].map((fila) => ({
+        usuario_id: usuarioId,
+        producto_id: productoId,
+        variante_id: fila.variante_id,
+        deposito_id: fila.deposito_id,
+        cantidad_disponible: fila.cantidad,
+        cantidad_reservada: 0,
+      })),
+      { transaction },
+    );
   }
 
   /**

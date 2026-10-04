@@ -1,10 +1,9 @@
 /**
  * fulfillment.service — cómo entrega el comercio lo que vende.
  *
- * Lo que importa verificar es que no se pueda quedar en un estado que no
- * cotiza: modalidad propia sin depósito, con un depósito ajeno o con uno sin
- * couriers, o modalidad Gesicomm cuando la red todavía no tiene cobertura.
- * En cualquiera de esos casos el checkout no podría calcular el flete.
+ * Lo que importa verificar es que la configuración de entregas no mezcle
+ * conceptos: en logística propia se elige un depósito activo del comercio,
+ * pero el courier se decide en el flujo de pedidos.
  */
 
 jest.mock('../models', () => {
@@ -90,14 +89,12 @@ beforeEach(() => {
 const tienda = () => __almacen.tiendas[0];
 
 describe('obtenerConfiguracion', () => {
-  it('marca la modalidad propia como disponible solo si algún depósito tiene couriers', async () => {
+  it('marca la modalidad propia como disponible si hay al menos un depósito activo', async () => {
     const cfg = await Fulfillment.obtenerConfiguracion(COMERCIO);
 
     expect(cfg.propia.disponible).toBe(true);
-    expect(cfg.propia.depositos.find((d) => d.id === 10).couriers_habilitados).toBe(1);
-    expect(cfg.propia.depositos.find((d) => d.id === 11).couriers_habilitados).toBe(0);
-    // Un depósito de otro comercio nunca aparece.
-    expect(cfg.propia.depositos.some((d) => d.id === 20)).toBe(false);
+    expect(cfg.propia.total_depositos).toBe(2);
+    expect(cfg.propia.depositos).toEqual([]);
   });
 
   it('sin proveedores de la red, esa modalidad no está disponible', async () => {
@@ -147,9 +144,11 @@ describe('guardarConfiguracion', () => {
     expect(tienda().deposito_fulfillment_id).toBeNull();
   });
 
-  it('propia rechaza un depósito sin couriers habilitados', async () => {
-    await expect(Fulfillment.guardarConfiguracion(COMERCIO, { modalidad: 'PROPIA', depositoId: 11 }))
-      .rejects.toMatchObject({ status: 400 });
+  it('propia permite un depósito aunque no tenga couriers habilitados', async () => {
+    await Fulfillment.guardarConfiguracion(COMERCIO, { modalidad: 'PROPIA', depositoId: 11 });
+
+    expect(tienda().modalidad_fulfillment).toBe('PROPIA');
+    expect(tienda().deposito_fulfillment_id).toBe(11);
   });
 
   it('propia guarda el depósito elegido', async () => {

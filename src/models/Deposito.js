@@ -59,6 +59,13 @@ const Deposito = sequelize.define('Deposito', {
     validate: { isIn: [['GESICOMM', 'PROPIO']] },
     comment: 'PROPIO = depósito privado del comercio. GESICOMM = centro de fulfillment de la red, designado por un administrador.',
   },
+  tipo_ubicacion: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'DEPOSITO',
+    validate: { isIn: [['SALON', 'DEPOSITO', 'FULFILLMENT']] },
+    comment: 'Función operativa de la ubicación. Distinto de alcance: SALON/DEPOSITO/FULFILLMENT.',
+  },
 }, {
   tableName: 'depositos',
   timestamps: true,

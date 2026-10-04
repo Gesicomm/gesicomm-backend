@@ -9,9 +9,11 @@
 const { Op, Transaction, UniqueConstraintError } = require('sequelize');
 const {
   sequelize, Envio, EnvioItem, EnvioHistorial,
-  WhatsappPlantilla, SeguimientoEtiqueta, EnvioEtiqueta,
+  WhatsappPlantilla, WhatsappFlujo, WhatsappFlujoFase,
+  SeguimientoEtiqueta, EnvioEtiqueta,
   SeguimientoContacto, SeguimientoRecordatorio, SeguimientoConfiguracion,
 } = require('../models');
+const flujoService = require('../services/seguimiento/flujo.service');
 const { registrarHistorial } = require('../utils/historial');
 const { resolverMensaje } = require('../services/seguimiento/plantillaResolver.service');
 const { encolarRecordatorio } = require('../services/queue/seguimientoQueue');
@@ -68,27 +70,66 @@ async function cargarEnvioODevolver404(req, res, { conItems = false } = {}) {
 }
 
 /**
+ * GET /api/envios/:id/seguimiento/flujos — flujos activos del usuario con
+ * lo que ya pasó con cada fase EN ESTE PEDIDO (cuántas veces se abrió y
+ * cuándo fue la última). Es lo único que el panel del pedido necesita para
+ * dibujar el flujo: no hay "fase actual" guardada, se deriva del historial.
+ */
+exports.flujosDelPedido = async (req, res) => {
+  const envio = await cargarEnvioODevolver404(req, res);
+  if (!envio) return;
+  const flujos = await flujoService.estadoFlujosDelPedido(envio.id, {
+    usuarioId: req.usuario.id,
+    esAdmin: esAdministrador(req),
+  });
+  res.json(flujos);
+};
+
+/**
  * POST /api/envios/:id/seguimiento/contactos — Registra que el usuario
- * abrió/envió una plantilla de WhatsApp (BE-06). Devuelve el mensaje ya
+ * ABRIÓ EN WHATSAPP una fase del flujo (BE-06). Devuelve el mensaje ya
  * resuelto y el enlace wa.me listo para abrir; el frontend no necesita
  * saber cómo se construye ninguno de los dos.
  *
+ * Ojo con el nombre: esto no registra un mensaje enviado. Con un deep link
+ * wa.me no hay forma de saber si el operador apretó enviar, así que el
+ * contacto queda en estado ABIERTO_EN_WHATSAPP. Contarlos como "mensajes
+ * enviados" sería un dato falso.
+ *
+ * Una fase no se consume: reenviar la Fase 1 diez veces son diez contactos
+ * con el mismo fase_id, y está bien. Acá no se valida ningún orden.
+ *
+ * Body: { fase_id } (nuevo), { plantilla_id } (legacy) o { mensaje } libre.
+ *
  * Efectos automáticos (BE-05/BE-07):
- *  - Si la plantilla tiene etiqueta asociada, se aplica al pedido.
+ *  - Si la fase tiene etiqueta asociada, se aplica al pedido.
  *  - Si el pedido está "Pendiente", pasa a "EnSeguimiento" (solo la
  *    PRIMERA vez — los contactos siguientes no vuelven a mover el estado).
  */
 exports.registrarContacto = async (req, res) => {
   const usuario_id = req.usuario.id;
-  const { plantilla_id, telefono: telefonoOverride } = req.body;
+  const { fase_id, plantilla_id, telefono: telefonoOverride } = req.body;
 
   try {
     const envio = await cargarEnvioODevolver404(req, res, { conItems: true });
     if (!envio) return;
 
+    let fase = null;
     let plantilla = null;
     let mensajeBase;
-    if (plantilla_id) {
+    if (fase_id) {
+      fase = await WhatsappFlujoFase.findOne({
+        where: { id: fase_id },
+        include: [{
+          model: WhatsappFlujo,
+          as: 'flujo',
+          required: true,
+          where: esAdministrador(req) ? {} : { usuario_id },
+        }],
+      });
+      if (!fase) return res.status(404).json({ error: 'Fase no encontrada' });
+      mensajeBase = fase.mensaje;
+    } else if (plantilla_id) {
       plantilla = await WhatsappPlantilla.findOne({
         where: esAdministrador(req) ? { id: plantilla_id } : { id: plantilla_id, usuario_id },
       });
@@ -97,7 +138,7 @@ exports.registrarContacto = async (req, res) => {
     } else {
       mensajeBase = req.body.mensaje;
       if (!mensajeBase || !String(mensajeBase).trim()) {
-        return res.status(400).json({ error: 'Se requiere plantilla_id o mensaje' });
+        return res.status(400).json({ error: 'Se requiere fase_id, plantilla_id o mensaje' });
       }
     }
 
@@ -106,20 +147,25 @@ exports.registrarContacto = async (req, res) => {
 
     const mensajeResuelto = resolverMensaje(mensajeBase, envio);
 
+    const etiquetaAutomatica = fase?.etiqueta_id || plantilla?.etiqueta_id || null;
+
     const resultado = await sequelize.transaction(async (t) => {
       const contacto = await SeguimientoContacto.create({
         envio_id: envio.id,
+        flujo_id: fase?.flujo_id || null,
+        fase_id: fase?.id || null,
         plantilla_id: plantilla?.id || null,
-        etiqueta_id: plantilla?.etiqueta_id || null,
+        etiqueta_id: etiquetaAutomatica,
         usuario_id,
         telefono,
         mensaje_generado: mensajeResuelto,
         canal: 'WHATSAPP',
+        estado: 'ABIERTO_EN_WHATSAPP',
       }, { transaction: t });
 
       let etiquetaAplicada = null;
-      if (plantilla?.etiqueta_id) {
-        etiquetaAplicada = await aplicarEtiqueta(envio.id, plantilla.etiqueta_id, usuario_id, 'plantilla', t);
+      if (etiquetaAutomatica) {
+        etiquetaAplicada = await aplicarEtiqueta(envio.id, etiquetaAutomatica, usuario_id, fase ? 'fase' : 'plantilla', t);
       }
 
       let transicionAutomatica = false;
@@ -129,12 +175,29 @@ exports.registrarContacto = async (req, res) => {
         transicionAutomatica = true;
       }
 
-      const detalleHistorial = plantilla
-        ? `Contacto WhatsApp — Plantilla "${plantilla.nombre}"`
-        : 'Contacto WhatsApp — mensaje libre';
+      // Cuántas veces se abrió ya esta fase en este pedido, incluyendo la de
+      // ahora: el historial dice "reenviada (3er intento)" en vez de repetir
+      // la misma línea sin contexto.
+      let intento = 1;
+      if (fase) {
+        intento = await SeguimientoContacto.count({
+          where: { envio_id: envio.id, fase_id: fase.id },
+          transaction: t,
+        });
+      }
+
+      let detalleHistorial;
+      if (fase) {
+        const sufijo = intento > 1 ? ` — reenviada (intento ${intento})` : '';
+        detalleHistorial = `WhatsApp abierto — ${fase.flujo.nombre} · Fase ${fase.orden}: ${fase.nombre}${sufijo}`;
+      } else if (plantilla) {
+        detalleHistorial = `Contacto WhatsApp — Plantilla "${plantilla.nombre}"`;
+      } else {
+        detalleHistorial = 'Contacto WhatsApp — mensaje libre';
+      }
       await registrarHistorial(envio.id, usuario_id, detalleHistorial, t);
 
-      return { contacto, etiquetaAplicada, transicionAutomatica };
+      return { contacto, etiquetaAplicada, transicionAutomatica, intento };
     });
 
     res.status(201).json({
@@ -142,6 +205,15 @@ exports.registrarContacto = async (req, res) => {
       etiqueta_aplicada: resultado.etiquetaAplicada,
       pedido_paso_a_en_seguimiento: resultado.transicionAutomatica,
       whatsapp_url: whatsappUrl(telefono, mensajeResuelto),
+      // Para que el panel pueda ofrecer el recordatorio de la fase siguiente
+      // sin volver a pedir el flujo entero.
+      fase: fase ? {
+        id: fase.id,
+        nombre: fase.nombre,
+        orden: fase.orden,
+        flujo_id: fase.flujo_id,
+        intento: resultado.intento,
+      } : null,
     });
   } catch (error) {
     logger.error({ mensaje: '[Seguimiento] Error registrando contacto.', error: error.message });
@@ -156,6 +228,12 @@ exports.listarContactos = async (req, res) => {
   const contactos = await SeguimientoContacto.findAll({
     where: { envio_id: envio.id },
     include: [
+      {
+        model: WhatsappFlujoFase,
+        as: 'fase',
+        attributes: ['id', 'nombre', 'orden'],
+        include: [{ model: WhatsappFlujo, as: 'flujo', attributes: ['id', 'nombre'] }],
+      },
       { model: WhatsappPlantilla, as: 'plantilla', attributes: ['id', 'nombre', 'codigo'] },
       { model: SeguimientoEtiqueta, as: 'etiqueta', attributes: ['id', 'nombre', 'codigo'] },
     ],
@@ -341,6 +419,12 @@ exports.historialSeguimiento = async (req, res) => {
     SeguimientoContacto.findAll({
       where: { envio_id: envio.id },
       include: [
+        {
+          model: WhatsappFlujoFase,
+          as: 'fase',
+          attributes: ['id', 'nombre', 'orden'],
+          include: [{ model: WhatsappFlujo, as: 'flujo', attributes: ['id', 'nombre'] }],
+        },
         { model: WhatsappPlantilla, as: 'plantilla', attributes: ['id', 'nombre'] },
         { model: SeguimientoEtiqueta, as: 'etiqueta', attributes: ['id', 'nombre'] },
       ],
@@ -352,13 +436,27 @@ exports.historialSeguimiento = async (req, res) => {
 
   const eventos = [
     ...historial.map((h) => ({ tipo: 'HISTORIAL', fecha: h.created_at, detalle: h.detalle })),
-    ...contactos.map((c) => ({
-      tipo: 'CONTACTO_WHATSAPP',
-      fecha: c.created_at,
-      detalle: c.plantilla ? `Contacto — Plantilla "${c.plantilla.nombre}"` : 'Contacto — mensaje libre',
-      etiqueta: c.etiqueta?.nombre || null,
-      telefono: c.telefono,
-    })),
+    ...contactos.map((c) => {
+      let detalle;
+      if (c.fase) {
+        detalle = `WhatsApp abierto — ${c.fase.flujo?.nombre || 'Flujo'} · Fase ${c.fase.orden}: ${c.fase.nombre}`;
+      } else if (c.plantilla) {
+        detalle = `Contacto — Plantilla "${c.plantilla.nombre}"`;
+      } else {
+        detalle = 'Contacto — mensaje libre';
+      }
+      return {
+        tipo: 'CONTACTO_WHATSAPP',
+        fecha: c.created_at,
+        detalle,
+        // ABIERTO_EN_WHATSAPP: se abrio el deep link, no hay confirmacion de entrega.
+        estado: c.estado,
+        flujo: c.fase?.flujo?.nombre || null,
+        fase: c.fase ? { id: c.fase.id, nombre: c.fase.nombre, orden: c.fase.orden } : null,
+        etiqueta: c.etiqueta?.nombre || null,
+        telefono: c.telefono,
+      };
+    }),
     ...recordatorios.flatMap((r) => {
       const puntos = [{ tipo: 'SEGUIMIENTO_PROGRAMADO', fecha: r.created_at, detalle: `Seguimiento programado para ${new Date(r.ejecutar_en).toLocaleString('es-PY')}` }];
       if (r.estado === 'VENCIDO') puntos.push({ tipo: 'SEGUIMIENTO_VENCIDO', fecha: r.ejecutar_en, detalle: 'Seguimiento vencido, requiere atención' });

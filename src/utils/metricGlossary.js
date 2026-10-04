@@ -15,6 +15,7 @@ const METRIC_TERMS = Object.freeze({
   costosVariables: 'Costos Variables',
   flujoCajaNeto: 'Flujo de caja neto',
   cajaDisponible: 'Caja disponible',
+  valorStockActual: 'Valor estimado del stock actual',
 });
 
 module.exports = { METRIC_TERMS };

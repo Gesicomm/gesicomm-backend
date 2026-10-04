@@ -51,6 +51,8 @@ async function crear(req, res) {
       await ProductoService.recalcularStockPadre(producto.id, t);
     }
 
+    await ProductoService.sincronizarStockDeposito(producto.id, usuario_id, req.body.stock_depositos, t);
+
     if (relacionados.length > 0) {
       // Por simplicidad, se mantiene aquí, pero podría ir a un RelacionadosService
       const { ProductoRelacionado } = require('../models');
@@ -217,6 +219,13 @@ async function actualizar(req, res) {
     if (req.body.variantes !== undefined) {
       await ProductoVarianteService.sincronizar(req.params.id, inquilino_id, req.body.variantes, t, req.body.opciones);
       await ProductoService.recalcularStockPadre(req.params.id, t);
+    }
+
+    const tocaStockDeposito = req.body.stock_depositos !== undefined
+      || req.body.stock_deposito !== undefined
+      || req.body.variantes !== undefined;
+    if (tocaStockDeposito) {
+      await ProductoService.sincronizarStockDeposito(req.params.id, usuario_id, req.body.stock_depositos, t);
     }
 
     if (req.body.faq !== undefined) {

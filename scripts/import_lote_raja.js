@@ -43,6 +43,7 @@ async function run() {
         faq_titulo: item.faq_titulo,
         ficha_datos: item.ficha_datos,
         slug: slug,
+        creado_por: 1,
         // Algunos campos obligatorios o default:
         cantidad_disponible: 100, // asumiendo algun stock
         stock_salon: 100,

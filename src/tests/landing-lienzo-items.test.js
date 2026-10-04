@@ -43,6 +43,18 @@ beforeEach(() => {
 });
 
 describe('regla "todos" / "por categoría"', () => {
+  it('conserva ancla y etiquetas de cada producto sin excluir los nuevos de una regla', async () => {
+    mockProductoFindAll.mockResolvedValue([{ id: 1 }, { id: 2 }]);
+    mockComboFindAll.mockResolvedValue([{ id: 1 }]);
+    const items = await LandingService.itemsDelLienzo({ content: { venta: reglaTodos }, items: [
+      { tipo: 'producto', referencia_id: 1, precio_ancla: 1200000, etiqueta: 'Cocina, Oferta', mostrar_en_inicio: false, envio_incluido: true },
+    ] }, tienda);
+    expect(items).toHaveLength(3);
+    expect(items[0]).toMatchObject({ tipo: 'producto', referencia_id: 1, precio_ancla: 1200000, etiqueta: 'Cocina, Oferta', mostrar_en_inicio: false, envio_incluido: true });
+    expect(items[1]).toMatchObject({ referencia_id: 2, precio_ancla: null, mostrar_en_inicio: true });
+    expect(items[2]).toMatchObject({ tipo: 'combo', referencia_id: 1, precio_ancla: null, etiqueta: null });
+  });
+
   it('no tiene tope: sin límite la consulta no lleva limit', async () => {
     mockProductoFindAll.mockResolvedValue(Array.from({ length: 222 }, (_, i) => ({ id: i + 1 })));
     const items = await LandingService.itemsDelLienzo({ content: { venta: reglaTodos } }, tienda);

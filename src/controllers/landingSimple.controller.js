@@ -73,9 +73,12 @@ function textoError(valor, fallback) {
 function manejarError(res, err, defaultMsg) {
   const message = textoError(err?.message, defaultMsg);
   console.error('[landing-simple]', message);
+  const declaredStatus = Number(err?.status);
   const status = err.message === 'Landing no encontrada.' || err.message === 'Template no encontrado.'
     ? 404
-    : (err.errores ? 422 : 400);
+    : (Number.isInteger(declaredStatus) && declaredStatus >= 400 && declaredStatus <= 599
+      ? declaredStatus
+      : (err.errores ? 422 : 400));
   return res.status(status).json({ message, errores: err.errores });
 }
 
@@ -108,7 +111,7 @@ async function crear(req, res) {
     if (!req.body.template_id) {
       return res.status(400).json({ message: 'Se requiere el ID del template.' });
     }
-    const landing = await LandingSimpleService.crear(tienda.id, req.usuario.tenantId, req.body.template_id);
+    const landing = await LandingSimpleService.crear(tienda.id, req.usuario.tenantId, req.body.template_id, req.body.colores, req.body.items ?? []);
     return res.status(201).json(landing);
   } catch (err) {
     return manejarError(res, err, 'Error al crear la landing.');

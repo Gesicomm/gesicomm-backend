@@ -19,8 +19,16 @@ const ComboConfiguracionService = require('./comboConfiguracion.service');
 const ComboService = require('./combo.service');
 const comboPricing = require('../utils/comboPricing');
 const ImagenService = require('./imagen.service');
+const PricingService = require('./pricing.service');
 
 class PrecioUsuarioService {
+
+  static precioPublico(producto, precioUsuario) {
+    const descontado = PricingService.aplicarDescuentoFecha(Number(producto.precio_base), producto.descuento_porcentaje, producto.descuento_inicio, producto.descuento_fin);
+    const minimo = producto.precio_minimo == null ? null : Number(producto.precio_minimo);
+    const { base, efectivo } = PricingService.calcularPrecioBase(descontado, minimo, precioUsuario);
+    return { precio_publico: efectivo, precio_publico_base: base };
+  }
 
   // La tarjeta del armador debe ofrecer las mismas opciones que la pública.
   // Solo consultamos los IDs visibles, en dos consultas por catálogo.
@@ -134,7 +142,7 @@ class PrecioUsuarioService {
         where: { inquilino_id, activo: true, estado_venta: 'en_venta', ...visibilidadProducto },
         attributes: [
           'id', 'slug', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_minimo',
-          'precio_tachado', 'cantidad_disponible', 'destacado', 'created_at', 'creado_por',
+          'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'cantidad_disponible', 'destacado', 'created_at', 'creado_por',
         ],
         include: [
           { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -156,7 +164,7 @@ class PrecioUsuarioService {
             model: ProductoComboItem,
             as: 'items',
             attributes: ['id', 'cantidad', 'producto_incluido_id'],
-            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base', 'beneficios'] }],
+            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base', 'precio_minimo', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'beneficios'] }],
           },
           {
             model: ProductoComboImagen,
@@ -170,7 +178,7 @@ class PrecioUsuarioService {
           {
             model: Producto,
             as: 'producto_padre',
-            attributes: ['id', 'nombre', 'precio_base', 'beneficios', 'cantidad_disponible', 'creado_por'],
+            attributes: ['id', 'nombre', 'precio_base', 'precio_minimo', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'beneficios', 'cantidad_disponible', 'creado_por'],
             where: { activo: true, ...visibilidadProducto },
             required: true,
             include: [
@@ -188,9 +196,7 @@ class PrecioUsuarioService {
     const precioVentaProducto = (prod) => {
       if (!prod) return null;
       const precioUsuario = mapaPrecios.has(`producto:${prod.id}`) ? mapaPrecios.get(`producto:${prod.id}`) : null;
-      return precioUsuario !== null
-        ? precioUsuario
-        : (prod.precio_base != null ? parseFloat(prod.precio_base) : null);
+      return this.precioPublico(prod, precioUsuario).precio_publico;
     };
     const productosDelCombo = (combo) => {
       const vistos = new Set();
@@ -263,6 +269,7 @@ class PrecioUsuarioService {
         precio_minimo: p.precio_minimo !== null ? parseFloat(p.precio_minimo) : null,
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
+        ...this.precioPublico(p, precioUsuario),
         precio_tachado: p.precio_tachado ? parseFloat(p.precio_tachado) : null,
         imagen: imgMap.get(p.id) || null,
         imagenes: galeriaMap.get(p.id) || [],
@@ -331,15 +338,18 @@ class PrecioUsuarioService {
     const { sequelize, Categoria } = require('../models');
     const {
       page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', orden = 'nombre', tipo = 'todos',
-      solamenteMios = false, mios_solamente = false
+      solamenteMios = false, mios_solamente = false, origenCatalogo = null
     } = filtros;
     const offset = (page - 1) * limit;
 
     const replacements = { usuario_id, inquilino_id };
 
     const miosOnly = Boolean(solamenteMios || mios_solamente);
-    const creadorFilter = this.visibilidadCatalogoSql(esAdmin, miosOnly);
-    const administradoresIds = (!esAdmin && !miosOnly) ? await this.obtenerIdsAdministradores(inquilino_id) : [];
+    const gesicomOnly = origenCatalogo === 'GESICOMM' && !miosOnly;
+    const creadorFilter = this.visibilidadCatalogoSql(esAdmin, miosOnly)
+      + (gesicomOnly ? ' AND p.creado_por IS DISTINCT FROM :usuario_id' : '');
+    // Un combo propio puede tener como principal un producto del administrador.
+    const administradoresIds = !esAdmin ? await this.obtenerIdsAdministradores(inquilino_id) : [];
     
     // Filtro de categoría
     let catFilter = '';
@@ -384,13 +394,14 @@ class PrecioUsuarioService {
     `;
 
     const combosSql = `
-      SELECT c.id, 'combo' as tipo, c.nombre, c.descripcion, c.created_at, p.categoria_id, p.creado_por,
+      SELECT c.id, 'combo' as tipo, c.nombre, c.descripcion, c.created_at, p.categoria_id, c.creado_por,
         COALESCE(pu.precio, c.precio_total) as precio_efectivo
       FROM producto_combos c
       INNER JOIN productos p ON c.producto_id = p.id AND p.inquilino_id = :inquilino_id AND p.activo = true
       LEFT JOIN precios_usuario pu ON pu.tipo = 'combo' AND pu.referencia_id = c.id AND pu.usuario_id = :usuario_id
       WHERE c.inquilino_id = :inquilino_id AND c.estado = 'ACTIVO'
       ${this.visibilidadComboSql(esAdmin, miosOnly)}
+      ${gesicomOnly ? 'AND c.creado_por IS DISTINCT FROM :usuario_id' : ''}
       ${this.visibilidadCatalogoSql(esAdmin, false)}
       ${catFilter}
       ${provFilter}
@@ -433,7 +444,7 @@ class PrecioUsuarioService {
         },
         attributes: [
           'id', 'slug', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_costo', 'precio_minimo',
-          'precio_tachado', 'cantidad_disponible', 'destacado', 'created_at', 'categoria_id', 'creado_por'
+          'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'cantidad_disponible', 'destacado', 'created_at', 'categoria_id', 'creado_por'
         ],
         include: [
           { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -442,7 +453,11 @@ class PrecioUsuarioService {
         ]
       }) : [],
       idsCombos.length ? ProductoCombo.findAll({
-        where: { id: { [require('sequelize').Op.in]: idsCombos } },
+        where: {
+          id: { [Op.in]: idsCombos },
+          inquilino_id,
+          ...this.visibilidadComboWhere(usuario_id, esAdmin, miosOnly, administradoresIds),
+        },
         attributes: ['id', 'nombre', 'descripcion', 'precio_total', 'precio_minimo', 'producto_id', 'created_at', 'creado_por',
           'propuesta_valor', 'beneficios', 'confianza', 'preguntas_frecuentes', 'faq_titulo', 'ficha_rubro', 'ficha_datos',
         ],
@@ -451,7 +466,7 @@ class PrecioUsuarioService {
             model: ProductoComboItem,
             as: 'items',
             attributes: ['id', 'cantidad', 'producto_incluido_id'],
-            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base', 'beneficios'] }],
+            include: [{ model: Producto, as: 'producto_incluido', attributes: ['id', 'nombre', 'precio_base', 'precio_minimo', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'beneficios'] }],
           },
           {
             model: ProductoComboImagen,
@@ -461,11 +476,11 @@ class PrecioUsuarioService {
           {
             model: Producto,
             as: 'producto_padre',
-            attributes: ['id', 'nombre', 'precio_base', 'beneficios', 'cantidad_disponible', 'categoria_id', 'creado_por'],
+            attributes: ['id', 'nombre', 'precio_base', 'precio_minimo', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'beneficios', 'cantidad_disponible', 'categoria_id', 'creado_por'],
             where: {
               inquilino_id,
               activo: true,
-              ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly, administradoresIds),
+              ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
             },
             required: true,
             include: [
@@ -521,9 +536,7 @@ class PrecioUsuarioService {
     const precioVentaProducto = (prod) => {
       if (!prod) return null;
       const precioUsuario = mapaPrecios.has(`producto:${prod.id}`) ? mapaPrecios.get(`producto:${prod.id}`) : null;
-      return precioUsuario !== null
-        ? precioUsuario
-        : (prod.precio_base != null ? parseFloat(prod.precio_base) : null);
+      return this.precioPublico(prod, precioUsuario).precio_publico;
     };
     const productosDelCombo = (combo) => {
       const vistos = new Set();
@@ -599,6 +612,7 @@ class PrecioUsuarioService {
         precio_minimo: p.precio_minimo !== null ? parseFloat(p.precio_minimo) : null,
         precio_usuario: precioUsuario,
         precio_efectivo: precioUsuario !== null ? precioUsuario : precioBase,
+        ...this.precioPublico(p, precioUsuario),
         precio_tachado: p.precio_tachado ? parseFloat(p.precio_tachado) : null,
         imagen: imgMap.get(p.id) || null,
         imagenes: galeriaMap.get(p.id) || [],

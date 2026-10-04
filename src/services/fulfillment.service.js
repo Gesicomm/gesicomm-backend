@@ -15,8 +15,8 @@ function errorHttp(message, status = 400) {
 /**
  * Cómo entrega el comercio lo que vende.
  *
- *   PROPIA   → despacha desde un depósito suyo, con los couriers que habilitó
- *              en ese depósito (ver depositoCourier.service).
+ *   PROPIA   → despacha desde un depósito suyo. El courier se decide en el
+ *              pedido, igual que el flujo operativo de Pedidos → Delivery.
  *   GESICOMM → despacha Gesicomm con sus proveedores logísticos
  *              con sus proveedores logísticos, configurados por el admin.
  *
@@ -211,11 +211,7 @@ class FulfillmentService {
       this.proveedoresDeGesicomm(),
     ]);
 
-    const couriersPorDeposito = await DepositoCourierService.couriersHabilitadosPorDeposito(
-      depositos.map((d) => d.id),
-    );
     const totalDepositos = depositos.length;
-    const depositosConCouriers = depositos.map((d) => ({ couriers_habilitados: (couriersPorDeposito.get(d.id) || []).length }));
 
     const costosGesicomm = proveedoresGesicomm.map((p) => p.costo_desde).filter((n) => n !== null);
 
@@ -225,9 +221,7 @@ class FulfillmentService {
       propia: {
         depositos: [],
         total_depositos: totalDepositos,
-        // Sin depósito, o con un depósito sin couriers, la modalidad propia
-        // no puede cotizar nada: conviene decirlo antes de que la elija.
-        disponible: depositosConCouriers.some((d) => d.couriers_habilitados > 0),
+        disponible: totalDepositos > 0,
       },
       gesicomm: {
         // A propósito no se listan los proveedores: quién hace la última
@@ -260,12 +254,6 @@ class FulfillmentService {
         throw errorHttp('Elegí un depósito activo tuyo para despachar tus pedidos.');
       }
 
-      const couriers = await DepositoCourierService.couriersHabilitados(deposito.id);
-      if (couriers.length === 0) {
-        throw errorHttp(
-          `El depósito "${deposito.nombre}" no tiene couriers habilitados: no va a poder cotizar envíos. Habilitá al menos uno antes de usar logística propia.`,
-        );
-      }
       cambios.deposito_fulfillment_id = deposito.id;
     } else {
       const disponibles = await this.proveedoresDeGesicomm();

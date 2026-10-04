@@ -738,6 +738,24 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
     // Por paquete (oferta 'normal'): la etiqueta que muestra la ficha
     // ("Más elegido", "Mayor ahorro"…) y cuál se destaca (arranca elegido).
     paquetes: limpiarPaquetes(venta.paquetes),
+    ...(venta.presentacion_productos && typeof venta.presentacion_productos === 'object' ? {
+      presentacion_productos: Object.fromEntries(Object.entries(venta.presentacion_productos)
+        .filter(([key, value]) => /^(producto|combo):[1-9]\d*$/.test(key) && value && typeof value === 'object')
+        .slice(0, 500).map(([key, value]) => [key, {
+          titulo_comercial: textoCorto(value.titulo_comercial, 100),
+          mensaje_comercial: textoCorto(value.mensaje_comercial, 160),
+          insignia_principal: textoCorto(value.insignia_principal, 40),
+          insignia_secundaria: textoCorto(value.insignia_secundaria, 40),
+          ...(Array.isArray(value.imagenes_landing) ? { imagenes_landing: [...new Set(value.imagenes_landing
+            .filter(url => typeof url === 'string' && url.length <= 2048 && (/^https?:\/\/[^\s]+$/i.test(url) || /^\/(?!\/)[^\s]+$/.test(url)))
+            .slice(0, 10))] } : {}),
+        }])),
+    } : {}),
+    ...(venta.catalogo_filtros && typeof venta.catalogo_filtros === 'object' ? {
+      catalogo_filtros: Object.fromEntries(['buscador', 'categoria', 'marca', 'etiqueta', 'precio', 'disponibilidad', 'orden']
+        .filter(k => typeof venta.catalogo_filtros[k] === 'boolean')
+        .map(k => [k, venta.catalogo_filtros[k]])),
+    } : {}),
     cross_sell: {
       activo: cross.activo !== false,
       ofertas: listaDe(cross.ofertas, 200, enteroPositivo),

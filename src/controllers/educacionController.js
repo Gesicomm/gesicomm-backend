@@ -1,4 +1,12 @@
-const { ModuloEducacion, LeccionEducacion, Examen, PreguntaExamen, ProgresoUsuarioModulo, ProgresoUsuarioLeccion } = require('../models');
+const {
+  ModuloEducacion,
+  LeccionEducacion,
+  Examen,
+  PreguntaExamen,
+  ProgresoUsuarioModulo,
+  ProgresoUsuarioLeccion,
+  GsqlModulo,
+} = require('../models');
 
 /**
  * Obtener todos los módulos de educación disponibles para el usuario,
@@ -590,11 +598,48 @@ async function getProgresoSidebar(req, res) {
     });
 
     const desbloqueadosArr = Array.from(menusDesbloqueados);
+    const modulosSidebar = GsqlModulo?.findAll ? await GsqlModulo.findAll({
+      where: { visible: true },
+      order: [['contexto', 'ASC'], ['orden', 'ASC'], ['id', 'ASC']],
+      attributes: [
+        'id',
+        'modulo_key',
+        'contexto',
+        'seccion',
+        'etiqueta',
+        'path',
+        'prefix',
+        'icono',
+        'menu_key',
+        'roles_permitidos',
+        'requiere_plan',
+        'badge',
+        'danger_badge_key',
+        'orden',
+      ],
+    }) : [];
+
     return res.json({
       menus_desbloqueados: desbloqueadosArr,
       menusDesbloqueados: desbloqueadosArr,
       menus_bloqueados: menusBloqueados,
       menusBloqueados: menusBloqueados,
+      modulos: modulosSidebar.map((m) => ({
+        id: m.id,
+        moduloKey: m.modulo_key,
+        contexto: m.contexto,
+        seccion: m.seccion,
+        label: m.etiqueta,
+        path: m.path,
+        prefix: m.prefix,
+        icono: m.icono,
+        menuKey: m.menu_key,
+        rolesPermitidos: m.roles_permitidos || [],
+        requierePlan: m.requiere_plan,
+        badge: m.badge,
+        dangerBadgeKey: m.danger_badge_key,
+        orden: m.orden,
+      })),
     });
   } catch (error) {
     console.error('Error al obtener progreso para sidebar:', error);
