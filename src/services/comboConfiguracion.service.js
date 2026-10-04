@@ -20,6 +20,10 @@ const DEFAULTS = {
   costo_envio: 0,
   costo_confirmacion: 0,
   costo_empaque: 0,
+  raha_cpa_porcentaje: 20.00,
+  raha_costo_envio: 0,
+  raha_costo_confirmacion: 0,
+  raha_costo_empaque: 0,
   margenes_objetivo: [15, 30, 45],
   margen_minimo: 10.00,
   umbral_excelente: 50.00,
@@ -61,6 +65,10 @@ class ComboConfiguracionService {
       'costo_envio',
       'costo_confirmacion',
       'costo_empaque',
+      'raha_cpa_porcentaje',
+      'raha_costo_envio',
+      'raha_costo_confirmacion',
+      'raha_costo_empaque',
       'margenes_objetivo',
       'margen_minimo',
       'umbral_excelente',
@@ -95,6 +103,15 @@ class ComboConfiguracionService {
       shipping: parseFloat(config.costo_envio),
       confirmation: parseFloat(config.costo_confirmacion),
       packaging: parseFloat(config.costo_empaque),
+    };
+  }
+
+  static toRahaMotorCosts(config) {
+    return {
+      cpaPercentage: parseFloat(config.raha_cpa_porcentaje ?? config.cpa_porcentaje),
+      shipping: parseFloat(config.raha_costo_envio ?? config.costo_envio),
+      confirmation: parseFloat(config.raha_costo_confirmacion ?? config.costo_confirmacion),
+      packaging: parseFloat(config.raha_costo_empaque ?? config.costo_empaque),
     };
   }
 }

@@ -52,6 +52,30 @@ const ComboConfiguracion = sequelize.define('ComboConfiguracion', {
     defaultValue: 0,
     comment: 'Costo de empaque por combo.',
   },
+  raha_cpa_porcentaje: {
+    type: DataTypes.DECIMAL(5, 2),
+    allowNull: false,
+    defaultValue: 20.00,
+    comment: 'CPA proyectado para ventas operadas con Raha.',
+  },
+  raha_costo_envio: {
+    type: DataTypes.DECIMAL(12, 2),
+    allowNull: false,
+    defaultValue: 0,
+    comment: 'Costo promedio de envio por combo operado con Raha.',
+  },
+  raha_costo_confirmacion: {
+    type: DataTypes.DECIMAL(12, 2),
+    allowNull: false,
+    defaultValue: 0,
+    comment: 'Costo de confirmacion por combo operado con Raha.',
+  },
+  raha_costo_empaque: {
+    type: DataTypes.DECIMAL(12, 2),
+    allowNull: false,
+    defaultValue: 0,
+    comment: 'Costo de empaque por combo operado con Raha.',
+  },
   // ─── Parámetros de análisis ───────────────────────────────────────────────
   // Array JSON de porcentajes para calcular precios sugeridos.
   // Ej: [15, 30, 45] → el motor calcula precio sugerido para cada margen.
