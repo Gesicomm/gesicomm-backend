@@ -12,6 +12,7 @@ dist/
 *.log
 logs/
 reports/
+storage-private/
 
 # Sistema operativo
 .DS_Store

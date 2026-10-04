@@ -297,7 +297,7 @@ const Envio = sequelize.define('Envio', {
     comment: 'Snapshot: valor de venta de lo perdido − costo de envío, calculado al registrar la pérdida. Lo usa el motor de rendición.',
   },
   abastecimiento_estado: {
-    type: DataTypes.STRING(30),
+    type: DataTypes.STRING(60),
     allowNull: false,
     defaultValue: 'no_requiere',
     validate: { isIn: [[

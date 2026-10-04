@@ -42,9 +42,19 @@ const LiquidacionEnvio = require('./LiquidacionEnvio');
 const EnvioHistorial = require('./EnvioHistorial');
 const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
+const SpeedboxTienda = require('./SpeedboxTienda');
+const SpeedboxPedido = require('./SpeedboxPedido');
+const SpeedboxEvento = require('./SpeedboxEvento');
+const RahaSolicitud = require('./RahaSolicitud');
+const RahaDocumento = require('./RahaDocumento');
+RahaSolicitud.belongsTo(Tienda, { as: 'tienda', foreignKey: 'tienda_id', onDelete: 'RESTRICT' });
+RahaSolicitud.belongsTo(Usuario, { as: 'solicitante', foreignKey: 'usuario_id', onDelete: 'RESTRICT' });
+RahaSolicitud.hasMany(RahaDocumento, { as: 'documentos', foreignKey: 'solicitud_id', onDelete: 'CASCADE' });
+RahaDocumento.belongsTo(RahaSolicitud, { foreignKey: 'solicitud_id' });
 const Page = require('./Page');
 const PageVersion = require('./PageVersion');
 const AiGenerationLog = require('./AiGenerationLog');
+SpeedboxPedido.belongsTo(Envio, { as: 'envio', foreignKey: 'envio_id' });
 const ProveedorDns = require('./ProveedorDns');
 const LandingTemplate = require('./LandingTemplate');
 const Landing = require('./Landing');
@@ -820,6 +830,11 @@ module.exports = {
   EnvioHistorial,
   PrecioUsuario,
   Tienda,
+  SpeedboxTienda,
+  SpeedboxPedido,
+  SpeedboxEvento,
+  RahaSolicitud,
+  RahaDocumento,
   LandingTemplate,
   Landing,
   TiendaPagina,

@@ -1,0 +1,53 @@
+'use strict';
+const express = require('express');
+const multer = require('multer');
+const archiver = require('archiver');
+const PDFDocument = require('pdfkit');
+const { verificarToken } = require('../middleware/autenticacion');
+const service = require('../services/raha/service');
+const router = express.Router();
+router.use(verificarToken);
+router.use((req, res, next) => { res.set('Cache-Control', 'private, no-store'); next(); });
+router.use(require('express-rate-limit')({ windowMs: 15 * 60 * 1000, max: 120, message: { message: 'Demasiadas operaciones. Intenta mas tarde.' } }));
+router.param('id', (req, res, next) => {
+  if (!Number.isSafeInteger(Number(req.params.id)) || Number(req.params.id) <= 0) return res.status(400).json({ message: 'ID invalido.' });
+  next();
+});
+const handle = fn => async (req, res, next) => { try { await fn(req, res); } catch (error) { next(error); } };
+const json = fn => handle(async (req, res) => res.json(await fn(req)));
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: require('../services/raha/storage').MAX_SIZE, files: 1, fields: 2, fieldSize: 100 } }).single('archivo');
+router.get('/', json(req => service.status(req.usuario)));
+router.put('/', json(req => service.save(req.usuario, req.body)));
+router.post('/enviar', json(req => service.submit(req.usuario, req.body)));
+router.post('/documentos', (req, res, next) => upload(req, res, error => error ? res.status(400).json({ message: 'Archivo invalido. Maximo 8 MB, un archivo por envio.' }) : next()),
+  json(req => service.upload(req.usuario, req.body.tipo, req.body.version, req.file)));
+router.delete('/documentos/:id', json(req => service.remove(req.usuario, Number(req.params.id), req.body.version)));
+router.get('/documentos/:id', handle(async (req, res) => {
+  const { doc, buffer } = await service.document(req.usuario, Number(req.params.id));
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.attachment(doc.nombre).type(doc.mime).send(buffer);
+}));
+router.get('/admin', json(req => service.list(req.usuario, req.query)));
+router.get('/admin/:id', json(req => service.detail(req.usuario, Number(req.params.id))));
+router.post('/admin/:id/revisar', json(req => service.review(req.usuario, Number(req.params.id), req.body)));
+router.get('/admin/:id/expediente', handle(async (req, res) => {
+  const { snapshot, archivos } = await service.dossier(req.usuario, Number(req.params.id));
+  const pdf = new PDFDocument({ margin: 45, size: 'A4' });
+  const parts = [];
+  const completed = new Promise((resolve, reject) => { pdf.on('data', chunk => parts.push(chunk)); pdf.on('end', () => resolve(Buffer.concat(parts))); pdf.on('error', reject); });
+  pdf.fontSize(18).text(`Solicitud Raha #${snapshot.id}`).moveDown();
+  pdf.fontSize(11).text(`Estado: ${snapshot.estado}`).text(`Presentada: ${snapshot.enviado_at}`).moveDown();
+  for (const [key, value] of Object.entries(snapshot.datos)) pdf.text(`${key.replace(/_/g, ' ')}: ${value}`).moveDown(0.4);
+  pdf.moveDown().text('Autorizacion de revision y envio manual registrada por el solicitante.');
+  pdf.end();
+  const resumen = await completed;
+  const zip = archiver('zip', { zlib: { level: 6 } });
+  zip.on('error', error => res.destroy(error));
+  res.attachment(`raha-solicitud-${snapshot.id}.zip`).type('application/zip');
+  zip.pipe(res);
+  zip.append(resumen, { name: 'resumen.pdf' });
+  zip.append(JSON.stringify(snapshot, null, 2), { name: 'solicitud.json' });
+  for (const archivo of archivos) zip.append(archivo.buffer, { name: archivo.nombre });
+  await zip.finalize();
+}));
+module.exports = router;

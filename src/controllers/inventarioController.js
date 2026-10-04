@@ -227,7 +227,7 @@ exports.marcarEnTransito = async (req, res) => {
   try {
     const { id } = req.params;
     const { transportista, numero_seguimiento, observacion } = req.body;
-    const ingreso = await IngresoInventarioService.marcarEnTransito(id, req.usuario.id, { transportista, numero_seguimiento, observacion });
+    const ingreso = await IngresoInventarioService.marcarEnTransito(id, req.usuario.id, { transportista, numero_seguimiento, observacion }, esAdmin(req));
     return res.json(ingreso);
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message });

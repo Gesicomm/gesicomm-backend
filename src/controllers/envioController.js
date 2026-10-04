@@ -52,7 +52,8 @@ function subirComprobanteAbastecimientoMulter(req, res, next) {
  * no, es el caso simple de siempre (1 producto × cantidad).
  */
 async function resolverReceta(item, t) {
-  const cantidadItem = parseInt(item.cantidad) || 1;
+  const cantidadItem = Number(item.cantidad ?? 1);
+  if (!Number.isSafeInteger(cantidadItem) || cantidadItem <= 0) throw Object.assign(new Error('La cantidad debe ser un entero positivo.'), { status: 400 });
   if (item.oferta_id) {
     const oferta = await Oferta.findByPk(item.oferta_id, {
       include: [{ model: OfertaComponente, as: 'componentes' }],
@@ -81,15 +82,17 @@ async function resolverReceta(item, t) {
 }
 
 /**
- * Reparto salón-primero: se vende del mostrador antes que del depósito, pero
+ * Se respeta primero el deposito trackeado; el resto usa salon-primero.
+ * Se vende del mostrador antes que del deposito generico, pero
  * el total vendible siempre es la suma de ambos. Misma regla para
  * Producto.stock_salon/stock_deposito y ProductoVariante.stock_salon/
  * stock_deposito — factorizada acá para no reescribirla en las dos ramas de
  * descontarStockYSnapshot.
  */
-function repartoSalonDeposito(salonActual, depositoActual, cantidadTotal) {
-  const desdeSalon = Math.min(salonActual, cantidadTotal);
-  const desdeDeposito = Math.min(depositoActual, cantidadTotal - desdeSalon);
+function repartoSalonDeposito(salonActual, depositoActual, cantidadTotal, cantidadTrackeada = 0) {
+  const trackeada = Math.min(depositoActual, cantidadTrackeada, cantidadTotal);
+  const desdeSalon = Math.min(salonActual, cantidadTotal - trackeada);
+  const desdeDeposito = trackeada + Math.min(depositoActual - trackeada, cantidadTotal - trackeada - desdeSalon);
   return { desdeSalon, desdeDeposito };
 }
 
@@ -169,7 +172,7 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
     include: [{ model: Deposito, as: 'Deposito', where: { ...depositoWhere, activo: true }, attributes: ['alcance', 'tipo_ubicacion'] }],
     order: [['cantidad_disponible', 'DESC']],
     transaction: t,
-    lock: Transaction.LOCK.UPDATE,
+    lock: { level: Transaction.LOCK.UPDATE, of: InventarioUbicacion },
   });
   if (!ubicacion) {
     const ubicacionesTrackeadas = await InventarioUbicacion.findAll({
@@ -221,8 +224,8 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
  * los depositos propios del comercio esta.
  *
  * Si dos lineas resuelven a ubicaciones especificas DISTINTAS, el pedido no
- * se puede despachar en un solo paquete: se rechaza con 409
- * PEDIDO_REQUIERE_SPLIT antes de tocar stock.
+ * se puede despachar en un solo paquete: se rechaza con 409 antes de tocar
+ * stock.
  */
 async function resolverPlanFulfillment(items, t, usuario_id) {
   const totalPorClave = new Map();
@@ -238,7 +241,7 @@ async function resolverPlanFulfillment(items, t, usuario_id) {
 
   let hayGenerico = false;
   const especificos = new Map(); // deposito_id -> alcance
-  for (const { producto_id, variante_id } of totalPorClave.values()) {
+  for (const { producto_id, variante_id, cantidad } of totalPorClave.values()) {
     const ubicacion = await InventarioUbicacion.findOne({
       where: {
         usuario_id,
@@ -246,7 +249,7 @@ async function resolverPlanFulfillment(items, t, usuario_id) {
         variante_id: variante_id || null,
         cantidad_disponible: { [Op.gt]: 0 },
       },
-      include: [{ model: Deposito, as: 'Deposito', attributes: ['alcance'] }],
+      include: [{ model: Deposito, as: 'Deposito', where: { activo: true }, attributes: ['alcance'] }],
       order: [['cantidad_disponible', 'DESC']],
       transaction: t,
     });
@@ -262,17 +265,16 @@ async function resolverPlanFulfillment(items, t, usuario_id) {
   const requiereSplit = distintos > 1 || (distintos === 1 && incluyeGesicomm && hayGenerico);
 
   if (requiereSplit) {
-    const err = new Error('Este pedido mezcla productos que están en depósitos distintos: hay que separarlo en dos envíos.');
+    const err = new Error('Hay stock suficiente, pero está distribuido entre varias ubicaciones.');
     err.status = 409;
-    err.code = 'PEDIDO_REQUIERE_SPLIT';
+    err.code = 'STOCK_DISTRIBUIDO_ENTRE_UBICACIONES';
+    err.requiresSplit = true;
     throw err;
   }
 }
 
 async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
   const origenPreferidoId = opciones.origenPreferidoId ? Number(opciones.origenPreferidoId) : null;
-  await resolverPlanFulfillment(items, t, usuario_id);
-
   // Si la tienda eligio despachar con logistica PROPIA, no tiene sentido
   // reservar de un Centro Gesicomm aunque tenga stock ahi: sus couriers
   // salen de SU deposito, no tienen forma de retirar del centro de
@@ -302,15 +304,32 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
   const productosConDescuentoDeVariante = new Set();
   const origenUbicacionPorClave = new Map();
 
+  // Receipts and sales lock products before variants/locations, in the same order.
+  for (const id of [...new Set([...totalPorClave.values()].map(c => c.producto_id))].sort((a, b) => a - b)) {
+    const prod = await Producto.findByPk(id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    if (!prod) throw Object.assign(new Error(`Producto #${id} no encontrado.`), { status: 404 });
+    productosPorId.set(id, prod);
+  }
+  await resolverPlanFulfillment(items, t, usuario_id);
+
   for (const { producto_id, variante_id, cantidad: cantidadTotal } of totalPorClave.values()) {
     const clave = `${producto_id}:${variante_id || ''}`;
+<<<<<<< HEAD
+=======
+    const origenGesicomm = await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id);
+    if (origenGesicomm) origenGesicommPorClave.set(clave, origenGesicomm);
+>>>>>>> codex/speedbox-integration
 
     if (variante_id) {
       const variante = await ProductoVariante.findByPk(variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
-      if (!variante) continue;
+      if (!variante || variante.producto_id !== producto_id || !variante.activo) {
+        throw Object.assign(new Error('La variante no pertenece al producto o esta inactiva.'), { status: 400 });
+      }
+      if (variante.stock < cantidadTotal) throw Object.assign(new Error('Stock insuficiente para la variante.'), { status: 400 });
 
       const salonActual = parseInt(variante.stock_salon) || 0;
       const depositoActual = parseInt(variante.stock_deposito) || 0;
+<<<<<<< HEAD
       const origenUbicacion = origenPreferidoId
         ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId)
         : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id);
@@ -327,6 +346,9 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
         throw err;
       }
       if (origenUbicacion) origenUbicacionPorClave.set(clave, origenUbicacion);
+=======
+      const { desdeSalon, desdeDeposito } = repartoSalonDeposito(salonActual, depositoActual, cantidadTotal, origenGesicomm?.cantidad || 0);
+>>>>>>> codex/speedbox-integration
       const nuevoSalon = salonActual - desdeSalon;
       const nuevoDeposito = depositoActual - desdeDeposito;
       await variante.update({
@@ -337,7 +359,7 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
 
       // La reserva sigue viviendo a nivel Producto (no existe ese campo en
       // ProductoVariante) — se acumula igual que el camino sin variante.
-      const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+      const prod = productosPorId.get(producto_id);
       if (prod) {
         productosPorId.set(producto_id, prod);
         await prod.update({
@@ -348,7 +370,7 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
       continue;
     }
 
-    const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+    const prod = productosPorId.get(producto_id);
     if (!prod) {
       const err = new Error(`Producto #${producto_id} no encontrado.`);
       err.status = 404;
@@ -372,6 +394,7 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
     // para decidir cuándo reponer.
     const salonActual = parseInt(prod.stock_salon) || 0;
     const depositoActual = parseInt(prod.stock_deposito) || 0;
+<<<<<<< HEAD
     const origenUbicacion = origenPreferidoId
       ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId)
       : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id);
@@ -388,6 +411,9 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
       throw err;
     }
     if (origenUbicacion) origenUbicacionPorClave.set(clave, origenUbicacion);
+=======
+    const { desdeSalon, desdeDeposito } = repartoSalonDeposito(salonActual, depositoActual, cantidadTotal, origenGesicomm?.cantidad || 0);
+>>>>>>> codex/speedbox-integration
 
     const actualizacion = {
       cantidad_disponible: nuevoStock,
@@ -463,20 +489,23 @@ async function bucketLegacyPorOrigen(componente, t) {
  * involucrado en el pedido (según la receta ya snapshotteada). Idempotente
  * vía envio.stock_despachado (chequeado por el caller antes de invocar).
  */
-async function moverAReservadoATransito(items, t) {
+async function moverAReservadoATransito(items, t, usuario_id) {
   const componentes = await obtenerComponentesDeItems(items, t);
   const totalPorProducto = new Map();
   for (const c of componentes) {
     totalPorProducto.set(c.producto_id, (totalPorProducto.get(c.producto_id) || 0) + c.cantidad);
   }
 
-  // Lo reservado en un Centro Gesicomm ya salio fisicamente de su deposito
-  // al llegar a este punto (Gesicomm lo preparo y lo despacho): se libera
-  // la reserva sin volver a cantidad_disponible, porque ya no esta ahi.
+  for (const id of [...totalPorProducto.keys()].sort((a, b) => a - b)) {
+    await Producto.findByPk(id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+  }
+
+  // Lo reservado en una ubicacion fisica ya salio de ahi al despacharse:
+  // se libera la reserva sin volver a cantidad_disponible.
   for (const c of componentes) {
     if (!c.origen_centro_id || !c.cantidad_desde_centro) continue;
     const ubicacion = await InventarioUbicacion.findOne({
-      where: { producto_id: c.producto_id, variante_id: c.variante_id || null, deposito_id: c.origen_centro_id },
+      where: { usuario_id, producto_id: c.producto_id, variante_id: c.variante_id || null, deposito_id: c.origen_centro_id },
       transaction: t,
       lock: Transaction.LOCK.UPDATE,
     });
@@ -518,7 +547,7 @@ async function consumirTransito(envio, items, t) {
   for (const c of componentes) {
     totalPorProducto.set(c.producto_id, (totalPorProducto.get(c.producto_id) || 0) + c.cantidad);
   }
-  for (const [producto_id, cantidad] of totalPorProducto) {
+  for (const [producto_id, cantidad] of [...totalPorProducto].sort(([a], [b]) => a - b)) {
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (!prod) continue;
     const transito = Math.max(0, (parseInt(prod.cantidad_transito) || 0) - cantidad);
@@ -535,19 +564,32 @@ async function consumirTransito(envio, items, t) {
 async function liberarStock(envio, items, t) {
   const componentes = await obtenerComponentesDeItems(items, t);
   const totalPorProducto = new Map();
+  const depositoPorProducto = new Map();
+  const variantesRestauradas = new Set();
+  for (const id of [...new Set(componentes.map(c => c.producto_id))].sort((a, b) => a - b)) {
+    await Producto.findByPk(id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+  }
   for (const c of componentes) {
     totalPorProducto.set(c.producto_id, (totalPorProducto.get(c.producto_id) || 0) + c.cantidad);
+    const desdeDeposito = !envio.stock_despachado && c.origen_centro_id ? (c.cantidad_desde_centro || 0) : 0;
+    depositoPorProducto.set(c.producto_id, (depositoPorProducto.get(c.producto_id) || 0) + desdeDeposito);
+    if (c.variante_id) {
+      const variante = await ProductoVariante.findByPk(c.variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+      if (!variante) throw new Error('No se puede restaurar una variante inexistente.');
+      await variante.update({ stock_salon: variante.stock_salon + c.cantidad - desdeDeposito,
+        stock_deposito: variante.stock_deposito + desdeDeposito, stock: variante.stock + c.cantidad }, { transaction: t });
+      variantesRestauradas.add(c.producto_id);
+    }
   }
 
-  // Espejo de reservarDesdeUbicacionTracked: solo se devuelve si el pedido nunca se
-  // despacho. Si ya se despacho, moverAReservadoATransito ya libero esa
-  // reserva (la mercaderia ya habia salido del centro Gesicomm), asi que
-  // sumarla de nuevo la duplicaria.
+  // Espejo de reservarDesdeUbicacionTracked: solo se devuelve si el pedido
+  // nunca se despacho. Si ya se despacho, moverAReservadoATransito ya libero
+  // esa reserva porque la mercaderia ya salio de la ubicacion fisica.
   if (!envio.stock_despachado) {
     for (const c of componentes) {
       if (!c.origen_centro_id || !c.cantidad_desde_centro) continue;
       const ubicacion = await InventarioUbicacion.findOne({
-        where: { producto_id: c.producto_id, variante_id: c.variante_id || null, deposito_id: c.origen_centro_id },
+        where: { usuario_id: envio.usuario_id, producto_id: c.producto_id, variante_id: c.variante_id || null, deposito_id: c.origen_centro_id },
         transaction: t,
         lock: Transaction.LOCK.UPDATE,
       });
@@ -564,6 +606,7 @@ async function liberarStock(envio, items, t) {
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (!prod) continue;
     const origenActual = Math.max(0, (parseInt(prod[campoOrigen]) || 0) - cantidad);
+<<<<<<< HEAD
     await prod.update({ [campoOrigen]: origenActual }, { transaction: t });
   }
 
@@ -602,8 +645,24 @@ async function liberarStock(envio, items, t) {
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (prod && total > 0 && prod.estado_venta === 'fuera_de_stock') {
       await prod.update({ estado_venta: 'en_venta' }, { transaction: t });
+=======
+    const disponible = (parseInt(prod.cantidad_disponible) || 0) + cantidad;
+    // Vuelve al SALÓN: la mercadería que se recupera de un pedido cancelado
+    // regresa al mostrador, no al depósito. Es también lo prudente para el
+    // aviso de reposición — deja el salón surtido en vez de pedir reponer
+    // algo que ya está a mano.
+    const actualizacion = {
+      cantidad_disponible: disponible,
+      [campoOrigen]: origenActual,
+      stock_salon: (parseInt(prod.stock_salon) || 0) + cantidad - (depositoPorProducto.get(producto_id) || 0),
+      stock_deposito: (parseInt(prod.stock_deposito) || 0) + (depositoPorProducto.get(producto_id) || 0),
+    };
+    if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') {
+      actualizacion.estado_venta = 'en_venta';
+>>>>>>> codex/speedbox-integration
     }
   }
+  for (const producto_id of variantesRestauradas) await ProductoService.recalcularStockPadre(producto_id, t);
 }
 
 /**
@@ -616,9 +675,13 @@ async function liberarStock(envio, items, t) {
  * llamadas con la misma cantidad total nunca superan `cantidad`.
  */
 async function registrarDevolucionComponentes(envio, itemsPayload, t) {
+  const snapshots = await obtenerComponentesDeItems(await EnvioItem.findAll({ where: { envio_id: envio.id }, transaction: t }), t);
+  for (const id of [...new Set(snapshots.map(c => c.producto_id))].sort((a, b) => a - b)) {
+    await Producto.findByPk(id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+  }
   for (const { envio_item_componente_id, cantidad, condicion } of itemsPayload) {
-    const cant = parseInt(cantidad) || 0;
-    if (cant <= 0) throw new Error('La cantidad a devolver debe ser mayor a 0');
+    const cant = Number(cantidad);
+    if (!Number.isSafeInteger(cant) || cant <= 0) throw new Error('La cantidad a devolver debe ser un entero positivo');
     if (!['vendible', 'dañado'].includes(condicion)) {
       throw new Error('Condición inválida: debe ser "vendible" o "dañado"');
     }
@@ -635,16 +698,14 @@ async function registrarDevolucionComponentes(envio, itemsPayload, t) {
       throw new Error(`Cantidad a devolver (${cant}) supera la cantidad disponible (${disponibleParaDevolver}) del componente ${envio_item_componente_id}`);
     }
 
-    // Que parte de ESTA devolucion corresponde a stock que salio de un
-    // Centro Gesicomm: mismo criterio "Gesicomm primero" que uso la venta
-    // al reservar (reservarDesdeUbicacionTracked), aplicado ahora en sentido
-    // inverso sobre lo que ya se gestiono de este componente. Sin esto,
-    // InventarioUbicacion nunca recuperaba una devolucion vendible — el
-    // stock quedaba contado como reservado/afuera para siempre.
+    // Que parte de ESTA devolucion corresponde a stock que salio de una
+    // ubicacion trackeada: mismo criterio de reserva, aplicado ahora en
+    // sentido inverso sobre lo que ya se gestiono de este componente.
+    // Sin esto, InventarioUbicacion nunca recuperaba una devolucion vendible.
     const origenTotal = componente.origen_centro_id ? (componente.cantidad_desde_centro || 0) : 0;
-    const yaConsumidoDeGesicomm = Math.min(yaGestionado, origenTotal);
-    const restanteDeGesicomm = origenTotal - yaConsumidoDeGesicomm;
-    const cantDesdeGesicomm = Math.min(restanteDeGesicomm, cant);
+    const yaConsumidoDeUbicacion = Math.min(yaGestionado, origenTotal);
+    const restanteDeUbicacion = origenTotal - yaConsumidoDeUbicacion;
+    const cantDesdeUbicacion = Math.min(restanteDeUbicacion, cant);
 
     const prod = await Producto.findByPk(componente.producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (prod) {
@@ -669,22 +730,38 @@ async function registrarDevolucionComponentes(envio, itemsPayload, t) {
         }
       } else if (prod) {
         const disponible = (parseInt(prod.cantidad_disponible) || 0) + cant;
+<<<<<<< HEAD
         const actualizacion = {
           cantidad_disponible: disponible,
           [bucket]: (parseInt(prod[bucket], 10) || 0) + cant,
         };
+=======
+        actualizacion.cantidad_disponible = disponible;
+        // Una devolución en buen estado vuelve al mostrador (mismo criterio
+        // que liberarStock). La dañada no suma a ningún lado: no es vendible.
+        actualizacion.stock_salon = (parseInt(prod.stock_salon) || 0) + cant - cantDesdeGesicomm;
+        actualizacion.stock_deposito = (parseInt(prod.stock_deposito) || 0) + cantDesdeGesicomm;
+>>>>>>> codex/speedbox-integration
         if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') actualizacion.estado_venta = 'en_venta';
         await prod.update(actualizacion, { transaction: t });
       }
     }
 
+    if (condicion === 'vendible' && componente.variante_id) {
+      const variante = await ProductoVariante.findByPk(componente.variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+      if (!variante) throw new Error('No se puede recibir una variante inexistente.');
+      await variante.update({ stock_salon: variante.stock_salon + cant - cantDesdeGesicomm,
+        stock_deposito: variante.stock_deposito + cantDesdeGesicomm, stock: variante.stock + cant }, { transaction: t });
+      await ProductoService.recalcularStockPadre(componente.producto_id, t);
+    }
+
     // Espejo en InventarioUbicacion: si esta devolucion (o parte de ella)
-    // salio originalmente de un centro Gesicomm y vuelve vendible, esas
-    // unidades quedan otra vez disponibles ahi — nunca en "reservada", que
-    // ya se libero al despachar (moverAReservadoATransito).
-    if (condicion === 'vendible' && cantDesdeGesicomm > 0) {
+    // salio originalmente de una ubicacion trackeada y vuelve vendible,
+    // esas unidades quedan otra vez disponibles ahi.
+    if (condicion === 'vendible' && cantDesdeUbicacion > 0) {
       const ubicacion = await InventarioUbicacion.findOne({
         where: {
+          usuario_id: envio.usuario_id,
           producto_id: componente.producto_id,
           variante_id: componente.variante_id || null,
           deposito_id: componente.origen_centro_id,
@@ -694,7 +771,7 @@ async function registrarDevolucionComponentes(envio, itemsPayload, t) {
       });
       if (ubicacion) {
         await ubicacion.update({
-          cantidad_disponible: ubicacion.cantidad_disponible + cantDesdeGesicomm,
+          cantidad_disponible: ubicacion.cantidad_disponible + cantDesdeUbicacion,
         }, { transaction: t });
       }
     }
@@ -968,33 +1045,35 @@ function esProductoCargadoPorAdmin(prod) {
 async function calcularAbastecimientoDesdeItems(items, usuario_id, t) {
   let costo = 0;
   let requiere = false;
-
+  const totals = new Map();
   for (const item of items || []) {
     const receta = await resolverReceta(item, t);
-    for (const { producto_id, variante_id, cantidad } of receta) {
-      const prod = await Producto.findByPk(producto_id, {
-        transaction: t,
-        include: [{ model: Usuario, as: 'Creador', include: [Rol] }],
-      });
-      if (!esProductoCargadoPorAdmin(prod)) continue;
-
-      // Si ya hay stock de este producto acreditado en InventarioUbicacion
-      // (llegó por un Ingreso propio o una SolicitudAbastecimiento ya
-      // pagada, en cualquier centro Gesicomm o depósito propio), esa
-      // porción no genera una obligación NUEVA de abastecimiento — ya se
-      // pagó cuando se trajo. Solo lo que excede ese disponible es nuevo.
-      const disponibleAcreditado = (await InventarioUbicacion.sum('cantidad_disponible', {
-        where: { producto_id, variante_id: variante_id || null },
-        transaction: t,
-      })) || 0;
-      const cantidadNueva = Math.max(0, (Number(cantidad) || 0) - disponibleAcreditado);
-      if (cantidadNueva <= 0) continue;
-
-      requiere = true;
-      costo += costoParaComerciante(prod, usuario_id) * cantidadNueva;
+    for (const componente of receta) {
+      const key = `${componente.producto_id}:${componente.variante_id || 0}`;
+      const actual = totals.get(key) || { ...componente, cantidad: 0 };
+      actual.cantidad += componente.cantidad;
+      totals.set(key, actual);
     }
   }
-
+  for (const id of [...new Set([...totals.values()].map(c => c.producto_id))].sort((a, b) => a - b)) {
+    await Producto.findByPk(id, { transaction: t, lock: Transaction.LOCK.UPDATE });
+  }
+  for (const { producto_id, variante_id, cantidad } of totals.values()) {
+    const prod = await Producto.findByPk(producto_id, {
+      transaction: t,
+      include: [{ model: Usuario, as: 'Creador', include: [Rol] }],
+    });
+    if (!esProductoCargadoPorAdmin(prod)) continue;
+    // Stock received and owned by this merchant does not incur a second purchase.
+    const disponibleAcreditado = (await InventarioUbicacion.sum('cantidad_disponible', {
+      where: { usuario_id, producto_id, variante_id: variante_id || null },
+      transaction: t,
+    })) || 0;
+    const cantidadNueva = Math.max(0, (Number(cantidad) || 0) - disponibleAcreditado);
+    if (cantidadNueva <= 0) continue;
+    requiere = true;
+    costo += costoParaComerciante(prod, usuario_id) * cantidadNueva;
+  }
   return {
     requiere,
     costo: Math.max(0, Math.round(costo)),
@@ -1556,6 +1635,16 @@ exports.createEnvio = async (req, res) => {
 
     const numeroPedido = await PedidoNumeracion.reservarNumeroPedido(usuario_id, t);
 
+    for (const item of items || []) {
+      if (!Number.isSafeInteger(Number(item.cantidad ?? 1)) || Number(item.cantidad ?? 1) <= 0) {
+        throw Object.assign(new Error('La cantidad debe ser un entero positivo.'), { status: 400 });
+      }
+    }
+    const sinVariante = [...new Set((items || []).filter(item => item.producto_id && !item.variante_id && !item.oferta_id).map(item => item.producto_id))];
+    if (sinVariante.length && await ProductoVariante.count({ where: { producto_id: { [Op.in]: sinVariante }, activo: true }, transaction: t })) {
+      throw Object.assign(new Error('Selecciona la variante del producto.'), { status: 400 });
+    }
+
     const nuevoEnvio = await Envio.create(
       {
         usuario_id,
@@ -1610,8 +1699,13 @@ exports.createEnvio = async (req, res) => {
           const oferta = item.oferta_id ? ofertasPorId.get(Number(item.oferta_id)) : null;
           return {
             producto_id: item.producto_id || null,
+<<<<<<< HEAD
             variante_id: item.variante_id || null,
             componente_variante_id: item.componente_variante_id || null,
+=======
+            variante_id: item.variante_id ? Number(item.variante_id) : null,
+            componente_variante_id: item.componente_variante_id ? Number(item.componente_variante_id) : null,
+>>>>>>> codex/speedbox-integration
             oferta_id: oferta ? oferta.id : null,
             oferta_codigo: oferta ? oferta.codigo : null,
             oferta_nombre: oferta ? oferta.nombre : null,
@@ -1633,6 +1727,7 @@ exports.createEnvio = async (req, res) => {
       const abastecimiento = await aplicarAbastecimientoCalculado(nuevoEnvio, nuevoEnvio.items || [], usuario_id, t);
       await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id, { origenPreferidoId: origen_preferido_id });
       await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
+      await require('../services/speedbox/service').queueConfirmedOrder(nuevoEnvio, t);
       await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
       if (abastecimiento.requiere) {
         await registrarHistorial(
@@ -1743,6 +1838,8 @@ exports.updateEstado = async (req, res) => {
       await t.rollback();
       return res.status(404).json({ error: 'Envío no encontrado' });
     }
+
+    await require('../services/speedbox/service').assertCanChange(bloqueo, { estado, courier_id }, t);
 
     const envio = await Envio.findOne({
       where: filtro,
@@ -1890,7 +1987,7 @@ exports.updateEstado = async (req, res) => {
         updateData.stock_descontado = true;
       }
       if (estado === 'Despachado' && !envio.stock_despachado) {
-        await moverAReservadoATransito(envio.items || [], t);
+        await moverAReservadoATransito(envio.items || [], t, envio.usuario_id);
         updateData.stock_despachado = true;
       }
       if (estado === 'Entregado') {
@@ -2009,6 +2106,9 @@ exports.updateEstado = async (req, res) => {
     }
 
     await envio.update(updateData, { transaction: t });
+    if (updateData.estado === 'Confirmado' || (courier_id !== undefined && envio.estado === 'Confirmado')) {
+      await require('../services/speedbox/service').queueConfirmedOrder(envio, t);
+    }
     await t.commit();
 
     if (updateData.estado) {
@@ -2425,9 +2525,19 @@ exports.registrarDevolucion = async (req, res) => {
       }
     }
     if (marcar_estado) {
+      const componentes = await obtenerComponentesDeItems(await EnvioItem.findAll({ where: { envio_id: envio.id }, transaction: t }), t);
+      if (componentes.some(c => c.cantidad_devuelta_vendible + c.cantidad_devuelta_danada + c.cantidad_perdida < c.cantidad)) {
+        throw new Error('Inspecciona todos los componentes antes de cerrar la devolucion.');
+      }
       updateData.estado = 'Devuelto';
       updateData.estado_logistico = 'Devuelto';
       await registrarHistorial(envio.id, usuario_id, `${envio.estado} → Devuelto`, t);
+      const { SpeedboxPedido, SpeedboxEvento } = require('../models');
+      const mapping = await SpeedboxPedido.findOne({ where: { envio_id: envio.id, usuario_id }, transaction: t });
+      if (mapping?.status === 'devuelto') await SpeedboxEvento.update({ estado: 'procesado',
+        detalle: 'Devolucion inspeccionada y cerrada en Gesicomm.' }, { where: { usuario_id, environment: mapping.environment,
+        order_id: mapping.order_id, tipo: 'shipment.status_changed', estado: 'revision',
+        [Op.or]: [{ 'payload.data.status': 'devuelto' }, { 'payload.payload.status': 'devuelto' }] }, transaction: t });
     }
     await envio.update(updateData, { transaction: t });
     await t.commit();
@@ -3075,6 +3185,8 @@ exports.deleteEnvio = async (req, res) => {
       return res.status(404).json({ error: 'Pedido no encontrado' });
     }
 
+    await require('../services/speedbox/service').assertCanChange(bloqueoBorrado, { delete: true }, t);
+
     const envio = await Envio.findOne({
       where: { id, usuario_id: req.usuario.tenantId },
       include: [{ model: EnvioItem, as: 'items' }],
@@ -3112,7 +3224,7 @@ exports.deleteEnvio = async (req, res) => {
   } catch (error) {
     if (!t.finished) await t.rollback();
     console.error('Error al eliminar pedido:', error);
-    res.status(500).json({ error: 'Error interno al eliminar el pedido' });
+    res.status(error.status || 500).json({ error: error.status ? error.message : 'Error interno al eliminar el pedido' });
   }
 };
 
@@ -3216,6 +3328,8 @@ exports.costoParaComerciante = costoParaComerciante;
 exports.esProductoCargadoPorAdmin = esProductoCargadoPorAdmin;
 exports.subirComprobanteAbastecimientoMulter = subirComprobanteAbastecimientoMulter;
 exports.calcularAbastecimientoDesdeItems = calcularAbastecimientoDesdeItems;
+exports.moverAReservadoATransito = moverAReservadoATransito;
+exports.consumirTransito = consumirTransito;
 
 // Todo lo que estos handlers no atrapen termina en el middleware de errores
 // de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
@@ -3224,5 +3338,5 @@ exports.calcularAbastecimientoDesdeItems = calcularAbastecimientoDesdeItems;
 // su propia firma (items, transacción, usuario_id), así que el tercer
 // argumento no es `next` y envolverlas se tragaría el error del llamador.
 envolverControlador(module.exports, {
-  excluir: ['descontarStockYSnapshot', 'calcularAbastecimientoDesdeItems', 'costoParaComerciante', 'esProductoCargadoPorAdmin', 'subirComprobanteAbastecimientoMulter'],
+  excluir: ['descontarStockYSnapshot', 'calcularAbastecimientoDesdeItems', 'costoParaComerciante', 'esProductoCargadoPorAdmin', 'subirComprobanteAbastecimientoMulter', 'moverAReservadoATransito', 'consumirTransito'],
 });

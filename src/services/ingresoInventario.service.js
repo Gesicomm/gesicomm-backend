@@ -36,7 +36,7 @@ class IngresoInventarioService {
   static async crearBorrador(usuario_id, centro_gesicomm_id, itemsDto) {
     // Validar que el centro sea de Gesicomm
     const centro = await Deposito.findByPk(centro_gesicomm_id);
-    if (!centro || centro.alcance !== 'GESICOMM') {
+    if (!centro || !centro.activo || centro.alcance !== 'GESICOMM') {
       throw errorHttp('El depósito destino debe ser un Centro de Fulfillment válido de Gesicomm.', 400);
     }
 
@@ -44,7 +44,7 @@ class IngresoInventarioService {
     if (!usuario) throw errorHttp('Usuario no encontrado', 404);
 
     // Validar pertenencia de productos (CP-06d y CP-06e)
-    const prodIds = itemsDto.map(i => i.producto_id);
+    const prodIds = [...new Set(itemsDto.map(i => i.producto_id))];
     const productos = await Producto.findAll({ where: { id: prodIds } });
     if (productos.length !== prodIds.length) {
       throw errorHttp('Uno o más productos no existen', 404);
@@ -53,6 +53,13 @@ class IngresoInventarioService {
       if (p.inquilino_id !== usuario.inquilino_id) {
         throw errorHttp('No tenés permiso para enviar stock de este producto', 403);
       }
+    }
+    for (const item of itemsDto) {
+      if (!Number.isSafeInteger(Number(item.cantidad_declarada)) || Number(item.cantidad_declarada) <= 0) throw errorHttp('Cantidad declarada invalida.');
+      if (item.variante_id && !await ProductoVariante.findOne({ where: { id: item.variante_id, producto_id: item.producto_id, activo: true } })) {
+        throw errorHttp('La variante del ingreso no pertenece al producto o esta inactiva.');
+      }
+      if (!item.variante_id && await ProductoVariante.count({ where: { producto_id: item.producto_id, activo: true } })) throw errorHttp('Selecciona la variante del ingreso.');
     }
 
     return sequelize.transaction(async (t) => {
@@ -110,9 +117,9 @@ class IngresoInventarioService {
   /**
    * Comercio o Admin marca como en tránsito.
    */
-  static async marcarEnTransito(ingreso_id, usuario_id, datosEnvio) {
+  static async marcarEnTransito(ingreso_id, usuario_id, datosEnvio, esAdmin = false) {
     return sequelize.transaction(async (t) => {
-      const ingreso = await IngresoInventario.findByPk(ingreso_id, { transaction: t });
+      const ingreso = await IngresoInventario.findOne({ where: { id: ingreso_id, ...(esAdmin ? {} : { usuario_id }) }, transaction: t, lock: t.LOCK.UPDATE });
       if (!ingreso) throw errorHttp('Ingreso no encontrado', 404);
       if (ingreso.estado !== ESTADOS.PENDIENTE_ENVIO) throw errorHttp('El ingreso debe estar pendiente de envío.');
 
@@ -134,7 +141,7 @@ class IngresoInventarioService {
    */
   static async recepcionFisica(ingreso_id, admin_id) {
     return sequelize.transaction(async (t) => {
-      const ingreso = await IngresoInventario.findByPk(ingreso_id, { transaction: t });
+      const ingreso = await IngresoInventario.findByPk(ingreso_id, { transaction: t, lock: t.LOCK.UPDATE });
       if (!ingreso) throw errorHttp('Ingreso no encontrado', 404);
       if (ingreso.estado !== ESTADOS.EN_TRANSITO && ingreso.estado !== ESTADOS.PENDIENTE_ENVIO) {
         throw errorHttp('El ingreso no está en estado válido para recepción.');
@@ -154,7 +161,7 @@ class IngresoInventarioService {
    */
   static async resolverDiferencias(ingreso_id, admin_id, conteos) {
     return sequelize.transaction(async (t) => {
-      const ingreso = await IngresoInventario.findByPk(ingreso_id, { transaction: t });
+      const ingreso = await IngresoInventario.findByPk(ingreso_id, { transaction: t, lock: t.LOCK.UPDATE });
       if (!ingreso) throw errorHttp('Ingreso no encontrado', 404);
       if (![ESTADOS.RECIBIDO, ESTADOS.EN_VALIDACION, ESTADOS.CON_DIFERENCIAS].includes(ingreso.estado)) {
         throw errorHttp('El ingreso no está en estado de validación.');
@@ -164,14 +171,15 @@ class IngresoInventarioService {
 
       for (const conteo of conteos) {
         const item = await IngresoInventarioItem.findOne({ where: { id: conteo.item_id, ingreso_id }, transaction: t });
-        if (!item) continue;
-
-        item.cantidad_recibida = conteo.cantidad_recibida;
-        if (conteo.cantidad_aceptada !== undefined) {
-          item.cantidad_aceptada = conteo.cantidad_aceptada;
-        } else {
-          item.cantidad_aceptada = conteo.cantidad_recibida;
+        if (!item) throw errorHttp('El item contado no pertenece al ingreso.');
+        const recibida = Number(conteo.cantidad_recibida);
+        const aceptada = conteo.cantidad_aceptada === undefined ? recibida : Number(conteo.cantidad_aceptada);
+        if (!Number.isSafeInteger(recibida) || recibida < 0 || !Number.isSafeInteger(aceptada) || aceptada < 0 || aceptada > recibida) {
+          throw errorHttp('El conteo debe ser entero no negativo y lo aceptado no puede superar lo recibido.');
         }
+
+        item.cantidad_recibida = recibida;
+        item.cantidad_aceptada = aceptada;
         item.observacion_recepcion = conteo.observacion || null;
         await item.save({ transaction: t });
 
@@ -211,29 +219,18 @@ class IngresoInventarioService {
       }
 
       const items = await IngresoInventarioItem.findAll({ where: { ingreso_id }, transaction: t });
+      if (!ingreso.fecha_recepcion || !items.length || items.some(item => item.cantidad_recibida == null || item.cantidad_aceptada == null)) {
+        throw errorHttp('Confirma la recepcion fisica y cuenta todos los items antes de habilitar stock.');
+      }
 
       // 3. Incrementar el InventarioUbicacion para cada item
       for (const item of items) {
         const cantidad_agregar = item.cantidad_aceptada !== null ? item.cantidad_aceptada : item.cantidad_recibida;
         if (!cantidad_agregar || cantidad_agregar <= 0) continue;
 
-        const [ubicacion] = await InventarioUbicacion.findOrCreate({
-          where: {
-            producto_id: item.producto_id,
-            variante_id: item.variante_id || null,
-            deposito_id: ingreso.centro_gesicomm_id
-          },
-          defaults: {
-            usuario_id: ingreso.usuario_id,
-            cantidad_disponible: 0,
-            cantidad_reservada: 0
-          },
-          transaction: t
-        });
-
-        // 4. Actualizar cantidad atómicamente
-        ubicacion.cantidad_disponible += cantidad_agregar;
-        await ubicacion.save({ transaction: t });
+        await require('./inventarioUbicacion.service').acreditar({ usuario_id: ingreso.usuario_id,
+          producto_id: item.producto_id, variante_id: item.variante_id,
+          deposito_id: ingreso.centro_gesicomm_id, cantidad: cantidad_agregar, alcance: 'GESICOMM' }, t);
       }
 
       // 5. Marcar ingreso como DISPONIBLE

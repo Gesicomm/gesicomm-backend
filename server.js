@@ -260,6 +260,8 @@ app.use('/api/config', configRoutes);
 app.use('/api/afiliados', afiliadosRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/brevo', brevoRoutes);
+app.use('/api/integraciones/speedbox', require('./src/routes/speedbox'));
+app.use('/api/integraciones/raha', require('./src/routes/raha'));
 // Planes y suscripciones de Gesicomm (publicas: son el paso previo al alta)
 app.use('/api', suscripcionesRoutes);
 
@@ -325,6 +327,7 @@ const CanalVentaService = require('./src/services/canalVenta.service');
 const { iniciarJobCostosRecurrentes } = require('./src/services/cron/costosRecurrentes.job');
 const { iniciarJobReconciliacionSuscripciones } = require('./src/services/cron/reconciliacionSuscripciones.job');
 const { iniciarJobReconciliacionRecordatorios } = require('./src/services/cron/reconciliacionRecordatorios.job');
+const { iniciarJobSpeedbox } = require('./src/services/cron/speedbox.job');
 
 sequelize.authenticate().then(async () => {
   try {
@@ -338,6 +341,7 @@ sequelize.authenticate().then(async () => {
     await migrarAuthTracking();
     await migrarNumeroPedido();
     await migrarComboImagenes();
+    await require('./migrations/20261002150000-speedbox-integration').up(sequelize.getQueryInterface(), require('sequelize'));
     await CategoriaCostoGastoService.seedDefaults();
     await CanalVentaService.seedDefaults();
     // Después del seed: necesita los canales ya creados para mapearles los
@@ -348,6 +352,18 @@ sequelize.authenticate().then(async () => {
     logger.error('Error al aplicar migraciones de estructura:', mErr);
   }
   logger.info('Migraciones iniciales aplicadas exitosamente.');
+  try {
+    await require('./migrations/20261002200000-speedbox-abastecimiento').up(sequelize.getQueryInterface(), require('sequelize'));
+  } catch (error) {
+    logger.error('No se puede iniciar sin aislamiento del inventario por propietario:', error);
+    process.exit(1);
+  }
+  try {
+    await require('./migrations/20261003010000-raha-solicitudes').up(sequelize.getQueryInterface(), require('sequelize'));
+  } catch (error) {
+    logger.error('No se puede iniciar sin las tablas de solicitudes Raha:', error);
+    process.exit(1);
+  }
 
   // Validar que el esquema de la BD coincide con los modelos
   try {
@@ -361,6 +377,7 @@ sequelize.authenticate().then(async () => {
   iniciarJobCostosRecurrentes();
   iniciarJobReconciliacionSuscripciones();
   iniciarJobReconciliacionRecordatorios();
+  iniciarJobSpeedbox();
   servidorHttp = app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });
