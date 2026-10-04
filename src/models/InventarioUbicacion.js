@@ -6,9 +6,9 @@ const sequelize = require('../config/database');
 /**
  * InventarioUbicacion
  * 
- * Persiste el estado actual del stock físico de un producto/variante en un depósito específico.
- * Es la fuente de verdad de "qué mercadería tiene actualmente X depósito", ya sea
- * del comercio (alcance='COMERCIO') o de la red de fulfillment (alcance='GESICOMM').
+ * Persiste el estado actual del stock físico de un producto/variante en una ubicación específica.
+ * Es la fuente de verdad de "qué mercadería tiene actualmente X ubicación", ya sea
+ * propia del comercio (alcance='PROPIO') o de la red de fulfillment (alcance='GESICOMM').
  */
 const InventarioUbicacion = sequelize.define('InventarioUbicacion', {
   usuario_id: {
@@ -27,7 +27,7 @@ const InventarioUbicacion = sequelize.define('InventarioUbicacion', {
   deposito_id: {
     type: DataTypes.INTEGER,
     allowNull: false,
-    comment: 'Dónde está físicamente la mercadería. Puede apuntar a un Centro Gesicomm o a un depósito propio.',
+    comment: 'Dónde está físicamente la mercadería. Puede apuntar a salón, depósito propio o centro Gesicomm.',
   },
   cantidad_disponible: {
     type: DataTypes.INTEGER,

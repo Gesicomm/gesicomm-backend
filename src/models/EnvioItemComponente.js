@@ -62,16 +62,16 @@ const EnvioItemComponente = sequelize.define('EnvioItemComponente', {
     allowNull: false,
     defaultValue: 0,
   },
-  // --- Origen fisico cuando el stock salio de un Centro Gesicomm ---
+  // --- Origen fisico cuando el stock salio de una ubicacion trackeada ---
   origen_centro_id: {
     type: DataTypes.INTEGER,
     allowNull: true,
-    comment: 'FK a depositos.id (alcance GESICOMM). NULL = salio del stock propio del comercio (salon/deposito).',
+    comment: 'FK a depositos.id. NULL = salio del stock generico legacy sin ubicacion puntual.',
   },
   cantidad_desde_centro: {
     type: DataTypes.INTEGER,
     allowNull: true,
-    comment: 'Cuanto de cantidad salio de origen_centro_id. NULL cuando origen_centro_id es NULL. Gatilla la cola de preparacion de Gesicomm.',
+    comment: 'Cuanto de cantidad salio de origen_centro_id. NULL cuando origen_centro_id es NULL.',
   },
 }, {
   tableName: 'envio_item_componentes',

@@ -314,11 +314,6 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
 
   for (const { producto_id, variante_id, cantidad: cantidadTotal } of totalPorClave.values()) {
     const clave = `${producto_id}:${variante_id || ''}`;
-<<<<<<< HEAD
-=======
-    const origenGesicomm = await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id);
-    if (origenGesicomm) origenGesicommPorClave.set(clave, origenGesicomm);
->>>>>>> codex/speedbox-integration
 
     if (variante_id) {
       const variante = await ProductoVariante.findByPk(variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
@@ -329,7 +324,6 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
 
       const salonActual = parseInt(variante.stock_salon) || 0;
       const depositoActual = parseInt(variante.stock_deposito) || 0;
-<<<<<<< HEAD
       const origenUbicacion = origenPreferidoId
         ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId)
         : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id);
@@ -346,9 +340,6 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
         throw err;
       }
       if (origenUbicacion) origenUbicacionPorClave.set(clave, origenUbicacion);
-=======
-      const { desdeSalon, desdeDeposito } = repartoSalonDeposito(salonActual, depositoActual, cantidadTotal, origenGesicomm?.cantidad || 0);
->>>>>>> codex/speedbox-integration
       const nuevoSalon = salonActual - desdeSalon;
       const nuevoDeposito = depositoActual - desdeDeposito;
       await variante.update({
@@ -394,7 +385,6 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
     // para decidir cuándo reponer.
     const salonActual = parseInt(prod.stock_salon) || 0;
     const depositoActual = parseInt(prod.stock_deposito) || 0;
-<<<<<<< HEAD
     const origenUbicacion = origenPreferidoId
       ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId)
       : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id);
@@ -411,9 +401,6 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
       throw err;
     }
     if (origenUbicacion) origenUbicacionPorClave.set(clave, origenUbicacion);
-=======
-    const { desdeSalon, desdeDeposito } = repartoSalonDeposito(salonActual, depositoActual, cantidadTotal, origenGesicomm?.cantidad || 0);
->>>>>>> codex/speedbox-integration
 
     const actualizacion = {
       cantidad_disponible: nuevoStock,
@@ -564,22 +551,11 @@ async function consumirTransito(envio, items, t) {
 async function liberarStock(envio, items, t) {
   const componentes = await obtenerComponentesDeItems(items, t);
   const totalPorProducto = new Map();
-  const depositoPorProducto = new Map();
-  const variantesRestauradas = new Set();
   for (const id of [...new Set(componentes.map(c => c.producto_id))].sort((a, b) => a - b)) {
     await Producto.findByPk(id, { transaction: t, lock: Transaction.LOCK.UPDATE });
   }
   for (const c of componentes) {
     totalPorProducto.set(c.producto_id, (totalPorProducto.get(c.producto_id) || 0) + c.cantidad);
-    const desdeDeposito = !envio.stock_despachado && c.origen_centro_id ? (c.cantidad_desde_centro || 0) : 0;
-    depositoPorProducto.set(c.producto_id, (depositoPorProducto.get(c.producto_id) || 0) + desdeDeposito);
-    if (c.variante_id) {
-      const variante = await ProductoVariante.findByPk(c.variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
-      if (!variante) throw new Error('No se puede restaurar una variante inexistente.');
-      await variante.update({ stock_salon: variante.stock_salon + c.cantidad - desdeDeposito,
-        stock_deposito: variante.stock_deposito + desdeDeposito, stock: variante.stock + c.cantidad }, { transaction: t });
-      variantesRestauradas.add(c.producto_id);
-    }
   }
 
   // Espejo de reservarDesdeUbicacionTracked: solo se devuelve si el pedido
@@ -606,7 +582,6 @@ async function liberarStock(envio, items, t) {
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (!prod) continue;
     const origenActual = Math.max(0, (parseInt(prod[campoOrigen]) || 0) - cantidad);
-<<<<<<< HEAD
     await prod.update({ [campoOrigen]: origenActual }, { transaction: t });
   }
 
@@ -645,24 +620,8 @@ async function liberarStock(envio, items, t) {
     const prod = await Producto.findByPk(producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
     if (prod && total > 0 && prod.estado_venta === 'fuera_de_stock') {
       await prod.update({ estado_venta: 'en_venta' }, { transaction: t });
-=======
-    const disponible = (parseInt(prod.cantidad_disponible) || 0) + cantidad;
-    // Vuelve al SALÓN: la mercadería que se recupera de un pedido cancelado
-    // regresa al mostrador, no al depósito. Es también lo prudente para el
-    // aviso de reposición — deja el salón surtido en vez de pedir reponer
-    // algo que ya está a mano.
-    const actualizacion = {
-      cantidad_disponible: disponible,
-      [campoOrigen]: origenActual,
-      stock_salon: (parseInt(prod.stock_salon) || 0) + cantidad - (depositoPorProducto.get(producto_id) || 0),
-      stock_deposito: (parseInt(prod.stock_deposito) || 0) + (depositoPorProducto.get(producto_id) || 0),
-    };
-    if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') {
-      actualizacion.estado_venta = 'en_venta';
->>>>>>> codex/speedbox-integration
     }
   }
-  for (const producto_id of variantesRestauradas) await ProductoService.recalcularStockPadre(producto_id, t);
 }
 
 /**
@@ -730,29 +689,13 @@ async function registrarDevolucionComponentes(envio, itemsPayload, t) {
         }
       } else if (prod) {
         const disponible = (parseInt(prod.cantidad_disponible) || 0) + cant;
-<<<<<<< HEAD
         const actualizacion = {
           cantidad_disponible: disponible,
           [bucket]: (parseInt(prod[bucket], 10) || 0) + cant,
         };
-=======
-        actualizacion.cantidad_disponible = disponible;
-        // Una devolución en buen estado vuelve al mostrador (mismo criterio
-        // que liberarStock). La dañada no suma a ningún lado: no es vendible.
-        actualizacion.stock_salon = (parseInt(prod.stock_salon) || 0) + cant - cantDesdeGesicomm;
-        actualizacion.stock_deposito = (parseInt(prod.stock_deposito) || 0) + cantDesdeGesicomm;
->>>>>>> codex/speedbox-integration
         if (disponible > 0 && prod.estado_venta === 'fuera_de_stock') actualizacion.estado_venta = 'en_venta';
         await prod.update(actualizacion, { transaction: t });
       }
-    }
-
-    if (condicion === 'vendible' && componente.variante_id) {
-      const variante = await ProductoVariante.findByPk(componente.variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
-      if (!variante) throw new Error('No se puede recibir una variante inexistente.');
-      await variante.update({ stock_salon: variante.stock_salon + cant - cantDesdeGesicomm,
-        stock_deposito: variante.stock_deposito + cantDesdeGesicomm, stock: variante.stock + cant }, { transaction: t });
-      await ProductoService.recalcularStockPadre(componente.producto_id, t);
     }
 
     // Espejo en InventarioUbicacion: si esta devolucion (o parte de ella)
@@ -1699,13 +1642,8 @@ exports.createEnvio = async (req, res) => {
           const oferta = item.oferta_id ? ofertasPorId.get(Number(item.oferta_id)) : null;
           return {
             producto_id: item.producto_id || null,
-<<<<<<< HEAD
-            variante_id: item.variante_id || null,
-            componente_variante_id: item.componente_variante_id || null,
-=======
             variante_id: item.variante_id ? Number(item.variante_id) : null,
             componente_variante_id: item.componente_variante_id ? Number(item.componente_variante_id) : null,
->>>>>>> codex/speedbox-integration
             oferta_id: oferta ? oferta.id : null,
             oferta_codigo: oferta ? oferta.codigo : null,
             oferta_nombre: oferta ? oferta.nombre : null,
