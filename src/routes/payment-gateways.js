@@ -8,6 +8,7 @@ const suscripcionesCtrl = require('../controllers/suscripciones.controller');
 router.get('/pagopar', verificarToken, ctrl.getPagoparConfig);
 router.put('/pagopar', verificarToken, ctrl.updatePagoparConfig);
 router.post('/pagopar/test', verificarToken, ctrl.testPagoparConnection);
+router.get('/pagopar/formas-pago', verificarToken, ctrl.listarFormasPagoPagopar);
 // Paso #3 del flujo de PagoPar: consultar estado de un pedido (y reconciliar).
 router.post('/pagopar/consultar', verificarToken, ctrl.consultarPedidoPagopar);
 

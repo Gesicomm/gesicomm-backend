@@ -61,8 +61,8 @@ const ComboConfiguracion = sequelize.define('ComboConfiguracion', {
   raha_costo_envio: {
     type: DataTypes.DECIMAL(12, 2),
     allowNull: false,
-    defaultValue: 0,
-    comment: 'Costo promedio de envio por combo operado con Raha.',
+    defaultValue: 30000,
+    comment: 'Costo fijo de envio por combo operado con Raha.',
   },
   raha_costo_confirmacion: {
     type: DataTypes.DECIMAL(12, 2),

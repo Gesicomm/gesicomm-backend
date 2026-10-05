@@ -66,6 +66,19 @@ describe('Caso 1 — Producto sin upsells', () => {
     expect(result.principal.totalCosts).toBe(158000);
   });
 
+  test('incluye comisión de cobro cuando viene configurada', () => {
+    const r = calcular({
+      principal: PRINCIPAL,
+      upsells: [],
+      costs: { ...COSTS_DEFAULT, paymentCommissionPercentage: 5 },
+      targetMargins: [15, 30, 45],
+      minimumMargin: 10,
+    });
+    expect(r.principal.paymentCommissionCost).toBe(12500);
+    expect(r.principal.totalCosts).toBe(170500);
+    expect(r.combo.totalCost).toBe(170500);
+  });
+
   test('utilidad = precioVenta - costosTotales', () => {
     // 250.000 - 158.000 = 92.000
     expect(result.principal.profit).toBe(92000);

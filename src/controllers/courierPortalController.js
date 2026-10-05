@@ -6,9 +6,8 @@ const { envolverControlador } = require('../utils/asyncHandler');
 
 const DEFAULT_METODOS = [
   { nombre: 'Efectivo contra entrega', comision_porcentaje: 0, es_anticipado: false, custodia_cobro: 'courier', orden: 1 },
-  { nombre: 'Transferencia bancaria', comision_porcentaje: 0, es_anticipado: true, custodia_cobro: 'negocio', orden: 2 },
-  { nombre: 'POS / Tarjeta', comision_porcentaje: 2.2, es_anticipado: true, custodia_cobro: 'negocio', orden: 3 },
-  { nombre: 'Crédito', comision_porcentaje: 5, es_anticipado: true, custodia_cobro: 'negocio', orden: 4 },
+  { nombre: 'Transferencia bancaria contra entrega', comision_porcentaje: 0, es_anticipado: false, custodia_cobro: 'negocio', orden: 2 },
+  { nombre: 'Transferencia bancaria anticipado', comision_porcentaje: 0, es_anticipado: true, custodia_cobro: 'negocio', orden: 3 },
 ];
 
 function montoVisibleACobrar(envio) {

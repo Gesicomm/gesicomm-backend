@@ -14,7 +14,7 @@ module.exports = {
       await queryInterface.addColumn('combo_configuraciones', 'raha_costo_envio', {
         type: Sequelize.DECIMAL(12, 2),
         allowNull: false,
-        defaultValue: 0,
+        defaultValue: 30000,
       });
     }
     if (!columns.raha_costo_confirmacion) {

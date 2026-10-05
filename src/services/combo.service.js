@@ -125,13 +125,18 @@ class ComboService {
 
     // 2. Principal, upsells y configuración del tenant son independientes
     // entre sí — se resuelven en paralelo en vez de uno atrás del otro.
-    const [principal, productosUpsell, config] = await Promise.all([
+    const [principal, productosUpsell, configBase, costosPagopar] = await Promise.all([
       Producto.findOne({ where: { id: principalId, inquilino_id, activo: true } }),
       upsellIds.length > 0
         ? Producto.findAll({ where: { id: upsellIds, inquilino_id, activo: true } })
         : Promise.resolve([]),
       ComboConfiguracionService.obtenerOCrear(inquilino_id),
+      ComboConfiguracionService.obtenerCostosPagopar(usuario_id).catch(() => ({ comision_maxima: 0 })),
     ]);
+    const config = {
+      ...(typeof configBase.toJSON === 'function' ? configBase.toJSON() : configBase),
+      pagopar_comision_porcentaje: costosPagopar.comision_maxima || 0,
+    };
 
     if (!principal) throw new Error('El producto principal no existe o no está activo.');
 

@@ -11,7 +11,8 @@
  * es visible y editable por el administrador.
  */
 
-const { ComboConfiguracion } = require('../models');
+const { ComboConfiguracion, PaymentGateway } = require('../models');
+const PagoParService = require('./payments/pagoParService');
 
 // Valores por defecto definidos en un solo lugar.
 // Si el modelo cambia sus defaults, cambia aquí también.
@@ -21,7 +22,7 @@ const DEFAULTS = {
   costo_confirmacion: 0,
   costo_empaque: 0,
   raha_cpa_porcentaje: 20.00,
-  raha_costo_envio: 0,
+  raha_costo_envio: 30000,
   raha_costo_confirmacion: 0,
   raha_costo_empaque: 0,
   margenes_objetivo: [15, 30, 45],
@@ -29,6 +30,8 @@ const DEFAULTS = {
   umbral_excelente: 50.00,
   escenarios_descuento: [0, 5, 10, 15, 20, 25, 30, 35],
 };
+
+const RAHA_COSTO_ENVIO_FIJO = 30000;
 
 class ComboConfiguracionService {
 
@@ -81,6 +84,8 @@ class ComboConfiguracionService {
         update[campo] = datos[campo];
       }
     }
+    update.raha_costo_envio = RAHA_COSTO_ENVIO_FIJO;
+    update.raha_costo_empaque = 0;
 
     if (Object.keys(update).length === 0) {
       return config; // Nada que actualizar
@@ -103,16 +108,76 @@ class ComboConfiguracionService {
       shipping: parseFloat(config.costo_envio),
       confirmation: parseFloat(config.costo_confirmacion),
       packaging: parseFloat(config.costo_empaque),
+      paymentCommissionPercentage: parseFloat(config.pagopar_comision_porcentaje || 0),
     };
   }
 
   static toRahaMotorCosts(config) {
     return {
       cpaPercentage: parseFloat(config.raha_cpa_porcentaje ?? config.cpa_porcentaje),
-      shipping: parseFloat(config.raha_costo_envio ?? config.costo_envio),
+      shipping: RAHA_COSTO_ENVIO_FIJO,
       confirmation: parseFloat(config.raha_costo_confirmacion ?? config.costo_confirmacion),
-      packaging: parseFloat(config.raha_costo_empaque ?? config.costo_empaque),
+      packaging: 0,
+      paymentCommissionPercentage: parseFloat(config.pagopar_comision_porcentaje || 0),
     };
+  }
+
+  static async obtenerCostosPagopar(usuario_id) {
+    if (!usuario_id) return { metodos: [], comision_maxima: 0, disponible: false };
+
+    const gateway = await PaymentGateway.findOne({
+      where: { usuario_id, provider: 'pagopar' },
+    });
+    if (!gateway || !gateway.private_key || !gateway.public_key) {
+      return { metodos: [], comision_maxima: 0, disponible: false };
+    }
+
+    const metodos = await PagoParService.obtenerFormasPago(gateway);
+    const opciones_checkout = PagoParService.obtenerOpcionesCheckout(metodos);
+    const comision_maxima = opciones_checkout.reduce((max, metodo) => (
+      Math.max(max, Number(metodo.comision_porcentaje) || 0)
+    ), 0);
+
+    return {
+      metodos,
+      opciones_checkout,
+      comision_maxima,
+      disponible: true,
+      solo_lectura: true,
+      fuente: 'PagoPar',
+    };
+  }
+
+  static async obtenerOCrearConPagopar(inquilino_id, usuario_id) {
+    const config = await this.obtenerOCrear(inquilino_id);
+    const plain = typeof config.toJSON === 'function' ? config.toJSON() : { ...config };
+
+    try {
+      const pagopar = await this.obtenerCostosPagopar(usuario_id);
+      return {
+        ...plain,
+        raha_costo_envio: RAHA_COSTO_ENVIO_FIJO,
+        raha_costo_empaque: 0,
+        pagopar,
+        pagopar_comision_porcentaje: pagopar.comision_maxima,
+      };
+    } catch (error) {
+      return {
+        ...plain,
+        raha_costo_envio: RAHA_COSTO_ENVIO_FIJO,
+        raha_costo_empaque: 0,
+        pagopar: {
+          metodos: [],
+          opciones_checkout: [],
+          comision_maxima: 0,
+          disponible: false,
+          solo_lectura: true,
+          fuente: 'PagoPar',
+          error: error.message,
+        },
+        pagopar_comision_porcentaje: 0,
+      };
+    }
   }
 }
 

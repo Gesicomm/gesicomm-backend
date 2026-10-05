@@ -23,6 +23,88 @@ class PagoParService {
     return null;
   }
 
+  static numeroDesdePagoPar(valor) {
+    if (valor === null || valor === undefined) return 0;
+    if (typeof valor === 'number') return Number.isFinite(valor) ? valor : 0;
+    const limpio = String(valor)
+      .replace('%', '')
+      .replace(',', '.')
+      .replace(/[^\d.-]/g, '');
+    const n = Number(limpio);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  static normalizarFormaPago(item = {}) {
+    const comision = [
+      item.comision_porcentaje,
+      item.porcentaje_comision,
+      item.comision_pct,
+      item.comision,
+      item.arancel,
+      item.arancel_porcentaje,
+      item.costo_porcentaje,
+    ].map(PagoParService.numeroDesdePagoPar).find(n => n > 0) || 0;
+
+    return {
+      id: item.id || item.id_forma_pago || item.forma_pago || item.codigo || item.nombre || item.descripcion,
+      nombre: item.nombre || item.descripcion || item.forma_pago || item.metodo || item.medio_pago || 'Metodo PagoPar',
+      comision_porcentaje: comision,
+      crudo: item,
+    };
+  }
+
+  static normalizarTexto(valor) {
+    return String(valor || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  }
+
+  static categoriaCheckout(metodo = {}) {
+    const nombre = PagoParService.normalizarTexto(metodo.nombre);
+
+    if (nombre.includes('transferencia')) {
+      return { id: 'transferencia-bancaria', nombre: 'Transferencia bancaria PagoPar' };
+    }
+    if (nombre.includes('qr') || nombre.includes('pix')) {
+      return { id: 'qr', nombre: 'Pago con QR' };
+    }
+    if (/(tarjeta|mastercard|visa|american express|cabal|panal|discover|diners)/.test(nombre)) {
+      return { id: 'tarjetas', nombre: 'Tarjetas de crédito/débito' };
+    }
+    if (/(zimple|tigo money|personal pay|pago movil|wally|billetera claro|billetera|fondos)/.test(nombre)) {
+      return { id: 'billeteras', nombre: 'Billeteras' };
+    }
+    if (/(boca|acercandose|pagos habilitadas)/.test(nombre)) {
+      return { id: 'bocas-de-pago', nombre: 'Bocas de pago' };
+    }
+
+    return null;
+  }
+
+  static obtenerOpcionesCheckout(metodos = []) {
+    const orden = ['transferencia-bancaria', 'qr', 'tarjetas', 'billeteras', 'bocas-de-pago'];
+    const grupos = new Map();
+
+    for (const metodo of metodos) {
+      const categoria = PagoParService.categoriaCheckout(metodo);
+      if (!categoria) continue;
+
+      const actual = grupos.get(categoria.id) || {
+        ...categoria,
+        comision_porcentaje: 0,
+        metodos_count: 0,
+      };
+      grupos.set(categoria.id, {
+        ...actual,
+        comision_porcentaje: Math.max(actual.comision_porcentaje, Number(metodo.comision_porcentaje) || 0),
+        metodos_count: actual.metodos_count + 1,
+      });
+    }
+
+    return orden.map(id => grupos.get(id)).filter(Boolean);
+  }
+
   /**
    * Genera el token (hash SHA1) requerido por PagoPar para iniciar una transacción.
    * sha1(comercio_token_privado + id_pedido + strval(floatval(monto_total)))
@@ -110,6 +192,40 @@ class PagoParService {
       pagado: datos?.pagado === true || datos?.pagado === 'true',
       datos: datos || null,
     };
+  }
+
+  /**
+   * Lista las formas de pago habilitadas en PagoPar y normaliza su comision.
+   */
+  static async obtenerFormasPago(gateway) {
+    if (!gateway?.private_key || !gateway?.public_key) {
+      throw new Error('La pasarela del comercio no está configurada correctamente.');
+    }
+
+    const token = crypto.createHash('sha1').update(`${gateway.private_key}FORMA-PAGO`).digest('hex');
+    let response;
+    try {
+      response = await axios.post('https://api.pagopar.com/api/forma-pago/1.1/traer/', {
+        token,
+        token_publico: gateway.public_key,
+      });
+    } catch (error) {
+      const detalle = PagoParService.motivoDeRespuesta(error.response?.data)
+        || error.response?.data?.message
+        || error.message
+        || 'No se pudo consultar las formas de pago de PagoPar.';
+      throw new Error(detalle);
+    }
+
+    if (!response.data?.respuesta) {
+      const detalle = PagoParService.motivoDeRespuesta(response.data) || 'PagoPar rechazó la consulta de formas de pago.';
+      throw new Error(detalle);
+    }
+
+    const resultado = Array.isArray(response.data.resultado) ? response.data.resultado : [];
+    return resultado
+      .map(item => PagoParService.normalizarFormaPago(item))
+      .filter(item => item.nombre);
   }
 
   /**

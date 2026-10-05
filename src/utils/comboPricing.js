@@ -47,19 +47,20 @@ function r4(n) {
  * Calcula rentabilidad del producto principal.
  *
  * @param {{ id, name, cost, salePrice }} principal
- * @param {{ cpaPercentage, shipping, confirmation, packaging }} costs
- * @returns {{ cpaMax, totalCosts, profit, margin, discountSimulation }}
+ * @param {{ cpaPercentage, shipping, confirmation, packaging, paymentCommissionPercentage }} costs
+ * @returns {{ cpaMax, paymentCommissionCost, totalCosts, profit, margin, discountSimulation }}
  */
 function calcularPrincipal(principal, costs) {
   const costo = principal.cost || 0;
   const precio = principal.salePrice || 0;
 
   const cpaMax = r2(precio * (costs.cpaPercentage / 100));
-  const totalCosts = r2(costo + cpaMax + costs.shipping + costs.confirmation + costs.packaging);
+  const paymentCommissionCost = r2(precio * ((costs.paymentCommissionPercentage || 0) / 100));
+  const totalCosts = r2(costo + cpaMax + paymentCommissionCost + costs.shipping + costs.confirmation + costs.packaging);
   const profit = r2(precio - totalCosts);
   const margin = r4(div(profit, precio));
 
-  return { cpaMax, totalCosts, profit, margin };
+  return { cpaMax, paymentCommissionCost, totalCosts, profit, margin };
 }
 
 /**
@@ -322,7 +323,7 @@ function calcularSensibilidad(comboData, scenarios = [0, 5, 10, 15, 20, 25, 30, 
  * @param {object} input
  * @param {{ id, name, cost, salePrice }} input.principal
  * @param {Array<{ id, name, cost, salePrice, discountPercentage }>} input.upsells
- * @param {{ cpaPercentage, shipping, confirmation, packaging }} input.costs
+ * @param {{ cpaPercentage, shipping, confirmation, packaging, paymentCommissionPercentage }} input.costs
  * @param {number[]} input.targetMargins
  * @param {number} input.minimumMargin - En porcentaje (ej: 10)
  * @param {number} input.excellentThreshold - En porcentaje (ej: 50)
@@ -333,7 +334,7 @@ function calcular(input) {
   const {
     principal,
     upsells = [],
-    costs = { cpaPercentage: 20, shipping: 0, confirmation: 0, packaging: 0 },
+    costs = { cpaPercentage: 20, shipping: 0, confirmation: 0, packaging: 0, paymentCommissionPercentage: 0 },
     targetMargins = [15, 30, 45],
     minimumMargin = 10,
     excellentThreshold = 50,

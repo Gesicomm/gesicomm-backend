@@ -198,6 +198,38 @@ exports.testPagoparConnection = async (req, res) => {
   }
 };
 
+exports.listarFormasPagoPagopar = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const gateway = await PaymentGateway.findOne({
+      where: { usuario_id, provider: 'pagopar' },
+    });
+
+    if (!gateway || !gateway.private_key || !gateway.public_key) {
+      return res.status(400).json({ error: 'Faltan credenciales de PagoPar.' });
+    }
+
+    const metodos = await PagoParService.obtenerFormasPago(gateway);
+    const opciones_checkout = PagoParService.obtenerOpcionesCheckout(metodos);
+    const comision_maxima = opciones_checkout.reduce((max, metodo) => (
+      Math.max(max, Number(metodo.comision_porcentaje) || 0)
+    ), 0);
+
+    return res.json({
+      metodos,
+      opciones_checkout,
+      comision_maxima,
+      solo_lectura: true,
+      fuente: 'PagoPar',
+    });
+  } catch (error) {
+    console.error('[PaymentGateways] Error al listar formas de pago:', error.response?.data || error.message);
+    return res.status(400).json({
+      error: error.message || 'No se pudieron consultar las formas de pago de PagoPar.',
+    });
+  }
+};
+
 /**
  * Paso #3 del flujo de PagoPar: consultar el estado de un pedido.
  *

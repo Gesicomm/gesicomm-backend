@@ -859,6 +859,51 @@ class PrecioUsuarioService {
 
   // ─── Análisis de sensibilidad ───────────────────────────────────────────────
 
+  static armarAnalisisSensibilidad({ entidad, precioEfectivo, costoBase, costs, config, minimumMarginDecimal }) {
+    const cpaMax = Math.round((precioEfectivo * ((Number(costs.cpaPercentage) || 0) / 100)) * 100) / 100;
+    const paymentCommissionCost = Math.round((precioEfectivo * ((Number(costs.paymentCommissionPercentage) || 0) / 100)) * 100) / 100;
+    const totalCosts = Math.round((
+      costoBase
+      + cpaMax
+      + paymentCommissionCost
+      + (Number(costs.shipping) || 0)
+      + (Number(costs.confirmation) || 0)
+      + (Number(costs.packaging) || 0)
+    ) * 100) / 100;
+    const profit = Math.round((precioEfectivo - totalCosts) * 100) / 100;
+    const margin = precioEfectivo > 0 ? Math.round((profit / precioEfectivo) * 10000) / 10000 : 0;
+
+    const sensitivity = this.anotarSensibilidad(comboPricing.calcularSensibilidad(
+      { finalPrice: precioEfectivo, totalCost: totalCosts },
+      config.escenarios_descuento || undefined,
+      { minimumMargin: minimumMarginDecimal },
+    ));
+
+    return {
+      profit,
+      margin,
+      estado: this.anotarEstado(margin, minimumMarginDecimal),
+      sensitivity,
+      costos: {
+        costo_compra: costoBase,
+        precio_venta_actual: precioEfectivo,
+        marketing_cpa_porcentaje: costs.cpaPercentage,
+        marketing_cpa: cpaMax,
+        costo_envio_promedio: costs.shipping,
+        costo_confirmacion_promedio: costs.confirmation,
+        costo_empaque_promedio: costs.packaging,
+        costo_pago_contra_entrega_porcentaje: costs.paymentCommissionPercentage || 0,
+        costo_pago_contra_entrega: paymentCommissionCost,
+        costo_total: totalCosts,
+      },
+      parametros: {
+        escenarios_descuento: config.escenarios_descuento || [0, 5, 10, 15, 20, 25, 30, 35],
+        margen_minimo: minimumMarginDecimal,
+      },
+      entidad,
+    };
+  }
+
   static async analizarSensibilidadProducto(usuario_id, inquilino_id, producto_id, esAdmin = false) {
     const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
     const producto = await Producto.findOne({
@@ -870,44 +915,71 @@ class PrecioUsuarioService {
       },
     });
     if (!producto) throw new Error('Producto no encontrado.');
-    if (!producto.precio_costo) throw new Error('Este producto no tiene análisis de rentabilidad configurado.');
+    if (!producto.precio_base) throw new Error('Este producto no tiene análisis de rentabilidad configurado.');
 
     // config y precioPersonalizado no dependen entre sí — en paralelo.
-    const [config, precioPersonalizado] = await Promise.all([
+    const [configBase, precioPersonalizado, costosPagopar] = await Promise.all([
       ComboConfiguracionService.obtenerOCrear(inquilino_id),
       this.obtenerPrecioPersonalizado(usuario_id, 'producto', producto.id),
+      ComboConfiguracionService.obtenerCostosPagopar(usuario_id).catch(() => ({ comision_maxima: 0 })),
     ]);
+    const config = {
+      ...(typeof configBase.toJSON === 'function' ? configBase.toJSON() : configBase),
+      pagopar_comision_porcentaje: costosPagopar.comision_maxima || 0,
+    };
     const costs = ComboConfiguracionService.toMotorCosts(config);
+    const rahaCosts = {
+      ...ComboConfiguracionService.toRahaMotorCosts(config),
+      paymentCommissionPercentage: 2,
+    };
     const minimumMarginDecimal = (parseFloat(config.margen_minimo) || 10) / 100;
 
     const precioEfectivo = precioPersonalizado ? parseFloat(precioPersonalizado.precio) : parseFloat(producto.precio_base);
 
-    const costoBase = producto.precio_costo != null ? parseFloat(producto.precio_costo) : parseFloat(producto.precio_base);
+    const costoBase = parseFloat(producto.precio_base);
 
-    const principalResult = comboPricing.calcularPrincipal(
-      { cost: costoBase, salePrice: precioEfectivo },
+    const entidad = {
+      id: producto.id,
+      nombre: producto.nombre,
+      precio_base: parseFloat(producto.precio_base),
+      precio_minimo: producto.precio_minimo !== null ? parseFloat(producto.precio_minimo) : null,
+      precio_usuario: precioPersonalizado ? parseFloat(precioPersonalizado.precio) : null,
+      precio_efectivo: precioEfectivo,
+    };
+    const operacionPropia = this.armarAnalisisSensibilidad({
+      entidad,
+      precioEfectivo,
+      costoBase,
       costs,
-    );
-
-    const sensitivity = this.anotarSensibilidad(comboPricing.calcularSensibilidad(
-      { finalPrice: precioEfectivo, totalCost: principalResult.totalCosts },
-      config.escenarios_descuento || undefined,
-      { minimumMargin: minimumMarginDecimal },
-    ));
+      config,
+      minimumMarginDecimal,
+    });
+    const operacionRaha = this.armarAnalisisSensibilidad({
+      entidad,
+      precioEfectivo,
+      costoBase,
+      costs: rahaCosts,
+      config,
+      minimumMarginDecimal,
+    });
 
     return {
-      producto: {
-        id: producto.id,
-        nombre: producto.nombre,
-        precio_base: parseFloat(producto.precio_base),
-        precio_minimo: producto.precio_minimo !== null ? parseFloat(producto.precio_minimo) : null,
-        precio_usuario: precioPersonalizado ? parseFloat(precioPersonalizado.precio) : null,
-        precio_efectivo: precioEfectivo,
+      producto: entidad,
+      profit: operacionPropia.profit,
+      margin: operacionPropia.margin,
+      estado: operacionPropia.estado,
+      sensitivity: operacionPropia.sensitivity,
+      costos: operacionPropia.costos,
+      operaciones: {
+        propios: operacionPropia,
+        raha: operacionRaha,
       },
-      profit: principalResult.profit,
-      margin: principalResult.margin,
-      estado: this.anotarEstado(principalResult.margin, minimumMarginDecimal),
-      sensitivity,
+      pagopar: {
+        metodos: costosPagopar.metodos || [],
+        opciones_checkout: costosPagopar.opciones_checkout || [],
+        comision_maxima: costosPagopar.comision_maxima || 0,
+        disponible: Boolean(costosPagopar.disponible),
+      },
     };
   }
 
@@ -929,40 +1001,68 @@ class PrecioUsuarioService {
     });
     if (!combo) throw new Error('Combo no encontrado.');
 
-    const [config, precioPersonalizado] = await Promise.all([
+    const [configBase, precioPersonalizado, costosPagopar] = await Promise.all([
       ComboConfiguracionService.obtenerOCrear(inquilino_id),
       this.obtenerPrecioPersonalizado(usuario_id, 'combo', combo.id),
+      ComboConfiguracionService.obtenerCostosPagopar(usuario_id).catch(() => ({ comision_maxima: 0 })),
     ]);
+    const config = {
+      ...(typeof configBase.toJSON === 'function' ? configBase.toJSON() : configBase),
+      pagopar_comision_porcentaje: costosPagopar.comision_maxima || 0,
+    };
     
     const costs = ComboConfiguracionService.toMotorCosts(config);
+    const rahaCosts = {
+      ...ComboConfiguracionService.toRahaMotorCosts(config),
+      paymentCommissionPercentage: 2,
+    };
     const minimumMarginDecimal = (parseFloat(config.margen_minimo) || 10) / 100;
 
     const precioEfectivo = precioPersonalizado ? parseFloat(precioPersonalizado.precio) : parseFloat(combo.precio_total);
 
-    const principalResult = comboPricing.calcularPrincipal(
-      { cost: parseFloat(combo.precio_total), salePrice: precioEfectivo },
+    const costoBase = parseFloat(combo.precio_total);
+    const entidad = {
+      id: combo.id,
+      nombre: combo.nombre,
+      precio_base: parseFloat(combo.precio_total),
+      precio_minimo: combo.precio_minimo !== null ? parseFloat(combo.precio_minimo) : null,
+      precio_usuario: precioPersonalizado ? parseFloat(precioPersonalizado.precio) : null,
+      precio_efectivo: precioEfectivo,
+    };
+    const operacionPropia = this.armarAnalisisSensibilidad({
+      entidad,
+      precioEfectivo,
+      costoBase,
       costs,
-    );
-
-    const sensitivity = this.anotarSensibilidad(comboPricing.calcularSensibilidad(
-      { finalPrice: precioEfectivo, totalCost: principalResult.totalCosts },
-      config.escenarios_descuento || undefined,
-      { minimumMargin: minimumMarginDecimal },
-    ));
+      config,
+      minimumMarginDecimal,
+    });
+    const operacionRaha = this.armarAnalisisSensibilidad({
+      entidad,
+      precioEfectivo,
+      costoBase,
+      costs: rahaCosts,
+      config,
+      minimumMarginDecimal,
+    });
 
     return {
-      combo: {
-        id: combo.id,
-        nombre: combo.nombre,
-        precio_base: parseFloat(combo.precio_total),
-        precio_minimo: combo.precio_minimo !== null ? parseFloat(combo.precio_minimo) : null,
-        precio_usuario: precioPersonalizado ? parseFloat(precioPersonalizado.precio) : null,
-        precio_efectivo: precioEfectivo,
+      combo: entidad,
+      profit: operacionPropia.profit,
+      margin: operacionPropia.margin,
+      estado: operacionPropia.estado,
+      sensitivity: operacionPropia.sensitivity,
+      costos: operacionPropia.costos,
+      operaciones: {
+        propios: operacionPropia,
+        raha: operacionRaha,
       },
-      profit: principalResult.profit,
-      margin: principalResult.margin,
-      estado: this.anotarEstado(principalResult.margin, minimumMarginDecimal),
-      sensitivity,
+      pagopar: {
+        metodos: costosPagopar.metodos || [],
+        opciones_checkout: costosPagopar.opciones_checkout || [],
+        comision_maxima: costosPagopar.comision_maxima || 0,
+        disponible: Boolean(costosPagopar.disponible),
+      },
       warnings: [],
     };
   }
