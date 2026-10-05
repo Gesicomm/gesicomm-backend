@@ -34,6 +34,21 @@ const WhatsappFlujo = sequelize.define('WhatsappFlujo', {
     allowNull: false,
     defaultValue: true,
   },
+  tipo: {
+    type: DataTypes.STRING(40),
+    allowNull: false,
+    defaultValue: 'CONFIRMACION_PEDIDO_WEB',
+  },
+  activacion: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'MANUAL',
+  },
+  predeterminado: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  },
   plantilla_origen_id: {
     type: DataTypes.INTEGER,
     allowNull: true,
@@ -46,6 +61,7 @@ const WhatsappFlujo = sequelize.define('WhatsappFlujo', {
   updatedAt: 'updated_at',
   indexes: [
     { fields: ['usuario_id'] },
+    { fields: ['usuario_id', 'tipo'] },
   ],
 });
 

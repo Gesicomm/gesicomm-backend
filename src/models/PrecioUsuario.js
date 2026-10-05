@@ -39,6 +39,11 @@ const PrecioUsuario = sequelize.define('PrecioUsuario', {
     allowNull: false,
     validate: { min: 0 },
   },
+  categoria_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Categoria interna que el usuario asigna a este item en su propia vitrina.',
+  },
 }, {
   tableName: 'precios_usuario',
   timestamps: true,

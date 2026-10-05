@@ -14,7 +14,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca, ProductoVariante, Oferta } = require('../models');
+const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca, ProductoVariante, Oferta, Categoria } = require('../models');
 const ComboConfiguracionService = require('./comboConfiguracion.service');
 const ComboService = require('./combo.service');
 const comboPricing = require('../utils/comboPricing');
@@ -131,6 +131,27 @@ class PrecioUsuarioService {
     return creadoPor != null && Number(creadoPor) === Number(usuarioId) ? 'PROPIO' : 'GESICOMM';
   }
 
+  static async buscarOCrearCategoria(nombre, inquilino_id, parent_id = null, transaction = null) {
+    const limpio = typeof nombre === 'string' ? nombre.trim() : '';
+    if (!limpio) throw new Error('El nombre de la categoría es requerido.');
+
+    const existente = await Categoria.findOne({
+      where: { inquilino_id, parent_id: parent_id || null, nombre: { [Op.iLike]: limpio } },
+      transaction,
+    });
+    if (existente) {
+      if (!existente.activo) {
+        existente.activo = true;
+        await existente.save({ transaction });
+      }
+      return existente;
+    }
+
+    const CategoriaService = require('./categoria.service');
+    const slug = await CategoriaService.generarSlugUnico(limpio, inquilino_id);
+    return Categoria.create({ inquilino_id, parent_id: parent_id || null, nombre: limpio, slug }, { transaction });
+  }
+
   static async listarCatalogo(usuario_id, inquilino_id, esAdmin = false) {
     const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
     const visibilidadProducto = this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds);
@@ -193,6 +214,11 @@ class PrecioUsuarioService {
     ]);
 
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
+    const categoriaIdsPersonalizadas = [...new Set(precios.map(p => p.categoria_id).filter(Boolean))];
+    const categoriasPersonalizadas = categoriaIdsPersonalizadas.length
+      ? await Categoria.findAll({ where: { id: { [Op.in]: categoriaIdsPersonalizadas }, inquilino_id }, attributes: ['id', 'nombre', 'parent_id'] })
+      : [];
+    const mapaCategoriasPersonalizadas = new Map(categoriasPersonalizadas.map(c => [Number(c.id), c]));
     const precioVentaProducto = (prod) => {
       if (!prod) return null;
       const precioUsuario = mapaPrecios.has(`producto:${prod.id}`) ? mapaPrecios.get(`producto:${prod.id}`) : null;
@@ -258,6 +284,8 @@ class PrecioUsuarioService {
     const idsConOpciones = await this.idsConOpciones(productos, inquilino_id);
     const productosDto = productos.map(p => {
       const precioUsuario = mapaPrecios.has(`producto:${p.id}`) ? mapaPrecios.get(`producto:${p.id}`) : null;
+      const precioRegistro = precios.find(pr => pr.tipo === 'producto' && Number(pr.referencia_id) === Number(p.id));
+      const categoriaPersonalizada = precioRegistro?.categoria_id ? mapaCategoriasPersonalizadas.get(Number(precioRegistro.categoria_id)) : null;
       const precioBase = parseFloat(p.precio_base);
       return {
         id: p.id,
@@ -273,7 +301,9 @@ class PrecioUsuarioService {
         precio_tachado: p.precio_tachado ? parseFloat(p.precio_tachado) : null,
         imagen: imgMap.get(p.id) || null,
         imagenes: galeriaMap.get(p.id) || [],
-        categoria: p.categoria?.nombre || null,
+        categoria: categoriaPersonalizada?.nombre || p.categoria?.nombre || null,
+        categoria_id: categoriaPersonalizada?.id || p.categoria?.id || null,
+        categoria_original: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
         stock: p.cantidad_disponible,
         tiene_opciones: idsConOpciones.has(p.id),
@@ -287,6 +317,8 @@ class PrecioUsuarioService {
 
     const combosDto = combos.map(c => {
       const precioUsuario = mapaPrecios.has(`combo:${c.id}`) ? mapaPrecios.get(`combo:${c.id}`) : null;
+      const precioRegistro = precios.find(pr => pr.tipo === 'combo' && Number(pr.referencia_id) === Number(c.id));
+      const categoriaPersonalizada = precioRegistro?.categoria_id ? mapaCategoriasPersonalizadas.get(Number(precioRegistro.categoria_id)) : null;
       const precioBase = parseFloat(c.precio_total);
       const padre = c.producto_padre;
       const imagenesCombo = (c.imagenes || [])
@@ -312,7 +344,9 @@ class PrecioUsuarioService {
         productos_combo: productosDelCombo(c),
         imagen: imagenesCombo[0] || (padre ? (imgMap.get(padre.id) || null) : null),
         imagenes: imagenesCombo.length ? imagenesCombo : imagenesFallback,
-        categoria: padre?.categoria?.nombre || null,
+        categoria: categoriaPersonalizada?.nombre || padre?.categoria?.nombre || null,
+        categoria_id: categoriaPersonalizada?.id || padre?.categoria?.id || null,
+        categoria_original: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
         stock: padre?.cantidad_disponible ?? null,
         destacado: false,
@@ -357,7 +391,7 @@ class PrecioUsuarioService {
       const cat = await Categoria.findOne({ where: { nombre: filtroCategoria, inquilino_id } });
       if (cat) {
         replacements.categoria_id = cat.id;
-        catFilter = 'AND p.categoria_id = :categoria_id';
+        catFilter = 'AND COALESCE(pu.categoria_id, p.categoria_id) = :categoria_id';
       } else {
         return { items: [], total: 0, page: 1, totalPages: 0, categorias: [] };
       }
@@ -382,7 +416,7 @@ class PrecioUsuarioService {
     if (orden === 'precio-desc') orderSql = 'ORDER BY precio_efectivo DESC';
 
     const productosSql = `
-      SELECT p.id, 'producto' as tipo, p.nombre, p.descripcion_corta as descripcion, p.created_at, p.categoria_id, p.creado_por,
+      SELECT p.id, 'producto' as tipo, p.nombre, p.descripcion_corta as descripcion, p.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, p.creado_por,
         COALESCE(pu.precio, p.precio_base) as precio_efectivo
       FROM productos p
       LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
@@ -394,7 +428,7 @@ class PrecioUsuarioService {
     `;
 
     const combosSql = `
-      SELECT c.id, 'combo' as tipo, c.nombre, c.descripcion, c.created_at, p.categoria_id, c.creado_por,
+      SELECT c.id, 'combo' as tipo, c.nombre, c.descripcion, c.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, c.creado_por,
         COALESCE(pu.precio, c.precio_total) as precio_efectivo
       FROM producto_combos c
       INNER JOIN productos p ON c.producto_id = p.id AND p.inquilino_id = :inquilino_id AND p.activo = true
@@ -496,8 +530,9 @@ class PrecioUsuarioService {
       ),
       sequelize.query(`
         SELECT DISTINCT c.nombre 
-        FROM categorias c 
-        INNER JOIN productos p ON p.categoria_id = c.id 
+        FROM productos p
+        LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
+        INNER JOIN categorias c ON COALESCE(pu.categoria_id, p.categoria_id) = c.id 
         WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
         ${creadorFilter}
         ORDER BY c.nombre ASC
@@ -516,6 +551,11 @@ class PrecioUsuarioService {
     const proveedoresUnicos = proveedoresUnicasData ? proveedoresUnicasData.map(p => p.nombre) : [];
 
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
+    const categoriaIdsPersonalizadas = [...new Set(precios.map(p => p.categoria_id).filter(Boolean))];
+    const categoriasPersonalizadas = categoriaIdsPersonalizadas.length
+      ? await Categoria.findAll({ where: { id: { [Op.in]: categoriaIdsPersonalizadas }, inquilino_id }, attributes: ['id', 'nombre', 'parent_id'] })
+      : [];
+    const mapaCategoriasPersonalizadas = new Map(categoriasPersonalizadas.map(c => [Number(c.id), c]));
     const idsProductosEnCombos = [
       ...new Set([
         ...combos.map(c => c.producto_padre?.id).filter(Boolean),
@@ -596,6 +636,8 @@ class PrecioUsuarioService {
     const idsConOpciones = await this.idsConOpciones(productos, inquilino_id);
     const mapaProductosDto = new Map(productos.map(p => {
       const precioUsuario = mapaPrecios.has(`producto:${p.id}`) ? mapaPrecios.get(`producto:${p.id}`) : null;
+      const precioRegistro = precios.find(pr => pr.tipo === 'producto' && Number(pr.referencia_id) === Number(p.id));
+      const categoriaPersonalizada = precioRegistro?.categoria_id ? mapaCategoriasPersonalizadas.get(Number(precioRegistro.categoria_id)) : null;
       const esProductoPropio = (p.creado_por != null && Number(p.creado_por) === Number(usuario_id));
       const precioCosto = p.precio_costo != null ? parseFloat(p.precio_costo) : null;
       const precioBase = parseFloat(p.precio_base);
@@ -616,7 +658,9 @@ class PrecioUsuarioService {
         precio_tachado: p.precio_tachado ? parseFloat(p.precio_tachado) : null,
         imagen: imgMap.get(p.id) || null,
         imagenes: galeriaMap.get(p.id) || [],
-        categoria: p.categoria?.nombre || null,
+        categoria: categoriaPersonalizada?.nombre || p.categoria?.nombre || null,
+        categoria_id: categoriaPersonalizada?.id || p.categoria?.id || null,
+        categoria_original: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
         proveedor: p.proveedor?.nombre || null,
         stock: p.cantidad_disponible,
@@ -631,6 +675,8 @@ class PrecioUsuarioService {
 
     const mapaCombosDto = new Map(combos.map(c => {
       const precioUsuario = mapaPrecios.has(`combo:${c.id}`) ? mapaPrecios.get(`combo:${c.id}`) : null;
+      const precioRegistro = precios.find(pr => pr.tipo === 'combo' && Number(pr.referencia_id) === Number(c.id));
+      const categoriaPersonalizada = precioRegistro?.categoria_id ? mapaCategoriasPersonalizadas.get(Number(precioRegistro.categoria_id)) : null;
       const precioBase = parseFloat(c.precio_total);
       const padre = c.producto_padre;
       const imagenesCombo = (c.imagenes || [])
@@ -656,7 +702,9 @@ class PrecioUsuarioService {
         productos_combo: productosDelCombo(c),
         imagen: imagenesCombo[0] || (padre ? (imgMap.get(padre.id) || null) : null),
         imagenes: imagenesCombo.length ? imagenesCombo : imagenesFallback,
-        categoria: padre?.categoria?.nombre || null,
+        categoria: categoriaPersonalizada?.nombre || padre?.categoria?.nombre || null,
+        categoria_id: categoriaPersonalizada?.id || padre?.categoria?.id || null,
+        categoria_original: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
         proveedor: padre?.proveedor?.nombre || null,
         stock: padre?.cantidad_disponible ?? null,
@@ -748,6 +796,65 @@ class PrecioUsuarioService {
     }
 
     return { tipo, referencia_id, precio: precioNum };
+  }
+
+  static async categorizarProductos(usuario_id, inquilino_id, payload = {}, esAdmin = false) {
+    const { producto_ids = [], categoria_nombre, subcategoria_nombre } = payload;
+    const ids = [...new Set((producto_ids || []).map(Number).filter(Boolean))];
+    if (!ids.length) throw new Error('Seleccioná al menos un producto.');
+
+    const nombreCategoria = typeof categoria_nombre === 'string' ? categoria_nombre.trim() : '';
+    const nombreSubcategoria = typeof subcategoria_nombre === 'string' ? subcategoria_nombre.trim() : '';
+    if (!nombreCategoria) throw new Error('El nombre de la categoría es requerido.');
+
+    const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
+    const productos = await Producto.findAll({
+      where: {
+        id: { [Op.in]: ids },
+        inquilino_id,
+        activo: true,
+        ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+      },
+      attributes: ['id', 'precio_base'],
+    });
+
+    if (productos.length !== ids.length) {
+      throw new Error('Uno o más productos no se encontraron en tu catálogo.');
+    }
+
+    return require('../models').sequelize.transaction(async (transaction) => {
+      const categoria = await this.buscarOCrearCategoria(nombreCategoria, inquilino_id, null, transaction);
+      const categoriaFinal = nombreSubcategoria
+        ? await this.buscarOCrearCategoria(nombreSubcategoria, inquilino_id, categoria.id, transaction)
+        : categoria;
+
+      for (const producto of productos) {
+        const precioBase = parseFloat(producto.precio_base) || 0;
+        const [registro] = await PrecioUsuario.findOrCreate({
+          where: { usuario_id, tipo: 'producto', referencia_id: producto.id },
+          defaults: {
+            usuario_id,
+            inquilino_id,
+            tipo: 'producto',
+            referencia_id: producto.id,
+            precio: precioBase,
+            categoria_id: categoriaFinal.id,
+          },
+          transaction,
+        });
+
+        if (Number(registro.categoria_id) !== Number(categoriaFinal.id)) {
+          registro.categoria_id = categoriaFinal.id;
+          await registro.save({ transaction });
+        }
+      }
+
+      return {
+        actualizados: productos.length,
+        categoria: { id: categoria.id, nombre: categoria.nombre },
+        subcategoria: categoriaFinal.id === categoria.id ? null : { id: categoriaFinal.id, nombre: categoriaFinal.nombre },
+      };
+    });
   }
 
   // ─── Análisis de sensibilidad ───────────────────────────────────────────────

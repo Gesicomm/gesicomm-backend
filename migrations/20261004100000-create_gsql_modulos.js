@@ -9,7 +9,7 @@ const modulosIniciales = [
   ['mis-pedidos', 'ecommerce', 'OPERACIONES', 'Pedidos', '/mis-pedidos', null, 'ShoppingCart', 'mis-pedidos', [], null, null, 'seguimientos_vencidos', 60],
   ['inventario', 'ecommerce', 'OPERACIONES', 'Inventario / Ingresos', '/inventario', null, 'PackageCheck', 'inventario', ['usuario', 'administrador'], null, null, null, 70],
   ['mis-abastecimientos', 'ecommerce', 'OPERACIONES', 'Mis Abastecimientos', '/mis-abastecimientos', null, 'Truck', 'mis-abastecimientos', ['usuario', 'administrador'], null, null, null, 80],
-  ['pedidos-configuracion', 'ecommerce', 'OPERACIONES', 'Flujos de mensajes', '/pedidos/configuracion', null, 'Settings', 'pedidos-configuracion', ['usuario', 'administrador'], null, null, null, 90],
+  ['pedidos-configuracion', 'ecommerce', 'OPERACIONES', 'Flujos y plantillas', '/pedidos/configuracion', null, 'Settings', 'pedidos-configuracion', ['usuario', 'administrador'], null, null, null, 90],
   ['mi-dashboard', 'ecommerce', 'ANÁLISIS', 'Dashboard', '/mi-dashboard', null, 'LayoutDashboard', 'mi-dashboard', ['usuario', 'administrador'], null, null, null, 100],
   ['finanzas-costos-gastos', 'ecommerce', 'ANÁLISIS', 'Control financiero', '/finanzas/costos-gastos', null, 'Receipt', 'finanzas-costos-gastos', ['usuario', 'administrador'], null, null, null, 110],
   ['finanzas-proveedores', 'ecommerce', 'ANÁLISIS', 'Proveedores', '/finanzas/proveedores', null, 'Truck', 'finanzas-proveedores', ['administrador'], null, null, null, 120],

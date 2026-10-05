@@ -45,9 +45,20 @@ function filtroPropietario({ usuarioId, esAdmin }, extra = {}) {
 }
 
 const ORDEN_FLUJOS = [
+  ['tipo', 'ASC'],
+  ['predeterminado', 'DESC'],
   ['nombre', 'ASC'],
   [{ model: WhatsappFlujoFase, as: 'fases' }, 'orden', 'ASC'],
 ];
+
+const TIPOS_FLUJO = new Set([
+  'CONFIRMACION_PEDIDO_WEB',
+  'VENTA_WHATSAPP',
+  'SEGUIMIENTO_ENVIO',
+  'ESCALAMIENTO_VENTAS',
+]);
+
+const ACTIVACIONES_FLUJO = new Set(['AUTOMATICA', 'MANUAL']);
 
 /**
  * Valida y normaliza las fases que llegan del frontend.
@@ -90,10 +101,37 @@ function normalizarFases(fases) {
   return normalizadas;
 }
 
-function validarFlujo({ nombre }) {
+function normalizarTipoFlujo(tipo) {
+  const normalizado = String(tipo || 'CONFIRMACION_PEDIDO_WEB').trim().toUpperCase();
+  if (!TIPOS_FLUJO.has(normalizado)) {
+    throw errorHttp('Tipo de flujo inválido', 422);
+  }
+  return normalizado;
+}
+
+function normalizarActivacion(activacion) {
+  const normalizada = String(activacion || 'MANUAL').trim().toUpperCase();
+  if (!ACTIVACIONES_FLUJO.has(normalizada)) {
+    throw errorHttp('Activación de flujo inválida', 422);
+  }
+  return normalizada;
+}
+
+function validarFlujo({ nombre, tipo, activacion }) {
   if (!String(nombre || '').trim()) {
     throw errorHttp('El nombre del flujo es obligatorio', 422);
   }
+  normalizarTipoFlujo(tipo);
+  normalizarActivacion(activacion);
+}
+
+async function limpiarPredeterminado({ usuarioId, esAdmin, tipo, exceptoId = null }, t) {
+  const where = filtroPropietario({ usuarioId, esAdmin }, {
+    tipo,
+    predeterminado: true,
+    ...(exceptoId ? { id: { [Op.ne]: exceptoId } } : {}),
+  });
+  await WhatsappFlujo.update({ predeterminado: false }, { where, transaction: t });
 }
 
 /** Fases del flujo que ya tienen al menos un envío registrado: no se pueden borrar. */
@@ -194,17 +232,25 @@ async function obtenerFlujo(id, { usuarioId, esAdmin }) {
   return flujo;
 }
 
-async function crearFlujo({ nombre, descripcion, activo, fases }, { usuarioId, esAdmin }) {
-  validarFlujo({ nombre });
+async function crearFlujo({ nombre, descripcion, activo, fases, tipo, activacion, predeterminado }, { usuarioId, esAdmin }) {
+  validarFlujo({ nombre, tipo, activacion });
   const normalizadas = normalizarFases(fases);
+  const tipoNormalizado = normalizarTipoFlujo(tipo);
+  const activacionNormalizada = normalizarActivacion(activacion);
 
   const creado = await sequelize.transaction(async (t) => {
     await validarEtiquetas(normalizadas, { usuarioId, esAdmin }, t);
+    if (predeterminado) {
+      await limpiarPredeterminado({ usuarioId, esAdmin, tipo: tipoNormalizado }, t);
+    }
     const flujo = await WhatsappFlujo.create({
       usuario_id: usuarioId,
       nombre: String(nombre).trim(),
       descripcion: descripcion ? String(descripcion).trim() : null,
       activo: activo !== undefined ? !!activo : true,
+      tipo: tipoNormalizado,
+      activacion: activacionNormalizada,
+      predeterminado: !!predeterminado,
     }, { transaction: t });
     await sincronizarFases(flujo.id, normalizadas, t);
     return flujo;
@@ -213,23 +259,38 @@ async function crearFlujo({ nombre, descripcion, activo, fases }, { usuarioId, e
   return obtenerFlujo(creado.id, { usuarioId, esAdmin });
 }
 
-async function actualizarFlujo(id, { nombre, descripcion, activo, fases }, { usuarioId, esAdmin }) {
+async function actualizarFlujo(id, { nombre, descripcion, activo, fases, tipo, activacion, predeterminado }, { usuarioId, esAdmin }) {
   const flujo = await WhatsappFlujo.findOne({
     where: filtroPropietario({ usuarioId, esAdmin }, { id }),
   });
   if (!flujo) throw errorHttp('Flujo no encontrado', 404);
 
-  if (nombre !== undefined) validarFlujo({ nombre });
+  const tipoFinal = tipo !== undefined ? normalizarTipoFlujo(tipo) : flujo.tipo;
+  const activacionFinal = activacion !== undefined ? normalizarActivacion(activacion) : flujo.activacion;
+
+  if (nombre !== undefined || tipo !== undefined || activacion !== undefined) {
+    validarFlujo({
+      nombre: nombre !== undefined ? nombre : flujo.nombre,
+      tipo: tipoFinal,
+      activacion: activacionFinal,
+    });
+  }
   const normalizadas = fases !== undefined ? normalizarFases(fases) : null;
 
   await sequelize.transaction(async (t) => {
     if (normalizadas) await validarEtiquetas(normalizadas, { usuarioId, esAdmin }, t);
+    if (predeterminado === true) {
+      await limpiarPredeterminado({ usuarioId, esAdmin, tipo: tipoFinal, exceptoId: flujo.id }, t);
+    }
     await flujo.update({
       nombre: nombre !== undefined ? String(nombre).trim() : flujo.nombre,
       descripcion: descripcion !== undefined
         ? (descripcion ? String(descripcion).trim() : null)
         : flujo.descripcion,
       activo: activo !== undefined ? !!activo : flujo.activo,
+      tipo: tipoFinal,
+      activacion: activacionFinal,
+      predeterminado: predeterminado !== undefined ? !!predeterminado : flujo.predeterminado,
     }, { transaction: t });
     if (normalizadas) await sincronizarFases(flujo.id, normalizadas, t);
   });

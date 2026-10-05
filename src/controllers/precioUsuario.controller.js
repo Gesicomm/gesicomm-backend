@@ -49,6 +49,25 @@ async function guardarPrecioProducto(req, res) {
   }
 }
 
+async function categorizarProductos(req, res) {
+  try {
+    const esAdmin = req.usuario.rol === 'administrador';
+    const resultado = await PrecioUsuarioService.categorizarProductos(
+      req.usuario.id,
+      req.usuario.tenantId,
+      req.body,
+      esAdmin,
+    );
+    return res.json(resultado);
+  } catch (err) {
+    console.error('[vitrina] categorizarProductos:', err.message);
+    const status = err.message?.includes('no encontrado') ? 404
+      : err.message?.includes('requerid') || err.message?.includes('Seleccion') ? 400
+      : 500;
+    return res.status(status).json({ message: err.message || 'Error al categorizar productos.' });
+  }
+}
+
 async function guardarPrecioCombo(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
@@ -91,4 +110,12 @@ async function sensibilidadCombo(req, res) {
   }
 }
 
-module.exports = { catalogo, catalogoPaginado, guardarPrecioProducto, guardarPrecioCombo, sensibilidadProducto, sensibilidadCombo };
+module.exports = {
+  catalogo,
+  catalogoPaginado,
+  guardarPrecioProducto,
+  categorizarProductos,
+  guardarPrecioCombo,
+  sensibilidadProducto,
+  sensibilidadCombo,
+};
