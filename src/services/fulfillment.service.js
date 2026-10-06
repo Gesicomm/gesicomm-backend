@@ -28,8 +28,14 @@ function errorHttp(message, status = 400) {
  * decide dónde se recibe el stock comprado, éste qué pasa cuando se vende.
  */
 class FulfillmentService {
-  static async tiendaDe(usuarioId) {
-    const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
+  // tiendaId es la tienda activa de la sesión (req.usuario.tiendaId): con
+  // 2+ tiendas de una cuenta, modalidad_fulfillment y deposito_fulfillment_id
+  // son por tienda, no por cuenta — sin tiendaId se cae a "la" tienda del
+  // usuario solo como compatibilidad para cuentas de una sola tienda.
+  static async tiendaDe(usuarioId, tiendaId = null) {
+    const tienda = tiendaId
+      ? await Tienda.findOne({ where: { id: tiendaId, usuario_id: usuarioId } })
+      : await Tienda.findOne({ where: { usuario_id: usuarioId } });
     if (!tienda) throw errorHttp('Todavía no tenés una tienda creada.', 404);
     return tienda;
   }
@@ -199,8 +205,8 @@ class FulfillmentService {
    * elija con información: qué tiene hoy, qué depósitos puede usar y qué
    * cobertura ofrece cada opción.
    */
-  static async obtenerConfiguracion(usuarioId) {
-    const tienda = await this.tiendaDe(usuarioId);
+  static async obtenerConfiguracion(usuarioId, tiendaId = null) {
+    const tienda = await this.tiendaDe(usuarioId, tiendaId);
 
     const [depositos, proveedoresGesicomm] = await Promise.all([
       Deposito.findAll({
@@ -234,8 +240,8 @@ class FulfillmentService {
     };
   }
 
-  static async guardarConfiguracion(usuarioId, { modalidad, depositoId } = {}) {
-    const tienda = await this.tiendaDe(usuarioId);
+  static async guardarConfiguracion(usuarioId, { modalidad, depositoId } = {}, tiendaId = null) {
+    const tienda = await this.tiendaDe(usuarioId, tiendaId);
 
     const valor = String(modalidad || '').trim().toUpperCase();
     if (!MODALIDADES.includes(valor)) {
@@ -265,15 +271,15 @@ class FulfillmentService {
     }
 
     await tienda.update(cambios);
-    return this.obtenerConfiguracion(usuarioId);
+    return this.obtenerConfiguracion(usuarioId, tiendaId);
   }
 
   /**
    * Quién puede entregar un pedido de este comercio, según su modalidad: sus
    * couriers si despacha él, los proveedores de la red si despacha Gesicomm.
    */
-  static async operadoresParaEntrega(usuarioId) {
-    const tienda = await this.tiendaDe(usuarioId);
+  static async operadoresParaEntrega(usuarioId, tiendaId = null) {
+    const tienda = await this.tiendaDe(usuarioId, tiendaId);
 
     if (tienda.modalidad_fulfillment === 'GESICOMM') {
       return ProveedorLogistico.findAll({ where: { activo: true }, order: [['nombre', 'ASC']] });

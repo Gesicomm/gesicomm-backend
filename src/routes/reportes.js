@@ -7,7 +7,8 @@ const { verificarToken } = require('../middleware/autenticacion');
 router.post('/kpis', verificarToken, async (req, res) => {
   try {
     // req.usuario en vez de req.user
-    const kpis = await ReporteService.obtenerKPIs(req.usuario.id, req.body);
+    const filtros = { ...req.body, tienda_id: req.usuario.tiendaId || null };
+    const kpis = await ReporteService.obtenerKPIs(req.usuario.id, filtros);
     res.json(kpis);
   } catch (error) {
     console.error('Error al obtener KPIs:', error);
@@ -18,7 +19,8 @@ router.post('/kpis', verificarToken, async (req, res) => {
 // POST /api/reportes/evolucion-ventas
 router.post('/evolucion-ventas', verificarToken, async (req, res) => {
   try {
-    const data = await ReporteService.obtenerEvolucionVentas(req.usuario.id, req.body);
+    const filtros = { ...req.body, tienda_id: req.usuario.tiendaId || null };
+    const data = await ReporteService.obtenerEvolucionVentas(req.usuario.id, filtros);
     res.json(data);
   } catch (error) {
     console.error('Error al obtener evolucion ventas:', error);
@@ -30,6 +32,7 @@ router.post('/evolucion-ventas', verificarToken, async (req, res) => {
 router.post('/pedidos', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerPedidos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -42,6 +45,7 @@ router.post('/pedidos', verificarToken, async (req, res) => {
 router.post('/items', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerItemsVendidos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -54,6 +58,7 @@ router.post('/items', verificarToken, async (req, res) => {
 router.post('/comisiones', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteComisiones(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -66,6 +71,7 @@ router.post('/comisiones', verificarToken, async (req, res) => {
 router.post('/facturacion', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteFacturacion(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -78,6 +84,7 @@ router.post('/facturacion', verificarToken, async (req, res) => {
 router.post('/productos', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteProductos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -90,6 +97,7 @@ router.post('/productos', verificarToken, async (req, res) => {
 router.post('/confirmadores', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteConfirmadores(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -102,6 +110,7 @@ router.post('/confirmadores', verificarToken, async (req, res) => {
 router.post('/composicion', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteComposicion(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -115,6 +124,7 @@ router.post('/composicion', verificarToken, async (req, res) => {
 router.post('/clientes', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteClientes(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -127,6 +137,7 @@ router.post('/clientes', verificarToken, async (req, res) => {
 router.post('/metodos-pago', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteMetodosPago(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -139,6 +150,7 @@ router.post('/metodos-pago', verificarToken, async (req, res) => {
 router.post('/fallos', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteFallos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -152,6 +164,7 @@ router.post('/fallos', verificarToken, async (req, res) => {
 router.post('/geografia', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteGeografia(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -164,6 +177,7 @@ router.post('/geografia', verificarToken, async (req, res) => {
 router.post('/logistica', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteLogistica(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
@@ -176,6 +190,7 @@ router.post('/logistica', verificarToken, async (req, res) => {
 router.post('/cross-selling', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
+    filtros.tienda_id = req.usuario.tiendaId || null;
     const datos = await ReporteService.obtenerReporteCrossSelling(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {

@@ -3655,6 +3655,7 @@ class LandingService {
       const numeroPedido = await PedidoNumeracion.reservarNumeroPedido(tienda.usuario_id, t);
       const envioCreado = await Envio.create({
         usuario_id: tienda.usuario_id,
+        tienda_id: tienda.id,
         numero_pedido: numeroPedido,
         cliente: nombre_cliente.trim(),
         nombre_cliente: nombre_cliente.trim(),

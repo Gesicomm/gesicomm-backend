@@ -1349,11 +1349,11 @@ async function getPagosOnlineAnalytics(whereBase) {
 // del filtro por producto) — sin acotar por rango de fechas, igual que ya
 // hace confirmadoresDisponiblesPromise, para que la lista no "desaparezca"
 // productos al cambiar de período.
-async function getProductosDisponibles(usuario_id) {
+async function getProductosDisponibles(usuario_id, tienda_id = null) {
   const filas = await EnvioItem.findAll({
     attributes: [[fn('DISTINCT', col('EnvioItem.producto_id')), 'producto_id']],
     where: { producto_id: { [Op.ne]: null } },
-    include: [{ model: Envio, attributes: [], where: { usuario_id }, required: true }],
+    include: [{ model: Envio, attributes: [], where: { usuario_id, ...(tienda_id ? { tienda_id } : {}) }, required: true }],
     raw: true,
   });
   const ids = filas.map(f => f.producto_id).filter(Boolean);
@@ -1583,7 +1583,7 @@ function getLandingsDisponibles(landingsTienda) {
 // Años con al menos un pedido, para el <select> de año del filtro "Por mes".
 // `fecha` es un STRING (no DATE) en el modelo Envio, así que el año se saca
 // en JS a partir de dispatchedAt/fecha en vez de un EXTRACT() en SQL.
-async function getAniosDisponibles(usuario_id) {
+async function getAniosDisponibles(usuario_id, tienda_id = null) {
   // El DISTINCT lo hace Postgres. Antes esto traía TODAS las filas de pedidos
   // del usuario a memoria solo para leerles el año: con pocos pedidos no se
   // nota, con decenas de miles es una consulta que crece para siempre.
@@ -1597,8 +1597,9 @@ async function getAniosDisponibles(usuario_id) {
               substring("fecha" from '^[0-9]{4}')::int
             ) AS anio
        FROM "envios"
-      WHERE "usuario_id" = :usuario_id`,
-    { replacements: { usuario_id }, type: sequelize.QueryTypes.SELECT }
+      WHERE "usuario_id" = :usuario_id
+        AND (:tienda_id::INTEGER IS NULL OR "tienda_id" = :tienda_id)`,
+    { replacements: { usuario_id, tienda_id }, type: sequelize.QueryTypes.SELECT }
   );
 
   const anios = new Set([new Date().getFullYear()]);
@@ -1680,11 +1681,15 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
 // Se exporta para poder verificar la regla de pérdida sin base de datos.
 exports.perdidaDeItem = perdidaDeItem;
 
-exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = null) => {
+exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = null, tienda_id = null) => {
   const { desde, hasta } = resolverRangoFechas(filtros);
 
   const whereBase = {
     usuario_id,
+    // Cada tienda ve solo sus propios números. tienda_id llega null solo
+    // cuando la cuenta todavía no tiene ninguna tienda (ver
+    // resolverTiendaActiva) — ahí no hay nada que filtrar.
+    ...(tienda_id ? { tienda_id } : {}),
     [Op.or]: [
       { dispatchedAt: { [Op.between]: [desde, hasta] } },
       { fecha: { [Op.between]: [desde, hasta] } }
@@ -1745,7 +1750,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
   // Antes cada uno hacía su propia consulta, encadenadas: tres viajes para
   // los mismos datos. La promesa arranca acá y se resuelve dentro de la ola
   // grande de abajo, sin agregar una ola propia.
-  const landingsTiendaPromise = catalogoCacheado(`landings:${usuario_id}`, () => sequelize.query(
+  const landingsTiendaPromise = catalogoCacheado(`landings:${usuario_id}:${tienda_id ?? 'todas'}`, () => sequelize.query(
     `SELECT l.id,
             l.nombre,
             l.slug,
@@ -1755,9 +1760,11 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
             (SELECT COUNT(*)::int FROM landing_eventos le WHERE le.landing_id = l.id) AS eventos_total,
             (SELECT COUNT(*)::int FROM envios e WHERE e.landing_id = l.id) AS pedidos_total
        FROM landings l
-      WHERE l.tienda_id IN (SELECT id FROM tiendas WHERE usuario_id = :usuario_id)
+      WHERE l.tienda_id IN (
+        SELECT id FROM tiendas WHERE usuario_id = :usuario_id AND (:tienda_id::INTEGER IS NULL OR id = :tienda_id)
+      )
       ORDER BY l.created_at ASC`,
-    { replacements: { usuario_id }, type: sequelize.QueryTypes.SELECT }
+    { replacements: { usuario_id, tienda_id }, type: sequelize.QueryTypes.SELECT }
   ));
 
   // Catálogo de canales del tenant y tienda del usuario: ninguno depende del
@@ -1777,8 +1784,8 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
 
 
   // Lista de confirmadores únicos disponibles en el inquilino
-  const confirmadoresDisponiblesPromise = catalogoCacheado(`confirmadores:${usuario_id}`, () => Envio.findAll({
-    where: { usuario_id, confirmador: { [Op.ne]: null } },
+  const confirmadoresDisponiblesPromise = catalogoCacheado(`confirmadores:${usuario_id}:${tienda_id ?? 'todas'}`, () => Envio.findAll({
+    where: { usuario_id, ...(tienda_id ? { tienda_id } : {}), confirmador: { [Op.ne]: null } },
     attributes: [[fn('DISTINCT', col('confirmador')), 'confirmador']],
     raw: true,
   }));
@@ -1817,8 +1824,8 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     confirmadoresDisponiblesPromise,
     getGastosOperativos(usuario_id, desde, hasta, inquilino_id),
     getPagosOnlineAnalytics(whereBase),
-    catalogoCacheado(`productos:${usuario_id}`, () => getProductosDisponibles(usuario_id)),
-    catalogoCacheado(`anios:${usuario_id}`, () => getAniosDisponibles(usuario_id)),
+    catalogoCacheado(`productos:${usuario_id}:${tienda_id ?? 'todas'}`, () => getProductosDisponibles(usuario_id, tienda_id)),
+    catalogoCacheado(`anios:${usuario_id}:${tienda_id ?? 'todas'}`, () => getAniosDisponibles(usuario_id, tienda_id)),
     landingsTiendaPromise.then(getLandingsDisponibles),
     landingsTiendaPromise.then(ls => getRankingLandings(whereRanking, desde, hasta, ls)),
     getComparativoPeriodo(whereBase, usuario_id, desde, hasta, filtros.producto_id, inquilino_id),

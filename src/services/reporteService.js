@@ -15,7 +15,10 @@ class ReporteService {
    * o si se pasa usuario_id, filtra por ese usuario directamente.
    */
   static _aplicarFiltrosGlobales(whereEnvio, filtros) {
-    const { estado, metodo_pago, canal_venta_id, ciudad, fecha_desde, fecha_hasta, buscador } = filtros;
+    const { estado, metodo_pago, canal_venta_id, ciudad, fecha_desde, fecha_hasta, buscador, tienda_id } = filtros;
+    // tienda_id llega desde el route handler (req.usuario.tiendaId, nunca del
+    // body sin validar) — cada tienda ve solo sus propios pedidos.
+    if (tienda_id) whereEnvio.tienda_id = tienda_id;
     if (fecha_desde && fecha_hasta) {
       whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
     }
@@ -38,6 +41,10 @@ class ReporteService {
     const replacements = { usuario_id, estados_exitosos: ESTADOS_ANALITICA.EXITOSOS };
     const condiciones = ['e.usuario_id = :usuario_id'];
 
+    if (filtros.tienda_id) {
+      condiciones.push('e.tienda_id = :tienda_id');
+      replacements.tienda_id = filtros.tienda_id;
+    }
     if (filtros.estado && filtros.estado !== 'TODOS') {
       condiciones.push('e.estado = :estado');
       replacements.estado = filtros.estado;
@@ -367,11 +374,12 @@ class ReporteService {
 
   static async obtenerItemsVendidos(usuario_id, pagina = 1, limite = 50, filtros = {}) {
     const offset = (pagina - 1) * limite;
-    const { fecha_desde, fecha_hasta, buscador } = filtros;
+    const { fecha_desde, fecha_hasta, buscador, tienda_id } = filtros;
 
-    const whereEnvio = { 
+    const whereEnvio = {
       estado: ESTADOS_ANALITICA.EXITOSOS,
-      usuario_id: usuario_id 
+      usuario_id: usuario_id,
+      ...(tienda_id ? { tienda_id } : {}),
     };
     
     if (fecha_desde && fecha_hasta) {
@@ -423,13 +431,14 @@ class ReporteService {
 
   static async obtenerReporteComisiones(usuario_id, pagina = 1, limite = 50, filtros = {}) {
     const offset = (pagina - 1) * limite;
-    const { buscador, confirmador, courierId, courier_id } = filtros;
+    const { buscador, confirmador, courierId, courier_id, tienda_id } = filtros;
     const finalCourierId = courierId || courier_id;
     const { desde, hasta } = resolverRangoFechas(filtros);
 
-    const whereEnvio = { 
+    const whereEnvio = {
       usuario_id: usuario_id,
-      estado: ESTADOS_ANALITICA.EXITOSOS
+      estado: ESTADOS_ANALITICA.EXITOSOS,
+      ...(tienda_id ? { tienda_id } : {}),
     };
     
     if (desde && hasta) {
@@ -507,14 +516,15 @@ class ReporteService {
 
   static async obtenerReporteFacturacion(usuario_id, pagina = 1, limite = 50, filtros = {}) {
     const offset = (pagina - 1) * limite;
-    const { buscador, confirmador, courierId, courier_id } = filtros;
+    const { buscador, confirmador, courierId, courier_id, tienda_id } = filtros;
     const finalCourierId = courierId || courier_id;
     const { desde, hasta } = resolverRangoFechas(filtros);
 
-    const whereEnvio = { 
+    const whereEnvio = {
       usuario_id: usuario_id,
       quiere_factura: true,
-      estado: ESTADOS_ANALITICA.EXITOSOS
+      estado: ESTADOS_ANALITICA.EXITOSOS,
+      ...(tienda_id ? { tienda_id } : {}),
     };
     
     if (desde && hasta) {
@@ -768,11 +778,11 @@ class ReporteService {
 
   static async obtenerReporteConfirmadores(usuario_id, pagina = 1, limite = 50, filtros = {}) {
     const offset = (pagina - 1) * limite;
-    const { buscador, confirmador, courierId, courier_id } = filtros;
+    const { buscador, confirmador, courierId, courier_id, tienda_id } = filtros;
     const finalCourierId = courierId || courier_id;
     const { desde, hasta } = resolverRangoFechas(filtros);
 
-    const whereEnvio = { usuario_id };
+    const whereEnvio = { usuario_id, ...(tienda_id ? { tienda_id } : {}) };
     
     if (desde && hasta) {
       whereEnvio.fecha = { [Op.between]: [desde, hasta] };
