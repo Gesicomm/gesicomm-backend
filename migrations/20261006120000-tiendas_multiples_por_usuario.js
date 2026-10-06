@@ -31,7 +31,7 @@ module.exports = {
               AND rel.relname = 'tiendas'
               AND con.contype = 'u'
               AND (
-                SELECT array_agg(attname ORDER BY attnum)
+                SELECT array_agg(attname::text ORDER BY attnum)
                 FROM pg_attribute
                 WHERE attrelid = rel.oid AND attnum = ANY(con.conkey)
               ) = ARRAY['usuario_id']
