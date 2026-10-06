@@ -79,7 +79,7 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
       envioFila.abastecimiento_costo = abastecimiento.costo;
       envioFila.abastecimiento_pagado_at = null;
       envioFila.abastecimiento_recibido_at = null;
-      await descontarStockYSnapshot(envio.items || [], t, envioFila.usuario_id);
+      await descontarStockYSnapshot(envio.items || [], t, envioFila.usuario_id, { tiendaId: envioFila.tienda_id });
       envioFila.stock_descontado = true;
     }
 

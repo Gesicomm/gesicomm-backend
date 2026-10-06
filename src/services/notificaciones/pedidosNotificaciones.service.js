@@ -82,7 +82,9 @@ async function notificarAbastecimientoPagado(envioId) {
     || process.env.BREVO_FROM_EMAIL;
   if (!destinatario) return { enviado: false, razon: 'Email de notificación de abastecimiento sin configurar' };
 
-  const tienda = await Tienda.findOne({ where: { usuario_id: envio.usuario_id }, attributes: ['nombre'] });
+  const tienda = envio.tienda_id
+    ? await Tienda.findByPk(envio.tienda_id, { attributes: ['nombre'] })
+    : await Tienda.findOne({ where: { usuario_id: envio.usuario_id }, attributes: ['nombre'] });
   const costo = formatGs(envio.abastecimiento_costo);
   const pedidoUrl = urlPedidos();
   const numeroPedido = envio.numero_pedido || envio.id;
@@ -182,7 +184,9 @@ async function notificarComprobanteAbastecimientoSubido(envioId, historialId = n
     return { enviado: false, razon: 'El abastecimiento no tiene un comprobante pendiente de validación' };
   }
 
-  const tienda = await Tienda.findOne({ where: { usuario_id: envio.usuario_id }, attributes: ['nombre'] });
+  const tienda = envio.tienda_id
+    ? await Tienda.findByPk(envio.tienda_id, { attributes: ['nombre'] })
+    : await Tienda.findOne({ where: { usuario_id: envio.usuario_id }, attributes: ['nombre'] });
   const numeroPedido = envio.numero_pedido || envio.id;
   const tiendaNombre = tienda?.nombre || 'Tu tienda';
   const pedidoUrl = urlPedidos();

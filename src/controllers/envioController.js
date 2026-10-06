@@ -280,7 +280,13 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
   // salen de SU deposito, no tienen forma de retirar del centro de
   // Gesicomm. Reservar igual dejaria la venta atada a un lugar que nadie
   // va a ir a buscar.
-  const tienda = await Tienda.findOne({ where: { usuario_id }, transaction: t });
+  //
+  // La modalidad vive en Tienda, no en Envio: con 2+ tiendas de una cuenta
+  // hay que resolver la del PEDIDO (opciones.tiendaId, de envio.tienda_id),
+  // nunca "la" tienda del usuario, que con 2+ tiendas es ambigua.
+  const tienda = opciones.tiendaId
+    ? await Tienda.findByPk(opciones.tiendaId, { transaction: t })
+    : await Tienda.findOne({ where: { usuario_id }, transaction: t });
   const permiteGesicomm = tienda?.modalidad_fulfillment === 'GESICOMM';
 
   const recetaPorItem = new Map();
@@ -897,7 +903,23 @@ function esAdministrador(req) {
 }
 
 function whereEnviosDeUsuario(req) {
-  return esAdministrador(req) ? {} : { usuario_id: req.usuario.id };
+  if (esAdministrador(req)) return {};
+  const where = { usuario_id: req.usuario.id };
+  // Cada tienda ve solo sus propios pedidos. tiendaId falta solo en el caso
+  // borde de una cuenta sin ninguna tienda creada todavía (ver
+  // resolverTiendaActiva) — ahí no hay nada que filtrar.
+  if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+  return where;
+}
+
+// Mismo criterio que whereEnviosDeUsuario, para operar sobre UN pedido
+// puntual por id (ver, editar, cambiar estado): un comercio no puede tocar
+// un pedido de otra de sus tiendas aunque conozca el id.
+function filtroEnvioPropio(req, extra = {}) {
+  if (esAdministrador(req)) return extra;
+  const where = { ...extra, usuario_id: req.usuario.id };
+  if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+  return where;
 }
 
 function agregarBusquedaClienteONumero(where, cliente) {
@@ -1591,6 +1613,7 @@ exports.createEnvio = async (req, res) => {
     const nuevoEnvio = await Envio.create(
       {
         usuario_id,
+        tienda_id: req.usuario.tiendaId || null,
         numero_pedido: numeroPedido,
         courier_id: courier_id || null,
         cliente: fullCliente,
@@ -1663,7 +1686,7 @@ exports.createEnvio = async (req, res) => {
     // Si nace en "Confirmado", reserva stock real desde la creación.
     if (nuevoEnvio.estado === 'Confirmado') {
       const abastecimiento = await aplicarAbastecimientoCalculado(nuevoEnvio, nuevoEnvio.items || [], usuario_id, t);
-      await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id, { origenPreferidoId: origen_preferido_id });
+      await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id, { origenPreferidoId: origen_preferido_id, tiendaId: nuevoEnvio.tienda_id });
       await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
       await require('../services/speedbox/service').queueConfirmedOrder(nuevoEnvio, t);
       await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
@@ -1757,7 +1780,7 @@ exports.updateEstado = async (req, res) => {
     }
 
     const idNum = parseInt(id, 10) || 0;
-    const filtro = esAdministrador(req) ? { id: idNum } : { id: idNum, usuario_id };
+    const filtro = filtroEnvioPropio(req, { id: idNum });
 
     // Bloqueo de la fila ANTES de leerla con sus items. Sin esto, dos cambios
     // de estado simultáneos sobre el mismo pedido —un doble click en
@@ -1921,7 +1944,7 @@ exports.updateEstado = async (req, res) => {
             t
           );
         }
-        await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id, { origenPreferidoId: origen_preferido_id });
+        await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id, { origenPreferidoId: origen_preferido_id, tiendaId: envio.tienda_id });
         updateData.stock_descontado = true;
       }
       if (estado === 'Despachado' && !envio.stock_despachado) {
@@ -2101,7 +2124,7 @@ exports.actualizarPrecioItem = async (req, res) => {
       return res.status(400).json({ error: 'precio_unitario debe ser un número mayor o igual a 0.' });
     }
 
-    const filtro = esAdministrador(req) ? { id } : { id, usuario_id };
+    const filtro = filtroEnvioPropio(req, { id });
 
     // Mismo patrón de bloqueo que updateEstado: lock en consulta aparte,
     // sin include, para no golpear un FOR UPDATE contra el lado nullable
@@ -2233,7 +2256,7 @@ exports.definirLogisticaAbastecimiento = async (req, res) => {
     }
 
     const envio = await Envio.findOne({
-      where: esAdministrador(req) ? { id } : { id, usuario_id },
+      where: filtroEnvioPropio(req, { id }),
     });
     if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
 
@@ -2286,10 +2309,9 @@ exports.definirLogisticaAbastecimiento = async (req, res) => {
 };
 
 async function envioParaAbastecimiento(req) {
-  const usuario_id = req.usuario.id;
   const { id } = req.params;
   return Envio.findOne({
-    where: esAdministrador(req) ? { id } : { id, usuario_id },
+    where: filtroEnvioPropio(req, { id }),
     include: [{ model: EnvioItem, as: 'items' }],
   });
 }
@@ -2428,7 +2450,7 @@ exports.registrarDevolucion = async (req, res) => {
     // sobre el mismo envio lo moverian dos veces (READ COMMITTED no los
     // aisla). Sin include, asi que el FOR UPDATE es directo.
     const envio = await Envio.findOne({
-      where: { id, usuario_id },
+      where: { id, usuario_id, ...(req.usuario.tiendaId ? { tienda_id: req.usuario.tiendaId } : {}) },
       transaction: t,
       lock: Transaction.LOCK.UPDATE,
     });
@@ -2522,7 +2544,7 @@ exports.registrarPerdida = async (req, res) => {
     // sobre el mismo envio lo moverian dos veces (READ COMMITTED no los
     // aisla). Sin include, asi que el FOR UPDATE es directo.
     const envio = await Envio.findOne({
-      where: { id, usuario_id },
+      where: { id, usuario_id, ...(req.usuario.tiendaId ? { tienda_id: req.usuario.tiendaId } : {}) },
       transaction: t,
       lock: Transaction.LOCK.UPDATE,
     });
@@ -2652,15 +2674,17 @@ exports.conteoPorEstado = async (req, res) => {
 
     try {
       const tenantId = req.usuario.id;
+      const tiendaIdFiltro = esAdministrador(req) ? null : req.usuario.tiendaId || null;
       const [vencidosFila] = await sequelize.query(`
         SELECT COUNT(DISTINCT e.id) AS cantidad
         FROM envios e
         INNER JOIN seguimiento_recordatorios sr ON sr.envio_id = e.id
         WHERE e.usuario_id = :tenantId
+          AND (:tiendaId::INTEGER IS NULL OR e.tienda_id = :tiendaId)
           AND e.estado NOT IN ('Entregado', 'Cancelado', 'Devuelto', 'Perdido')
           AND (sr.estado = 'VENCIDO' OR (sr.estado = 'PENDIENTE' AND sr.ejecutar_en <= NOW()))
       `, {
-        replacements: { tenantId },
+        replacements: { tenantId, tiendaId: tiendaIdFiltro },
         type: Sequelize.QueryTypes.SELECT,
       });
       conteos.seguimiento_vencidos = parseInt(vencidosFila?.cantidad || 0, 10);
@@ -3058,10 +3082,9 @@ exports.dashboardGeneralPedidos = async (req, res) => {
  */
 exports.obtenerHistorial = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
     const { id } = req.params;
 
-    const envio = await Envio.findOne({ where: { id, usuario_id } });
+    const envio = await Envio.findOne({ where: filtroEnvioPropio(req, { id }) });
     if (!envio) return res.status(404).json({ error: 'Envío no encontrado' });
 
     const historial = await EnvioHistorial.findAll({
@@ -3091,7 +3114,7 @@ exports.getDashboardMetricas = async (req, res) => {
     const usuario_id = req.usuario.id;
     const filtros = req.body || {};
 
-    const data = await getAnalyticsCompleto(filtros, usuario_id, req.usuario.tenantId);
+    const data = await getAnalyticsCompleto(filtros, usuario_id, req.usuario.tenantId, esAdministrador(req) ? null : req.usuario.tiendaId || null);
     res.json(data);
   } catch (error) {
     console.error('Error in getDashboardMetricas:', error);

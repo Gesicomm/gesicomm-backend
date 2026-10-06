@@ -11,6 +11,13 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  tienda_id: {
+    // De qué Tienda vino el pedido, para cuentas con 2+ tiendas (ver
+    // migracion 20261006130000). Nullable: pedidos viejos sin backfill
+    // posible quedan sin tienda asignada.
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   numero_pedido: {
     type: DataTypes.INTEGER,
     allowNull: false,

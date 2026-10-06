@@ -176,14 +176,17 @@ function eventIdCompra(envio) {
  *
  * @param {object} envio - Envio con id, landing_id, usuario_id, monto, numero_pedido, telefono, cliente, ciudad.
  * @param {object} [opciones]
- * @param {object} [opciones.tienda] - si no viene, se busca por envio.usuario_id.
+ * @param {object} [opciones.tienda] - si no viene, se busca por envio.tienda_id (la tienda real
+ *   del pedido — nunca por envio.usuario_id, que con 2+ tiendas de una cuenta es ambiguo).
  * @param {object} [opciones.contexto] - {client_ip, client_user_agent, fbc, fbp, event_source_url} del navegador, cuando lo hay.
  * @param {number} [opciones.numItems]
  */
 async function enviarCompra(envio, { tienda = null, contexto = {}, numItems = null } = {}) {
   try {
     if (!envio?.landing_id) return { enviado: false, motivo: 'El pedido no viene de una landing.' };
-    const tiendaFinal = tienda || await Tienda.findOne({ where: { usuario_id: envio.usuario_id } });
+    const tiendaFinal = tienda || (envio.tienda_id
+      ? await Tienda.findByPk(envio.tienda_id)
+      : await Tienda.findOne({ where: { usuario_id: envio.usuario_id } }));
     if (!tiendaFinal) return { enviado: false, motivo: 'Tienda no encontrada.' };
     const custom_data = {
       value: Math.max(0, Math.round(Number(envio.monto) || 0)),

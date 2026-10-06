@@ -162,7 +162,7 @@ async function whoisDominio(req, res) {
 /** GET /api/mi-tienda/fulfillment — modalidad actual + contexto para decidir. */
 async function obtenerFulfillment(req, res) {
   try {
-    return res.json(await FulfillmentService.obtenerConfiguracion(req.usuario.id));
+    return res.json(await FulfillmentService.obtenerConfiguracion(req.usuario.id, req.usuario.tiendaId || null));
   } catch (err) {
     const status = err.status || 500;
     if (status >= 500) console.error('[tienda] obtenerFulfillment:', err);
@@ -187,7 +187,7 @@ async function guardarFulfillment(req, res) {
     const resultado = await FulfillmentService.guardarConfiguracion(req.usuario.id, {
       modalidad: req.body?.modalidad,
       depositoId: req.body?.depositoId,
-    });
+    }, req.usuario.tiendaId || null);
     return res.json(resultado);
   } catch (err) {
     const status = err.status || 500;

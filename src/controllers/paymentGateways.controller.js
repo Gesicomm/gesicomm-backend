@@ -37,7 +37,11 @@ function urlRetornoPagopar(tienda) {
 exports.getPagoparConfig = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
-    const tienda = await Tienda.findOne({ where: { usuario_id } });
+    // La URL de retorno depende del dominio/subdominio de la tienda, que es
+    // por tienda: se muestra la de la tienda activa, no una cualquiera.
+    const tienda = req.usuario.tiendaId
+      ? await Tienda.findOne({ where: { id: req.usuario.tiendaId, usuario_id } })
+      : await Tienda.findOne({ where: { usuario_id } });
     const gateway = await PaymentGateway.findOne({
       where: { usuario_id, provider: 'pagopar' }
     });
