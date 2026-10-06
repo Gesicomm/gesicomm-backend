@@ -202,7 +202,7 @@ async function regenerarConIA(req, res) {
     const tienda = await resolverTiendaPropia(req, res);
     if (!tienda) return;
 
-    const TARGETS_VALIDOS = ['inicio', 'producto', 'producto_especifico'];
+    const TARGETS_VALIDOS = ['inicio', 'producto', 'producto_especifico', 'categoria', 'checkout'];
     const AILandingService = require('../services/aiLanding.service');
     const landing = await AILandingService.regenerarConIA({
       tienda_id: tienda.id,

@@ -570,6 +570,9 @@ class AILandingService {
     const hayVariantes = this._alguno(catalogo, p => Number(p.variantes_count) > 0);
     const hayGaleria = this._alguno(catalogo, p => Number(p.imagenes_count) > 1);
     const hayFichaDatos = this._alguno(catalogo, p => p.ficha_datos && typeof p.ficha_datos === 'object' && Object.keys(p.ficha_datos).length > 0);
+    const categorias = [...new Set(catalogo.map(p => p.categoria).filter(Boolean))];
+    const hayCategorias = categorias.length > 1;
+    const hayOfertasEntrada = catalogo.some(p => Number(p.precio_antes || p.precio_tachado || 0) > Number(p.precio_efectivo || p.precio_usuario || p.precio_base || p.precio || 0));
 
     const sections = [];
     const add = (id, reason, opts = {}) => {
@@ -585,13 +588,21 @@ class AILandingService {
     };
 
     add('trust_bar', 'Reduce fricción antes del primer CTA: envío, pago, devolución y seguridad.', { priority: 'high', omit_if_missing: false });
-    add('hero_product_value', 'Primera pantalla con propuesta clara, producto real, precio por bind y CTA principal.', { priority: 'high', omit_if_missing: false });
+    if (pageType !== 'product' && catalogo.length > 1) {
+      add('marketplace_header_search', 'Catálogo multiproducto: header con buscador dominante, categorías y carrito visible.', { priority: 'high', data_source: 'data-gesicomm-buscar, data-gesicomm-carrito' });
+      if (hayCategorias) add('category_departments', 'Hay categorías reales: usarlas como departamentos/accesos visuales antes de la grilla completa.', { priority: 'high', data_source: 'data-gesicomm-lista="categorias" o "menu_categorias"' });
+      add('modular_showcases', 'Home modular con vitrinas compactas: destacados, ofertas, novedades o curadas manuales según datos.', { data_source: 'productos_destacados/productos_ofertas/productos_novedades/productos_manual' });
+      if (hayOfertasEntrada) add('entry_offer', 'Hay ofertas reales: pueden funcionar como solución de entrada para convertir rápido sin escribir precios fijos.', { priority: 'high', data_source: 'productos_ofertas + binds de precio' });
+    }
+    add('hero_product_value', pageType === 'product'
+      ? 'Primera pantalla con propuesta clara, producto real, precio por bind y CTA principal.'
+      : 'Primera pantalla con propuesta clara de tienda/categoría y acceso rápido a productos reales.', { priority: 'high', omit_if_missing: false });
     if (hayGaleria) add('gallery_or_demo', 'Hay varias imágenes: conviene mostrar exploración visual o demo sin inventar media.');
     add('offer_price_cta', 'El precio, precio tachado y CTA deben salir de binds/data-gesicomm, no texto fijo.', { priority: 'high', omit_if_missing: false });
     if (hayVariantes) add('variants_selector', 'Hay variantes reales: se necesita selector visible antes de comprar.', { priority: 'high', data_source: 'data-gesicomm-lista="variantes"' });
     if (hayPaquetes) add('quantity_packages', 'Hay paquetes/ofertas por cantidad: usar lista "paquetes" como bloque de decisión.', { priority: 'high', data_source: 'data-gesicomm-lista="paquetes"' });
     if (hayBumps && pageType === 'product') add('order_bump_slot', 'Hay order bumps reales: reservar casilla arriba del botón de compra.', { priority: 'high', data_source: 'data-gesicomm-lista="ofertas_bump"' });
-    if (hayCombos) add('combos_or_bundle_value', 'Hay combos reales: mostrar ahorro/incluye sin inventar composición.', { data_source: 'data-gesicomm-lista="combos" o "combos_producto"' });
+    if (hayCombos) add('combos_or_bundle_value', 'Hay combos reales: mostrar ahorro/incluye sin inventar composición; sirven para subir ticket promedio.', { data_source: 'data-gesicomm-lista="combos" o "combos_producto"' });
     if (hayBeneficios || hayFichaDatos) add('benefits', 'Hay beneficios o datos de ficha: convertirlos en razones de compra escaneables.', { data_source: 'beneficios/ficha_datos' });
 
     if (familia === 'suplementos') {
@@ -612,7 +623,7 @@ class AILandingService {
     add('social_proof_real_only', 'Prueba social solo si hay datos reales; si no, usar marcador editable o no mostrar.', { data_source: 'testimonios reales', required_when: 'testimonios reales disponibles' });
     if (hayFaq) add('faq', 'Hay preguntas frecuentes reales: usarlas para resolver objeciones.', { data_source: 'data-gesicomm-lista="preguntas"' });
     else add('faq', 'FAQ útil para objeciones de envío, pago y cambios, sin inventar datos del producto.', { priority: 'optional', data_source: 'políticas/tienda' });
-    if (hayRelacionados) add('related_products', 'Productos relacionados/complementos permiten cross-sell sin bloquear la compra principal.', { data_source: 'data-gesicomm-lista="recomendados"' });
+    if (hayRelacionados) add('related_products', 'Distinguir complementos/accesorios de alternativas comparables; ambos pueden usar recomendados, pero con títulos distintos y sin inventar relación.', { data_source: 'data-gesicomm-lista="recomendados"' });
     add('guarantee_shipping_returns', 'Cierre de confianza con envío, pago seguro, cambios/devoluciones y links legales.', { priority: 'high', omit_if_missing: false });
     add('final_cta', 'Resumen de oferta y CTA final después de resolver objeciones.', { priority: 'high', omit_if_missing: false });
 
@@ -627,6 +638,9 @@ class AILandingService {
         'El plan interno solo completa criterio comercial cuando el pedido no especifica una estructura. No lo uses para rediseñar una plantilla que el comerciante pidió rellenar.',
         'Si el pedido del comerciante especifica qué secciones quiere (o cuáles no quiere), construí solo lo que pidió, sin sumarle secciones de acá que no mencionó.',
         'Podés fusionar o representar visualmente secciones de manera creativa solo cuando el comerciante no haya pedido una plantilla/estructura concreta.',
+        'Para catálogos amplios, pensá como sistema e-commerce conectado: descubrimiento, categorías, vitrinas, catálogo, ficha, carrito y checkout; no como una landing lineal de once secciones.',
+        'Si el usuario pide inspiración tipo Wayfair/marketplace, replicá la lógica estructural compatible con Gesicomm, no marcas, políticas, membresías, reseñas, favoritos ni financiación inexistentes.',
+        'La estrategia interna puede ser entrada económica + complementos de mayor valor, pero al comprador se le comunica como solución de entrada, combos, accesorios o colecciones útiles; no mencionar margen.',
         'No inventes testimonios, certificaciones, comparaciones, stock, precios, descuentos ni claims médicos.',
         'Los datos comerciales deben salir de data-gesicomm-* y de las listas del runtime.',
         'Si una sección no tiene datos reales suficientes, omitila o dejá un marcador editable claramente marcado.',
@@ -641,6 +655,9 @@ class AILandingService {
         has_gallery: hayGaleria,
         has_product_benefits: hayBeneficios,
         has_product_faq: hayFaq,
+        categories_count: categorias.length,
+        categories: categorias.slice(0, 30),
+        has_entry_offers: hayOfertasEntrada,
       },
       merchant_brief: comercio?.brief_comercial || null,
       sections,
@@ -1461,6 +1478,8 @@ class AILandingService {
    *     "este auricular quiero que se vea tech futurista" sin que
    *     compartan diseño: cada ficha propia vive en su propia clave, y un
    *     producto sin ficha propia sigue cayendo en la ficha general.
+   *   - 'categoria' → content.vistas.categoria (vista propia de categoría).
+   *   - 'checkout' → content.vistas.checkout (checkout propio del lienzo).
    *
    * Reutiliza los productos ya cargados en la landing (los de "Configurar
    * venta"): la IA no vuelve a preguntar qué vender, solo cómo mostrarlo.
@@ -1471,6 +1490,8 @@ class AILandingService {
     }
     const esFichaEspecifica = target === 'producto_especifico';
     const esFicha = target === 'producto' || esFichaEspecifica;
+    const esCategoria = target === 'categoria';
+    const esCheckout = target === 'checkout';
     if (esFichaEspecifica && !contentId) {
       throw new Error('Falta indicar de qué producto es la ficha.');
     }
@@ -1501,7 +1522,11 @@ class AILandingService {
       ? landingModel.content?.vistas?.productos?.[contentId]
       : esFicha
         ? landingModel.content?.vistas?.producto
-        : landingModel.content?.codigo;
+        : esCategoria
+          ? landingModel.content?.vistas?.categoria
+          : esCheckout
+            ? landingModel.content?.vistas?.checkout
+            : landingModel.content?.codigo;
     const instruccion = prompt.trim();
     const referenciaVisual = esFicha ? this.referenciaVisualInicio(landingModel) : '';
     const instruccionParaRAG = referenciaVisual
@@ -1529,7 +1554,7 @@ class AILandingService {
           : this.solicitarCodigoRAG({ prompt: instruccionParaRAG, tienda, productos: catalogoRAG, pageType, producto: productoContexto, comercio })),
         anterior: actual,
         instruccion,
-        vista: esFicha ? 'ficha' : 'inicio',
+        vista: esFicha ? 'ficha' : esCategoria ? 'categoria' : esCheckout ? 'checkout' : 'inicio',
         tienda,
         productos: catalogoRAG,
         pageType,
@@ -1566,6 +1591,14 @@ class AILandingService {
     } else if (esFicha) {
       guardada = await LandingSimpleService.actualizarCodigo(landingModel, tienda_id, inquilino_id, {
         vistas: { producto: codigo },
+      });
+    } else if (esCategoria) {
+      guardada = await LandingSimpleService.actualizarCodigo(landingModel, tienda_id, inquilino_id, {
+        vistas: { categoria: codigo },
+      });
+    } else if (esCheckout) {
+      guardada = await LandingSimpleService.actualizarCodigo(landingModel, tienda_id, inquilino_id, {
+        vistas: { checkout: codigo },
       });
     } else {
       // Igual que en crearDesdeIA: demo_data solo llena urgencia/prueba_social

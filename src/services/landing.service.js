@@ -882,12 +882,9 @@ class LandingService {
 
   static TIPOS_SIN_CATALOGO = [
     'contacto',
-    'politica_privacidad',
-    'politica_reembolso',
-    'terminos_servicio',
-    'politica_envio',
-    'aviso_legal',
   ];
+
+  static TIPOS_PAGINA_PERSISTIDOS = new Set(['inicio', 'catalogo', 'contacto', 'funnel']);
 
   static async sincronizarTemaPaginasFijas(landing, payload = {}) {
     const tocoTema = this.CAMPOS_TEMA.some(campo => payload[campo] !== undefined);
@@ -903,11 +900,6 @@ class LandingService {
       { tipo_pagina: 'inicio', nombre: 'Inicio', es_home: true },
       { tipo_pagina: 'catalogo', nombre: 'Catálogo', es_home: false },
       { tipo_pagina: 'contacto', nombre: 'Contacto', es_home: false },
-      { tipo_pagina: 'politica_privacidad', nombre: 'Política de Privacidad', es_home: false, activo: true },
-      { tipo_pagina: 'politica_reembolso', nombre: 'Política de Reembolso', es_home: false, activo: true },
-      { tipo_pagina: 'terminos_servicio', nombre: 'Términos del Servicio', es_home: false, activo: true },
-      { tipo_pagina: 'politica_envio', nombre: 'Política de Envío', es_home: false, activo: true },
-      { tipo_pagina: 'aviso_legal', nombre: 'Aviso Legal', es_home: false, activo: true },
     ];
 
     const existentes = await Landing.findAll({ where: { tienda_id } });
@@ -1730,7 +1722,14 @@ class LandingService {
    */
   static async obtenerPublica(tienda, slug, preview = false, opciones = {}) {
     const where = { tienda_id: tienda.id };
-    if (opciones.tipoPagina) where.tipo_pagina = opciones.tipoPagina;
+    const tipoPaginaVirtual = opciones.tipoPagina && !this.TIPOS_PAGINA_PERSISTIDOS.has(opciones.tipoPagina)
+      ? opciones.tipoPagina
+      : null;
+    if (opciones.tipoPagina && this.TIPOS_PAGINA_PERSISTIDOS.has(opciones.tipoPagina)) where.tipo_pagina = opciones.tipoPagina;
+    else if (tipoPaginaVirtual) {
+      if (slug) where.slug = slug;
+      else where.es_home = true;
+    }
     else if (slug) where.slug = slug;
     else where.es_home = true;
 
@@ -2524,7 +2523,7 @@ class LandingService {
       es_home: landing.es_home,
       // El front lo usa para saber que en un funnel la landing ES la página
       // del producto (no hay :productId en la URL) — ver LandingPublica.jsx.
-      tipo_pagina: landing.tipo_pagina,
+      tipo_pagina: tipoPaginaVirtual || landing.tipo_pagina,
       // Contenido propio del embudo (propuesta de valor, CTA, franja de
       // confianza) — ver funnel.service.js#normalizarContent. En el resto
       // de las landings va vacío.

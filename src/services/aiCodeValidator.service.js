@@ -32,7 +32,9 @@
 const ATRIBUTOS_AUTOR = [
   'data-gesicomm-agregar', 'data-gesicomm-bind', 'data-gesicomm-bump', 'data-gesicomm-buscar',
   'data-gesicomm-cantidad-input', 'data-gesicomm-cargando', 'data-gesicomm-cargar-mas',
-  'data-gesicomm-categoria', 'data-gesicomm-comprar', 'data-gesicomm-countdown',
+  'data-gesicomm-categoria', 'data-gesicomm-categoria-ir', 'data-gesicomm-checkout-form',
+  'data-gesicomm-checkout-con-items', 'data-gesicomm-checkout-ir', 'data-gesicomm-checkout-vacio',
+  'data-gesicomm-comprar', 'data-gesicomm-countdown',
   'data-gesicomm-countdown-parte', 'data-gesicomm-evento', 'data-gesicomm-filtro',
   'data-gesicomm-form', 'data-gesicomm-form-ok', 'data-gesicomm-imagen-principal', 'data-gesicomm-inicio',
   'data-gesicomm-limite', 'data-gesicomm-link', 'data-gesicomm-lista', 'data-gesicomm-oferta',
@@ -52,9 +54,11 @@ const ATRIBUTOS_RUNTIME = [
 const ATRIBUTOS_VALIDOS = new Set([...ATRIBUTOS_AUTOR, ...ATRIBUTOS_RUNTIME]);
 
 const LISTAS_VALIDAS = new Set([
-  'catalogo', 'productos', 'productos_destacados', 'solo_productos', 'combos', 'combos_producto', 'recomendados',
+  'catalogo', 'categorias', 'menu_categorias', 'secciones_inicio', 'productos_seccion',
+  'productos', 'productos_destacados', 'productos_ofertas', 'productos_novedades', 'productos_manual',
+  'solo_productos', 'combos', 'combos_producto', 'recomendados',
   'ofertas', 'ofertas_bump', 'ofertas_pack', 'variantes', 'imagenes',
-  'beneficios', 'confianza', 'preguntas', 'combo_incluye', 'paquetes', 'estadisticas',
+  'beneficios', 'confianza', 'preguntas', 'combo_incluye', 'paquetes', 'estadisticas', 'checkout_items',
 ]);
 
 // Documentados en promptsCodigo.js / runtimeGesicomm.js aplicarBind(). No es
@@ -64,7 +68,7 @@ const BINDS_DOCUMENTADOS = new Set([
   'nombre', 'descripcion', 'descripcion_larga', 'precio', 'precio_antes', 'precio_separado',
   'por_unidad', 'descuento', 'ahorro', 'ahorro_texto', 'stock', 'incluye', 'imagen', 'url',
   'categoria', 'etiqueta', 'propuesta_valor', 'sobre', 'titulo', 'texto', 'pregunta', 'respuesta',
-  'valor',
+  'valor', 'categoria_url', 'precio_unitario', 'cantidad', 'subtotal', 'variante',
 ]);
 
 // Acciones que cuentan como "se puede comprar desde acá".
