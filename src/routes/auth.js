@@ -147,11 +147,15 @@ function enviarCookieTiendaActiva(req, res, tiendaId) {
 
 /**
  * Resuelve qué tienda queda activa para el payload del JWT: con una sola
- * tienda no hay nada que elegir; con varias, se respeta la cookie si sigue
- * apuntando a una tienda propia; si no hay forma de decidir (0 o ≥2 sin
- * cookie válida) queda en null y el frontend manda a /seleccionar-tienda.
+ * tienda no hay nada que elegir. Con varias, la cookie SOLO se respeta
+ * dentro de la misma sesión (para que /refresh no tenga que volver a
+ * preguntar cada 15 minutos) — en un login nuevo se ignora a propósito:
+ * el usuario tiene que elegir con qué tienda operar cada vez que inicia
+ * sesión, aunque haya elegido una la vez anterior.
+ * Si no hay forma de decidir (0 o ≥2 sin elección) queda en null y el
+ * frontend manda a /seleccionar-tienda.
  */
-async function resolverTiendaParaUsuario(usuarioId, cookieTiendaId) {
+async function resolverTiendaParaUsuario(usuarioId, cookieTiendaId, { respetarCookie = true } = {}) {
   const tiendas = await Tienda.findAll({
     where: { usuario_id: usuarioId },
     attributes: ['id', 'nombre', 'subdominio', 'logo_imagen'],
@@ -160,7 +164,7 @@ async function resolverTiendaParaUsuario(usuarioId, cookieTiendaId) {
   let tiendaId = null;
   if (tiendas.length === 1) {
     tiendaId = tiendas[0].id;
-  } else if (cookieTiendaId && tiendas.some(t => t.id === Number(cookieTiendaId))) {
+  } else if (respetarCookie && cookieTiendaId && tiendas.some(t => t.id === Number(cookieTiendaId))) {
     tiendaId = Number(cookieTiendaId);
   }
   return { tiendas: tiendas.map(t => t.toJSON()), tiendaId };
@@ -262,7 +266,10 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
       });
     }
 
-    const { tiendas, tiendaId } = await resolverTiendaParaUsuario(usuario.id, cookieTiendaId);
+    // Login nuevo: nunca se respeta la cookie de tienda recordada — con 2+
+    // tiendas, el usuario tiene que elegir con cuál operar en cada inicio
+    // de sesión (ver resolverTiendaParaUsuario).
+    const { tiendas, tiendaId } = await resolverTiendaParaUsuario(usuario.id, cookieTiendaId, { respetarCookie: false });
 
     const payload = {
       id: usuario.id,
