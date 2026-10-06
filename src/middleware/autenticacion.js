@@ -35,6 +35,7 @@ function verificarToken(req, res, next) {
       rol: payload.rol,
       permisos: payload.permisos || [],
       tenantId: payload.tenantId, // ⚠️ Siempre del token, nunca de req.body
+      tiendaId: payload.tiendaId ?? null, // tienda activa elegida al loguearse
     };
 
     next();

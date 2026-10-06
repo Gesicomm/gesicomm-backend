@@ -82,9 +82,17 @@ function manejarError(res, err, defaultMsg) {
   return res.status(status).json({ message, errores: err.errores });
 }
 
-/** @returns {Promise<import('../models').Tienda|null>} null si ya respondió el error */
+/**
+ * La tienda ACTIVA (req.usuario.tiendaId, resuelta por resolverTiendaActiva
+ * en las rutas) — nunca "la" tienda del usuario, que puede tener varias.
+ * @returns {Promise<import('../models').Tienda|null>} null si ya respondió el error
+ */
 async function resolverTiendaPropia(req, res) {
-  const tienda = await Tienda.findOne({ where: { usuario_id: req.usuario.id } });
+  if (!req.usuario.tiendaId) {
+    res.status(409).json({ message: 'Seleccioná una tienda antes de armar una landing.', codigo: 'TIENDA_NO_SELECCIONADA' });
+    return null;
+  }
+  const tienda = await Tienda.findOne({ where: { id: req.usuario.tiendaId, usuario_id: req.usuario.id } });
   if (!tienda) {
     res.status(409).json({ message: 'Todavía no tenés una tienda creada. Creála antes de armar una landing.' });
     return null;

@@ -10,10 +10,12 @@ const router = express.Router();
 
 const { verificarToken } = require('../middleware/autenticacion');
 const { verificarPermiso } = require('../middleware/autorizacion');
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 const ctrl = require('../controllers/landingSimple.controller');
 
 router.use(verificarToken);
 router.use(verificarPermiso('gestionar_landing'));
+router.use(resolverTiendaActiva);
 
 router.get('/', ctrl.listar);
 router.post('/', ctrl.crear);

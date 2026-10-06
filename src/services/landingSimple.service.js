@@ -482,9 +482,7 @@ class LandingSimpleService {
     // Cada vista se sanea por separado y ANTES de tocar content: si la de
     // producto no pasa, no se guarda a medias la de inicio.
     const limpioInicio = payload.codigo !== undefined ? LandingCodigoService.sanitizar(payload.codigo) : null;
-    const limpioProducto = payload.vistas?.producto !== undefined
-      ? this.sanitizarVista(payload.vistas.producto, 'Vista de producto')
-      : null;
+    const vistasLibres = this.sanitizarVistasLibres(payload.vistas);
     // Ficha propia de un producto (pisa la general solo para ese producto):
     // { [content_id]: {html,css,js} | null }. null = volver a la general.
     const fichasPropias = payload.vistas?.productos !== undefined
@@ -504,18 +502,9 @@ class LandingSimpleService {
         design_context: limpioInicio.design_context,
       };
     }
-    if (limpioProducto) {
-      advertencias = [...advertencias, ...limpioProducto.advertencias.map(a => `Vista de producto: ${a}`)];
-      content.vistas = {
-        ...(content.vistas || {}),
-        producto: {
-          html: limpioProducto.html,
-          css: limpioProducto.css,
-          js: limpioProducto.js,
-          fonts: limpioProducto.fonts,
-          design_context: limpioProducto.design_context,
-        },
-      };
+    if (vistasLibres) {
+      advertencias = [...advertencias, ...vistasLibres.advertencias];
+      content.vistas = { ...(content.vistas || {}), ...vistasLibres.vistas };
     }
     if (fichasPropias) {
       advertencias = [...advertencias, ...fichasPropias.advertencias];
@@ -546,7 +535,7 @@ class LandingSimpleService {
         content.venta = { ...content.venta, prueba_social: { ...content.venta.prueba_social, estado: 'confirmado' } };
       }
     }
-    if (limpioInicio || limpioProducto || fichasPropias || legales || payload.venta !== undefined || payload.confirmaciones !== undefined) {
+    if (limpioInicio || vistasLibres || fichasPropias || legales || payload.venta !== undefined || payload.confirmaciones !== undefined) {
       landing.content = content;
       landing.changed('content', true);
     }
@@ -557,6 +546,33 @@ class LandingSimpleService {
     }
     const dto = await this.obtener(landing.id, tienda_id);
     return { ...dto, codigo_advertencias: advertencias };
+  }
+
+  static sanitizarVistasLibres(vistas = {}) {
+    const DEFINICIONES = {
+      catalogo: 'Vista de catálogo',
+      producto: 'Vista de producto',
+      categoria: 'Vista de categoría',
+      checkout: 'Vista de checkout',
+    };
+    const entradas = Object.entries(DEFINICIONES)
+      .filter(([clave]) => vistas?.[clave] !== undefined);
+    if (!entradas.length) return null;
+
+    const limpias = {};
+    const advertencias = [];
+    for (const [clave, nombre] of entradas) {
+      const limpio = this.sanitizarVista(vistas[clave], nombre);
+      limpias[clave] = {
+        html: limpio.html,
+        css: limpio.css,
+        js: limpio.js,
+        fonts: limpio.fonts,
+        design_context: limpio.design_context,
+      };
+      advertencias.push(...limpio.advertencias.map(a => `${nombre}: ${a}`));
+    }
+    return { vistas: limpias, advertencias };
   }
 
   /**

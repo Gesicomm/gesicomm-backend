@@ -670,6 +670,147 @@ function listaDe(valor, max, mapear) {
 const enteroPositivo = v => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
 const contentId = v => (typeof v === 'string' && /^[a-z0-9-]{1,200}$/i.test(v) ? v : null);
 
+const TIPOS_SECCION_INICIO = ['categoria', 'ofertas', 'mas_vendidos', 'novedades', 'manual'];
+// Mismo criterio que imagenes_landing (ver más abajo): http(s) absoluta, o
+// ruta propia del backend (/uploads/...), nunca otro esquema.
+const urlMedia = v => (typeof v === 'string' && v.length <= 2048 && (/^https?:\/\/[^\s]+$/i.test(v) || /^\/(?!\/)[^\s]+$/.test(v)) ? v : '');
+const TIPOS_MEDIO = ['imagen', 'gif', 'video'];
+
+function limpiarBannerInicio(b) {
+  if (!b || typeof b !== 'object') return null;
+  return {
+    id: textoCorto(b.id, 60) || undefined,
+    activo: b.activo !== false,
+    titulo: textoCorto(b.titulo, 100),
+    subtitulo: textoCorto(b.subtitulo, 160),
+    etiqueta: textoCorto(b.etiqueta, 40),
+    cta_texto: textoCorto(b.cta_texto, 40),
+    enlace: textoCorto(b.enlace, 200),
+    imagen: urlMedia(b.imagen),
+    tipo_medio: TIPOS_MEDIO.includes(b.tipo_medio) ? b.tipo_medio : 'imagen',
+  };
+}
+
+function limpiarSeccionInicio(s) {
+  if (!s || typeof s !== 'object') return null;
+  const limite = Number(s.limite);
+  return {
+    id: textoCorto(s.id, 60) || undefined,
+    activo: s.activo !== false,
+    tipo: TIPOS_SECCION_INICIO.includes(s.tipo) ? s.tipo : 'categoria',
+    titulo: textoCorto(s.titulo, 100),
+    subtitulo: textoCorto(s.subtitulo, 160),
+    categoria: textoCorto(s.categoria, 100),
+    productos: listaDe(s.productos, 50, contentId),
+    limite: Number.isInteger(limite) && limite >= 1 && limite <= 24 ? limite : 4,
+  };
+}
+
+/**
+ * Contenido editable del "Inicio" del lienzo en blanco (menú, banners,
+ * categorías visuales y vitrinas) — ver inicioComercialDesdeVenta /
+ * normalizarInicioComercial en ConfigurarVentaCodigo.jsx (frontend), el
+ * espejo de esta función. `null` si no vino nada: antes esta clave NO se
+ * guardaba en absoluto (se perdía al hacer submit), este es el fix.
+ */
+// Secciones del body del Inicio que el comercio puede reordenar/ocultar como
+// bloques (ver EditorBloquesInicio en el frontend). El Menú vive en el header
+// fijo y no entra en esta lista — no tiene "posición" que mover.
+const TIPOS_BLOQUE_INICIO = [
+  'anuncios', 'banner', 'categorias', 'productos_categoria', 'destacados', 'confianza', 'marca',
+  'banner_intermedio', 'secciones_inicio', 'mas_vendidos', 'ofertas_urgencia', 'ofertas_catalogo',
+  'novedades', 'combos', 'colecciones', 'preguntas', 'contacto',
+];
+const TIPOS_MEDIO_MARCA = ['imagen', 'gif', 'video'];
+
+function limpiarBloquesInicio(bloques) {
+  // Sin lista guardada: no se fuerza ningún orden/visibilidad — el runtime
+  // deja la página tal como viene en el HTML (compatibilidad total con
+  // landings guardadas antes de que existiera esta lista). `listaDe` no
+  // sirve acá porque dedupea por el VALOR mapeado (cada objeto es único por
+  // referencia); un bloque repetido se identifica por `tipo`, a mano.
+  if (!Array.isArray(bloques)) return [];
+  const vistos = new Set();
+  const salida = [];
+  for (const b of bloques) {
+    if (!b || typeof b !== 'object' || !TIPOS_BLOQUE_INICIO.includes(b.tipo) || vistos.has(b.tipo)) continue;
+    vistos.add(b.tipo);
+    salida.push({ tipo: b.tipo, visible: b.visible !== false });
+    if (salida.length >= TIPOS_BLOQUE_INICIO.length) break;
+  }
+  return salida;
+}
+
+function limpiarConfianza(items) {
+  return listaDe(items, 3, it => {
+    if (!it || typeof it !== 'object') return null;
+    const titulo = textoCorto(it.titulo, 60);
+    const texto = textoCorto(it.texto, 120);
+    if (!titulo && !texto) return null;
+    return { icono: textoCorto(it.icono, 40) || 'shield', titulo, texto };
+  });
+}
+
+function limpiarMedioMarca(m) {
+  if (!m || typeof m !== 'object') return null;
+  const url = urlMedia(m.url);
+  if (!url) return null;
+  return { tipo: TIPOS_MEDIO_MARCA.includes(m.tipo) ? m.tipo : 'imagen', url };
+}
+
+function limpiarMarca(marca) {
+  if (!marca || typeof marca !== 'object') return null;
+  return {
+    activo: marca.activo === true,
+    kicker: textoCorto(marca.kicker, 40),
+    titulo: textoCorto(marca.titulo, 100),
+    texto: textoCorto(marca.texto, 600),
+    badges: listaDe(marca.badges, 6, v => textoCorto(v, 30)),
+    medios: listaDe(marca.medios, 5, limpiarMedioMarca),
+  };
+}
+
+function limpiarProductosCategoria(pc) {
+  if (!pc || typeof pc !== 'object') return null;
+  const limite = Number(pc.limite);
+  return {
+    activo: pc.activo === true,
+    titulo: textoCorto(pc.titulo, 100),
+    kicker: textoCorto(pc.kicker, 40),
+    subtitulo: textoCorto(pc.subtitulo, 160),
+    items: listaDe(pc.items, 48, contentId),
+    limite: Number.isInteger(limite) && limite >= 1 && limite <= 48 ? limite : 8,
+  };
+}
+
+function limpiarInicio(inicio) {
+  if (!inicio || typeof inicio !== 'object') return null;
+  return {
+    menu_links: listaDe(inicio.menu_links, 8, item => {
+      if (!item || typeof item !== 'object') return null;
+      const texto = textoCorto(item.texto, 30);
+      const destino = textoCorto(item.destino, 200);
+      return texto && destino ? { texto, destino, visible: item.visible !== false } : null;
+    }),
+    menu_categorias: inicio.menu_categorias !== false,
+    categorias: listaDe(inicio.categorias, 50, v => textoCorto(v, 100)),
+    banners: listaDe(inicio.banners, 8, limpiarBannerInicio),
+    banners_intermedios: listaDe(inicio.banners_intermedios, 4, limpiarBannerInicio),
+    secciones: listaDe(inicio.secciones, 8, limpiarSeccionInicio),
+    bloques: limpiarBloquesInicio(inicio.bloques),
+    anuncios: listaDe(inicio.anuncios, 8, v => textoCorto(v, 80)),
+    confianza: limpiarConfianza(inicio.confianza),
+    ...(() => {
+      const marca = limpiarMarca(inicio.marca);
+      return marca ? { marca } : {};
+    })(),
+    ...(() => {
+      const productosCategoria = limpiarProductosCategoria(inicio.productos_categoria);
+      return productosCategoria ? { productos_categoria: productosCategoria } : {};
+    })(),
+  };
+}
+
 function limpiarPaquetes(paquetes) {
   if (!paquetes || typeof paquetes !== 'object' || Array.isArray(paquetes)) return {};
   const salida = {};
@@ -735,6 +876,13 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
     // Configurar venta. Si queda vacío, el runtime usa los primeros de la
     // selección para conservar compatibilidad con landings anteriores.
     destacados: listaDe(venta.destacados, 12, contentId),
+    // Menú, banners, categorías visuales y vitrinas del Inicio — ver
+    // limpiarInicio. Acepta `inicio_comercial` (nombre legado) si no vino
+    // `inicio`, igual que inicioComercialDesdeVenta en el frontend.
+    ...(() => {
+      const inicioLimpio = limpiarInicio(venta.inicio || venta.inicio_comercial);
+      return inicioLimpio ? { inicio: inicioLimpio, inicio_comercial: inicioLimpio } : {};
+    })(),
     // Por paquete (oferta 'normal'): la etiqueta que muestra la ficha
     // ("Más elegido", "Mayor ahorro"…) y cuál se destaca (arranca elegido).
     paquetes: limpiarPaquetes(venta.paquetes),

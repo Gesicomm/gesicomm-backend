@@ -2749,7 +2749,7 @@ class LandingService {
   static async obtenerCatalogoPublico(tienda, slug, preview = false, opciones = {}) {
     const {
       pagina = 1,
-      porPagina = 24,
+      porPagina = 20,
       orden = 'destacados',
       disponibilidad = 'todos',
       categoria = 'todas',
@@ -2947,7 +2947,7 @@ class LandingService {
 
     const total = filtrado.length;
     // Tope defensivo: nadie pide 100000 productos de una en un catálogo público.
-    const porPaginaFinal = Math.min(Math.max(Number(porPagina) || 24, 1), 100);
+    const porPaginaFinal = Math.min(Math.max(Number(porPagina) || 20, 1), 100);
     const totalPaginas = Math.max(1, Math.ceil(total / porPaginaFinal));
     const paginaFinal = Math.min(Math.max(Number(pagina) || 1, 1), totalPaginas);
     const pageSlice = filtrado.slice((paginaFinal - 1) * porPaginaFinal, paginaFinal * porPaginaFinal);

@@ -80,12 +80,22 @@ async function nameserversDe(dominio) {
 
 class TiendaService {
 
-  static async obtenerPorUsuario(usuario_id) {
-    const tienda = await Tienda.findOne({ where: { usuario_id } });
+  /** Las tiendas del usuario, livianas — para el selector al loguearse. */
+  static async listarPorUsuario(usuario_id) {
+    const tiendas = await Tienda.findAll({
+      where: { usuario_id },
+      attributes: ['id', 'nombre', 'subdominio', 'logo_imagen'],
+      order: [['id', 'ASC']],
+    });
+    return tiendas.map(t => t.toJSON());
+  }
+
+  static async obtener(tienda_id, usuario_id) {
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
     if (!tienda) return null;
     const [usuario, suscripcion, landingInicio] = await Promise.all([
-      Usuario.findByPk(usuario_id, { attributes: ['plan'] }),
-      suscripcionActivaDeUsuario(usuario_id),
+      Usuario.findByPk(tienda.usuario_id, { attributes: ['plan'] }),
+      suscripcionActivaDeUsuario(tienda.usuario_id),
       Landing.findOne({
         where: { tienda_id: tienda.id, tipo_pagina: 'inicio' },
         attributes: ['color_primario', 'color_texto', 'color_fondo'],
@@ -177,9 +187,6 @@ class TiendaService {
   // ─── CRUD ────────────────────────────────────────────────────────────────
 
   static async crear(usuario_id, inquilino_id, payload) {
-    const existente = await Tienda.findOne({ where: { usuario_id } });
-    if (existente) throw new Error('Ya tenés una tienda creada.');
-
     if (!payload.nombre?.trim()) throw new Error('El nombre de la tienda es obligatorio.');
     if (!payload.subdominio?.trim()) throw new Error('El subdominio es obligatorio.');
     // Obligatorio SOLO al crear: PagoPar exige comprador.documento para
@@ -228,8 +235,8 @@ class TiendaService {
     };
   }
 
-  static async actualizar(usuario_id, payload) {
-    const tienda = await Tienda.findOne({ where: { usuario_id } });
+  static async actualizar(tienda_id, usuario_id, payload) {
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
     if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
 
     const errores = this.validarCamposComunes(payload);
@@ -281,8 +288,8 @@ class TiendaService {
    * Devuelve `anterior` para que el controller borre ese objeto de R2 —
    * mismo contrato que LandingSimpleService._actualizarImagenCampo.
    */
-  static async actualizarLogo(usuario_id, imagenData) {
-    const tienda = await Tienda.findOne({ where: { usuario_id } });
+  static async actualizarLogo(tienda_id, usuario_id, imagenData) {
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
     if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
 
     const anterior = tienda.logo_imagen
@@ -297,21 +304,15 @@ class TiendaService {
     tienda.logo_imagen_height = imagenData ? imagenData.height : null;
     await tienda.save();
 
-    return { tienda: await this.obtenerPorUsuario(usuario_id), anterior };
+    return { tienda: await this.obtener(tienda_id, usuario_id), anterior };
   }
 
-  static async verificarDisponibilidadSubdominio(sub, usuario_id = null) {
+  static async verificarDisponibilidadSubdominio(sub, tienda_id = null) {
     if (!sub) return { valido: false, disponible: false, motivo: 'Ingresá un subdominio.' };
     const { valido, motivo } = validarFormatoSubdominio(sub);
     if (!valido) return { valido: false, disponible: false, motivo };
 
-    let propiaTiendaId = null;
-    if (usuario_id) {
-      const propia = await Tienda.findOne({ where: { usuario_id }, attributes: ['id'] });
-      if (propia) propiaTiendaId = propia.id;
-    }
-
-    const libre = await subdominioDisponible(sub, propiaTiendaId);
+    const libre = await subdominioDisponible(sub, tienda_id || null);
     return { valido: true, disponible: libre, motivo: libre ? null : 'Ese subdominio ya está en uso.' };
   }
 
@@ -321,8 +322,8 @@ class TiendaService {
   // de validación y sin intermediarios. El certificado lo emite Caddy solo.
   // Ver src/utils/dominios.js.
 
-  static async guardarDominioPropio(usuario_id, dominio) {
-    const tienda = await Tienda.findOne({ where: { usuario_id } });
+  static async guardarDominioPropio(tienda_id, usuario_id, dominio) {
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
     if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
 
     const limpio = (dominio || '').trim().toLowerCase();
@@ -361,8 +362,8 @@ class TiendaService {
    * partir de ahí la tienda ya se sirve por ese hostname. Pasa a 'activo'
    * cuando Caddy le emitió el certificado, que ocurre en la primera visita.
    */
-  static async verificarDominioPropio(usuario_id) {
-    const tienda = await Tienda.findOne({ where: { usuario_id } });
+  static async verificarDominioPropio(tienda_id, usuario_id) {
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
     if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
     if (!tienda.dominio_propio) throw new Error('No configuraste ningún dominio propio todavía.');
 
@@ -458,19 +459,19 @@ class TiendaService {
    * certificado, pero el dominio sigue cargado y no hay que volver a
    * pasar por el DNS para recuperarlo.
    */
-  static async cambiarHabilitacionDominioPropio(usuario_id, habilitado) {
-    const tienda = await Tienda.findOne({ where: { usuario_id } });
+  static async cambiarHabilitacionDominioPropio(tienda_id, usuario_id, habilitado) {
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
     if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
     if (!tienda.dominio_propio) throw new Error('No configuraste ningún dominio propio todavía.');
 
     tienda.dominio_propio_habilitado = !!habilitado;
     await tienda.save();
 
-    return this.verificarDominioPropio(usuario_id);
+    return this.verificarDominioPropio(tienda_id, usuario_id);
   }
 
-  static async eliminarDominioPropio(usuario_id) {
-    const tienda = await Tienda.findOne({ where: { usuario_id } });
+  static async eliminarDominioPropio(tienda_id, usuario_id) {
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
     if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
 
     tienda.dominio_propio = null;

@@ -398,4 +398,124 @@ describe('LandingCodigoService.limpiarVenta', () => {
       22: { etiqueta: 'Oculto', destacado: false, activo: false },
     });
   });
+
+  it('no guarda `inicio` si no vino nada (compatibilidad con guardados viejos)', () => {
+    const v = LandingCodigoService.limpiarVenta({ tipo: 'catalogo' });
+    expect(v).not.toHaveProperty('inicio');
+    expect(v).not.toHaveProperty('inicio_comercial');
+  });
+
+  it('persiste banners, menú y vitrinas del Inicio (antes se perdían al guardar)', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      inicio: {
+        menu_links: [{ texto: 'Inicio', destino: '#inicio', visible: true }, { texto: '', destino: '/x' }],
+        menu_categorias: false,
+        categorias: ['Cocina', 'Cocina'],
+        banners: [{
+          id: 'banner-1', activo: true, titulo: 'Hola', subtitulo: 'Sub', etiqueta: 'Nuevo',
+          cta_texto: 'Ver más', enlace: '/catalogo', imagen: 'https://cdn.test/b.jpg', tipo_medio: 'imagen',
+        }, { titulo: 'Sin imagen segura', imagen: 'javascript:alert(1)', tipo_medio: 'raro' }],
+        secciones: [{
+          id: 'seccion-1', activo: true, tipo: 'categoria', titulo: 'Cocina', subtitulo: 'Lo mejor',
+          categoria: 'Cocina', productos: ['adelfit', '<script>'], limite: 6,
+        }, { tipo: 'inventado', productos: [] }],
+      },
+    });
+    expect(v.inicio).toEqual({
+      menu_links: [{ texto: 'Inicio', destino: '#inicio', visible: true }],
+      menu_categorias: false,
+      categorias: ['Cocina'],
+      bloques: [],
+      anuncios: [],
+      confianza: [],
+      banners: [
+        {
+          id: 'banner-1', activo: true, titulo: 'Hola', subtitulo: 'Sub', etiqueta: 'Nuevo',
+          cta_texto: 'Ver más', enlace: '/catalogo', imagen: 'https://cdn.test/b.jpg', tipo_medio: 'imagen',
+        },
+        { activo: true, titulo: 'Sin imagen segura', subtitulo: '', etiqueta: '', cta_texto: '', enlace: '', imagen: '', tipo_medio: 'imagen' },
+      ],
+      banners_intermedios: [],
+      secciones: [
+        { id: 'seccion-1', activo: true, tipo: 'categoria', titulo: 'Cocina', subtitulo: 'Lo mejor', categoria: 'Cocina', productos: ['adelfit'], limite: 6 },
+        { activo: true, tipo: 'categoria', titulo: '', subtitulo: '', categoria: '', productos: [], limite: 4 },
+      ],
+    });
+    expect(v.inicio_comercial).toEqual(v.inicio);
+  });
+
+  it('acepta `inicio_comercial` (nombre legado) cuando no viene `inicio`', () => {
+    const v = LandingCodigoService.limpiarVenta({ inicio_comercial: { menu_categorias: false } });
+    expect(v.inicio.menu_categorias).toBe(false);
+  });
+
+  it('bloques: ordena y oculta solo tipos conocidos, sin duplicados', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      inicio: {
+        bloques: [
+          { tipo: 'marca', visible: false },
+          { tipo: 'confianza' },
+          { tipo: 'inventado', visible: true },
+          { tipo: 'marca', visible: true }, // duplicado: se ignora el segundo
+        ],
+      },
+    });
+    expect(v.inicio.bloques).toEqual([
+      { tipo: 'marca', visible: false },
+      { tipo: 'confianza', visible: true },
+    ]);
+  });
+
+  it('anuncios: textos cortos para la barra de confianza, sin vacíos', () => {
+    const v = LandingCodigoService.limpiarVenta({ inicio: { anuncios: ['Envío gratis', '', 'x'.repeat(100)] } });
+    expect(v.inicio.anuncios).toEqual(['Envío gratis', 'x'.repeat(80)]);
+  });
+
+  it('confianza: hasta 3 items con ícono por defecto si falta, descarta los vacíos', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      inicio: {
+        confianza: [
+          { icono: 'truck', titulo: 'Envíos', texto: 'A todo el país' },
+          { titulo: 'Sin ícono' },
+          { icono: 'x' }, // sin título ni texto: se descarta, no cuenta para el tope de 3
+          { titulo: 'Tercero', texto: 'Este sí entra' },
+          { titulo: 'Cuarto', texto: 'Este no entra, ya hay 3' },
+        ],
+      },
+    });
+    expect(v.inicio.confianza).toEqual([
+      { icono: 'truck', titulo: 'Envíos', texto: 'A todo el país' },
+      { icono: 'shield', titulo: 'Sin ícono', texto: '' },
+      { icono: 'shield', titulo: 'Tercero', texto: 'Este sí entra' },
+    ]);
+  });
+
+  it('marca: solo se guarda si vino el objeto, descarta medios con URL insegura', () => {
+    const sinMarca = LandingCodigoService.limpiarVenta({ tipo: 'catalogo' });
+    expect(sinMarca).not.toHaveProperty('marca');
+
+    const v = LandingCodigoService.limpiarVenta({
+      inicio: {
+        marca: {
+          activo: true, kicker: 'Conocé', titulo: 'Lo cotidiano', texto: 'Hola',
+          badges: ['Utilidad', 'Simplicidad', ''],
+          medios: [{ tipo: 'imagen', url: 'https://cdn.test/marca.jpg' }, { tipo: 'video', url: 'javascript:alert(1)' }],
+        },
+      },
+    });
+    expect(v.inicio.marca).toEqual({
+      activo: true, kicker: 'Conocé', titulo: 'Lo cotidiano', texto: 'Hola',
+      badges: ['Utilidad', 'Simplicidad'],
+      medios: [{ tipo: 'imagen', url: 'https://cdn.test/marca.jpg' }],
+    });
+  });
+
+  it('productos_categoria: solo se guarda si vino el objeto, límite entre 1 y 48', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      inicio: { productos_categoria: { activo: true, titulo: 'Productos', items: ['adelfit', 'combo-1'], limite: 99 } },
+    });
+    expect(v.inicio.productos_categoria).toEqual({
+      activo: true, titulo: 'Productos', kicker: '', subtitulo: '', items: ['adelfit', 'combo-1'], limite: 8,
+    });
+  });
 });

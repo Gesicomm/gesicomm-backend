@@ -12,11 +12,13 @@ const router = express.Router();
 
 const { verificarToken } = require('../middleware/autenticacion');
 const { verificarPermiso } = require('../middleware/autorizacion');
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 const ctrl = require('../controllers/tienda.controller');
 const { subirImagenMiddleware } = require('../controllers/landingSimple.controller');
 
 router.use(verificarToken);
 router.use(verificarPermiso('gestionar_tienda'));
+router.use(resolverTiendaActiva);
 
 router.get('/subdominio/disponibilidad', ctrl.disponibilidadSubdominio);
 

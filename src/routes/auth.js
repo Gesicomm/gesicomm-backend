@@ -21,7 +21,7 @@ const { auditoria } = require('../utils/logger');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { rollbackSeguro } = require('../utils/transaction');
 const EmailService = require('../services/email.service');
-const { Usuario, Inquilino, Rol, Permiso, sequelize } = require('../models');
+const { Usuario, Inquilino, Rol, Permiso, Tienda, sequelize } = require('../models');
 const AuthTracking = require('../services/authTracking.service');
 
 const router = express.Router();
@@ -126,7 +126,44 @@ function limpiarCookiesSesion(req, res) {
     res.clearCookie('refreshToken', { ...opciones, path: '/api/auth/refresh' });
     // Variante legacy: hubo versiones que escribieron el refresh en la raíz.
     res.clearCookie('refreshToken', { ...opciones, path: '/' });
+    res.clearCookie(TIENDA_ACTIVA_COOKIE, { ...opciones, path: '/' });
   }
+}
+
+// Nombre separado de AuthTracking.SESSION_COOKIE: esta cookie no identifica
+// la sesión, recuerda cuál de las (posiblemente varias) tiendas del usuario
+// eligió la última vez — así /refresh puede reconstruir el claim `tiendaId`
+// del access token sin volver a preguntar en cada renovación de 15 minutos.
+const TIENDA_ACTIVA_COOKIE = 'tiendaActivaId';
+
+function enviarCookieTiendaActiva(req, res, tiendaId) {
+  if (!tiendaId) return;
+  res.cookie(TIENDA_ACTIVA_COOKIE, String(tiendaId), {
+    ...opcionesCookie(req),
+    path: '/',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // igual que el refresh token
+  });
+}
+
+/**
+ * Resuelve qué tienda queda activa para el payload del JWT: con una sola
+ * tienda no hay nada que elegir; con varias, se respeta la cookie si sigue
+ * apuntando a una tienda propia; si no hay forma de decidir (0 o ≥2 sin
+ * cookie válida) queda en null y el frontend manda a /seleccionar-tienda.
+ */
+async function resolverTiendaParaUsuario(usuarioId, cookieTiendaId) {
+  const tiendas = await Tienda.findAll({
+    where: { usuario_id: usuarioId },
+    attributes: ['id', 'nombre', 'subdominio', 'logo_imagen'],
+    order: [['id', 'ASC']],
+  });
+  let tiendaId = null;
+  if (tiendas.length === 1) {
+    tiendaId = tiendas[0].id;
+  } else if (cookieTiendaId && tiendas.some(t => t.id === Number(cookieTiendaId))) {
+    tiendaId = Number(cookieTiendaId);
+  }
+  return { tiendas: tiendas.map(t => t.toJSON()), tiendaId };
 }
 
 function enviarCookieSesion(req, res, sesion) {
@@ -170,6 +207,7 @@ const EVENTOS_ONBOARDING = new Set([
 router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
   try {
     const { email, password } = req.body;
+    const cookieTiendaId = req.cookies?.[TIENDA_ACTIVA_COOKIE] || null;
 
     const usuario = await Usuario.findOne({ 
       where: { correo_electronico: email },
@@ -224,6 +262,8 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
       });
     }
 
+    const { tiendas, tiendaId } = await resolverTiendaParaUsuario(usuario.id, cookieTiendaId);
+
     const payload = {
       id: usuario.id,
       nombre: usuario.nombre,
@@ -231,6 +271,7 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
       rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
       permisos: usuario.Rol && usuario.Rol.Permisos ? usuario.Rol.Permisos.map(p => p.nombre) : [],
       tenantId: usuario.inquilino_id,
+      tiendaId,
     };
 
     const accessToken = jwt.sign(payload, process.env.JWT_SECRET, {
@@ -246,6 +287,7 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
     enviarCookieToken(req, res, accessToken, refreshToken);
     const sesion = await AuthTracking.iniciarSesion({ req, usuario });
     enviarCookieSesion(req, res, sesion);
+    enviarCookieTiendaActiva(req, res, tiendaId);
 
     auditoria('LOGIN', { usuarioId: usuario.id, email, ip: req.ip });
 
@@ -259,6 +301,8 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
         rol: payload.rol,
         permisos: payload.permisos,
       },
+      tiendas,
+      tienda_activa_id: tiendaId,
     });
   } catch (err) {
     console.error(err);
@@ -519,7 +563,9 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
       });
     }
 
-    // Iniciar sesión automáticamente
+    // Iniciar sesión automáticamente. Recién verificado: nunca tiene
+    // tiendas todavía, así que no hace falta resolverTiendaParaUsuario acá
+    // — el frontend manda directo al onboarding de creación.
     const payload = {
       id: usuario.id,
       nombre: usuario.nombre,
@@ -527,6 +573,7 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
       rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
       permisos: usuario.Rol && usuario.Rol.Permisos ? usuario.Rol.Permisos.map(p => p.nombre) : [],
       tenantId: usuario.inquilino_id,
+      tiendaId: null,
     };
 
     const accessToken = jwt.sign(payload, process.env.JWT_SECRET, {
@@ -553,6 +600,8 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
         rol: payload.rol,
         permisos: payload.permisos,
       },
+      tiendas: [],
+      tienda_activa_id: null,
       suscripcion_vinculada: reclamo.resultado === 'reclamada',
       pago_pendiente_revision: reclamo.resultado === 'ambigua',
     });
@@ -660,6 +709,11 @@ router.post('/refresh', async (req, res) => {
     }
     await AuthTracking.marcarActividad(req, usuario.id);
 
+    // El refresh token solo lleva {id}: la tienda activa no viaja ahí, se
+    // reconstruye leyendo la cookie tiendaActivaId (ver resolverTiendaParaUsuario).
+    const cookieTiendaId = req.cookies?.[TIENDA_ACTIVA_COOKIE] || null;
+    const { tiendaId } = await resolverTiendaParaUsuario(usuario.id, cookieTiendaId);
+
     const nuevoPayload = {
       id: usuario.id,
       nombre: usuario.nombre,
@@ -667,6 +721,7 @@ router.post('/refresh', async (req, res) => {
       rol: usuario.Rol ? usuario.Rol.nombre : 'sin_rol',
       permisos: usuario.Rol && usuario.Rol.Permisos ? usuario.Rol.Permisos.map(p => p.nombre) : [],
       tenantId: usuario.inquilino_id,
+      tiendaId,
     };
 
     const nuevoAccessToken = jwt.sign(nuevoPayload, process.env.JWT_SECRET, {
@@ -700,7 +755,47 @@ router.get('/me', verificarToken, asyncHandler(async (req, res) => {
     rol: req.usuario.rol,
     permisos: req.usuario.permisos,
     tenantId: req.usuario.tenantId,
+    tiendaId: req.usuario.tiendaId,
   });
+}));
+
+// ============================================================
+// POST /api/auth/seleccionar-tienda
+// Cambia la tienda activa de la sesión (entre las propias) sin
+// reloguearse. Reemite accessToken + la cookie que recuerda la elección
+// para que /refresh la siga respetando.
+// ============================================================
+router.post('/seleccionar-tienda', verificarToken, asyncHandler(async (req, res) => {
+  const tiendaId = Number(req.body?.tienda_id);
+  if (!tiendaId) return res.status(400).json({ message: 'Falta indicar la tienda.' });
+
+  const tienda = await Tienda.findOne({
+    where: { id: tiendaId, usuario_id: req.usuario.id },
+    attributes: ['id', 'nombre', 'subdominio', 'logo_imagen'],
+  });
+  if (!tienda) return res.status(404).json({ message: 'Esa tienda no existe o no te pertenece.' });
+
+  const nuevoPayload = {
+    id: req.usuario.id,
+    nombre: req.usuario.nombre,
+    email: req.usuario.email,
+    rol: req.usuario.rol,
+    permisos: req.usuario.permisos,
+    tenantId: req.usuario.tenantId,
+    tiendaId: tienda.id,
+  };
+  const accessToken = jwt.sign(nuevoPayload, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRATION || '15m',
+  });
+
+  res.cookie('accessToken', accessToken, {
+    ...opcionesCookie(req),
+    path: '/',
+    maxAge: 15 * 60 * 1000,
+  });
+  enviarCookieTiendaActiva(req, res, tienda.id);
+
+  return res.json({ tienda: tienda.toJSON() });
 }));
 
 // ============================================================

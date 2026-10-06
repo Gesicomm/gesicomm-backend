@@ -2,7 +2,8 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
 /**
- * Tienda de un usuario (rol 'usuario'): 1:1 con Usuario. Es el contenedor
+ * Tienda de un usuario (rol 'usuario'): 1:N con Usuario — un usuario puede
+ * tener varias tiendas, cada tienda tiene un único dueño. Es el contenedor
  * de sus landings públicas y el dueño de la identidad pública (subdominio
  * gesicomm.com, opcionalmente un dominio propio) y del tema/contacto/pixel
  * que antes vivían sueltos en cada Landing.
@@ -27,7 +28,6 @@ const Tienda = sequelize.define('Tienda', {
   usuario_id: {
     type: DataTypes.INTEGER,
     allowNull: false,
-    unique: true,
   },
   inquilino_id: {
     type: DataTypes.INTEGER,
@@ -262,7 +262,7 @@ const Tienda = sequelize.define('Tienda', {
   createdAt: 'created_at',
   updatedAt: 'updated_at',
   indexes: [
-    { unique: true, fields: ['usuario_id'] },
+    { fields: ['usuario_id'] },
     { unique: true, fields: ['subdominio'] },
     { unique: true, fields: ['dominio_propio'] },
     { fields: ['inquilino_id'] },

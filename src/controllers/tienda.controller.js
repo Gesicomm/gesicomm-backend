@@ -2,9 +2,13 @@
 
 /**
  * Controller privado de Tienda — gestión de la identidad pública propia.
+ * Todas las rutas operan sobre la TIENDA ACTIVA (req.usuario.tiendaId,
+ * resuelta por el middleware resolverTiendaActiva a partir de la selección
+ * hecha al loguearse), nunca sobre "la" tienda del usuario — un usuario
+ * puede tener varias.
  *
- * GET    /api/mi-tienda                          → mi tienda (o null si no existe)
- * POST   /api/mi-tienda                           → crear
+ * GET    /api/mi-tienda                          → mi tienda activa (o null si no existe ninguna)
+ * POST   /api/mi-tienda                           → crear una tienda nueva
  * PUT    /api/mi-tienda                           → actualizar (nombre/colores/contacto/pixel)
  * GET    /api/mi-tienda/subdominio/disponibilidad  → check en vivo
  * POST   /api/mi-tienda/dominio-propio             → registrar dominio propio
@@ -23,13 +27,27 @@ const ImagenService = require('../services/imagen.service');
 
 function manejarError(res, err, defaultMsg) {
   console.error('[tienda]', err.message);
+  if (err.codigo === 'TIENDA_NO_SELECCIONADA') {
+    return res.status(409).json({ message: err.message, codigo: err.codigo });
+  }
   const status = err.message.includes('no tenés una tienda') ? 404 : (err.errores ? 422 : 400);
   return res.status(status).json({ message: err.message || defaultMsg, errores: err.errores });
 }
 
+/** Exige tienda activa antes de operar sobre ella (crear() es la excepción: no la necesita). */
+function exigirTiendaActiva(req) {
+  if (!req.usuario.tiendaId) {
+    const err = new Error('Seleccioná una tienda primero.');
+    err.codigo = 'TIENDA_NO_SELECCIONADA';
+    throw err;
+  }
+  return req.usuario.tiendaId;
+}
+
 async function obtener(req, res) {
   try {
-    const tienda = await TiendaService.obtenerPorUsuario(req.usuario.id);
+    if (!req.usuario.tiendaId) return res.json(null);
+    const tienda = await TiendaService.obtener(req.usuario.tiendaId, req.usuario.id);
     return res.json(tienda);
   } catch (err) {
     console.error('[tienda] obtener:', err.message);
@@ -72,7 +90,7 @@ async function crear(req, res) {
 
 async function actualizar(req, res) {
   try {
-    const tienda = await TiendaService.actualizar(req.usuario.id, req.body);
+    const tienda = await TiendaService.actualizar(exigirTiendaActiva(req), req.usuario.id, req.body);
     return res.json(tienda);
   } catch (err) {
     return manejarError(res, err, 'Error al actualizar la tienda.');
@@ -81,7 +99,7 @@ async function actualizar(req, res) {
 
 async function disponibilidadSubdominio(req, res) {
   try {
-    const resultado = await TiendaService.verificarDisponibilidadSubdominio(req.query.sub, req.usuario.id);
+    const resultado = await TiendaService.verificarDisponibilidadSubdominio(req.query.sub, req.usuario.tiendaId || null);
     return res.json(resultado);
   } catch (err) {
     console.error('[tienda] disponibilidadSubdominio:', err.message);
@@ -91,7 +109,7 @@ async function disponibilidadSubdominio(req, res) {
 
 async function guardarDominioPropio(req, res) {
   try {
-    const resultado = await TiendaService.guardarDominioPropio(req.usuario.id, req.body.dominio);
+    const resultado = await TiendaService.guardarDominioPropio(exigirTiendaActiva(req), req.usuario.id, req.body.dominio);
     return res.status(201).json(resultado);
   } catch (err) {
     return manejarError(res, err, 'Error al configurar el dominio propio.');
@@ -100,7 +118,7 @@ async function guardarDominioPropio(req, res) {
 
 async function estadoDominioPropio(req, res) {
   try {
-    const resultado = await TiendaService.verificarDominioPropio(req.usuario.id);
+    const resultado = await TiendaService.verificarDominioPropio(exigirTiendaActiva(req), req.usuario.id);
     return res.json(resultado);
   } catch (err) {
     return manejarError(res, err, 'Error al verificar el dominio propio.');
@@ -113,7 +131,7 @@ async function habilitacionDominioPropio(req, res) {
       return res.status(400).json({ message: 'Falta indicar si el dominio queda habilitado.' });
     }
     const resultado = await TiendaService.cambiarHabilitacionDominioPropio(
-      req.usuario.id, req.body.habilitado,
+      exigirTiendaActiva(req), req.usuario.id, req.body.habilitado,
     );
     return res.json(resultado);
   } catch (err) {
@@ -123,7 +141,7 @@ async function habilitacionDominioPropio(req, res) {
 
 async function eliminarDominioPropio(req, res) {
   try {
-    const tienda = await TiendaService.eliminarDominioPropio(req.usuario.id);
+    const tienda = await TiendaService.eliminarDominioPropio(exigirTiendaActiva(req), req.usuario.id);
     return res.json(tienda);
   } catch (err) {
     return manejarError(res, err, 'Error al eliminar el dominio propio.');
@@ -196,10 +214,11 @@ async function coberturaGesicomm(req, res) {
 async function subirLogo(req, res) {
   try {
     if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
+    const tiendaId = exigirTiendaActiva(req);
     // Mismo tamaño que el logo de landing-simple: el header nunca lo muestra
     // más ancho que esto. WebP conserva la transparencia del PNG.
-    const imagenData = await ImagenService.procesarArchivoParaR2(req.file, `tiendas/logo/${req.usuario.id}`, { width: 400, quality: 85 });
-    const { tienda, anterior } = await TiendaService.actualizarLogo(req.usuario.id, imagenData);
+    const imagenData = await ImagenService.procesarArchivoParaR2(req.file, `tiendas/logo/${tiendaId}`, { width: 400, quality: 85 });
+    const { tienda, anterior } = await TiendaService.actualizarLogo(tiendaId, req.usuario.id, imagenData);
     if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.status(201).json(tienda);
   } catch (err) {
@@ -210,7 +229,7 @@ async function subirLogo(req, res) {
 
 async function eliminarLogo(req, res) {
   try {
-    const { tienda, anterior } = await TiendaService.actualizarLogo(req.usuario.id, null);
+    const { tienda, anterior } = await TiendaService.actualizarLogo(exigirTiendaActiva(req), req.usuario.id, null);
     if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.json(tienda);
   } catch (err) {

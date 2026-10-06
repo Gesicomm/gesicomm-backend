@@ -463,8 +463,8 @@ HistorialPrecio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 Usuario.hasMany(PrecioUsuario, { as: 'precios_personalizados', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 PrecioUsuario.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
-// Tienda: 1:1 con Usuario, dueña de las landings públicas
-Usuario.hasOne(Tienda, { foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+// Tienda: 1:N con Usuario (un usuario puede tener varias), dueña de las landings públicas
+Usuario.hasMany(Tienda, { foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 Tienda.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
 Tienda.hasMany(Landing, { as: 'landings', foreignKey: 'tienda_id', onDelete: 'CASCADE' });
