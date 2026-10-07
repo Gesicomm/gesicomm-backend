@@ -183,6 +183,11 @@ const Tienda = sequelize.define('Tienda', {
     allowNull: true,
     comment: 'Ciudad o localidad visible al público.',
   },
+  horario_atencion: {
+    type: DataTypes.STRING(150),
+    allowNull: true,
+    comment: 'Texto libre, ej: Lunes a viernes de 9 a 18 horas.',
+  },
   // --- Reservado: Meta Pixel / CAPI, sin uso todavía ---
   meta_pixel_id: {
     type: DataTypes.STRING(20),

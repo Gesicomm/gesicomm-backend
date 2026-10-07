@@ -140,7 +140,7 @@ class TiendaService {
     if (payload.mensaje_contacto && String(payload.mensaje_contacto).length > 300) {
       errores.push('mensaje_contacto no puede superar los 300 caracteres.');
     }
-    for (const [campo, max] of [['nombre_contacto', 100], ['direccion_publica', 255], ['ciudad_publica', 100]]) {
+    for (const [campo, max] of [['nombre_contacto', 100], ['direccion_publica', 255], ['ciudad_publica', 100], ['horario_atencion', 150]]) {
       if (payload[campo] && String(payload[campo]).length > max) errores.push(`${campo} no puede superar los ${max} caracteres.`);
     }
     for (const red of ['instagram', 'facebook', 'tiktok', 'youtube', 'twitter']) {
@@ -163,7 +163,7 @@ class TiendaService {
     for (const campo of [
       'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'documento', 'ruc',
       'email', 'instagram', 'facebook', 'tiktok', 'youtube', 'twitter',
-      'nombre_contacto', 'canal_contacto', 'direccion_publica', 'ciudad_publica',
+      'nombre_contacto', 'canal_contacto', 'direccion_publica', 'ciudad_publica', 'horario_atencion',
       'color_primario', 'color_secundario', 'color_fondo',
       'meta_test_event_code', 'google_analytics_id', 'tiktok_pixel_id',
       'deposito_departamento', 'deposito_ciudad', 'deposito_direccion',

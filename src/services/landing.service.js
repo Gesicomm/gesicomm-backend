@@ -142,7 +142,7 @@ class LandingService {
       direccion: de(landing.contacto_direccion, tienda?.direccion_publica),
       ciudad: de(landing.contacto_ciudad, tienda?.ciudad_publica),
       pais: landing.contacto_pais || null,
-      horarios: landing.contacto_horarios || null,
+      horarios: de(landing.contacto_horarios, tienda?.horario_atencion),
       instagram: de(landing.contacto_instagram, tienda?.instagram),
       facebook: de(landing.contacto_facebook, tienda?.facebook),
       tiktok: de(landing.contacto_tiktok, tienda?.tiktok),
