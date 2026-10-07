@@ -108,6 +108,22 @@ describe('cache de borde en el GET público de la landing', () => {
 
     expect(res.headers['Cache-Control']).toBeUndefined();
   });
+
+  test('el catálogo público propaga el filtro soloDescuento', async () => {
+    LandingService.obtenerCatalogoPublico.mockResolvedValue({ disponible: true });
+    const res = fakeRes();
+    await ctrl.obtenerPorSlug(
+      fakeReq({ query: { vista: 'catalogo', etiqueta: 'Oferta', soloDescuento: 'true' } }),
+      res
+    );
+
+    expect(LandingService.obtenerCatalogoPublico).toHaveBeenCalledWith(
+      tienda,
+      'tienda-qa',
+      false,
+      expect.objectContaining({ etiqueta: 'Oferta', soloDescuento: true })
+    );
+  });
 });
 
 describe('visita', () => {

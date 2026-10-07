@@ -22,8 +22,11 @@ const storage = multer.diskStorage({
   },
 });
 
+const MAX_IMAGEN_MB = 5;
+
 const upload = multer({
   storage,
+  limits: { fileSize: MAX_IMAGEN_MB * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const permitidos = ['image/jpeg', 'image/png', 'image/webp'];
     if (!permitidos.includes(file.mimetype)) {
@@ -60,6 +63,9 @@ async function productoEditablePorUsuario(req, res) {
 function subirImagenMiddleware(req, res, next) {
   upload.single('imagen')(req, res, (err) => {
     if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ message: `La imagen supera el máximo permitido de ${MAX_IMAGEN_MB} MB.` });
+    }
     return res.status(400).json({ message: err.message || 'Error al subir la imagen.' });
   });
 }

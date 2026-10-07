@@ -170,6 +170,7 @@ async function obtenerPorSlug(req, res) {
           precioMin: options.precioMin,
           precioMax: options.precioMax,
           soloInicio: options.soloInicio === true || options.soloInicio === 'true',
+          soloDescuento: options.soloDescuento === true || options.soloDescuento === 'true',
           busqueda: typeof options.busqueda === 'string' ? options.busqueda : (typeof options.q === 'string' ? options.q : ''),
         })
       : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview, { tipoPagina });

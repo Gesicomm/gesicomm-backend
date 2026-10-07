@@ -2860,6 +2860,7 @@ class LandingService {
       precioMax = null,
       busqueda = '',
       soloInicio = false,
+      soloDescuento = false,
     } = opciones;
 
     const where = { tienda_id: tienda.id };
@@ -3027,8 +3028,27 @@ class LandingService {
     // la página, el desplegable iría perdiendo opciones a medida que el
     // visitante filtra o pagina.
     const categoriasDisponibles = [...new Set(listado.map(i => i.categoria).filter(Boolean))].sort();
+    const normalizarFiltro = t => String(t || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
     const etiquetasDe = i => String(i.etiqueta || '').split(',').map(t => t.trim()).filter(Boolean);
-    const etiquetasDisponibles = [...new Set(listado.flatMap(etiquetasDe))].sort();
+    const itemEnOferta = i => Number(i.precio_antes || 0) > Number(i.precio || 0);
+    const tieneEtiqueta = (i, buscada) => {
+      const normalizada = normalizarFiltro(buscada);
+      return etiquetasDe(i).some(t => normalizarFiltro(t) === normalizada);
+    };
+    const etiquetasDisponibles = [];
+    for (const etiquetaDisponible of listado.flatMap(etiquetasDe)) {
+      if (!etiquetasDisponibles.some(t => normalizarFiltro(t) === normalizarFiltro(etiquetaDisponible))) {
+        etiquetasDisponibles.push(etiquetaDisponible);
+      }
+    }
+    if (listado.some(itemEnOferta) && !etiquetasDisponibles.some(t => normalizarFiltro(t) === 'oferta')) {
+      etiquetasDisponibles.push('Oferta');
+    }
+    etiquetasDisponibles.sort((a, b) => {
+      const oa = normalizarFiltro(a) === 'oferta' ? 0 : 20;
+      const ob = normalizarFiltro(b) === 'oferta' ? 0 : 20;
+      return oa === ob ? String(a).localeCompare(String(b), 'es') : oa - ob;
+    });
     const marcasDisponibles = [...new Set(listado.map(i => i.marca).filter(Boolean))].sort();
 
     const min = precioMin !== null && precioMin !== '' && !Number.isNaN(Number(precioMin)) ? Number(precioMin) : null;
@@ -3049,7 +3069,13 @@ class LandingService {
       if (disponibilidad === 'agotado' && !(i.stock != null && i.stock <= 0)) return false;
       if (categoria && categoria !== 'todas' && i.categoria !== categoria) return false;
       if (marca && marca !== 'todas' && i.marca !== marca) return false;
-      if (etiqueta && etiqueta !== 'todas' && !etiquetasDe(i).includes(etiqueta)) return false;
+      if (soloDescuento && !itemEnOferta(i)) return false;
+      if (etiqueta && etiqueta !== 'todas') {
+        const etiquetaOferta = normalizarFiltro(etiqueta) === 'oferta';
+        if (etiquetaOferta) {
+          if (!itemEnOferta(i) && !tieneEtiqueta(i, etiqueta)) return false;
+        } else if (!tieneEtiqueta(i, etiqueta)) return false;
+      }
       return true;
     });
 
