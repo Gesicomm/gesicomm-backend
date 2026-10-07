@@ -71,7 +71,24 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
       transaction: t,
       lock: t.LOCK.UPDATE,
     });
-    if (!envioFila || envioFila.estado !== 'Pendiente') return;
+    if (!envioFila) return;
+
+    // El pago ya ocurrió: esto queda registrado pase lo que pase con el
+    // estado del pedido (antes quedaba sin marcar si el pedido no estaba
+    // Pendiente, y Courier/Finanzas seguían tratando un pedido ya cobrado
+    // como pendiente de cobro contra entrega).
+    // 'PagoPar' fijo, no `origen`: `origen` es texto descriptivo del call
+    // site ("PagoPar webhook", "PagoPar (consulta)") pensado para el
+    // historial, no un valor presentable como método de pago.
+    envioFila.pago_anticipado = true;
+    envioFila.metodo_pago = 'PagoPar';
+
+    if (envioFila.estado !== 'Pendiente') {
+      await envioFila.save({ transaction: t });
+      Object.assign(envio, { pago_anticipado: true, metodo_pago: 'PagoPar' });
+      resultado = 'pago_registrado';
+      return;
+    }
 
     if (!envioFila.stock_descontado) {
       const abastecimiento = await calcularAbastecimientoDesdeItems(envio.items || [], envioFila.usuario_id, t);
@@ -83,6 +100,8 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
       envioFila.stock_descontado = true;
     }
 
+    // Ya pagó: el pedido nace/pasa directo a Confirmado, nunca se queda en
+    // Pendiente esperando que alguien lo revise como si fuera contra entrega.
     envioFila.estado = 'Confirmado';
     envioFila.estado_comercial = 'Confirmado';
     envioFila.estado_logistico = 'Confirmado';
@@ -95,6 +114,8 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
       estado_comercial: 'Confirmado',
       estado_logistico: 'Confirmado',
       stock_descontado: envioFila.stock_descontado,
+      pago_anticipado: true,
+      metodo_pago: 'PagoPar',
     });
 
     await registrarHistorial(

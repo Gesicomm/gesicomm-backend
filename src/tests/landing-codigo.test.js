@@ -466,9 +466,15 @@ describe('LandingCodigoService.limpiarVenta', () => {
     ]);
   });
 
-  it('anuncios: textos cortos para la barra de confianza, sin vacíos', () => {
-    const v = LandingCodigoService.limpiarVenta({ inicio: { anuncios: ['Envío gratis', '', 'x'.repeat(100)] } });
-    expect(v.inicio.anuncios).toEqual(['Envío gratis', 'x'.repeat(80)]);
+  it('anuncios: acepta strings sueltos (legado) y objetos con ícono, descarta vacíos', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      inicio: { anuncios: ['Envío gratis', '', { texto: 'x'.repeat(100), icono: 'truck' }, { icono: 'card' }, { texto: 'Pago seguro', icono: '<script>' }] },
+    });
+    expect(v.inicio.anuncios).toEqual([
+      { texto: 'Envío gratis', icono: '' },
+      { texto: 'x'.repeat(80), icono: 'truck' },
+      { texto: 'Pago seguro', icono: '<script>'.slice(0, 40) },
+    ]);
   });
 
   it('confianza: hasta 3 items con ícono por defecto si falta, descarta los vacíos', () => {

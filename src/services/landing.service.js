@@ -79,6 +79,7 @@ const TIPOS_SECCION = new Set([
   'redes_sociales',
   'footer',
   'product_detail',
+  'productos_recomendados',
   'cta',
   'image_text',
   'logo_list',
@@ -86,6 +87,33 @@ const TIPOS_SECCION = new Set([
   'scrolling_text',
   'producto_galeria',
 ]);
+
+const SECCIONES_PRODUCTO_DEFECTO = [
+  { tipo: 'announcement_bar', nombre_interno: 'Barra superior', activo: true, orden: 0, config_json: {}, contenido_json: { texto: 'Bienvenidos a nuestra tienda!' } },
+  { tipo: 'header', nombre_interno: 'Header', activo: true, orden: 10, config_json: {}, contenido_json: {} },
+  { tipo: 'product_detail', nombre_interno: 'Detalle de Producto', activo: true, orden: 20, config_json: {}, contenido_json: {} },
+  { tipo: 'testimonios', nombre_interno: 'Opiniones', activo: true, orden: 30, config_json: {}, contenido_json: { titulo: 'Opiniones de clientes' } },
+  {
+    tipo: 'productos_recomendados',
+    nombre_interno: 'Productos recomendados',
+    activo: true,
+    orden: 40,
+    config_json: {},
+    contenido_json: {
+      titulo: 'También te puede interesar',
+      subtitulo: 'Productos elegidos para complementar esta compra.',
+      cta_texto: 'Ver producto',
+    },
+  },
+  { tipo: 'footer', nombre_interno: 'Footer', activo: true, orden: 50, config_json: {}, contenido_json: {} },
+];
+
+const SECCIONES_CATALOGO_DEFECTO = [
+  { tipo: 'announcement_bar', nombre_interno: 'Barra superior', activo: true, orden: 0, config_json: {}, contenido_json: { texto: 'Bienvenidos a nuestra tienda!' } },
+  { tipo: 'header', nombre_interno: 'Header', activo: true, orden: 10, config_json: { sticky: true, mostrar_busqueda: true, mostrar_carrito: true }, contenido_json: {} },
+  { tipo: 'productos', nombre_interno: 'Productos', activo: true, orden: 20, config_json: {}, contenido_json: { titulo: 'Todos los productos' } },
+  { tipo: 'footer', nombre_interno: 'Footer', activo: true, orden: 30, config_json: {}, contenido_json: {} },
+];
 
 /** Los colores de Branding de Mi Tienda, para las landings HTML. */
 function coloresDeTienda(tienda) {
@@ -571,6 +599,79 @@ class LandingService {
       template: seccion.template_id || seccion.template || null,
       ...extra,
     };
+  }
+
+  static completarSeccionesProductoPublicas(secciones = [], fuenteLanding = []) {
+    const lista = Array.isArray(secciones) ? [...secciones] : [];
+    const tipos = new Set(lista.map(s => s.tipo));
+    const heredables = new Map((fuenteLanding || [])
+      .filter(s => ['announcement_bar', 'header', 'footer'].includes(s.tipo))
+      .map(s => [s.tipo, s]));
+    const faltantes = SECCIONES_PRODUCTO_DEFECTO
+      .filter(s => !tipos.has(s.tipo))
+      .map((s, idx) => {
+        const heredada = heredables.get(s.tipo);
+        return this.seccionDto({
+          ...s,
+          ...(heredada ? {
+            config_json: heredada.config || heredada.config_json || {},
+            contenido_json: heredada.contenido || heredada.content_json || heredada.contenido_json || {},
+            activo: heredada.activo !== false,
+            nombre_interno: heredada.nombre_interno || s.nombre_interno,
+            template_id: heredada.template || heredada.template_id || s.template_id,
+          } : {}),
+          id: null,
+          stable_id: `producto-default-${s.tipo}`,
+          orden: 1000 + idx,
+          page_type: 'product',
+        });
+      });
+
+    if (!faltantes.length) return lista;
+
+    const indiceFooter = lista.findIndex(s => s.tipo === 'footer');
+    const destino = indiceFooter >= 0 ? indiceFooter : lista.length;
+    lista.splice(destino, 0, ...faltantes);
+    return lista.map((s, idx) => ({ ...s, orden: idx }));
+  }
+
+  static completarSeccionesCatalogoPublicas(secciones = [], fuenteInicio = []) {
+    const lista = Array.isArray(secciones) ? [...secciones] : [];
+    const existentes = new Map(lista.map(s => [s.tipo, s]));
+    const tiposDefault = new Set(SECCIONES_CATALOGO_DEFECTO.map(s => s.tipo));
+    const heredables = new Map((fuenteInicio || [])
+      .filter(s => !s.page_type || s.page_type === 'landing')
+      .filter(s => ['announcement_bar', 'header', 'footer'].includes(s.tipo))
+      .map(s => [s.tipo, s]));
+
+    const resultado = SECCIONES_CATALOGO_DEFECTO.map((def, idx) => {
+      const actual = existentes.get(def.tipo) || this.seccionDto({
+        ...def,
+        id: null,
+        stable_id: `catalogo-default-${def.tipo}`,
+        page_type: 'landing',
+        orden: idx,
+      });
+      const heredada = heredables.get(def.tipo);
+      if (!heredada) return actual;
+      return {
+        ...actual,
+        config: heredada.config || heredada.config_json || {},
+        contenido: heredada.contenido || heredada.content_json || heredada.contenido_json || {},
+        settings_json: heredada.settings_json || heredada.config_json || heredada.config || {},
+        content_json: heredada.content_json || heredada.contenido_json || heredada.contenido || {},
+        activo: heredada.activo !== false,
+        nombre_interno: heredada.nombre_interno || actual.nombre_interno,
+        template: heredada.template || heredada.template_id || actual.template,
+        template_id: heredada.template_id || heredada.template || actual.template_id,
+      };
+    });
+
+    const extras = lista.filter(s => !tiposDefault.has(s.tipo));
+    const indiceFooter = resultado.findIndex(s => s.tipo === 'footer');
+    const destino = indiceFooter >= 0 ? indiceFooter : resultado.length;
+    resultado.splice(destino, 0, ...extras);
+    return resultado.map((s, idx) => ({ ...s, orden: idx }));
   }
 
   // La seccion `productos` NO lleva el catalogo embebido: el render publico lo
@@ -2769,8 +2870,12 @@ class LandingService {
       include: [
         { model: LandingItem, as: 'items' },
         { model: LandingTemplate, as: 'template', required: false },
+        { model: LandingSeccion, as: 'secciones', required: false, where: { producto_id: null } },
       ],
-      order: [[{ model: LandingItem, as: 'items' }, 'orden', 'ASC']],
+      order: [
+        [{ model: LandingItem, as: 'items' }, 'orden', 'ASC'],
+        [{ model: LandingSeccion, as: 'secciones' }, 'orden', 'ASC'],
+      ],
     });
     if (!landing) return null;
     if (!tienda.activo || !tienda.Usuario?.activo) return { disponible: false };
@@ -2778,6 +2883,15 @@ class LandingService {
 
     // Sin registrarVisita, por lo mismo que en obtenerPublica: la cuenta el
     // navegador para que esta respuesta pueda vivir en el CDN.
+    let seccionesInicio = [];
+    if (landing.tipo_pagina !== 'inicio') {
+      const inicio = await Landing.findOne({
+        where: { tienda_id: tienda.id, tipo_pagina: 'inicio' },
+        include: [{ model: LandingSeccion, as: 'secciones', required: false, where: { producto_id: null } }],
+        order: [[{ model: LandingSeccion, as: 'secciones' }, 'orden', 'ASC']],
+      });
+      seccionesInicio = inicio?.secciones || [];
+    }
 
     // Lienzo en blanco: la misma lista que vende (regla, manual o fallback).
     const items = landing.template?.kind === 'codigo'
@@ -3021,6 +3135,12 @@ class LandingService {
 
     const esRigida = landing.template?.kind === 'rigido';
     const esFunnel = landing.template?.kind === 'funnel';
+    const seccionesCatalogoGuardadas = !esRigida && Array.isArray(landing.secciones) && landing.secciones.length
+      ? this.construirSeccionesPublicas(landing, { testimonios: [], faq: [], banner: null }).secciones
+      : [];
+    const seccionesCatalogo = esRigida
+      ? []
+      : this.completarSeccionesCatalogoPublicas(seccionesCatalogoGuardadas, seccionesInicio);
     return {
       disponible: true,
       id: landing.id,
@@ -3087,7 +3207,7 @@ class LandingService {
       categorias_disponibles: categoriasDisponibles,
       etiquetas_disponibles: etiquetasDisponibles,
       marcas_disponibles: marcasDisponibles,
-      secciones: [],
+      secciones: seccionesCatalogo,
       secciones_producto: [],
       testimonios: [],
       faq: [],
@@ -3183,7 +3303,7 @@ class LandingService {
 
     return {
       ...landing,
-      secciones_producto: seccionesProducto,
+      secciones_producto: this.completarSeccionesProductoPublicas(seccionesProducto, landing.secciones),
       producto: item,
       relacionados,
       seo: {

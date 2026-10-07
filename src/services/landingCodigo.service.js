@@ -723,6 +723,20 @@ const TIPOS_BLOQUE_INICIO = [
 ];
 const TIPOS_MEDIO_MARCA = ['imagen', 'gif', 'video'];
 
+// `icono` es una clave libre (igual que en confianza, ver limpiarConfianza):
+// el runtime la traduce a un glifo si la reconoce, o cicla íconos por
+// defecto si viene vacía — así landings viejas (anuncio como string suelto,
+// sin ícono elegido) se siguen viendo igual que antes.
+function limpiarAnuncioInicio(it) {
+  if (typeof it === 'string') {
+    const texto = textoCorto(it, 80);
+    return texto ? { texto, icono: '' } : null;
+  }
+  if (!it || typeof it !== 'object') return null;
+  const texto = textoCorto(it.texto, 80);
+  return texto ? { texto, icono: textoCorto(it.icono, 40) } : null;
+}
+
 function limpiarBloquesInicio(bloques) {
   // Sin lista guardada: no se fuerza ningún orden/visibilidad — el runtime
   // deja la página tal como viene en el HTML (compatibilidad total con
@@ -798,7 +812,7 @@ function limpiarInicio(inicio) {
     banners_intermedios: listaDe(inicio.banners_intermedios, 4, limpiarBannerInicio),
     secciones: listaDe(inicio.secciones, 8, limpiarSeccionInicio),
     bloques: limpiarBloquesInicio(inicio.bloques),
-    anuncios: listaDe(inicio.anuncios, 8, v => textoCorto(v, 80)),
+    anuncios: listaDe(inicio.anuncios, 8, limpiarAnuncioInicio),
     confianza: limpiarConfianza(inicio.confianza),
     ...(() => {
       const marca = limpiarMarca(inicio.marca);
