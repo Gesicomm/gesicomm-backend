@@ -50,6 +50,7 @@ exports.listar = async (req, res) => {
     } = req.body || {};
 
     const where = { usuario_id };
+    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
 
     if (nombre && String(nombre).trim()) {
       where.nombre = { [Op.iLike]: `%${String(nombre).trim()}%` };
@@ -109,7 +110,9 @@ exports.obtenerPorId = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const deposito = await Deposito.findOne({ where: { id, usuario_id } });
+    const where = { id, usuario_id };
+    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+    const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
     res.json(deposito);
   } catch (error) {
@@ -128,7 +131,7 @@ exports.crear = async (req, res) => {
       return res.status(400).json({ error: `Faltan campos obligatorios: ${faltantes.join(', ')}` });
     }
 
-    const deposito = await Deposito.create({ ...datos, usuario_id, activo: true });
+    const deposito = await Deposito.create({ ...datos, usuario_id, tienda_id: req.usuario.tiendaId || null, activo: true });
     res.status(201).json(deposito);
   } catch (error) {
     console.error('Error creando deposito:', error);
@@ -140,7 +143,9 @@ exports.editar = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const deposito = await Deposito.findOne({ where: { id, usuario_id } });
+    const where = { id, usuario_id };
+    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+    const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 
     const datos = normalizarPayload({ ...deposito.toJSON(), ...req.body });
@@ -166,7 +171,9 @@ exports.cambiarEstado = async (req, res) => {
       return res.status(400).json({ error: 'El campo activo es obligatorio y debe ser booleano' });
     }
 
-    const deposito = await Deposito.findOne({ where: { id, usuario_id } });
+    const whereActivo = { id, usuario_id };
+    if (req.usuario.tiendaId) whereActivo.tienda_id = req.usuario.tiendaId;
+    const deposito = await Deposito.findOne({ where: whereActivo });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 
     await deposito.update({ activo });
@@ -181,7 +188,9 @@ exports.eliminar = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const deposito = await Deposito.findOne({ where: { id, usuario_id } });
+    const where = { id, usuario_id };
+    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+    const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 
     const usosHistoricos = await Envio.count({ where: { deposito_destino_id: deposito.id } });
@@ -205,7 +214,7 @@ exports.eliminar = async (req, res) => {
  */
 exports.listarCouriers = async (req, res) => {
   try {
-    const resultado = await DepositoCourierService.listarPorDeposito(req.params.id, req.usuario.id);
+    const resultado = await DepositoCourierService.listarPorDeposito(req.params.id, req.usuario.id, req.usuario.tiendaId);
     res.json(resultado);
   } catch (error) {
     const status = error.status || 500;
@@ -218,7 +227,7 @@ exports.listarCouriers = async (req, res) => {
 exports.reemplazarCouriers = async (req, res) => {
   try {
     const courierIds = Array.isArray(req.body?.courierIds) ? req.body.courierIds : [];
-    const resultado = await DepositoCourierService.reemplazar(req.params.id, req.usuario.id, courierIds);
+    const resultado = await DepositoCourierService.reemplazar(req.params.id, req.usuario.id, courierIds, req.usuario.tiendaId);
     res.json(resultado);
   } catch (error) {
     const status = error.status || 500;

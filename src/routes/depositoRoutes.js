@@ -2,8 +2,10 @@ const express = require('express');
 const router = express.Router();
 const depositoController = require('../controllers/depositoController');
 const { verificarToken } = require('../middleware/autenticacion');
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 
 router.use(verificarToken);
+router.use(resolverTiendaActiva);
 
 // Listado paginado con filtros dinámicos (ver RF Gestión de Depósitos)
 router.post('/listado', depositoController.listar);

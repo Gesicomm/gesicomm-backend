@@ -931,6 +931,14 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
     },
     urgencia: limpiarUrgencia(venta.urgencia),
     prueba_social: limpiarPruebaSocial(venta.prueba_social),
+    // Logos de medios de pago en la ficha (Tarjetas / Bocas de cobranza /
+    // Billetera electrónica): de la tienda entera, no por producto.
+    // `undefined` = el comercio no lo tocó = se sigue mostrando.
+    pago_logos: {
+      tarjetas: venta.pago_logos?.tarjetas !== false,
+      bocas: venta.pago_logos?.bocas !== false,
+      billetera: venta.pago_logos?.billetera !== false,
+    },
     ...(briefComercial ? { brief_comercial: briefComercial } : {}),
   };
 };

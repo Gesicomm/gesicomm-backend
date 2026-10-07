@@ -365,6 +365,7 @@ describe('LandingCodigoService.limpiarVenta', () => {
       prueba_social: null,
       cross_sell: { activo: true, ofertas: [3, 4] },
       recomendados: { activo: true, modo: 'manual', items: ['air-fryer'], max: 4, titulo: 'x'.repeat(80) },
+      pago_logos: { tarjetas: true, bocas: true, billetera: true },
     });
   });
 

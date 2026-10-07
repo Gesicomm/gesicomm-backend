@@ -23,14 +23,32 @@ function validarPassword(password) {
   return null;
 }
 
-async function courierDelUsuario(courierId, usuarioId) {
-  return Courier.findOne({ where: { id: courierId, usuario_id: usuarioId } });
+async function courierDelUsuario(courierId, usuarioId, tiendaId) {
+  const where = { id: courierId, usuario_id: usuarioId };
+  if (tiendaId) where.tienda_id = tiendaId;
+  return Courier.findOne({ where });
 }
 
-/** Las tarifas del comercio, tal como las consumen el listado y el guardado. */
-function zonasDelUsuario(usuario_id) {
+/** Los couriers PROPIOS de la tienda activa (no los de Gesicomm). */
+async function courierIdsDeTienda(usuario_id, tiendaId) {
+  const where = { usuario_id };
+  if (tiendaId) where.tienda_id = tiendaId;
+  const couriers = await Courier.findAll({ where, attributes: ['id'] });
+  return couriers.map(c => c.id);
+}
+
+/**
+ * Las tarifas del comercio, tal como las consumen el listado y el guardado.
+ * DeliveryZonaTarifa no tiene columna tienda_id propia: una regla siempre
+ * está atada a un courier (la invariante de la tabla lo exige para el
+ * alcance "comercio"), así que se filtra acotando a los couriers de la
+ * tienda activa.
+ */
+async function zonasDelUsuario(usuario_id, tiendaId) {
+  const where = { usuario_id };
+  if (tiendaId) where.courier_id = { [Op.in]: await courierIdsDeTienda(usuario_id, tiendaId) };
   return DeliveryZonaTarifa.findAll({
-    where: { usuario_id },
+    where,
     include: [{ model: Courier, as: 'courier', attributes: ['id', 'nombre', 'activo'], required: false }],
     order: [['departamento', 'ASC'], ['ciudad', 'ASC'], ['rango_min', 'ASC']],
   });
@@ -89,8 +107,10 @@ function normalizarZonaDelivery(t, usuarioId, couriersPermitidos) {
 exports.listCouriers = async (req, res) => {
   try {
     const usuario_id = req.usuario.id; // Asumiendo autenticación por token en req.user
+    const where = { usuario_id };
+    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
     const couriers = await Courier.findAll({
-      where: { usuario_id },
+      where,
       include: [{ model: CourierAcceso, as: 'acceso', attributes: ACCESS_ATTRIBUTES, required: false }],
       order: [['nombre', 'ASC'], ['id', 'ASC']],
     });
@@ -103,7 +123,7 @@ exports.listCouriers = async (req, res) => {
 
 exports.getAccesoCourier = async (req, res) => {
   const usuario_id = req.usuario.id;
-  const courier = await courierDelUsuario(req.params.id, usuario_id);
+  const courier = await courierDelUsuario(req.params.id, usuario_id, req.usuario.tiendaId);
   if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
   const acceso = await CourierAcceso.findOne({
@@ -115,7 +135,7 @@ exports.getAccesoCourier = async (req, res) => {
 
 exports.createAccesoCourier = async (req, res) => {
   const usuario_id = req.usuario.id;
-  const courier = await courierDelUsuario(req.params.id, usuario_id);
+  const courier = await courierDelUsuario(req.params.id, usuario_id, req.usuario.tiendaId);
   if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
   const username = usernameLimpio(req.body?.username);
@@ -148,7 +168,7 @@ exports.createAccesoCourier = async (req, res) => {
 
 exports.updatePasswordAccesoCourier = async (req, res) => {
   const usuario_id = req.usuario.id;
-  const courier = await courierDelUsuario(req.params.id, usuario_id);
+  const courier = await courierDelUsuario(req.params.id, usuario_id, req.usuario.tiendaId);
   if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
   const password = String(req.body?.password || '');
@@ -166,7 +186,7 @@ exports.updatePasswordAccesoCourier = async (req, res) => {
 
 exports.updateEstadoAccesoCourier = async (req, res) => {
   const usuario_id = req.usuario.id;
-  const courier = await courierDelUsuario(req.params.id, usuario_id);
+  const courier = await courierDelUsuario(req.params.id, usuario_id, req.usuario.tiendaId);
   if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
   const acceso = await CourierAcceso.findOne({ where: { courier_id: courier.id, usuario_id } });
@@ -183,6 +203,7 @@ exports.createCourier = async (req, res) => {
 
     const courier = await Courier.create({
       usuario_id,
+      tienda_id: req.usuario.tiendaId || null,
       nombre,
       telefono,
       vehiculo,
@@ -203,7 +224,9 @@ exports.updateCourier = async (req, res) => {
     const { id } = req.params;
     const { nombre, telefono, vehiculo, activo } = req.body;
 
-    const courier = await Courier.findOne({ where: { id, usuario_id } });
+    const where = { id, usuario_id };
+    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+    const courier = await Courier.findOne({ where });
     if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
     await courier.update({
@@ -226,7 +249,9 @@ exports.deleteCourier = async (req, res) => {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
 
-    const courier = await Courier.findOne({ where: { id, usuario_id } });
+    const where = { id, usuario_id };
+    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+    const courier = await Courier.findOne({ where });
     if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
     await courier.destroy();
@@ -240,7 +265,7 @@ exports.deleteCourier = async (req, res) => {
 exports.listZonasDelivery = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
-    res.json(await zonasDelUsuario(usuario_id));
+    res.json(await zonasDelUsuario(usuario_id, req.usuario.tiendaId));
   } catch (error) {
     console.error('Error listing delivery zones:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -277,8 +302,11 @@ exports.catalogoGeografico = async (req, res) => {
 exports.replaceZonasDelivery = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
+    const tiendaId = req.usuario.tiendaId;
     const zonas = Array.isArray(req.body?.zonas) ? req.body.zonas : [];
-    const couriers = await Courier.findAll({ where: { usuario_id }, attributes: ['id'] });
+    const whereCouriers = { usuario_id };
+    if (tiendaId) whereCouriers.tienda_id = tiendaId;
+    const couriers = await Courier.findAll({ where: whereCouriers, attributes: ['id'] });
     const couriersPermitidos = new Set(couriers.map(c => Number(c.id)));
     const normalizadas = zonas
       .map(z => normalizarZonaDelivery(z, usuario_id, couriersPermitidos))
@@ -311,9 +339,15 @@ exports.replaceZonasDelivery = async (req, res) => {
     if (conAlcance) {
       if (alcance.length === 0) {
         // Alcance vacío: no hay nada de qué el cliente sea autoritativo.
-        return res.json(await zonasDelUsuario(usuario_id));
+        return res.json(await zonasDelUsuario(usuario_id, tiendaId));
       }
       whereBorrado.courier_id = { [Op.in]: alcance };
+    } else if (tiendaId) {
+      // Sin alcance declarado, el borrado histórico era "todo lo del
+      // usuario" — con 2+ tiendas eso borraría también las tarifas de OTRA
+      // tienda. Se acota a los couriers de la tienda activa (los únicos que
+      // `couriersPermitidos` dejó pasar en `normalizadas`).
+      whereBorrado.courier_id = { [Op.in]: [...couriersPermitidos] };
     }
 
     await sequelize.transaction(async (t) => {
@@ -323,7 +357,7 @@ exports.replaceZonasDelivery = async (req, res) => {
       }
     });
 
-    res.json(await zonasDelUsuario(usuario_id));
+    res.json(await zonasDelUsuario(usuario_id, tiendaId));
   } catch (error) {
     console.error('Error replacing delivery zones:', error);
     res.status(500).json({ error: 'Error interno del servidor' });

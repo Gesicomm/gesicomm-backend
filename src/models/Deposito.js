@@ -11,6 +11,11 @@ const Deposito = sequelize.define('Deposito', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  tienda_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Tienda dueña del depósito/salón. Nullable: depósitos GESICOMM (no son de ninguna tienda) y filas viejas de antes de esta columna.',
+  },
   nombre: {
     type: DataTypes.STRING(150),
     allowNull: false,

@@ -21,17 +21,21 @@ function errorHttp(message, status = 400) {
  * se vinculan al depósito privado de nadie.
  */
 class DepositoCourierService {
-  /** El depósito, validando que sea del comercio. */
-  static async depositoDelUsuario(depositoId, usuarioId) {
-    const deposito = await Deposito.findOne({ where: { id: depositoId, usuario_id: usuarioId } });
+  /** El depósito, validando que sea del comercio (y de la tienda activa). */
+  static async depositoDelUsuario(depositoId, usuarioId, tiendaId) {
+    const where = { id: depositoId, usuario_id: usuarioId };
+    if (tiendaId) where.tienda_id = tiendaId;
+    const deposito = await Deposito.findOne({ where });
     if (!deposito) throw errorHttp('Depósito no encontrado.', 404);
     return deposito;
   }
 
-  /** Couriers que este comercio puede vincular: exclusivamente los suyos. */
-  static async couriersDisponibles(usuarioId) {
+  /** Couriers que este comercio puede vincular: exclusivamente los suyos (de la tienda activa). */
+  static async couriersDisponibles(usuarioId, tiendaId) {
+    const where = { activo: true, usuario_id: usuarioId };
+    if (tiendaId) where.tienda_id = tiendaId;
     return Courier.findAll({
-      where: { activo: true, usuario_id: usuarioId },
+      where,
       order: [['nombre', 'ASC']],
     });
   }
@@ -41,11 +45,11 @@ class DepositoCourierService {
    * ese depósito, más cuántas ciudades cubre cada uno — sin cobertura el
    * vínculo no sirve para nada y conviene que se vea.
    */
-  static async listarPorDeposito(depositoId, usuarioId) {
-    const deposito = await this.depositoDelUsuario(depositoId, usuarioId);
+  static async listarPorDeposito(depositoId, usuarioId, tiendaId) {
+    const deposito = await this.depositoDelUsuario(depositoId, usuarioId, tiendaId);
 
     const [disponibles, vinculos, coberturas] = await Promise.all([
-      this.couriersDisponibles(usuarioId),
+      this.couriersDisponibles(usuarioId, tiendaId),
       DepositoCourier.findAll({ where: { deposito_id: deposito.id } }),
       DeliveryZonaTarifa.findAll({
         where: { activo: true },
@@ -77,13 +81,13 @@ class DepositoCourierService {
    * Reemplaza el set de couriers habilitados del depósito. El borrado está
    * acotado a ESE depósito: nunca toca los vínculos de otro.
    */
-  static async reemplazar(depositoId, usuarioId, courierIds = []) {
-    const deposito = await this.depositoDelUsuario(depositoId, usuarioId);
+  static async reemplazar(depositoId, usuarioId, courierIds = [], tiendaId) {
+    const deposito = await this.depositoDelUsuario(depositoId, usuarioId, tiendaId);
 
     const pedidos = [...new Set((courierIds || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
 
     if (pedidos.length > 0) {
-      const permitidos = await this.couriersDisponibles(usuarioId);
+      const permitidos = await this.couriersDisponibles(usuarioId, tiendaId);
       const idsPermitidos = new Set(permitidos.map((c) => c.id));
       const invalidos = pedidos.filter((id) => !idsPermitidos.has(id));
       if (invalidos.length > 0) {

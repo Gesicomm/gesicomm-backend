@@ -2,9 +2,11 @@ const express = require('express');
 const router = express.Router();
 const courierController = require('../controllers/courierController');
 const { verificarToken } = require('../middleware/autenticacion'); // Middleware de autenticacion
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 
 // Todas las rutas requieren autenticación
 router.use(verificarToken);
+router.use(resolverTiendaActiva);
 
 router.get('/zonas-delivery', courierController.listZonasDelivery);
 router.put('/zonas-delivery', courierController.replaceZonasDelivery);
