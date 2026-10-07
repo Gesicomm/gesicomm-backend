@@ -49,8 +49,15 @@ exports.listar = async (req, res) => {
       activo,
     } = req.body || {};
 
-    const where = { usuario_id };
-    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+    const where = {};
+    if (req.usuario.tiendaId) {
+      where[Op.or] = [
+        { tienda_id: req.usuario.tiendaId },
+        { usuario_id: usuario_id }
+      ];
+    } else {
+      where.usuario_id = usuario_id;
+    }
 
     if (nombre && String(nombre).trim()) {
       where.nombre = { [Op.iLike]: `%${String(nombre).trim()}%` };
@@ -110,8 +117,15 @@ exports.obtenerPorId = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const where = { id, usuario_id };
-    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+    const where = { id };
+    if (req.usuario.tiendaId) {
+      where[Op.or] = [
+        { tienda_id: req.usuario.tiendaId },
+        { usuario_id: usuario_id }
+      ];
+    } else {
+      where.usuario_id = usuario_id;
+    }
     const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
     res.json(deposito);
@@ -143,8 +157,15 @@ exports.editar = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const where = { id, usuario_id };
-    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+    const where = { id };
+    if (req.usuario.tiendaId) {
+      where[Op.or] = [
+        { tienda_id: req.usuario.tiendaId },
+        { usuario_id: usuario_id }
+      ];
+    } else {
+      where.usuario_id = usuario_id;
+    }
     const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 
@@ -171,8 +192,15 @@ exports.cambiarEstado = async (req, res) => {
       return res.status(400).json({ error: 'El campo activo es obligatorio y debe ser booleano' });
     }
 
-    const whereActivo = { id, usuario_id };
-    if (req.usuario.tiendaId) whereActivo.tienda_id = req.usuario.tiendaId;
+    const whereActivo = { id };
+    if (req.usuario.tiendaId) {
+      whereActivo[Op.or] = [
+        { tienda_id: req.usuario.tiendaId },
+        { usuario_id: usuario_id }
+      ];
+    } else {
+      whereActivo.usuario_id = usuario_id;
+    }
     const deposito = await Deposito.findOne({ where: whereActivo });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 
@@ -188,8 +216,15 @@ exports.eliminar = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const where = { id, usuario_id };
-    if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+    const where = { id };
+    if (req.usuario.tiendaId) {
+      where[Op.or] = [
+        { tienda_id: req.usuario.tiendaId },
+        { usuario_id: usuario_id }
+      ];
+    } else {
+      where.usuario_id = usuario_id;
+    }
     const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 
