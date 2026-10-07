@@ -53,7 +53,7 @@ function subirComprobanteMiddleware(req, res, next) {
 
 async function buscar(req, res) {
   try {
-    const result = await CostoGastoService.buscar(req.body, req.usuario.id);
+    const result = await CostoGastoService.buscar(req.body, req.usuario.id, req.usuario.tiendaId);
     return res.json(result);
   } catch (err) {
     console.error(err);
@@ -63,7 +63,7 @@ async function buscar(req, res) {
 
 async function resumen(req, res) {
   try {
-    const result = await CostoGastoService.resumen(req.query, req.usuario.id);
+    const result = await CostoGastoService.resumen(req.query, req.usuario.id, req.usuario.tiendaId);
     return res.json(result);
   } catch (err) {
     console.error(err);
@@ -73,7 +73,7 @@ async function resumen(req, res) {
 
 async function reporteDesglose(req, res) {
   try {
-    const result = await CostoGastoService.reporteDesglose(req.body || {}, req.usuario.id);
+    const result = await CostoGastoService.reporteDesglose(req.body || {}, req.usuario.id, req.usuario.tiendaId);
     return res.json(result);
   } catch (err) {
     console.error(err);
@@ -83,7 +83,7 @@ async function reporteDesglose(req, res) {
 
 async function reporteFlujoCaja(req, res) {
   try {
-    const result = await CostoGastoService.reporteVisualFlujoCaja(req.query, req.usuario.id, req.usuario.tenantId);
+    const result = await CostoGastoService.reporteVisualFlujoCaja(req.query, req.usuario.id, req.usuario.tenantId, req.usuario.tiendaId);
     return res.json(result);
   } catch (err) {
     console.error(err);
@@ -93,8 +93,8 @@ async function reporteFlujoCaja(req, res) {
 
 async function exportarExcel(req, res) {
   try {
-    const datos = await CostoGastoService.datosReporteFinanciero(req.query, req.usuario.id);
-    datos.reporte_visual = await CostoGastoService.reporteVisualFlujoCaja(req.query, req.usuario.id, req.usuario.tenantId);
+    const datos = await CostoGastoService.datosReporteFinanciero(req.query, req.usuario.id, req.usuario.tiendaId);
+    datos.reporte_visual = await CostoGastoService.reporteVisualFlujoCaja(req.query, req.usuario.id, req.usuario.tenantId, req.usuario.tiendaId);
     const buffer = await generarExcelReporteFinanciero(datos, req.query);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="reporte-financiero_${req.query.fecha_desde || 'inicio'}_${req.query.fecha_hasta || 'hoy'}.xlsx"`);
@@ -107,8 +107,8 @@ async function exportarExcel(req, res) {
 
 async function exportarPdf(req, res) {
   try {
-    const datos = await CostoGastoService.datosReporteFinanciero(req.query, req.usuario.id);
-    datos.reporte_visual = await CostoGastoService.reporteVisualFlujoCaja(req.query, req.usuario.id, req.usuario.tenantId);
+    const datos = await CostoGastoService.datosReporteFinanciero(req.query, req.usuario.id, req.usuario.tiendaId);
+    datos.reporte_visual = await CostoGastoService.reporteVisualFlujoCaja(req.query, req.usuario.id, req.usuario.tenantId, req.usuario.tiendaId);
     const buffer = await generarPdfReporteFinanciero(datos, req.query);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="reporte-financiero_${req.query.fecha_desde || 'inicio'}_${req.query.fecha_hasta || 'hoy'}.pdf"`);
@@ -121,7 +121,7 @@ async function exportarPdf(req, res) {
 
 async function crear(req, res) {
   try {
-    const registro = await CostoGastoService.crear(req.body, req.usuario.id, req.usuario.tenantId);
+    const registro = await CostoGastoService.crear(req.body, req.usuario.id, req.usuario.tenantId, req.usuario.tiendaId);
     return res.status(201).json(registro);
   } catch (err) {
     console.error(err);
@@ -132,7 +132,7 @@ async function crear(req, res) {
 
 async function detalle(req, res) {
   try {
-    const registro = await CostoGastoService.detalle(req.params.id, req.usuario.id);
+    const registro = await CostoGastoService.detalle(req.params.id, req.usuario.id, req.usuario.tiendaId);
     return res.json(registro);
   } catch (err) {
     console.error(err);
@@ -143,7 +143,7 @@ async function detalle(req, res) {
 
 async function actualizar(req, res) {
   try {
-    const registro = await CostoGastoService.actualizar(req.params.id, req.body, req.usuario.id, req.usuario.tenantId);
+    const registro = await CostoGastoService.actualizar(req.params.id, req.body, req.usuario.id, req.usuario.tenantId, req.usuario.tiendaId);
     return res.json(registro);
   } catch (err) {
     console.error(err);
@@ -154,7 +154,7 @@ async function actualizar(req, res) {
 
 async function eliminar(req, res) {
   try {
-    await CostoGastoService.eliminar(req.params.id, req.usuario.id);
+    await CostoGastoService.eliminar(req.params.id, req.usuario.id, req.usuario.tiendaId);
     return res.json({ message: 'Movimiento financiero eliminado correctamente.' });
   } catch (err) {
     console.error(err);
@@ -165,7 +165,7 @@ async function eliminar(req, res) {
 
 async function duplicar(req, res) {
   try {
-    const registro = await CostoGastoService.duplicar(req.params.id, req.usuario.id);
+    const registro = await CostoGastoService.duplicar(req.params.id, req.usuario.id, req.usuario.tiendaId);
     return res.status(201).json(registro);
   } catch (err) {
     console.error(err);
@@ -176,7 +176,7 @@ async function duplicar(req, res) {
 
 async function marcarPagado(req, res) {
   try {
-    const registro = await CostoGastoService.marcarPagado(req.params.id, req.body, req.usuario.id);
+    const registro = await CostoGastoService.marcarPagado(req.params.id, req.body, req.usuario.id, req.usuario.tiendaId);
     return res.json(registro);
   } catch (err) {
     console.error(err);
@@ -192,14 +192,14 @@ async function subirComprobante(req, res) {
     // Confirmamos que el registro exista y sea del usuario ANTES de guardar
     // el archivo definitivo (mismo patrón que imagen.controller.js).
     try {
-      await CostoGastoService.detalle(req.params.id, req.usuario.id);
+      await CostoGastoService.detalle(req.params.id, req.usuario.id, req.usuario.tiendaId);
     } catch (e) {
       await ImagenService.borrarArchivoSeguro(req.file.path);
       return res.status(404).json({ message: 'Movimiento financiero no encontrado.' });
     }
 
     const imagenData = await ComprobanteService.procesarComprobanteParaR2(req.file, req.params.id);
-    const { registro, anterior } = await CostoGastoService.guardarComprobante(req.params.id, req.usuario.id, imagenData, req.file.originalname);
+    const { registro, anterior } = await CostoGastoService.guardarComprobante(req.params.id, req.usuario.id, imagenData, req.file.originalname, req.usuario.tiendaId);
     // Reemplazar es subir el nuevo y borrar el viejo: si no, cada
     // reemplazo de comprobante deja un objeto huérfano en R2 para siempre.
     if (anterior) await ImagenService.eliminarObjetoStorage(anterior);

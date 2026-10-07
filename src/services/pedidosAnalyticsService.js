@@ -504,7 +504,7 @@ async function getGastoMetaAds(usuario_id, inquilino_id, desde, hasta) {
   return { total, sin_atribuir: sinAtribuir, directo_por_producto: directoPorProducto };
 }
 
-async function getGastosOperativos(usuario_id, desde, hasta, inquilino_id = null) {
+async function getGastosOperativos(usuario_id, desde, hasta, inquilino_id = null, tienda_id = null) {
   const whereGastos = {
     usuario_id,
     activo: true,
@@ -513,6 +513,7 @@ async function getGastosOperativos(usuario_id, desde, hasta, inquilino_id = null
     envio_id: null,
     fecha: { [Op.between]: [desde, hasta] },
   };
+  if (tienda_id) whereGastos.tienda_id = tienda_id;
 
   const filas = await CostoGasto.findAll({
     where: whereGastos,
@@ -692,7 +693,7 @@ function claveProducto(p) {
  * (whereBase.id) NO sirve para el anterior: son otros pedidos. Se vuelve a
  * resolver contra el rango viejo, si no la comparativa daría siempre cero.
  */
-async function getComparativoPeriodo(whereBase, usuario_id, desde, hasta, productoId, inquilino_id = null) {
+async function getComparativoPeriodo(whereBase, usuario_id, desde, hasta, productoId, inquilino_id = null, tienda_id = null) {
   const MS_DIA = 86400000;
   const pad = (n) => String(n).padStart(2, '0');
   const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -726,7 +727,7 @@ async function getComparativoPeriodo(whereBase, usuario_id, desde, hasta, produc
 
   const [envios, gastos] = await Promise.all([
     getEnviosConItems(wherePrev),
-    getGastosOperativos(usuario_id, pDesde, pHasta, inquilino_id),
+    getGastosOperativos(usuario_id, pDesde, pHasta, inquilino_id, tienda_id),
   ]);
 
   const k = getKpisFinancieros(envios);
@@ -1822,13 +1823,13 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     getCouriersAnalytics(whereBase, usuario_id),
     getTimelineTendencias(whereBase, desde, hasta),
     confirmadoresDisponiblesPromise,
-    getGastosOperativos(usuario_id, desde, hasta, inquilino_id),
+    getGastosOperativos(usuario_id, desde, hasta, inquilino_id, tienda_id),
     getPagosOnlineAnalytics(whereBase),
     catalogoCacheado(`productos:${usuario_id}:${tienda_id ?? 'todas'}`, () => getProductosDisponibles(usuario_id, tienda_id)),
     catalogoCacheado(`anios:${usuario_id}:${tienda_id ?? 'todas'}`, () => getAniosDisponibles(usuario_id, tienda_id)),
     landingsTiendaPromise.then(getLandingsDisponibles),
     landingsTiendaPromise.then(ls => getRankingLandings(whereRanking, desde, hasta, ls)),
-    getComparativoPeriodo(whereBase, usuario_id, desde, hasta, filtros.producto_id, inquilino_id),
+    getComparativoPeriodo(whereBase, usuario_id, desde, hasta, filtros.producto_id, inquilino_id, tienda_id),
     enviosConItemsPromise,
     getUnidadesUniversoPeriodo(whereUniverso),
   ]);

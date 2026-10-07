@@ -25,6 +25,11 @@ const CostoGasto = sequelize.define('CostoGasto', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  tienda_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Tienda activa al cargar el movimiento. Nullable: cuentas sin tienda, o filas viejas de antes de esta columna.',
+  },
   tipo: {
     type: DataTypes.ENUM('ingreso', 'costo', 'gasto'),
     allowNull: false,
@@ -134,6 +139,7 @@ const CostoGasto = sequelize.define('CostoGasto', {
     { fields: ['usuario_id', 'fecha'] },
     { fields: ['usuario_id', 'tipo'] },
     { fields: ['usuario_id', 'es_recurrente', 'proxima_fecha'] },
+    { fields: ['tienda_id'] },
   ],
 });
 

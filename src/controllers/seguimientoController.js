@@ -7,7 +7,7 @@
  * dependen de un pedido viven en envioSeguimientoController.js.
  */
 const { Op } = require('sequelize');
-const { WhatsappPlantilla, SeguimientoEtiqueta, SeguimientoConfiguracion, Notificacion } = require('../models');
+const { WhatsappPlantilla, SeguimientoEtiqueta, SeguimientoConfiguracion, Notificacion, Envio } = require('../models');
 const { listarVariablesDisponibles } = require('../services/seguimiento/plantillaResolver.service');
 const { envolverControlador } = require('../utils/asyncHandler');
 
@@ -200,22 +200,39 @@ exports.actualizarConfiguracion = async (req, res) => {
 
 exports.listarNotificaciones = async (req, res) => {
   const usuario_id = req.usuario.id;
+  const tiendaId = req.usuario.tiendaId;
   const { leida, limit = 50 } = req.query;
   const where = { usuario_id };
   if (leida !== undefined) where.leida = leida === 'true';
+
+  // Una notificación atada a un pedido (envio_id) es de la tienda de ESE
+  // pedido, no de "la" tienda del usuario — con 2+ tiendas hay que mirar
+  // Envio.tienda_id. Las que no dependen de ningún pedido (envio_id null,
+  // ej. avisos de cuenta) se siguen mostrando siempre, en cualquier tienda.
+  const includeEnvio = tiendaId ? [{ model: Envio, attributes: [], required: false }] : [];
+  const whereTienda = tiendaId ? { [Op.or]: [{ envio_id: null }, { '$Envio.tienda_id$': tiendaId }] } : {};
+
   const notificaciones = await Notificacion.findAll({
-    where,
+    where: { ...where, ...whereTienda },
+    include: includeEnvio,
     order: [['created_at', 'DESC']],
     limit: Math.min(200, Math.max(1, parseInt(limit, 10) || 50)),
+    subQuery: false,
   });
-  const noLeidas = await Notificacion.count({ where: { usuario_id, leida: false } });
-  
-  // Incluir conteo de seguimientos vencidos para el badge de la sidebar
+  const noLeidas = await Notificacion.count({
+    where: { usuario_id, leida: false, ...whereTienda },
+    include: includeEnvio,
+  });
+
+  // Incluir conteo de seguimientos vencidos para el badge de la sidebar.
+  // SeguimientoRecordatorio siempre cuelga de un pedido (envio_id NOT NULL),
+  // así que acá sí se puede exigir el join en vez de tolerar el null.
   const { SeguimientoRecordatorio } = require('../models');
   const seguimientosVencidos = await SeguimientoRecordatorio.count({
-    where: { usuario_id, estado: 'VENCIDO' }
+    where: { usuario_id, estado: 'VENCIDO' },
+    include: tiendaId ? [{ model: Envio, attributes: [], where: { tienda_id: tiendaId }, required: true }] : [],
   });
-  
+
   res.json({ data: notificaciones, no_leidas: noLeidas, seguimientos_vencidos: seguimientosVencidos });
 };
 
@@ -229,7 +246,20 @@ exports.marcarNotificacionLeida = async (req, res) => {
 
 exports.marcarTodasLeidas = async (req, res) => {
   const usuario_id = req.usuario.id;
-  await Notificacion.update({ leida: true, leida_en: new Date() }, { where: { usuario_id, leida: false } });
+  const tiendaId = req.usuario.tiendaId;
+  // Solo las de la tienda activa (o sin tienda asociada) — no marcar como
+  // leídas notificaciones de pedidos de otra tienda de la misma cuenta.
+  const idsAMarcar = tiendaId
+    ? (await Notificacion.findAll({
+        where: { usuario_id, leida: false, [Op.or]: [{ envio_id: null }, { '$Envio.tienda_id$': tiendaId }] },
+        include: [{ model: Envio, attributes: [], required: false }],
+        attributes: ['id'],
+        subQuery: false,
+        raw: true,
+      })).map(r => r.id)
+    : null;
+  const where = idsAMarcar ? { id: { [Op.in]: idsAMarcar } } : { usuario_id, leida: false };
+  await Notificacion.update({ leida: true, leida_en: new Date() }, { where });
   res.status(204).send();
 };
 

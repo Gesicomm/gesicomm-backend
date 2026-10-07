@@ -5,9 +5,11 @@ const express = require('express');
 const router = express.Router();
 const { verificarToken } = require('../middleware/autenticacion');
 const { verificarPermiso } = require('../middleware/autorizacion');
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 const ctrl = require('../controllers/costoGasto.controller');
 
 router.use(verificarToken);
+router.use(resolverTiendaActiva);
 
 router.post('/buscar', verificarPermiso('ver_costos_gastos'), ctrl.buscar);
 router.get('/resumen', verificarPermiso('ver_costos_gastos'), ctrl.resumen);

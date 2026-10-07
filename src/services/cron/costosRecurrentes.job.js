@@ -35,6 +35,7 @@ async function generarOcurrenciasRecurrentes() {
       while (plantilla.proxima_fecha && plantilla.proxima_fecha <= hoy) {
         await CostoGasto.create({
           usuario_id: plantilla.usuario_id,
+          tienda_id: plantilla.tienda_id,
           tipo: plantilla.tipo,
           categoria_id: plantilla.categoria_id,
           concepto: plantilla.concepto,

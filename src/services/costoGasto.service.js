@@ -142,7 +142,7 @@ class CostoGastoService {
     return data;
   }
 
-  static async buscar(filtros, usuario_id) {
+  static async buscar(filtros, usuario_id, tiendaId) {
     const {
       fecha_desde, fecha_hasta, tipo, categoria_id, estado, proveedor_id,
       frecuencia, metodo_pago_id, producto_id, clasificacion, es_recurrente,
@@ -150,6 +150,7 @@ class CostoGastoService {
     } = filtros;
 
     const where = { usuario_id, activo: true };
+    if (tiendaId) where.tienda_id = tiendaId;
     if (fecha_desde && fecha_hasta) where.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
     else if (fecha_desde) where.fecha = { [Op.gte]: fecha_desde };
     else if (fecha_hasta) where.fecha = { [Op.lte]: fecha_hasta };
@@ -211,7 +212,7 @@ class CostoGastoService {
     }
   }
 
-  static async crear(datos, usuario_id, inquilino_id) {
+  static async crear(datos, usuario_id, inquilino_id, tiendaId) {
     const { concepto, tipo, categoria_id, importe } = datos;
     if (!concepto || !concepto.trim()) throw new Error('El concepto es requerido.');
     if (!TIPOS_MOVIMIENTO.includes(tipo)) throw new Error('El tipo debe ser "ingreso", "costo" o "gasto".');
@@ -232,6 +233,7 @@ class CostoGastoService {
 
     const registro = await CostoGasto.create({
       usuario_id,
+      tienda_id: tiendaId || null,
       tipo,
       categoria_id,
       concepto: concepto.trim(),
@@ -252,20 +254,24 @@ class CostoGastoService {
       envio_id: datos.envio_id || null,
     });
 
-    return this.detalle(registro.id, usuario_id);
+    return this.detalle(registro.id, usuario_id, tiendaId);
   }
 
-  static async detalle(id, usuario_id) {
+  static async detalle(id, usuario_id, tiendaId) {
+    const where = { id, usuario_id };
+    if (tiendaId) where.tienda_id = tiendaId;
     const registro = await CostoGasto.findOne({
-      where: { id, usuario_id },
+      where,
       include: INCLUDES_DETALLE,
     });
     if (!registro) throw new Error('Movimiento financiero no encontrado.');
     return this.serializar(registro);
   }
 
-  static async actualizar(id, datos, usuario_id, inquilino_id) {
-    const registro = await CostoGasto.findOne({ where: { id, usuario_id } });
+  static async actualizar(id, datos, usuario_id, inquilino_id, tiendaId) {
+    const where = { id, usuario_id };
+    if (tiendaId) where.tienda_id = tiendaId;
+    const registro = await CostoGasto.findOne({ where });
     if (!registro) throw new Error('Movimiento financiero no encontrado.');
 
     if (datos.tipo !== undefined && !TIPOS_MOVIMIENTO.includes(datos.tipo)) {
@@ -307,23 +313,28 @@ class CostoGastoService {
     }
 
     await registro.save();
-    return this.detalle(id, usuario_id);
+    return this.detalle(id, usuario_id, tiendaId);
   }
 
-  static async eliminar(id, usuario_id) {
-    const registro = await CostoGasto.findOne({ where: { id, usuario_id } });
+  static async eliminar(id, usuario_id, tiendaId) {
+    const where = { id, usuario_id };
+    if (tiendaId) where.tienda_id = tiendaId;
+    const registro = await CostoGasto.findOne({ where });
     if (!registro) throw new Error('Movimiento financiero no encontrado.');
     registro.activo = false;
     await registro.save();
     return true;
   }
 
-  static async duplicar(id, usuario_id) {
-    const original = await CostoGasto.findOne({ where: { id, usuario_id } });
+  static async duplicar(id, usuario_id, tiendaId) {
+    const where = { id, usuario_id };
+    if (tiendaId) where.tienda_id = tiendaId;
+    const original = await CostoGasto.findOne({ where });
     if (!original) throw new Error('Movimiento financiero no encontrado.');
 
     const copia = await CostoGasto.create({
       usuario_id,
+      tienda_id: original.tienda_id,
       tipo: original.tipo,
       categoria_id: original.categoria_id,
       concepto: original.concepto,
@@ -344,16 +355,18 @@ class CostoGastoService {
       envio_id: null,
     });
 
-    return this.detalle(copia.id, usuario_id);
+    return this.detalle(copia.id, usuario_id, tiendaId);
   }
 
-  static async marcarPagado(id, datos, usuario_id) {
-    const registro = await CostoGasto.findOne({ where: { id, usuario_id } });
+  static async marcarPagado(id, datos, usuario_id, tiendaId) {
+    const where = { id, usuario_id };
+    if (tiendaId) where.tienda_id = tiendaId;
+    const registro = await CostoGasto.findOne({ where });
     if (!registro) throw new Error('Movimiento financiero no encontrado.');
     registro.estado = 'pagado';
     registro.fecha_pago = (datos && datos.fecha_pago) || hoyISO();
     await registro.save();
-    return this.detalle(id, usuario_id);
+    return this.detalle(id, usuario_id, tiendaId);
   }
 
   /**
@@ -363,8 +376,10 @@ class CostoGastoService {
    *   `anterior` es el comprobante que se reemplaza, para que el controller
    *   borre ese objeto de R2 (o el archivo legacy en disco).
    */
-  static async guardarComprobante(id, usuario_id, imagenData, nombreOriginal) {
-    const registro = await CostoGasto.findOne({ where: { id, usuario_id } });
+  static async guardarComprobante(id, usuario_id, imagenData, nombreOriginal, tiendaId) {
+    const where = { id, usuario_id };
+    if (tiendaId) where.tienda_id = tiendaId;
+    const registro = await CostoGasto.findOne({ where });
     if (!registro) throw new Error('Movimiento financiero no encontrado.');
     const anterior = registro.comprobante_url
       ? { url: registro.comprobante_url, storage_key: registro.comprobante_storage_key }
@@ -376,7 +391,7 @@ class CostoGastoService {
     registro.comprobante_size = imagenData.size;
     registro.comprobante_nombre = nombreOriginal || null;
     await registro.save();
-    return { registro: await this.detalle(id, usuario_id), anterior };
+    return { registro: await this.detalle(id, usuario_id, tiendaId), anterior };
   }
 
   /**
@@ -391,9 +406,10 @@ class CostoGastoService {
    * contra entrega, que es el método dominante) — recién al entregarse se
    * puede considerar cobrado.
    */
-  static async resumen(filtros, usuario_id) {
+  static async resumen(filtros, usuario_id, tiendaId) {
     const { fecha_desde, fecha_hasta } = filtros;
     const whereFecha = { usuario_id, activo: true, estado: { [Op.ne]: 'cancelado' } };
+    if (tiendaId) whereFecha.tienda_id = tiendaId;
     if (fecha_desde && fecha_hasta) whereFecha.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
 
     const totales = await CostoGasto.findAll({
@@ -409,6 +425,7 @@ class CostoGastoService {
     const totalEgresos = gastosPeriodo + costosPeriodo;
 
     const whereEnvio = { usuario_id, estado: { [Op.iLike]: 'entregado' } };
+    if (tiendaId) whereEnvio.tienda_id = tiendaId;
     if (fecha_desde && fecha_hasta) whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
 
     const enviosEntregados = await Envio.findAll({
@@ -440,11 +457,12 @@ class CostoGastoService {
    * gasto/costo y cada venta que compone esos totales, para que el
    * usuario pueda auditar línea por línea de dónde sale cada número.
    */
-  static async datosReporteFinanciero(filtros, usuario_id) {
+  static async datosReporteFinanciero(filtros, usuario_id, tiendaId) {
     const { fecha_desde, fecha_hasta } = filtros;
-    const resumenCalculado = await this.resumen(filtros, usuario_id);
+    const resumenCalculado = await this.resumen(filtros, usuario_id, tiendaId);
 
     const whereGastos = { usuario_id, activo: true, estado: { [Op.ne]: 'cancelado' } };
+    if (tiendaId) whereGastos.tienda_id = tiendaId;
     if (fecha_desde && fecha_hasta) whereGastos.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
 
     const gastos = await CostoGasto.findAll({
@@ -454,6 +472,7 @@ class CostoGastoService {
     });
 
     const whereEnvio = { usuario_id, estado: { [Op.iLike]: 'entregado' } };
+    if (tiendaId) whereEnvio.tienda_id = tiendaId;
     if (fecha_desde && fecha_hasta) whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
 
     const ingresos = await Envio.findAll({
@@ -521,14 +540,15 @@ class CostoGastoService {
     }, 0));
   }
 
-  static async _datosReporteVisualPeriodo(filtros, usuario_id, inquilino_id) {
+  static async _datosReporteVisualPeriodo(filtros, usuario_id, inquilino_id, tiendaId) {
     const { fecha_desde, fecha_hasta } = filtros;
     const wherePeriodo = {};
     if (fecha_desde && fecha_hasta) wherePeriodo.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
+    const whereTienda = tiendaId ? { tienda_id: tiendaId } : {};
 
     const [envios, gastos, metaAds, productos, cuentasPendientes] = await Promise.all([
       Envio.findAll({
-        where: { usuario_id, ...wherePeriodo },
+        where: { usuario_id, ...whereTienda, ...wherePeriodo },
         attributes: [
           'id', 'fecha', 'cliente', 'monto', 'costo_envio', 'estado', 'origen',
           'canal_venta_id', 'comision_pct_aplicada', 'quiere_factura', 'estado_financiero',
@@ -554,7 +574,7 @@ class CostoGastoService {
         ],
       }),
       CostoGasto.findAll({
-        where: { usuario_id, activo: true, estado: { [Op.ne]: 'cancelado' }, ...wherePeriodo },
+        where: { usuario_id, ...whereTienda, activo: true, estado: { [Op.ne]: 'cancelado' }, ...wherePeriodo },
         include: INCLUDES_LISTA,
         order: [['fecha', 'DESC'], ['id', 'DESC']],
       }),
@@ -570,6 +590,7 @@ class CostoGastoService {
       CostoGasto.sum('importe', {
         where: {
           usuario_id,
+          ...whereTienda,
           activo: true,
           tipo: { [Op.in]: TIPOS_EGRESO },
           estado: 'pendiente',
@@ -745,15 +766,15 @@ class CostoGastoService {
     };
   }
 
-  static async reporteVisualFlujoCaja(filtros, usuario_id, inquilino_id) {
-    const actual = await this._datosReporteVisualPeriodo(filtros, usuario_id, inquilino_id);
+  static async reporteVisualFlujoCaja(filtros, usuario_id, inquilino_id, tiendaId) {
+    const actual = await this._datosReporteVisualPeriodo(filtros, usuario_id, inquilino_id, tiendaId);
     const comparar = filtros.comparar_anterior === true || filtros.comparar_anterior === 'true' || filtros.comparar_anterior === '1';
     if (!comparar) return { ...actual, comparacion: null };
 
     const anteriorRango = periodoAnterior(filtros.fecha_desde, filtros.fecha_hasta);
     if (!anteriorRango) return { ...actual, comparacion: null };
 
-    const anterior = await this._datosReporteVisualPeriodo(anteriorRango, usuario_id, inquilino_id);
+    const anterior = await this._datosReporteVisualPeriodo(anteriorRango, usuario_id, inquilino_id, tiendaId);
     const filas = [
       {
         indicador: METRIC_TERMS.ventasNetas,
@@ -804,7 +825,7 @@ class CostoGastoService {
    * agrega el detalle propio de Control financiero que no existe en ningún
    * otro lado.
    */
-  static async reporteDesglose(filtros, usuario_id) {
+  static async reporteDesglose(filtros, usuario_id, tiendaId) {
     const hasta = filtros.fecha_hasta || hoyISO();
     const desde = filtros.fecha_desde || (() => {
       const d = new Date(hasta);
@@ -812,8 +833,9 @@ class CostoGastoService {
       d.setDate(1);
       return d.toISOString().slice(0, 10);
     })();
+    const whereTienda = tiendaId ? { tienda_id: tiendaId } : {};
 
-    const whereBase = { usuario_id, activo: true, estado: { [Op.ne]: 'cancelado' }, tipo: { [Op.in]: TIPOS_EGRESO }, envio_id: null, fecha: { [Op.between]: [desde, hasta] } };
+    const whereBase = { usuario_id, ...whereTienda, activo: true, estado: { [Op.ne]: 'cancelado' }, tipo: { [Op.in]: TIPOS_EGRESO }, envio_id: null, fecha: { [Op.between]: [desde, hasta] } };
 
     const [porCategoriaRaw, porMesRaw, topGastos, plantillasRecurrentes, ingresosPorMesRaw] = await Promise.all([
       CostoGasto.findAll({
@@ -840,12 +862,12 @@ class CostoGastoService {
         limit: 8,
       }),
       CostoGasto.findAll({
-        where: { usuario_id, activo: true, estado: { [Op.ne]: 'cancelado' }, tipo: { [Op.in]: TIPOS_EGRESO }, es_recurrente: true, parent_recurring_id: null },
+        where: { usuario_id, ...whereTienda, activo: true, estado: { [Op.ne]: 'cancelado' }, tipo: { [Op.in]: TIPOS_EGRESO }, es_recurrente: true, parent_recurring_id: null },
         attributes: ['importe', 'frecuencia'],
         raw: true,
       }),
       Envio.findAll({
-        where: { usuario_id, estado: { [Op.iLike]: 'entregado' }, fecha: { [Op.between]: [desde, hasta] } },
+        where: { usuario_id, ...whereTienda, estado: { [Op.iLike]: 'entregado' }, fecha: { [Op.between]: [desde, hasta] } },
         attributes: ['id', 'fecha', 'monto', 'costo_envio', 'delivery_a_cargo', 'cupon_descuento'],
         include: [{ model: EnvioItem, as: 'items', attributes: ['cantidad', 'precio_unitario', 'subtotal'], required: false }],
       }),

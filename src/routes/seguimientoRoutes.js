@@ -3,8 +3,10 @@ const router = express.Router();
 const seguimientoController = require('../controllers/seguimientoController');
 const flujoController = require('../controllers/seguimientoFlujoController');
 const { verificarToken } = require('../middleware/autenticacion');
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 
 router.use(verificarToken);
+router.use(resolverTiendaActiva);
 
 // Flujos de mensajes de WhatsApp: el proceso y sus fases ordenadas. Es la
 // unidad principal del seguimiento; las plantillas sueltas de abajo quedan
