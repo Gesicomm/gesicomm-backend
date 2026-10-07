@@ -20,6 +20,7 @@ const MetaCapiService = require('../services/metaCapi.service');
 const BuilderPublicPageService = require('../services/builderPublicPage.service');
 const PagoParService = require('../services/payments/pagoParService');
 const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago');
+const RedFulfillmentService = require('../services/redFulfillment.service');
 
 const EVENTOS_PERMITIDOS = new Set(['PageView', 'Contact', 'AddToCart', 'InitiateCheckout', 'ViewContent', 'Lead']);
 const MAX_CONTENT_IDS = 40;
@@ -216,6 +217,22 @@ async function obtenerProducto(req, res) {
   } catch (err) {
     console.error('[landing-publica] obtenerProducto:', err.message);
     return res.status(500).json({ message: 'Error al obtener el producto.' });
+  }
+}
+
+/**
+ * Departamentos y ciudades de Paraguay (catálogo compartido, no por
+ * inquilino) para el selector de dirección del checkout propio del lienzo —
+ * el mismo catálogo que ya usa Courier → Nuevo pedido, pero público porque
+ * acá no hay sesión: es el cliente completando su propia dirección.
+ */
+async function geografia(req, res) {
+  try {
+    const resultado = await RedFulfillmentService.catalogoGeografico({ conCiudades: true });
+    return res.status(200).json(resultado);
+  } catch (err) {
+    console.error('[landing-publica] geografia:', err.message);
+    return res.status(500).json({ message: 'Error al obtener el catálogo geográfico.' });
   }
 }
 
@@ -632,4 +649,4 @@ async function registrarVisitaPublica(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago };
+module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia };

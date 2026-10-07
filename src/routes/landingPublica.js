@@ -93,6 +93,10 @@ router.post('/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCa
 router.post('/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);
 router.get('/pagopar/resultado/:hash', limitePublico, resolverTiendaOpcional, ctrl.resultadoPago);
 router.get('/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
+// Catálogo de departamentos/ciudades de Paraguay (no es de ninguna tienda en
+// particular): va antes del catch-all /:slug, si no "geografia" se
+// interpretaría como un slug de landing.
+router.get('/geografia', limitePublico, ctrl.geografia);
 router.get('/:slug', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);
 router.post('/:slug/buscar', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug); // busqueda catalogo
 router.get('/:slug/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
