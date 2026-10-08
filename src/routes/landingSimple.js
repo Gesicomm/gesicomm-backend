@@ -18,6 +18,7 @@ router.use(verificarPermiso('gestionar_landing'));
 router.use(resolverTiendaActiva);
 
 router.get('/', ctrl.listar);
+router.get('/payment-logos', ctrl.listarPaymentLogos);
 router.post('/', ctrl.crear);
 // Antes de '/:id' no hace falta (aquel es GET), pero se declara junto al
 // otro POST de creación para que el par se lea de una.

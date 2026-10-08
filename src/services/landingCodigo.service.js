@@ -879,6 +879,20 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
   const max = Number(reco.max);
   const briefComercial = limpiarBriefComercial(venta.brief_comercial);
   const tipo = TIPOS_VENTA.includes(venta.tipo) ? venta.tipo : 'catalogo';
+  const paymentLogos = Array.isArray(venta.payment_logos)
+    ? venta.payment_logos
+      .filter(logo => logo && typeof logo === 'object')
+      .slice(0, 100)
+      .map(logo => ({
+        clave: textoCorto(logo.clave, 80),
+        grupo: textoCorto(logo.grupo, 60),
+        nombre: textoCorto(logo.nombre, 120),
+        logo_url: textoCorto(logo.logo_url || logo.imagen, 700),
+        imagen: textoCorto(logo.logo_url || logo.imagen, 700),
+        orden: enteroPositivo(logo.orden) || 0,
+      }))
+      .filter(logo => logo.clave && logo.nombre && logo.logo_url)
+    : null;
   return {
     configurado: true,
     tipo,
@@ -943,6 +957,7 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
       bocas: venta.pago_logos?.bocas !== false,
       billetera: venta.pago_logos?.billetera !== false,
     },
+    ...(paymentLogos ? { payment_logos: paymentLogos } : {}),
     ...(briefComercial ? { brief_comercial: briefComercial } : {}),
   };
 };

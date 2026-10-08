@@ -23,6 +23,7 @@ const LandingCodigoService = require('./landingCodigo.service');
 const AICodeValidator = require('./aiCodeValidator.service');
 const ImagenService = require('./imagen.service');
 const TypographyService = require('./typography.service');
+const PaymentLogoService = require('./paymentLogo.service');
 const PaginaFactory = require('../factories/PaginaFactory');
 
 // Los dos modos que administra este servicio, ambos "una landing por
@@ -565,6 +566,10 @@ class LandingSimpleService {
     }
     Object.assign(landing, this.camposEditables(payload, 'codigo'));
     await landing.save();
+    if (payload.venta !== undefined) {
+      const tienda = await Tienda.findByPk(tienda_id);
+      await PaymentLogoService.guardarVisibilidadLanding(landing, tienda, content.venta?.payment_logos || []);
+    }
     if (payload.items !== undefined) {
       await LandingService.sincronizarItems(landing.id, payload.items);
     }

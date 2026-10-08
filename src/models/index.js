@@ -87,6 +87,8 @@ const BuilderFunnelPage = require('./BuilderFunnelPage');
 const BuilderDomain = require('./BuilderDomain');
 const PaymentGateway = require('./PaymentGateway');
 const PaymentTransaction = require('./PaymentTransaction');
+const PaymentLogo = require('./PaymentLogo');
+const PaymentLogoVisibility = require('./PaymentLogoVisibility');
 const Plan = require('./Plan');
 const CheckoutIntent = require('./CheckoutIntent');
 const SubscriptionPurchase = require('./SubscriptionPurchase');
@@ -503,6 +505,15 @@ Faq.belongsTo(Landing, { foreignKey: 'landing_id' });
 Landing.hasMany(LandingBeneficio, { as: 'beneficios', foreignKey: 'landing_id', onDelete: 'CASCADE' });
 LandingBeneficio.belongsTo(Landing, { foreignKey: 'landing_id' });
 
+PaymentLogo.hasMany(PaymentLogoVisibility, { as: 'visibilidades', foreignKey: 'payment_logo_id', onDelete: 'CASCADE' });
+PaymentLogoVisibility.belongsTo(PaymentLogo, { as: 'logo', foreignKey: 'payment_logo_id' });
+Usuario.hasMany(PaymentLogoVisibility, { as: 'payment_logo_visibilidades', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
+PaymentLogoVisibility.belongsTo(Usuario, { as: 'usuario', foreignKey: 'usuario_id' });
+Tienda.hasMany(PaymentLogoVisibility, { as: 'payment_logo_visibilidades', foreignKey: 'tienda_id', onDelete: 'CASCADE' });
+PaymentLogoVisibility.belongsTo(Tienda, { as: 'tienda', foreignKey: 'tienda_id' });
+Landing.hasMany(PaymentLogoVisibility, { as: 'payment_logo_visibilidades', foreignKey: 'landing_id', onDelete: 'CASCADE' });
+PaymentLogoVisibility.belongsTo(Landing, { as: 'landing', foreignKey: 'landing_id' });
+
 // ============================================================
 // Relaciones de Educación / Academia
 // ============================================================
@@ -875,6 +886,8 @@ module.exports = {
   BuilderDomain,
   PaymentGateway,
   PaymentTransaction,
+  PaymentLogo,
+  PaymentLogoVisibility,
   ProveedorDns,
   Plan,
   CheckoutIntent,

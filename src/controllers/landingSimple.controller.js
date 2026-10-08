@@ -24,6 +24,7 @@ const { Tienda } = require('../models');
 const LandingSimpleService = require('../services/landingSimple.service');
 const ImagenService = require('../services/imagen.service');
 const AuthTracking = require('../services/authTracking.service');
+const PaymentLogoService = require('../services/paymentLogo.service');
 const { destinoUploadsTmp } = require('../utils/uploadTmp');
 
 const uploadImagenLandingSimple = multer({
@@ -109,6 +110,17 @@ async function listar(req, res) {
   } catch (err) {
     console.error('[landing-simple] listar:', err.message);
     return res.status(500).json({ message: 'Error al listar landings.' });
+  }
+}
+
+async function listarPaymentLogos(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    const logos = await PaymentLogoService.resolverParaLanding(null, tienda);
+    return res.json(logos);
+  } catch (err) {
+    return manejarError(res, err, 'Error al listar logos de pago.');
   }
 }
 
@@ -396,7 +408,7 @@ async function eliminarHeroImagen(req, res) {
 }
 
 module.exports = {
-  listar, crear, crearDesdeOnboarding, crearDesdeIA, regenerarConIA, actualizarBloquesVenta, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
+  listar, listarPaymentLogos, crear, crearDesdeOnboarding, crearDesdeIA, regenerarConIA, actualizarBloquesVenta, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
   subirImagenMiddleware,
   subirLogo, eliminarLogo,
   subirHeroImagen, eliminarHeroImagen,

@@ -37,6 +37,7 @@ const MetaCapiService = require('./metaCapi.service');
 const ImagenService = require('./imagen.service');
 const PrecioUsuarioService = require('./precioUsuario.service');
 const TypographyService = require('./typography.service');
+const PaymentLogoService = require('./paymentLogo.service');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
@@ -1893,6 +1894,7 @@ class LandingService {
     const esFunnel = landing.template?.kind === 'funnel';
     const esCodigo = landing.template?.kind === 'codigo';
     const typography = await TypographyService.resolver(tienda, landing);
+    const paymentLogos = esCodigo ? await PaymentLogoService.resolverParaLanding(landing, tienda) : [];
 
     // Lienzo en blanco sin productos curados: los define la regla de
     // "Configurar venta" (todo el catálogo / por categoría, con o sin
@@ -2678,7 +2680,7 @@ class LandingService {
         ...(landing.content?.vistas?.producto || landing.content?.vistas?.productos || landing.content?.vistas?.legales
           ? { vistas: this.vistasPublicas(landing.content, opciones.asegurarContentId, itemsDto.find(i => i.tipo === 'producto')?.content_id) }
           : {}),
-        ...(landing.content?.venta ? { venta: landing.content.venta } : {}),
+        ...(landing.content?.venta ? { venta: { ...landing.content.venta, payment_logos: paymentLogos } } : { venta: { payment_logos: paymentLogos } }),
       } : {
         ofertas_carrito: landing.content?.ofertas_carrito || [],
         ofertas_producto_vista: landing.content?.ofertas_producto_vista || [],
