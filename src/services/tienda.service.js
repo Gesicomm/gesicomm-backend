@@ -11,6 +11,7 @@ const { Tienda, Usuario, ProveedorDns, Suscripcion, Plan, Landing } = require('.
 const EncryptionService = require('../utils/EncryptionService');
 const { validarFormato: validarFormatoSubdominio, disponible: subdominioDisponible } = require('../utils/validarSubdominio');
 const { ESTADOS, registrosPara, apuntaANuestroServidor, sirvePorHttps } = require('../utils/dominios');
+const TypographyService = require('./typography.service');
 const whois = require('whois-json');
 const dns = require('dns').promises;
 
@@ -105,8 +106,10 @@ class TiendaService {
     if (suscripcion && usuario?.plan !== plan) {
       await Usuario.update({ plan }, { where: { id: usuario_id } });
     }
+    const data = this.serializarConTemaLanding(tienda, landingInicio);
+    data.typography = await TypographyService.obtenerParaTienda(tienda);
     return {
-      ...this.serializarConTemaLanding(tienda, landingInicio),
+      ...data,
       plan,
       suscripcion: serializarSuscripcion(suscripcion),
     };
@@ -228,8 +231,10 @@ class TiendaService {
       nombre: payload.nombre.trim(),
     });
 
+    const data = this.serializar(tienda);
+    data.typography = await TypographyService.obtenerParaTienda(tienda);
     return {
-      ...this.serializar(tienda),
+      ...data,
       plan,
       suscripcion: serializarSuscripcion(suscripcion),
     };
@@ -276,8 +281,10 @@ class TiendaService {
       await Usuario.update({ plan }, { where: { id: usuario_id } });
     }
 
+    const data = this.serializar(tienda);
+    data.typography = await TypographyService.obtenerParaTienda(tienda);
     return {
-      ...this.serializar(tienda),
+      ...data,
       plan,
       suscripcion: serializarSuscripcion(suscripcion),
     };

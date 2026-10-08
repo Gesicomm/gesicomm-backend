@@ -5,6 +5,7 @@ const express = require('express');
 const router = express.Router();
 const { verificarToken } = require('../middleware/autenticacion');
 const { verificarPermiso } = require('../middleware/autorizacion');
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 const ctrl = require('../controllers/producto.controller');
 const imgCtrl = require('../controllers/imagen.controller');
 const comboRoutes = require('./combos');
@@ -12,6 +13,7 @@ const ofertaRoutes = require('./ofertas');
 const landingCtrl = require('../controllers/landing.controller');
 
 router.use(verificarToken);
+router.use(resolverTiendaActiva);
 
 // Productos
 router.post('/buscar', verificarPermiso('ver_productos'), ctrl.buscar);

@@ -28,7 +28,7 @@ async function buscar(req, res) {
       req.body.creado_por = req.usuario.id;
     }
     
-    const resultado = await ProductoService.buscar(req.body, inquilino_id, esAdmin, req.usuario.id);
+    const resultado = await ProductoService.buscar(req.body, inquilino_id, esAdmin, req.usuario.id, req.usuario.tiendaId || null);
     return res.json(resultado);
   } catch (err) {
     console.error(err);
@@ -44,14 +44,16 @@ async function crear(req, res) {
     const esAdmin = req.usuario.rol === 'administrador';
     const { variantes = [], relacionados = [] } = req.body;
 
-    const producto = await ProductoService.crear(req.body, inquilino_id, usuario_id, esAdmin, t);
+    const producto = await ProductoService.crear(req.body, inquilino_id, usuario_id, esAdmin, t, req.usuario.tiendaId || null);
 
     if (variantes.length > 0) {
       await ProductoVarianteService.crearMultiples(producto.id, inquilino_id, variantes, t, req.body.opciones);
       await ProductoService.recalcularStockPadre(producto.id, t);
     }
 
-    await ProductoService.sincronizarStockDeposito(producto.id, usuario_id, req.body.stock_depositos, t);
+    if (typeof ProductoService.sincronizarStockDeposito === 'function') {
+      await ProductoService.sincronizarStockDeposito(producto.id, usuario_id, req.body.stock_depositos, t);
+    }
 
     if (relacionados.length > 0) {
       // Por simplicidad, se mantiene aquí, pero podría ir a un RelacionadosService
@@ -90,7 +92,7 @@ async function detalle(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const esAdmin = req.usuario.rol === 'administrador';
-    const producto = await ProductoService.detalle(req.params.id, inquilino_id, esAdmin, req.usuario.id);
+    const producto = await ProductoService.detalle(req.params.id, inquilino_id, esAdmin, req.usuario.id, req.usuario.tiendaId || null);
     return res.json(producto);
   } catch (err) {
     console.error(err);
@@ -214,7 +216,7 @@ async function actualizar(req, res) {
     const usuario_id = req.usuario.id;
     const esAdmin = req.usuario.rol === 'administrador';
     
-    const producto = await ProductoService.actualizar(req.params.id, req.body, inquilino_id, usuario_id, esAdmin, t);
+    const producto = await ProductoService.actualizar(req.params.id, req.body, inquilino_id, usuario_id, esAdmin, t, req.usuario.tiendaId || null);
 
     if (req.body.variantes !== undefined) {
       await ProductoVarianteService.sincronizar(req.params.id, inquilino_id, req.body.variantes, t, req.body.opciones);
@@ -259,7 +261,7 @@ async function eliminar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const esAdmin = req.usuario.rol === 'administrador';
-    await ProductoService.eliminar(req.params.id, inquilino_id, req.usuario.id, esAdmin);
+    await ProductoService.eliminar(req.params.id, inquilino_id, req.usuario.id, esAdmin, req.usuario.tiendaId || null);
     return res.json({ message: 'Producto dado de baja correctamente.' });
   } catch (err) {
     console.error(err);

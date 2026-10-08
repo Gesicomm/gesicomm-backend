@@ -36,6 +36,7 @@ const PedidoNumeracion = require('./pedidoNumeracion.service');
 const MetaCapiService = require('./metaCapi.service');
 const ImagenService = require('./imagen.service');
 const PrecioUsuarioService = require('./precioUsuario.service');
+const TypographyService = require('./typography.service');
 
 const MAX_ITEMS_POR_LANDING = 40;
 const MAX_TESTIMONIOS_POR_LANDING = 20;
@@ -62,6 +63,7 @@ const ATRIBUTOS_IMAGEN_PRODUCTO = [
 // es el eje que sí está planeado (ver Tienda.js).
 const MAX_LANDINGS_POR_TIENDA = 1;
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const FONT_ID_RE = /^(outfit|inter|poppins|roboto|montserrat|lato|playfair-display|custom:\d+)$/;
 const TIPOS_SECCION = new Set([
   'header',
   'announcement_bar',
@@ -122,6 +124,20 @@ function coloresDeTienda(tienda) {
     secundario: tienda.color_secundario || null,
     fondo: tienda.color_fondo || null,
   };
+}
+
+function normalizarTipografiaLanding(value) {
+  if (!value || typeof value !== 'object' || value.mode === 'inherit') {
+    return null;
+  }
+  const headingFont = String(value.headingFont || '').trim();
+  const bodyFont = String(value.bodyFont || '').trim();
+  if (!FONT_ID_RE.test(headingFont) || !FONT_ID_RE.test(bodyFont)) {
+    const err = new Error('Validación fallida.');
+    err.errores = ['La tipografía de la landing no es válida.'];
+    throw err;
+  }
+  return { mode: 'custom', headingFont, bodyFont };
 }
 
 class LandingService {
@@ -754,6 +770,9 @@ class LandingService {
     for (const campo of ['nombre', 'titulo', 'descripcion', 'content']) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo] || null;
     }
+    if (payload.typography !== undefined) {
+      campos.typography = normalizarTipografiaLanding(payload.typography);
+    }
     for (const flag of [
       'mostrar_filtro_categoria', 'mostrar_filtro_marca', 'mostrar_filtro_etiqueta',
       'mostrar_buscador', 'mostrar_orden_precio', 'mostrar_banner', 'mostrar_whatsapp',
@@ -1077,6 +1096,13 @@ class LandingService {
     });
     if (!landing) throw new Error('Landing no encontrada.');
     const json = landing.toJSON();
+    const tienda = await Tienda.findByPk(tienda_id, { attributes: ['id', 'typography'] });
+    if (tienda) {
+      json.typography = {
+        ...(json.typography || { mode: 'inherit' }),
+        resolved: await TypographyService.resolver(tienda, landing),
+      };
+    }
     // Mapear secciones: content_json/settings_json → contenido/config para compatibilidad con frontend
     if (Array.isArray(json.secciones)) {
       json.secciones = json.secciones.map(s => ({
@@ -1866,6 +1892,7 @@ class LandingService {
     const esRigida = landing.template?.kind === 'rigido';
     const esFunnel = landing.template?.kind === 'funnel';
     const esCodigo = landing.template?.kind === 'codigo';
+    const typography = await TypographyService.resolver(tienda, landing);
 
     // Lienzo en blanco sin productos curados: los define la regla de
     // "Configurar venta" (todo el catálogo / por categoría, con o sin
@@ -2737,6 +2764,7 @@ class LandingService {
         radio_bordes: landing.radio_bordes,
         fuente: landing.fuente,
       },
+      typography,
       filtros: {
         categoria: landing.mostrar_filtro_categoria,
         marca: landing.mostrar_filtro_marca,
@@ -3161,6 +3189,7 @@ class LandingService {
 
     const esRigida = landing.template?.kind === 'rigido';
     const esFunnel = landing.template?.kind === 'funnel';
+    const typography = await TypographyService.resolver(tienda, landing);
     const seccionesCatalogoGuardadas = !esRigida && Array.isArray(landing.secciones) && landing.secciones.length
       ? this.construirSeccionesPublicas(landing, { testimonios: [], faq: [], banner: null }).secciones
       : [];
@@ -3195,6 +3224,7 @@ class LandingService {
         texto: landing.color_texto || null,
         tarjeta: landing.color_tarjeta || null,
       },
+      typography,
       filtros: {
         categoria: landing.mostrar_filtro_categoria,
         marca: landing.mostrar_filtro_marca,

@@ -24,6 +24,7 @@ const AuthTracking = require('../services/authTracking.service');
 const FulfillmentService = require('../services/fulfillment.service');
 const RedFulfillment = require('../services/redFulfillment.service');
 const ImagenService = require('../services/imagen.service');
+const TypographyService = require('../services/typography.service');
 
 function manejarError(res, err, defaultMsg) {
   console.error('[tienda]', err.message);
@@ -237,6 +238,33 @@ async function eliminarLogo(req, res) {
   }
 }
 
+async function guardarTipografia(req, res) {
+  try {
+    const typography = await TypographyService.guardarConfigTienda(exigirTiendaActiva(req), req.usuario.id, req.body || {});
+    return res.json({ typography });
+  } catch (err) {
+    return manejarError(res, err, 'Error al guardar la tipografía.');
+  }
+}
+
+async function subirFuente(req, res) {
+  try {
+    const font = await TypographyService.subirFuente(exigirTiendaActiva(req), req.usuario.id, req.file, req.body || {});
+    return res.status(201).json(font);
+  } catch (err) {
+    return manejarError(res, err, 'Error al subir la fuente.');
+  }
+}
+
+async function eliminarFuente(req, res) {
+  try {
+    const resultado = await TypographyService.eliminarFuente(exigirTiendaActiva(req), req.usuario.id, req.params.fontId);
+    return res.json(resultado);
+  } catch (err) {
+    return manejarError(res, err, 'Error al eliminar la fuente.');
+  }
+}
+
 module.exports = {
   obtener, crear, actualizar, disponibilidadSubdominio,
   coberturaGesicomm,
@@ -244,4 +272,5 @@ module.exports = {
   eliminarDominioPropio, whoisDominio,
   obtenerFulfillment, listarDepositosFulfillment, guardarFulfillment,
   subirLogo, eliminarLogo,
+  guardarTipografia, subirFuente, eliminarFuente,
 };

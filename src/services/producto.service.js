@@ -74,7 +74,18 @@ class ProductoService {
     return data;
   }
 
-  static async buscar(filtros, inquilino_id, esAdmin, usuarioId = null) {
+  static visibilidadTiendaProducto(usuarioId, tiendaId) {
+    if (usuarioId == null || tiendaId == null) return {};
+    return {
+      [Op.or]: [
+        { creado_por: { [Op.ne]: usuarioId } },
+        { tienda_id: tiendaId },
+        { tienda_id: null },
+      ],
+    };
+  }
+
+  static async buscar(filtros, inquilino_id, esAdmin, usuarioId = null, tiendaId = null) {
     const {
       texto, categoria_id, marca_id, proveedor_id, activo, destacado,
       precio_min, precio_max, stock_bajo, sin_stock, con_ofertas,
@@ -119,6 +130,12 @@ class ProductoService {
           },
         ];
       }
+    }
+    if (!esAdmin && usuarioId != null && tiendaId != null) {
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        this.visibilidadTiendaProducto(usuarioId, tiendaId),
+      ];
     }
 
     const filtrosPorIds = [];
@@ -168,7 +185,7 @@ class ProductoService {
         'id', 'nombre', 'slug', 'sku', 'tags', 'precio_base', 'precio_costo', 'precio_dolar', 'es_dolar', 'precio_tachado',
         'descuento_porcentaje',
         'cantidad_disponible', 'stock_minimo', 'stock_salon', 'stock_deposito', 'stock_minimo_salon',
-        'estado_venta', 'activo', 'destacado', 'categoria_id', 'marca_id', 'proveedor_id', 'creado_por'
+        'estado_venta', 'activo', 'destacado', 'categoria_id', 'marca_id', 'proveedor_id', 'creado_por', 'tienda_id'
       ],
       order,
     };
@@ -253,15 +270,23 @@ class ProductoService {
     };
   }
 
-  static async detalle(id, inquilino_id, esAdmin, usuarioId = null) {
+  static async detalle(id, inquilino_id, esAdmin, usuarioId = null, tiendaId = null) {
     const where = { id, inquilino_id };
     if (!esAdmin && usuarioId != null) {
       const administradoresIds = await this.obtenerIdsAdministradores(inquilino_id);
       const creadoresVisibles = [...new Set([usuarioId, ...administradoresIds].filter(id => id != null))];
-      where[Op.or] = [
+      const visibilidadCreador = [
         { creado_por: null },
         { creado_por: { [Op.in]: creadoresVisibles } },
       ];
+      if (tiendaId != null) {
+        where[Op.and] = [
+          { [Op.or]: visibilidadCreador },
+          this.visibilidadTiendaProducto(usuarioId, tiendaId),
+        ];
+      } else {
+        where[Op.or] = visibilidadCreador;
+      }
     }
     const producto = await Producto.findOne({
       where,
@@ -496,7 +521,7 @@ class ProductoService {
     return limpio;
   }
 
-  static async crear(datos, inquilino_id, usuario_id, esAdmin, transaction) {
+  static async crear(datos, inquilino_id, usuario_id, esAdmin, transaction, tiendaId = null) {
     const precioAncla = datos.precio_ancla !== undefined ? datos.precio_ancla : datos.precio_tachado;
     const {
       nombre, sku, categoria_id, marca_id, proveedor_id, tags,
@@ -556,6 +581,7 @@ class ProductoService {
       slug, meta_titulo, meta_descripcion,
       creado_por: usuario_id,
       modificado_por: usuario_id,
+      tienda_id: !esAdmin && tiendaId ? tiendaId : null,
     }, { transaction });
 
     return this.serializar(producto, esAdmin, usuario_id);
@@ -578,13 +604,17 @@ class ProductoService {
     };
   }
 
-  static async actualizar(id, campos, inquilino_id, usuario_id, esAdmin, transaction) {
+  static async actualizar(id, campos, inquilino_id, usuario_id, esAdmin, transaction, tiendaId = null) {
 
     if (campos.precio_ancla !== undefined && campos.precio_tachado === undefined) {
       campos.precio_tachado = campos.precio_ancla;
     }
 
-    const producto = await Producto.findOne({ where: { id, inquilino_id }, transaction });
+    const whereProducto = { id, inquilino_id };
+    if (!esAdmin && usuario_id != null && tiendaId != null) {
+      whereProducto[Op.and] = [this.visibilidadTiendaProducto(usuario_id, tiendaId)];
+    }
+    const producto = await Producto.findOne({ where: whereProducto, transaction });
     if (!producto) throw new Error('Producto no encontrado.');
 
     if (!esAdmin && producto.creado_por !== usuario_id) {
@@ -834,8 +864,12 @@ class ProductoService {
     })), { transaction });
   }
 
-  static async eliminar(id, inquilino_id, usuario_id, esAdmin = false) {
-    const producto = await Producto.findOne({ where: { id, inquilino_id } });
+  static async eliminar(id, inquilino_id, usuario_id, esAdmin = false, tiendaId = null) {
+    const whereProducto = { id, inquilino_id };
+    if (!esAdmin && usuario_id != null && tiendaId != null) {
+      whereProducto[Op.and] = [this.visibilidadTiendaProducto(usuario_id, tiendaId)];
+    }
+    const producto = await Producto.findOne({ where: whereProducto });
     if (!producto) throw new Error('Producto no encontrado.');
 
     if (!esAdmin && producto.creado_por !== usuario_id) {

@@ -92,6 +92,12 @@ const Tienda = sequelize.define('Tienda', {
     allowNull: true,
     defaultValue: '#0a0a0a',
   },
+  typography: {
+    type: DataTypes.JSON,
+    allowNull: false,
+    defaultValue: {},
+    comment: 'Configuración tipográfica global de la tienda: heading/body y referencias a fuentes propias.',
+  },
   // --- Logo: default de todas las landings de la tienda. Una landing con
   // logo propio (Landing.logo_imagen o el del bloque Header) lo pisa. Solo
   // lo escriben los endpoints de subida, nunca el PUT de texto. ---

@@ -131,6 +131,29 @@ class PrecioUsuarioService {
     return creadoPor != null && Number(creadoPor) === Number(usuarioId) ? 'PROPIO' : 'GESICOMM';
   }
 
+  static visibilidadTiendaProductoWhere(usuario_id, tiendaId) {
+    if (usuario_id == null || tiendaId == null) return {};
+    return {
+      [Op.or]: [
+        { creado_por: { [Op.ne]: usuario_id } },
+        { tienda_id: tiendaId },
+        { tienda_id: null },
+      ],
+    };
+  }
+
+  static visibilidadTiendaProductoSql(tiendaId) {
+    if (tiendaId == null) return '';
+    return 'AND (p.creado_por IS DISTINCT FROM :usuario_id OR p.tienda_id = :tienda_id OR p.tienda_id IS NULL)';
+  }
+
+  static combinarVisibilidadProducto(visibilidadCatalogo, visibilidadTienda) {
+    const condiciones = [visibilidadCatalogo, visibilidadTienda].filter(c => c && Reflect.ownKeys(c).length > 0);
+    if (condiciones.length === 0) return {};
+    if (condiciones.length === 1) return condiciones[0];
+    return { [Op.and]: condiciones };
+  }
+
   static async buscarOCrearCategoria(nombre, inquilino_id, parent_id = null, transaction = null) {
     const limpio = typeof nombre === 'string' ? nombre.trim() : '';
     if (!limpio) throw new Error('El nombre de la categoría es requerido.');
@@ -152,18 +175,20 @@ class PrecioUsuarioService {
     return Categoria.create({ inquilino_id, parent_id: parent_id || null, nombre: limpio, slug }, { transaction });
   }
 
-  static async listarCatalogo(usuario_id, inquilino_id, esAdmin = false) {
+  static async listarCatalogo(usuario_id, inquilino_id, esAdmin = false, tiendaId = null) {
     const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
     const visibilidadProducto = this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds);
+    const visibilidadTienda = !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {};
+    const visibilidadProductoTienda = this.combinarVisibilidadProducto(visibilidadProducto, visibilidadTienda);
     // productos/combos/precios son independientes entre sí — se resuelven en
     // paralelo en vez de uno atrás de otro para no acumular latencia de red
     // por cada ida-vuelta a la base.
     const [productos, combos, precios] = await Promise.all([
       Producto.findAll({
-        where: { inquilino_id, activo: true, estado_venta: 'en_venta', ...visibilidadProducto },
+        where: { inquilino_id, activo: true, estado_venta: 'en_venta', ...visibilidadProductoTienda },
         attributes: [
           'id', 'slug', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_minimo',
-          'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'cantidad_disponible', 'destacado', 'created_at', 'creado_por',
+          'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'cantidad_disponible', 'destacado', 'created_at', 'creado_por', 'tienda_id',
         ],
         include: [
           { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -200,7 +225,7 @@ class PrecioUsuarioService {
             model: Producto,
             as: 'producto_padre',
             attributes: ['id', 'nombre', 'precio_base', 'precio_minimo', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'beneficios', 'cantidad_disponible', 'creado_por'],
-            where: { activo: true, ...visibilidadProducto },
+            where: { activo: true, ...visibilidadProductoTienda },
             required: true,
             include: [
               { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -368,7 +393,7 @@ class PrecioUsuarioService {
     return { productos: productosDto, combos: combosDto };
   }
 
-    static async listarCatalogoPaginado(usuario_id, inquilino_id, filtros = {}, esAdmin = false) {
+    static async listarCatalogoPaginado(usuario_id, inquilino_id, filtros = {}, esAdmin = false, tiendaId = null) {
     const { sequelize, Categoria } = require('../models');
     const {
       page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', orden = 'nombre', tipo = 'todos',
@@ -377,14 +402,23 @@ class PrecioUsuarioService {
     const offset = (page - 1) * limit;
 
     const replacements = { usuario_id, inquilino_id };
+    if (tiendaId != null) replacements.tienda_id = tiendaId;
 
     const miosOnly = Boolean(solamenteMios || mios_solamente);
     const gesicomOnly = origenCatalogo === 'GESICOMM' && !miosOnly;
-    const creadorFilter = this.visibilidadCatalogoSql(esAdmin, miosOnly)
-      + (gesicomOnly ? ' AND p.creado_por IS DISTINCT FROM :usuario_id' : '');
     // Un combo propio puede tener como principal un producto del administrador.
     const administradoresIds = !esAdmin ? await this.obtenerIdsAdministradores(inquilino_id) : [];
-    
+    const creadorFilter = this.visibilidadCatalogoSql(esAdmin, miosOnly)
+      + (gesicomOnly ? ' AND p.creado_por IS DISTINCT FROM :usuario_id' : '');
+    const tiendaFilter = !esAdmin ? this.visibilidadTiendaProductoSql(tiendaId) : '';
+    const visibilidadProductoPaginado = this.combinarVisibilidadProducto(
+      this.visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly, administradoresIds),
+      !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {},
+    );
+    const visibilidadProductoPadre = this.combinarVisibilidadProducto(
+      this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+      !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {},
+    );
     // Filtro de categoría
     let catFilter = '';
     if (filtroCategoria) {
@@ -422,12 +456,14 @@ class PrecioUsuarioService {
       LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
       WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
       ${creadorFilter}
+      ${tiendaFilter}
       ${catFilter}
       ${provFilter}
       ${searchFilter.replace(/c\./g, 'p.').replace(/descripcion/g, 'descripcion_corta')}
     `;
 
     const combosSql = `
+      /* p.categoria_id, c.creado_por */
       SELECT c.id, 'combo' as tipo, c.nombre, c.descripcion, c.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, c.creado_por,
         COALESCE(pu.precio, c.precio_total) as precio_efectivo
       FROM producto_combos c
@@ -437,6 +473,7 @@ class PrecioUsuarioService {
       ${this.visibilidadComboSql(esAdmin, miosOnly)}
       ${gesicomOnly ? 'AND c.creado_por IS DISTINCT FROM :usuario_id' : ''}
       ${this.visibilidadCatalogoSql(esAdmin, false)}
+      ${tiendaFilter}
       ${catFilter}
       ${provFilter}
       ${searchFilter}
@@ -474,11 +511,11 @@ class PrecioUsuarioService {
         where: {
           id: { [require('sequelize').Op.in]: idsProductos },
           inquilino_id,
-          ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly, administradoresIds),
+          ...visibilidadProductoPaginado,
         },
         attributes: [
           'id', 'slug', 'nombre', 'descripcion_corta', 'descripcion_larga', 'precio_base', 'precio_costo', 'precio_minimo',
-          'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'cantidad_disponible', 'destacado', 'created_at', 'categoria_id', 'creado_por'
+          'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin', 'cantidad_disponible', 'destacado', 'created_at', 'categoria_id', 'creado_por', 'tienda_id'
         ],
         include: [
           { association: 'categoria', attributes: ['id', 'nombre'] },
@@ -514,7 +551,7 @@ class PrecioUsuarioService {
             where: {
               inquilino_id,
               activo: true,
-              ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+              ...visibilidadProductoPadre,
             },
             required: true,
             include: [
@@ -535,6 +572,7 @@ class PrecioUsuarioService {
         INNER JOIN categorias c ON COALESCE(pu.categoria_id, p.categoria_id) = c.id 
         WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
         ${creadorFilter}
+        ${tiendaFilter}
         ORDER BY c.nombre ASC
       `, { replacements, type: sequelize.QueryTypes.SELECT }),
       sequelize.query(`
@@ -543,6 +581,7 @@ class PrecioUsuarioService {
         INNER JOIN productos p ON p.proveedor_id = pr.id 
         WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
         ${creadorFilter}
+        ${tiendaFilter}
         ORDER BY pr.nombre ASC
       `, { replacements, type: sequelize.QueryTypes.SELECT })
     ]);
@@ -740,14 +779,18 @@ class PrecioUsuarioService {
 
   // ─── Guardar precio propio ─────────────────────────────────────────────────
 
-  static async guardarPrecioProducto(usuario_id, inquilino_id, producto_id, precio, esAdmin = false) {
+  static async guardarPrecioProducto(usuario_id, inquilino_id, producto_id, precio, esAdmin = false, tiendaId = null) {
     const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
+    const visibilidadProducto = this.combinarVisibilidadProducto(
+      this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+      !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {},
+    );
     const producto = await Producto.findOne({
       where: {
         id: producto_id,
         inquilino_id,
         activo: true,
-        ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+        ...visibilidadProducto,
       },
     });
     if (!producto) throw new Error('Producto no encontrado.');
@@ -798,7 +841,7 @@ class PrecioUsuarioService {
     return { tipo, referencia_id, precio: precioNum };
   }
 
-  static async categorizarProductos(usuario_id, inquilino_id, payload = {}, esAdmin = false) {
+  static async categorizarProductos(usuario_id, inquilino_id, payload = {}, esAdmin = false, tiendaId = null) {
     const { producto_ids = [], categoria_nombre, subcategoria_nombre } = payload;
     const ids = [...new Set((producto_ids || []).map(Number).filter(Boolean))];
     if (!ids.length) throw new Error('Seleccioná al menos un producto.');
@@ -808,12 +851,16 @@ class PrecioUsuarioService {
     if (!nombreCategoria) throw new Error('El nombre de la categoría es requerido.');
 
     const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
+    const visibilidadProducto = this.combinarVisibilidadProducto(
+      this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+      !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {},
+    );
     const productos = await Producto.findAll({
       where: {
         id: { [Op.in]: ids },
         inquilino_id,
         activo: true,
-        ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+        ...visibilidadProducto,
       },
       attributes: ['id', 'precio_base'],
     });
@@ -904,14 +951,18 @@ class PrecioUsuarioService {
     };
   }
 
-  static async analizarSensibilidadProducto(usuario_id, inquilino_id, producto_id, esAdmin = false) {
+  static async analizarSensibilidadProducto(usuario_id, inquilino_id, producto_id, esAdmin = false, tiendaId = null) {
     const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
+    const visibilidadProducto = this.combinarVisibilidadProducto(
+      this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+      !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {},
+    );
     const producto = await Producto.findOne({
       where: {
         id: producto_id,
         inquilino_id,
         activo: true,
-        ...this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+        ...visibilidadProducto,
       },
     });
     if (!producto) throw new Error('Producto no encontrado.');
@@ -936,7 +987,9 @@ class PrecioUsuarioService {
 
     const precioEfectivo = precioPersonalizado ? parseFloat(precioPersonalizado.precio) : parseFloat(producto.precio_base);
 
-    const costoBase = parseFloat(producto.precio_base);
+    const costoBase = producto.precio_costo != null
+      ? parseFloat(producto.precio_costo)
+      : parseFloat(producto.precio_base);
 
     const entidad = {
       id: producto.id,

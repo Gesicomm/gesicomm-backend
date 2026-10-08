@@ -17,11 +17,12 @@
  */
 
 const { Op } = require('sequelize');
-const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate, Testimonio, Producto } = require('../models');
+const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate, Testimonio, Producto, Tienda } = require('../models');
 const LandingService = require('./landing.service');
 const LandingCodigoService = require('./landingCodigo.service');
 const AICodeValidator = require('./aiCodeValidator.service');
 const ImagenService = require('./imagen.service');
+const TypographyService = require('./typography.service');
 const PaginaFactory = require('../factories/PaginaFactory');
 
 // Los dos modos que administra este servicio, ambos "una landing por
@@ -45,6 +46,19 @@ const CLAVES_ESTRUCTURALES = [
 ];
 
 const MAX_BENEFICIOS = 6;
+const FONT_ID_RE = /^(outfit|inter|poppins|roboto|montserrat|lato|playfair-display|custom:\d+)$/;
+
+function normalizarTipografiaLanding(value) {
+  if (!value || typeof value !== 'object' || value.mode === 'inherit') return null;
+  const headingFont = String(value.headingFont || '').trim();
+  const bodyFont = String(value.bodyFont || '').trim();
+  if (!FONT_ID_RE.test(headingFont) || !FONT_ID_RE.test(bodyFont)) {
+    const err = new Error('Validación fallida.');
+    err.errores = ['La tipografía de la landing no es válida.'];
+    throw err;
+  }
+  return { mode: 'custom', headingFont, bodyFont };
+}
 
 // Copy inicial de "Beneficios" y "Contenido adicional" por template — se
 // siembra al crear() para que la landing se vea completa desde el primer
@@ -159,6 +173,7 @@ class LandingSimpleService {
       for (const campo of ['titulo', 'descripcion', 'seo_titulo', 'seo_descripcion']) {
         if (payload[campo] !== undefined) campos[campo] = payload[campo]?.trim() || null;
       }
+      if (payload.typography !== undefined) campos.typography = normalizarTipografiaLanding(payload.typography);
       return campos;
     }
     const campos = {};
@@ -194,6 +209,7 @@ class LandingSimpleService {
     for (const campo of ['color_primario', 'color_fondo', 'color_texto', 'content']) {
       if (payload[campo] !== undefined) campos[campo] = payload[campo] || null;
     }
+    if (payload.typography !== undefined) campos.typography = normalizarTipografiaLanding(payload.typography);
     return campos;
   }
 
@@ -413,7 +429,15 @@ class LandingSimpleService {
       ],
     });
     if (!landing) throw new Error('Landing no encontrada.');
-    return landing.toJSON();
+    const json = landing.toJSON();
+    const tienda = await Tienda.findByPk(tienda_id, { attributes: ['id', 'typography'] });
+    if (tienda) {
+      json.typography = {
+        ...(json.typography || { mode: 'inherit' }),
+        resolved: await TypographyService.resolver(tienda, landing),
+      };
+    }
+    return json;
   }
 
   /**

@@ -11,10 +11,12 @@ const router = express.Router();
 
 const { verificarToken } = require('../middleware/autenticacion');
 const { verificarPermiso } = require('../middleware/autorizacion');
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 const ctrl = require('../controllers/precioUsuario.controller');
 const preciosCtrl = require('../controllers/precioUsuarioMasivo.controller');
 
 router.use(verificarToken);
+router.use(resolverTiendaActiva);
 
 router.get('/catalogo', verificarPermiso('ver_productos'), ctrl.catalogo);
 router.post('/catalogo-paginado', verificarPermiso('ver_productos'), ctrl.catalogoPaginado);

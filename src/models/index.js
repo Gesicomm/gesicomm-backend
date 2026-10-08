@@ -42,6 +42,7 @@ const LiquidacionEnvio = require('./LiquidacionEnvio');
 const EnvioHistorial = require('./EnvioHistorial');
 const PrecioUsuario = require('./PrecioUsuario');
 const Tienda = require('./Tienda');
+const TiendaFont = require('./TiendaFont');
 const SpeedboxTienda = require('./SpeedboxTienda');
 const SpeedboxPedido = require('./SpeedboxPedido');
 const SpeedboxEvento = require('./SpeedboxEvento');
@@ -598,6 +599,9 @@ CostoGasto.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });
 ProductoVariante.hasMany(CostoGasto, { foreignKey: 'variante_id' });
 CostoGasto.belongsTo(ProductoVariante, { as: 'variante', foreignKey: 'variante_id' });
 
+Tienda.hasMany(TiendaFont, { as: 'fonts', foreignKey: 'tienda_id', onDelete: 'CASCADE' });
+TiendaFont.belongsTo(Tienda, { as: 'tienda', foreignKey: 'tienda_id' });
+
 Envio.hasMany(CostoGasto, { foreignKey: 'envio_id' });
 CostoGasto.belongsTo(Envio, { as: 'envio', foreignKey: 'envio_id' });
 
@@ -830,6 +834,7 @@ module.exports = {
   EnvioHistorial,
   PrecioUsuario,
   Tienda,
+  TiendaFont,
   SpeedboxTienda,
   SpeedboxPedido,
   SpeedboxEvento,

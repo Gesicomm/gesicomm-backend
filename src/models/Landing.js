@@ -145,6 +145,11 @@ const Landing = sequelize.define('Landing', {
   color_tarjeta: { type: DataTypes.STRING(7), allowNull: true, comment: 'Override del fondo de las tarjetas de producto; null = hereda el default de tema_modo.' },
   radio_bordes: { type: DataTypes.ENUM('chico', 'mediano', 'grande'), allowNull: false, defaultValue: 'mediano' },
   fuente: { type: DataTypes.ENUM('outfit', 'inter', 'poppins', 'roboto'), allowNull: false, defaultValue: 'outfit' },
+  typography: {
+    type: DataTypes.JSON,
+    allowNull: true,
+    comment: 'Override tipográfico por landing. null o mode=inherit hereda la tienda.',
+  },
   mostrar_whatsapp: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   // --- Opiniones y FAQ: contenido propio de ESTA landing, igual criterio
   // que el banner (ver Testimonio.js/Faq.js) ---

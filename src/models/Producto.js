@@ -21,6 +21,11 @@ const Producto = sequelize.define('Producto', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  tienda_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Tienda dueña del producto cuando lo carga un comercio. Nullable para catálogo global/admin y filas antiguas.',
+  },
   nombre: {
     type: DataTypes.STRING(255),
     allowNull: false,
@@ -293,6 +298,7 @@ const Producto = sequelize.define('Producto', {
     { unique: true, fields: ['slug', 'inquilino_id'] },
     // Índice de búsqueda frecuente
     { fields: ['inquilino_id', 'activo'] },
+    { fields: ['tienda_id'] },
   ],
 });
 

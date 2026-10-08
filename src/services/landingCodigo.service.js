@@ -808,6 +808,10 @@ function limpiarInicio(inicio) {
     }),
     menu_categorias: inicio.menu_categorias !== false,
     categorias: listaDe(inicio.categorias, 50, v => textoCorto(v, 100)),
+    // null = tamaño legado (alto fijo de siempre, ver TAMANOS_BANNER en el
+    // frontend) — no se le asume "mediano" a una landing que nunca tocó el
+    // selector.
+    banner_tamano: ['pequeno', 'mediano', 'grande'].includes(inicio.banner_tamano) ? inicio.banner_tamano : null,
     banners: listaDe(inicio.banners, 8, limpiarBannerInicio),
     banners_intermedios: listaDe(inicio.banners_intermedios, 4, limpiarBannerInicio),
     secciones: listaDe(inicio.secciones, 8, limpiarSeccionInicio),
