@@ -116,6 +116,8 @@ async function manejarSolicitudPublica(req, res) {
       imagen: imagenAbsoluta,
       url: destino,
       keywords: seo.keywords || null,
+      // Mismo orden que la pestaña en el SPA (LandingPublica.jsx).
+      favicon: resultado.tienda?.favicon_imagen || resultado.logo_imagen || resultado.tienda?.logo_imagen || null,
       cta: 'Ver catálogo',
     }));
   } catch (err) {

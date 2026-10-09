@@ -89,6 +89,53 @@ class ImagenService {
   }
 
   /**
+   * Favicon de la tienda: PNG cuadrado de 192x192 con fondo transparente.
+   *
+   * - Recorta antes los márgenes vacíos (transparentes o de color parejo):
+   *   un ícono con aire alrededor es justamente lo que se ve diminuto en la
+   *   pestaña. Sin el piso del 35% de recorteAutomatico: acá sacar mucho
+   *   margen es el objetivo (un logo de 800x400 con el símbolo al medio
+   *   queda en ~260x190 y el piso lo descartaba).
+   * - Si no es cuadrado lo centra (contain) en vez de deformarlo o cortarlo.
+   * - 192 px cubre la pestaña en pantallas de alta densidad (16-32 px x2/x3)
+   *   y el ícono de acceso directo de Android; el navegador lo achica solo.
+   * - PNG y no WebP: es el formato de favicon que aceptan todos los
+   *   navegadores, Safari incluido.
+   */
+  static async procesarFaviconParaR2(fileData, keyPrefix) {
+    const tmpPath = fileData.path;
+    try {
+      const buffer = await fs.promises.readFile(tmpPath);
+      const original = await sharp(buffer).rotate().toBuffer({ resolveWithObject: true });
+      let base = original.data;
+      try {
+        const recortado = await sharp(original.data).trim({ threshold: 10 }).toBuffer({ resolveWithObject: true });
+        if (recortado.info.width >= 16 && recortado.info.height >= 16) base = recortado.data;
+      } catch {
+        // trim falla con imágenes de un solo color: se usa sin recortar.
+      }
+
+      const salida = await sharp(base)
+        .resize(192, 192, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+        .png({ compressionLevel: 9 })
+        .toBuffer();
+      const storageKey = `${keyPrefix}/${crypto.randomUUID()}.png`;
+      const result = await R2Service.uploadObject({
+        key: storageKey,
+        body: salida,
+        contentType: 'image/png',
+        cacheControl: IMMUTABLE_CACHE_CONTROL,
+        contentLength: salida.length,
+      });
+      await this.borrarArchivoSeguro(tmpPath);
+      return { url: result.url, storage_key: storageKey };
+    } catch (err) {
+      await this.borrarArchivoSeguro(tmpPath);
+      throw err;
+    }
+  }
+
+  /**
    * Núcleo del procesamiento (trim + resize + webp + subida), sin tocar
    * disco ni el original — lo comparten procesarArchivoParaR2() (sube
    * desde multer) y reprocesar() (relee el original ya guardado en R2).

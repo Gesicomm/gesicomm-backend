@@ -2725,6 +2725,8 @@ class LandingService {
         nombre: tienda.nombre,
         subdominio: tienda.subdominio,
         logo_imagen: tienda.logo_imagen || null,
+        // Ícono de la pestaña; null = el front cae al logo.
+        favicon_imagen: tienda.favicon_imagen || null,
         // Branding de Mi Tienda tal cual: la landing HTML (lienzo en blanco)
         // arranca con estos colores (ver --tienda-* en construirDocumentoCodigo).
         colores: coloresDeTienda(tienda),
@@ -2778,6 +2780,8 @@ class LandingService {
         whatsapp: landing.mostrar_whatsapp ? (tienda.whatsapp || null) : null,
         telefono: tienda.telefono,
         mensaje: tienda.mensaje_contacto,
+        // Consultas sin producto (inicio, categorías): plantilla aparte.
+        mensaje_general: tienda.mensaje_consulta_general || null,
         incluir_precio: !!landing.whatsapp_incluir_precio,
         incluir_url: !!landing.whatsapp_incluir_url,
       },
@@ -3201,7 +3205,7 @@ class LandingService {
       catalogo_titulo: landing.catalogo_titulo || null,
       catalogo_descripcion: landing.catalogo_descripcion || null,
       template: landing.template ? { slug: landing.template.slug, kind: landing.template.kind } : null,
-      tienda: { nombre: tienda.nombre, subdominio: tienda.subdominio, logo_imagen: tienda.logo_imagen || null, colores: coloresDeTienda(tienda) },
+      tienda: { nombre: tienda.nombre, subdominio: tienda.subdominio, logo_imagen: tienda.logo_imagen || null, favicon_imagen: tienda.favicon_imagen || null, colores: coloresDeTienda(tienda) },
       tema: (esRigida || esFunnel) ? {
         modo: landing.tema_modo,
         primario: landing.color_primario || (esRigida ? tienda.color_primario : null),
@@ -3230,6 +3234,8 @@ class LandingService {
         whatsapp: landing.mostrar_whatsapp ? (tienda.whatsapp || null) : null,
         telefono: tienda.telefono,
         mensaje: tienda.mensaje_contacto,
+        // Consultas sin producto (inicio, categorías): plantilla aparte.
+        mensaje_general: tienda.mensaje_consulta_general || null,
         incluir_precio: !!landing.whatsapp_incluir_precio,
         incluir_url: !!landing.whatsapp_incluir_url,
       },
