@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { Op } = require('sequelize');
-const { SolicitudEliminacion, Usuario } = require('../models');
+const { SolicitudEliminacion, Usuario, MetaIntegration } = require('../models');
 
 /**
  * Plazo máximo comprometido públicamente en /data-deletion y en la Política
@@ -173,6 +173,13 @@ class SolicitudEliminacionService {
    * Alta desde el Data Deletion Callback de Meta: el usuario desvinculó la
    * app desde su configuración de Facebook/Instagram y Meta nos avisa.
    *
+   * Lo único obtenido de Meta que se guarda son las filas de
+   * meta_integrations (token cifrado, ID y nombre del BM): se borran en el
+   * acto y la solicitud nace completada. Las métricas de campañas nunca se
+   * persisten. Si no aparece ninguna conexión con ese meta_user_id (por
+   * ejemplo, una conectada antes de que existiera la columna), la solicitud
+   * queda 'recibida' para que la resuelva el equipo a mano.
+   *
    * Reutiliza la solicitud abierta del mismo meta_user_id si existe, para que
    * desvincular y volver a vincular varias veces no genere duplicados.
    */
@@ -180,22 +187,36 @@ class SolicitudEliminacionService {
     const payload = this.parsearSignedRequest(signedRequest, appSecret);
     const metaUserId = String(payload.user_id);
 
+    const conexiones = await MetaIntegration.findAll({ where: { meta_user_id: metaUserId } });
+    if (conexiones.length > 0) {
+      await MetaIntegration.destroy({ where: { meta_user_id: metaUserId } });
+    }
+
     const existente = await SolicitudEliminacion.findOne({
       where: { meta_user_id: metaUserId, estado: { [Op.in]: ESTADOS_ABIERTOS } },
       order: [['created_at', 'DESC']],
     });
     if (existente) {
-      return { codigo: existente.codigo, meta_user_id: metaUserId, duplicada: true };
+      return { codigo: existente.codigo, meta_user_id: metaUserId, duplicada: true, conexiones_borradas: conexiones.length };
     }
 
+    const borradas = conexiones.length > 0;
     const solicitud = await SolicitudEliminacion.create({
       codigo: this.generarCodigo(),
       origen: 'meta_callback',
-      estado: 'recibida',
+      estado: borradas ? 'completada' : 'recibida',
       meta_user_id: metaUserId,
+      usuario_id: borradas ? conexiones[0].usuario_id : null,
+      inquilino_id: borradas ? conexiones[0].inquilino_id : null,
       motivo: 'Desvinculación de la aplicación desde la configuración de Meta.',
-      ip_solicitante: contexto.ip || null,
-      user_agent: contexto.userAgent ? String(contexto.userAgent).slice(0, 500) : null,
+      notas_internas: borradas
+        ? `Borrado automático de ${conexiones.length} conexión(es) de Meta (ids ${conexiones.map((c) => c.id).join(', ')}).`
+        : 'Sin conexiones con este meta_user_id: revisar a mano.',
+      // Resuelta en el acto: IP y user agent eran evidencia de la solicitud y
+      // no se conservan, igual que en actualizarEstado().
+      ip_solicitante: borradas ? null : contexto.ip || null,
+      user_agent: borradas || !contexto.userAgent ? null : String(contexto.userAgent).slice(0, 500),
+      procesada_en: borradas ? new Date() : null,
       fecha_limite: this.calcularFechaLimite(),
     });
 

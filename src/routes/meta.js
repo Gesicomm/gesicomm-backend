@@ -33,22 +33,26 @@ const rutaInternaSegura = (ruta) => (
 //
 // Revocar invalida TODOS los tokens de ese usuario de Meta para la app, no
 // solo el de esta fila: si otra conexión (de otra tienda o de otro usuario de
-// Gesicom) usa el mismo Business Manager, se deja la autorización viva y solo
-// se borra el token local. El BM es un aproximado del usuario de Meta hasta
-// que exista meta_integrations.meta_user_id. Nunca hace fallar la
+// Gesicom) depende del mismo usuario de Meta, se deja la autorización viva y
+// solo se borra el token local. Las conexiones anteriores a meta_user_id no lo
+// tienen cargado: para esas se usa el BM como aproximado. Nunca hace fallar la
 // desconexión: si el token ya venció o Meta no responde, el borrado local
 // sigue igual.
 const revocarEnMeta = async (integracion) => {
     if (!integracion.access_token) return;
     try {
         const accessToken = EncryptionService.decrypt(integracion.access_token);
+        const metaUserId = integracion.meta_user_id
+            || (await fetchMeta(`https://graph.facebook.com/${FB_API_VERSION}/me?fields=id&access_token=${accessToken}`)).id;
 
+        const mismoUsuario = [{ meta_user_id: metaUserId }];
         if (integracion.business_id) {
-            const otrasConexiones = await MetaIntegration.count({
-                where: { business_id: integracion.business_id, estado: 'conectado', id: { [Op.ne]: integracion.id } }
-            });
-            if (otrasConexiones > 0) return;
+            mismoUsuario.push({ meta_user_id: null, business_id: integracion.business_id });
         }
+        const otrasConexiones = await MetaIntegration.count({
+            where: { [Op.or]: mismoUsuario, estado: 'conectado', id: { [Op.ne]: integracion.id } }
+        });
+        if (otrasConexiones > 0) return;
 
         const res = await fetch(
             `https://graph.facebook.com/${FB_API_VERSION}/me/permissions?access_token=${accessToken}`,
@@ -195,6 +199,11 @@ router.get('/callback', async (req, res) => {
         const business = businessData.data[0];
         const encryptedToken = EncryptionService.encrypt(longLivedToken);
 
+        // ID app-scoped de quien autorizó: es lo que manda Meta en el Data
+        // Deletion Callback, y sin él no se puede encontrar esta conexión.
+        const metaUser = await fetchMeta(`https://graph.facebook.com/${FB_API_VERSION}/me?fields=id&access_token=${longLivedToken}`);
+        const metaUserId = String(metaUser.id);
+
         // 6. Guardar según el modo
         if (mode === 'add_store') {
             // Verificar que este BM no esté ya conectado para este tenant
@@ -215,6 +224,7 @@ router.get('/callback', async (req, res) => {
                 usuario_id: userId,
                 nombre: business.name,
                 access_token: encryptedToken,
+                meta_user_id: metaUserId,
                 business_id: business.id,
                 business_name: business.name,
                 estado: 'conectado'
@@ -226,6 +236,7 @@ router.get('/callback', async (req, res) => {
                 defaults: {
                     nombre: business.name,
                     access_token: encryptedToken,
+                    meta_user_id: metaUserId,
                     business_name: business.name,
                     estado: 'conectado'
                 }
@@ -234,6 +245,7 @@ router.get('/callback', async (req, res) => {
                 await integracion.update({
                     nombre: business.name,
                     access_token: encryptedToken,
+                    meta_user_id: metaUserId,
                     business_name: business.name,
                     estado: 'conectado'
                 });
@@ -568,6 +580,7 @@ router.post('/disconnect', verificarToken, async (req, res) => {
         await revocarEnMeta(integracion);
         await integracion.update({
             access_token: null,
+            meta_user_id: null,
             business_id: null,
             business_name: null,
             estado: 'desconectado'

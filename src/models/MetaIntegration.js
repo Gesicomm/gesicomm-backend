@@ -16,6 +16,10 @@ const MetaIntegration = sequelize.define('MetaIntegration', {
     type: DataTypes.INTEGER,
     allowNull: true, // Para asegurar retrocompatibilidad inmediata, luego será false
   },
+  meta_user_id: {
+    type: DataTypes.STRING(64),
+    allowNull: true, // ID app-scoped de quien autorizó. Lo usa el Data Deletion Callback para encontrar la conexión.
+  },
   nombre: {
     type: DataTypes.STRING,
     allowNull: true, // Nombre visible de la tienda (ej: "BM - Ecom"). Se toma de business_name al crear.
