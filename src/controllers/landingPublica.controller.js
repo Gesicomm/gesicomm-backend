@@ -175,6 +175,21 @@ async function obtenerPorSlug(req, res) {
         })
       : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview, { tipoPagina });
     if (resultado === null) {
+      // `tienda.com/<algo>` puede ser otra landing o un producto: el frontend
+      // pide primero la landing y, con el 404, recién ahí el producto. Ese 404
+      // no lo cachea nadie, así que cada visita a una ficha pagaba una ida y
+      // vuelta entera al origen (1-1,7s medidos) antes de empezar. Si no hay
+      // landing con ese slug se responde el producto acá mismo — la misma
+      // respuesta que /producto/:productoSlug. La landing sigue ganando si
+      // existen las dos.
+      const producto = !isCatalogo && !tipoPagina && req.method === 'GET' && req.params.slug
+        ? await LandingService.obtenerProductoPublico(tienda, null, req.params.slug)
+        : null;
+      if (producto) {
+        // Igual que obtenerProducto: sin rama de preview, siempre pública.
+        aplicarCacheDeBorde(req, res, { preview: false, disponible: producto.disponible !== false });
+        return res.status(200).json(producto);
+      }
       return res.status(404).json({ message: 'Landing no encontrada.' });
     }
     aplicarCacheDeBorde(req, res, { preview, disponible: resultado.disponible !== false });
