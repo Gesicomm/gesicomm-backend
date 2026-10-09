@@ -1,5 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
+const { Op } = require('sequelize');
 const { verificarToken } = require('../middleware/autenticacion');
 const { MetaIntegration } = require('../models');
 const { auditoria } = require('../utils/logger');
@@ -21,6 +22,46 @@ const fetchMeta = async (url) => {
     return data;
 };
 
+// Solo rutas internas del frontend. El destino final se arma como
+// FRONTEND_URL + redirect_to, así que algo como "@otro-sitio.com" terminaba en
+// https://gesicomm.com@otro-sitio.com: un open redirect.
+const rutaInternaSegura = (ruta) => (
+    typeof ruta === 'string' && /^\/(?![/\\])[^@\s]*$/.test(ruta) ? ruta : '/settings'
+);
+
+// Revoca la autorización de la app en Meta (DELETE /me/permissions).
+//
+// Revocar invalida TODOS los tokens de ese usuario de Meta para la app, no
+// solo el de esta fila: si otra conexión (de otra tienda o de otro usuario de
+// Gesicom) usa el mismo Business Manager, se deja la autorización viva y solo
+// se borra el token local. El BM es un aproximado del usuario de Meta hasta
+// que exista meta_integrations.meta_user_id. Nunca hace fallar la
+// desconexión: si el token ya venció o Meta no responde, el borrado local
+// sigue igual.
+const revocarEnMeta = async (integracion) => {
+    if (!integracion.access_token) return;
+    try {
+        const accessToken = EncryptionService.decrypt(integracion.access_token);
+
+        if (integracion.business_id) {
+            const otrasConexiones = await MetaIntegration.count({
+                where: { business_id: integracion.business_id, estado: 'conectado', id: { [Op.ne]: integracion.id } }
+            });
+            if (otrasConexiones > 0) return;
+        }
+
+        const res = await fetch(
+            `https://graph.facebook.com/${FB_API_VERSION}/me/permissions?access_token=${accessToken}`,
+            { method: 'DELETE' }
+        );
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.message);
+        auditoria('META_PERMISOS_REVOCADOS', { integracionId: integracion.id });
+    } catch (err) {
+        console.warn(`No se pudo revocar en Meta la integración ${integracion.id}:`, err.message);
+    }
+};
+
 // GET /api/meta/connect -> Inicia el flujo OAuth
 // Query param opcional: ?mode=add_store para agregar una nueva tienda sin reemplazar la actual
 // Query param opcional: ?redirect_to= para indicar a dónde redirigir al finalizar
@@ -31,7 +72,7 @@ router.get('/connect', verificarToken, (req, res) => {
 
     const state = crypto.randomBytes(16).toString('hex');
     const mode = req.query.mode || 'connect'; // 'connect' | 'add_store'
-    const redirectTo = req.query.redirect_to || '/settings';
+    const redirectTo = rutaInternaSegura(req.query.redirect_to);
 
     res.cookie('meta_oauth_state', state, {
         httpOnly: true,
@@ -68,7 +109,12 @@ router.get('/connect', verificarToken, (req, res) => {
         maxAge: 10 * 60 * 1000
     });
 
-    const scope = 'ads_management,business_management';
+    // Permisos mínimos: Gesicom solo LEE (nunca crea ni edita anuncios), así
+    // que ads_management no corresponde. business_management hace falta para
+    // /me/businesses y /{bm}/owned_ad_accounts, que arman el selector de BM.
+    // Si se agrega un permiso, actualizar antes la Política de Privacidad (§4.1)
+    // y Seguridad (§4.1), que los enumeran.
+    const scope = 'ads_read,business_management';
     const authUrl = `https://www.facebook.com/${FB_API_VERSION}/dialog/oauth`
         + `?client_id=${FB_APP_ID}`
         + `&redirect_uri=${encodeURIComponent(FB_REDIRECT_URI)}`
@@ -85,7 +131,7 @@ router.get('/callback', async (req, res) => {
     const tenantId = req.cookies?.meta_oauth_tenant;
     const userId = req.cookies?.meta_oauth_user;
     const mode = req.cookies?.meta_oauth_mode || 'connect';
-    const redirectPath = req.cookies?.meta_oauth_redirect || '/settings';
+    const redirectPath = rutaInternaSegura(req.cookies?.meta_oauth_redirect);
 
     const frontendRedirect = process.env.FRONTEND_URL;
 
@@ -262,7 +308,9 @@ router.delete('/stores/:id', verificarToken, async (req, res) => {
         if (!integracion) {
             return res.status(404).json({ message: 'Tienda no encontrada.' });
         }
+        await revocarEnMeta(integracion);
         await integracion.destroy();
+        auditoria('META_DESCONECTADO', { tenantId: req.usuario.tenantId, integracionId: integracion.id });
         return res.json({ message: 'Tienda desconectada correctamente.' });
     } catch (err) {
         console.error(err);
@@ -517,6 +565,7 @@ router.post('/disconnect', verificarToken, async (req, res) => {
             return res.status(404).json({ message: 'No hay integración de Meta para este tenant.' });
         }
 
+        await revocarEnMeta(integracion);
         await integracion.update({
             access_token: null,
             business_id: null,
