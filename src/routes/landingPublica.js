@@ -97,7 +97,11 @@ router.get('/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctr
 // particular): va antes del catch-all /:slug, si no "geografia" se
 // interpretaría como un slug de landing.
 router.get('/geografia', limitePublico, ctrl.geografia);
+// Ciudades de envío de la tienda (el carrito las pide aparte, ya no viajan en
+// la landing). Mismo motivo para ir antes del catch-all /:slug.
+router.get('/delivery', limitePublico, resolverTiendaOpcional, ctrl.deliveryPublico);
 router.get('/:slug', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);
+router.get('/:slug/delivery', limitePublico, resolverTiendaOpcional, ctrl.deliveryPublico);
 router.post('/:slug/buscar', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug); // busqueda catalogo
 router.get('/:slug/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 router.post('/:slug/eventos', limiteEventos, resolverTiendaOpcional, ctrl.registrarEvento);

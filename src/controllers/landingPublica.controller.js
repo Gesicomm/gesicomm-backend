@@ -238,6 +238,41 @@ async function geografia(req, res) {
 }
 
 /**
+ * Ciudades de envío de la tienda para el carrito/checkout público.
+ *
+ * Antes viajaban dentro de cada GET de landing y de catálogo: en una tienda
+ * con la red de Gesicomm eran ~200 KB (el 86% de la respuesta del catálogo) y
+ * tres consultas encadenadas, pagadas en cada visita aunque nadie llegara a
+ * comprar. Ahora el carrito las pide cuando tiene algo adentro.
+ *
+ * Mismo cache de borde que la landing: dependen solo de la tienda, no de quién
+ * pregunta, así que la respuesta es compartible.
+ */
+async function deliveryPublico(req, res) {
+  try {
+    let tienda = req.tienda;
+    // Sin tienda por hostname (gesicomm.com/l/:slug, local): por el slug, igual
+    // que obtenerPorSlug.
+    if (!tienda && req.params.slug) {
+      const l = await Landing.findOne({
+        where: { slug: req.params.slug },
+        include: [{ model: Tienda, include: [{ model: Usuario, attributes: ['id', 'activo'] }] }],
+      });
+      tienda = l?.Tienda || null;
+    }
+    if (!tienda) return res.status(404).json({ message: 'Tienda no encontrada.' });
+
+    const disponible = !!(tienda.activo && tienda.Usuario?.activo);
+    const ciudades = disponible ? await LandingService.obtenerOpcionesDelivery(tienda.usuario_id) : [];
+    aplicarCacheDeBorde(req, res, { preview: false, disponible });
+    return res.status(200).json({ delivery_ciudades: ciudades });
+  } catch (err) {
+    console.error('[landing-publica] delivery:', err.message);
+    return res.status(500).json({ message: 'Error al obtener las ciudades de envío.' });
+  }
+}
+
+/**
  * El nombre de producto que se guarda nunca sale del cliente: se resuelve
  * contra el catálogo real de la landing. /eventos es público y sin auth, y su
  * payload termina renderizado en "productos más consultados" del panel de la
@@ -650,4 +685,4 @@ async function registrarVisitaPublica(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia };
+module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia, deliveryPublico };

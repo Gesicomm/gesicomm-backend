@@ -2633,13 +2633,10 @@ class LandingService {
         faq: faqDto,
         banner: bannerDto,
       });
-    // Estas 3 llamadas son independientes entre si (delivery, pasarelas de
-    // pago, landings hermanas) y ninguna depende del resultado de las otras
-    // -- antes se esperaban una atras de otra, sumando 3 round-trips
-    // completos a una DB que vive detras de un tunel (ver latencia real en
-    // produccion). En paralelo, el costo es el de la mas lenta de las tres.
-    const [deliveryCiudadesDto, pasarelasPublicas, landingsHermanas] = await Promise.all([
-      this.obtenerOpcionesDelivery(tienda.usuario_id),
+    // Independientes entre si: en paralelo, el costo es el de la mas lenta.
+    // Las ciudades de envio ya no van aca (ver deliveryPublico): pesaban mas
+    // que todo el resto de la respuesta y solo las usa el checkout.
+    const [pasarelasPublicas, landingsHermanas] = await Promise.all([
       PaymentService.getPublicGateways(tienda.usuario_id),
       Landing.findAll({
         where: { tienda_id: tienda.id, activo: true },
@@ -2789,9 +2786,6 @@ class LandingService {
         redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp,
         pasarelas: pasarelasPublicas,
       },
-      // Opciones oficiales del checkout público. Nacen de la matriz de
-      // tarifas de couriers activa para evitar cargar zonas por duplicado.
-      delivery_ciudades: deliveryCiudadesDto,
       // null si está apagado o si no se cargó ni imagen ni título — así el
       // frontend público no tiene que repetir esa condición.
       banner: bannerDto,
@@ -2937,7 +2931,7 @@ class LandingService {
     // los idsProducto enteros, paginar no ahorraría nada — el punto de
     // paginar es no pagar esa galería completa para productos que ni
     // siquiera se van a mostrar en esta página.
-    const [productos, combos, precios, deliveryCiudadesDto, pasarelasPublicas] = await Promise.all([
+    const [productos, combos, precios, pasarelasPublicas] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
           where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
@@ -2975,12 +2969,9 @@ class LandingService {
           },
         })
         : Promise.resolve([]),
-      // Antes venían hardcodeados en [] en esta vista liviana: el carrito de
-      // la página de Catálogo (CartDrawer) se abría sin ciudades de envío ni
-      // pasarelas de pago reales, aunque en el home/ficha de producto sí las
-      // tenía. Van en el mismo Promise.all que el resto de fase 1 porque no
-      // dependen de nada de acá — sumarlas no agrega ningún round-trip extra.
-      this.obtenerOpcionesDelivery(tienda.usuario_id),
+      // Pasarelas reales para el CartDrawer de esta página (antes venían en
+      // []). Las ciudades de envío las pide el carrito aparte, cuando hay
+      // algo para comprar (ver deliveryPublico).
       PaymentService.getPublicGateways(tienda.usuario_id),
     ]);
 
@@ -3244,7 +3235,6 @@ class LandingService {
       },
       content: { ofertas_carrito: [] },
       checkout: { redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp, pasarelas: pasarelasPublicas },
-      delivery_ciudades: deliveryCiudadesDto,
       banner: null,
       seo: {
         titulo: landing.seo_titulo || landing.titulo,
