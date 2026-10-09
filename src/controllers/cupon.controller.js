@@ -13,7 +13,7 @@ function manejarError(res, err, defecto) {
   // Los errores del service son de negocio y están escritos para leerse
   // (código repetido, porcentaje inválido, cupón inexistente): van con 400
   // y su texto. Cualquier otra cosa es un 500 genérico.
-  const esDeNegocio = /obligatorio|porcentaje|Ya tenés|no encontrado|al menos un producto/i.test(mensaje);
+  const esDeNegocio = /obligatorio|porcentaje|Ya tenés|no encontrado|al menos un producto|límite de canjes/i.test(mensaje);
   if (!esDeNegocio) console.error('[cupones]', err);
   return res.status(esDeNegocio ? 400 : 500).json({ message: esDeNegocio ? mensaje : defecto });
 }

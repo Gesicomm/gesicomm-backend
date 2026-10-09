@@ -3803,12 +3803,10 @@ class LandingService {
       ? null
       : this.buscarOpcionDelivery(opcionesDelivery, ciudad, departamento);
 
-    if (!envioIncluido && opcionesDelivery.length && !opcionDelivery) {
-      const error = new Error('La ciudad seleccionada no está disponible para delivery.');
-      error.status = 400;
-      throw error;
-    }
-
+    // Ciudad sin delivery configurado: el pedido se crea igual, con envío en
+    // cero y sin courier, y la tienda coordina el envío después (misma regla
+    // que la tarifa: solo coincidencia exacta, sin match queda para carga
+    // manual). Antes se rechazaba y el cliente perdía la compra.
     const costoEnvio = envioIncluido ? 0 : (Number(opcionDelivery?.costo) || 0);
     const courierIdDelivery = envioIncluido ? null : (opcionDelivery?.courier_id || null);
     const ciudadEnvio = opcionDelivery?.ciudad || ciudad.trim();
