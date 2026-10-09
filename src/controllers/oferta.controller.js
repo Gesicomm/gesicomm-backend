@@ -93,7 +93,8 @@ async function listarTodas(req, res) {
     const bodyEstrategias = req.body.estrategias || [];
     const estrategiasCrudas = Array.isArray(bodyEstrategias) ? bodyEstrategias : String(bodyEstrategias).split(',');
     const estrategias = estrategiasCrudas.map(e => String(e).trim()).filter(e => ESTRATEGIAS.includes(e));
-    const ofertas = await OfertaService.listarPorInquilino(req.usuario.tenantId, { estrategias });
+    // listarPorInquilino no existe: esta ruta respondía siempre 500.
+    const ofertas = await OfertaService.listar(req.usuario.tenantId, { estrategias, usuarioId: req.usuario.id });
     return res.json(ofertas);
   } catch (err) {
     console.error('[oferta] listarTodas:', err.message);
@@ -110,7 +111,7 @@ async function listarPorProducto(req, res) {
     // ofertas sí las quiere todas (muestra un badge "Inactivo"), por eso es
     // opt-in y no el comportamiento por defecto.
     const soloActivas = req.body.soloActivas === true;
-    const ofertas = await OfertaService.listarPorProducto(req.params.productoId, inquilino_id, { soloActivas });
+    const ofertas = await OfertaService.listarPorProducto(req.params.productoId, inquilino_id, { soloActivas, usuarioId: req.usuario.id });
     return res.json(ofertas);
   } catch (err) {
     console.error('[oferta] listarPorProducto:', err.message);
@@ -130,6 +131,7 @@ async function listar(req, res) {
       estrategias: lista(req.query.estrategias),
       productoIds: lista(req.query.productos).map(Number).filter(Number.isInteger),
       soloActivas: req.query.soloActivas === 'true',
+      usuarioId: req.usuario.id,
     });
     return res.json(ofertas);
   } catch (err) {

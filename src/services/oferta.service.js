@@ -270,7 +270,7 @@ class OfertaService {
    * nunca se persiste (el costo real de una venta ya confirmada vive en
    * EnvioItemComponente, no acá).
    */
-  static async listarPorProducto(producto_ancla_id, inquilino_id, { soloActivas = false, transaction } = {}) {
+  static async listarPorProducto(producto_ancla_id, inquilino_id, { soloActivas = false, transaction, usuarioId = null } = {}) {
     const where = { producto_ancla_id, inquilino_id };
     if (soloActivas) where.activo = true;
 
@@ -283,7 +283,7 @@ class OfertaService {
         include: [{
           model: Producto,
           as: 'producto',
-          attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+          attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base', 'creado_por', 'cantidad_disponible'],
           include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
         }, {
           model: ProductoVariante,
@@ -293,7 +293,7 @@ class OfertaService {
       order: [['orden', 'ASC'], ['created_at', 'ASC']],
     });
 
-    return ofertas.map(o => this.conMargen(o));
+    return ofertas.map(o => this.conMargen(o, usuarioId));
   }
 
   /**
@@ -305,7 +305,7 @@ class OfertaService {
    * @param {number} inquilino_id
    * @param {{estrategias?: string[], productoIds?: number[], soloActivas?: boolean}} filtros
    */
-  static async listar(inquilino_id, { estrategias = [], productoIds = [], soloActivas = false } = {}) {
+  static async listar(inquilino_id, { estrategias = [], productoIds = [], soloActivas = false, usuarioId = null } = {}) {
     const where = { inquilino_id };
     const validas = estrategias.filter(e => ESTRATEGIAS.includes(e));
     if (validas.length) where.estrategia = validas;
@@ -320,7 +320,7 @@ class OfertaService {
         include: [{
           model: Producto,
           as: 'producto',
-          attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+          attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base', 'creado_por', 'cantidad_disponible'],
           include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }],
         }, {
           model: ProductoVariante,
@@ -345,16 +345,33 @@ class OfertaService {
     }));
 
     return ofertas.map(o => ({
-      ...this.conMargen(o),
+      ...this.conMargen(o, usuarioId),
       producto_ancla: mapaAnclas.get(o.producto_ancla_id) || null,
     }));
   }
 
-  static conMargen(ofertaInstancia) {
+  /**
+   * Costo de una unidad para el comercio — mismo criterio que el "Te cuesta"
+   * del catálogo (PrecioUsuarioService): de un producto propio es su
+   * precio_costo; de uno del catálogo de Gesicom, lo que el comercio le paga
+   * (precio_base). Antes se usaba siempre precio_costo, que en los productos
+   * de Gesicom viene vacío: un bump de un adaptador al 30% menos mostraba
+   * "margen 100%" cuando en realidad dejaba pérdida.
+   */
+  static costoParaComercio(producto, usuarioId = null) {
+    if (!producto) return 0;
+    const precioCosto = producto.precio_costo != null ? parseFloat(producto.precio_costo) : null;
+    const precioBase = parseFloat(producto.precio_base) || 0;
+    const esPropio = usuarioId != null && producto.creado_por != null && Number(producto.creado_por) === Number(usuarioId);
+    if (esPropio && precioCosto != null) return precioCosto;
+    if (usuarioId == null && precioCosto) return precioCosto;
+    return precioBase;
+  }
+
+  static conMargen(ofertaInstancia, usuarioId = null) {
     const oferta = ofertaInstancia.toJSON();
     const costo = (oferta.componentes || []).reduce((acc, c) => {
-      const costoUnit = parseFloat(c.producto?.precio_costo) || 0;
-      return acc + costoUnit * c.cantidad;
+      return acc + this.costoParaComercio(c.producto, usuarioId) * c.cantidad;
     }, 0);
     // El margen se calcula sobre el precio normal (canal de referencia).
     // El del bump va aparte: es el que más importa vigilar, porque es un

@@ -79,8 +79,7 @@ class ProductoService {
     return {
       [Op.or]: [
         { creado_por: { [Op.ne]: usuarioId } },
-        { tienda_id: tiendaId },
-        { tienda_id: null },
+        { creado_por: usuarioId, tienda_id: tiendaId },
       ],
     };
   }
@@ -541,6 +540,12 @@ class ProductoService {
     }
 
     const skuValido = await this.validarSku(sku, inquilino_id, null, transaction);
+    if (!esAdmin && !tiendaId) {
+      const err = new Error('Seleccioná una tienda antes de crear un producto.');
+      err.codigo = 'TIENDA_NO_SELECCIONADA';
+      throw err;
+    }
+
     const slug = slugManual ? slugManual : await this.generarSlugUnico(nombre, inquilino_id);
 
     const producto = await Producto.create({

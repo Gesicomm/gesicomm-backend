@@ -18,6 +18,7 @@ const ProductoVarianteService = require('../services/productoVariante.service');
 const ProductoOpcionService = require('../services/productoOpcion.service');
 const OfertaService = require('../services/oferta.service');
 const ImagenService = require('../services/imagen.service');
+const ImportacionShopifyService = require('../services/productoImportacionShopify.service');
 
 async function buscar(req, res) {
   try {
@@ -270,6 +271,26 @@ async function eliminar(req, res) {
   }
 }
 
+async function importarShopify(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'Subí un archivo CSV o Excel exportado desde Shopify.' });
+    }
+
+    const resultado = await ImportacionShopifyService.importarShopify(req.file, {
+      inquilinoId: req.usuario.tenantId,
+      usuarioId: req.usuario.id,
+      esAdmin: req.usuario.rol === 'administrador',
+      tiendaId: req.usuario.tiendaId || null,
+    });
+
+    return res.status(resultado.creados > 0 ? 201 : 200).json(resultado);
+  } catch (err) {
+    console.error('[importar productos shopify]', err);
+    return res.status(400).json({ message: err.message || 'No se pudo importar el archivo de Shopify.' });
+  }
+}
+
 module.exports = {
   buscar,
   crear,
@@ -282,5 +303,6 @@ module.exports = {
   relacionados,
   historialPrecios,
   actualizar,
-  eliminar
+  eliminar,
+  importarShopify
 };

@@ -136,15 +136,14 @@ class PrecioUsuarioService {
     return {
       [Op.or]: [
         { creado_por: { [Op.ne]: usuario_id } },
-        { tienda_id: tiendaId },
-        { tienda_id: null },
+        { creado_por: usuario_id, tienda_id: tiendaId },
       ],
     };
   }
 
   static visibilidadTiendaProductoSql(tiendaId) {
     if (tiendaId == null) return '';
-    return 'AND (p.creado_por IS DISTINCT FROM :usuario_id OR p.tienda_id = :tienda_id OR p.tienda_id IS NULL)';
+    return 'AND (p.creado_por IS DISTINCT FROM :usuario_id OR (p.creado_por = :usuario_id AND p.tienda_id = :tienda_id))';
   }
 
   static combinarVisibilidadProducto(visibilidadCatalogo, visibilidadTienda) {
@@ -396,7 +395,7 @@ class PrecioUsuarioService {
     static async listarCatalogoPaginado(usuario_id, inquilino_id, filtros = {}, esAdmin = false, tiendaId = null) {
     const { sequelize, Categoria } = require('../models');
     const {
-      page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', orden = 'nombre', tipo = 'todos',
+      page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', filtroMarca = '', filtroStock = '', orden = 'nombre', tipo = 'todos',
       solamenteMios = false, mios_solamente = false, origenCatalogo = null
     } = filtros;
     const offset = (page - 1) * limit;
@@ -406,6 +405,10 @@ class PrecioUsuarioService {
 
     const miosOnly = Boolean(solamenteMios || mios_solamente);
     const gesicomOnly = origenCatalogo === 'GESICOMM' && !miosOnly;
+    const landingOnly = tipo === 'landing';
+    if (landingOnly && tiendaId == null) {
+      return { items: [], total: 0, page: parseInt(page), totalPages: 1, categorias: [], proveedores: [], marcas: [] };
+    }
     // Un combo propio puede tener como principal un producto del administrador.
     const administradoresIds = !esAdmin ? await this.obtenerIdsAdministradores(inquilino_id) : [];
     const creadorFilter = this.visibilidadCatalogoSql(esAdmin, miosOnly)
@@ -438,6 +441,16 @@ class PrecioUsuarioService {
       provFilter = 'AND p.proveedor_id IN (SELECT id FROM proveedores WHERE nombre = :filtroProveedor)';
     }
 
+    let marcaFilter = '';
+    if (filtroMarca) {
+      replacements.filtroMarca = filtroMarca;
+      marcaFilter = 'AND p.marca_id IN (SELECT id FROM marcas WHERE nombre = :filtroMarca)';
+    }
+
+    let stockFilter = '';
+    if (filtroStock === 'con') stockFilter = 'AND COALESCE(p.cantidad_disponible, 0) > 0';
+    if (filtroStock === 'sin') stockFilter = 'AND COALESCE(p.cantidad_disponible, 0) = 0';
+
     let searchFilter = '';
     if (busqueda.trim()) {
       replacements.busqueda = `%${busqueda.trim()}%`;
@@ -449,6 +462,37 @@ class PrecioUsuarioService {
     if (orden === 'precio-asc') orderSql = 'ORDER BY precio_efectivo ASC';
     if (orden === 'precio-desc') orderSql = 'ORDER BY precio_efectivo DESC';
 
+    const landingActualSql = `
+      SELECT l.id
+      FROM landings l
+      WHERE l.inquilino_id = :inquilino_id
+        AND l.tienda_id = :tienda_id
+        AND l.activo = true
+      ORDER BY
+        CASE WHEN l.es_home = true THEN 0 ELSE 1 END,
+        l.created_at DESC,
+        l.id DESC
+      LIMIT 1
+    `;
+    const landingProductoFilter = landingOnly
+      ? `AND EXISTS (
+          SELECT 1
+          FROM landing_items li
+          WHERE li.landing_id = (${landingActualSql})
+            AND li.tipo = 'producto'
+            AND li.referencia_id = p.id
+        )`
+      : '';
+    const landingComboFilter = landingOnly
+      ? `AND EXISTS (
+          SELECT 1
+          FROM landing_items li
+          WHERE li.landing_id = (${landingActualSql})
+            AND li.tipo = 'combo'
+            AND li.referencia_id = c.id
+        )`
+      : '';
+
     const productosSql = `
       SELECT p.id, 'producto' as tipo, p.nombre, p.descripcion_corta as descripcion, p.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, p.creado_por,
         COALESCE(pu.precio, p.precio_base) as precio_efectivo
@@ -457,8 +501,11 @@ class PrecioUsuarioService {
       WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
       ${creadorFilter}
       ${tiendaFilter}
+      ${landingProductoFilter}
       ${catFilter}
       ${provFilter}
+      ${marcaFilter}
+      ${stockFilter}
       ${searchFilter.replace(/c\./g, 'p.').replace(/descripcion/g, 'descripcion_corta')}
     `;
 
@@ -474,8 +521,11 @@ class PrecioUsuarioService {
       ${gesicomOnly ? 'AND c.creado_por IS DISTINCT FROM :usuario_id' : ''}
       ${this.visibilidadCatalogoSql(esAdmin, false)}
       ${tiendaFilter}
+      ${landingComboFilter}
       ${catFilter}
       ${provFilter}
+      ${marcaFilter}
+      ${stockFilter}
       ${searchFilter}
     `;
 
@@ -506,7 +556,7 @@ class PrecioUsuarioService {
 
     const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca, Proveedor } = require('../models');
 
-    const [productos, combos, precios, categoriasUnicasData, proveedoresUnicasData] = await Promise.all([
+    const [productos, combos, precios, categoriasUnicasData, proveedoresUnicasData, marcasUnicasData] = await Promise.all([
       idsProductos.length ? Producto.findAll({
         where: {
           id: { [require('sequelize').Op.in]: idsProductos },
@@ -573,6 +623,9 @@ class PrecioUsuarioService {
         WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
         ${creadorFilter}
         ${tiendaFilter}
+        ${landingProductoFilter}
+        ${marcaFilter}
+        ${stockFilter}
         ORDER BY c.nombre ASC
       `, { replacements, type: sequelize.QueryTypes.SELECT }),
       sequelize.query(`
@@ -582,12 +635,27 @@ class PrecioUsuarioService {
         WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
         ${creadorFilter}
         ${tiendaFilter}
+        ${landingProductoFilter}
+        ${stockFilter}
         ORDER BY pr.nombre ASC
+      `, { replacements, type: sequelize.QueryTypes.SELECT }),
+      sequelize.query(`
+        SELECT DISTINCT m.nombre 
+        FROM marcas m
+        INNER JOIN productos p ON p.marca_id = m.id 
+        WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
+        ${creadorFilter}
+        ${tiendaFilter}
+        ${landingProductoFilter}
+        ${provFilter}
+        ${stockFilter}
+        ORDER BY m.nombre ASC
       `, { replacements, type: sequelize.QueryTypes.SELECT })
     ]);
 
     const categoriasUnicas = categoriasUnicasData ? categoriasUnicasData.map(c => c.nombre) : [];
     const proveedoresUnicos = proveedoresUnicasData ? proveedoresUnicasData.map(p => p.nombre) : [];
+    const marcasUnicas = marcasUnicasData ? marcasUnicasData.map(m => m.nombre) : [];
 
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
     const categoriaIdsPersonalizadas = [...new Set(precios.map(p => p.categoria_id).filter(Boolean))];
@@ -773,7 +841,8 @@ class PrecioUsuarioService {
       page: parseInt(page), 
       totalPages: Math.ceil(total / limit),
       categorias: categoriasUnicas,
-      proveedores: proveedoresUnicos
+      proveedores: proveedoresUnicos,
+      marcas: marcasUnicas
     };
   }
 

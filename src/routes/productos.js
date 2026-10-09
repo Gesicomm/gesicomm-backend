@@ -2,6 +2,7 @@
  * Rutas de Productos e Imágenes.
  */
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const { verificarToken } = require('../middleware/autenticacion');
 const { verificarPermiso } = require('../middleware/autorizacion');
@@ -12,11 +13,32 @@ const comboRoutes = require('./combos');
 const ofertaRoutes = require('./ofertas');
 const landingCtrl = require('../controllers/landing.controller');
 
+const uploadImportacion = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const nombre = String(file.originalname || '').toLowerCase();
+    if (nombre.endsWith('.csv') || nombre.endsWith('.xlsx') || nombre.endsWith('.xls')) {
+      return cb(null, true);
+    }
+    return cb(new Error('Solo se permiten archivos CSV o Excel exportados desde Shopify.'));
+  },
+});
+
+function subirArchivoImportacion(req, res, next) {
+  uploadImportacion.single('archivo')(req, res, (err) => {
+    if (!err) return next();
+    const status = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    return res.status(status).json({ message: err.message || 'No se pudo leer el archivo.' });
+  });
+}
+
 router.use(verificarToken);
 router.use(resolverTiendaActiva);
 
 // Productos
 router.post('/buscar', verificarPermiso('ver_productos'), ctrl.buscar);
+router.post('/importar-shopify', verificarPermiso('crear_productos'), subirArchivoImportacion, ctrl.importarShopify);
 router.post('/', verificarPermiso('crear_productos'), ctrl.crear);
 router.get('/:id', verificarPermiso('ver_productos'), ctrl.detalle);
 router.get('/:id/historial-precios', verificarPermiso('ver_productos'), ctrl.historialPrecios);
