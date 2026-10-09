@@ -30,9 +30,22 @@ function normalizarItems(items) {
 
 class PrecioUsuarioMasivoService {
   // Consulta plana: no se cargan imágenes ni relaciones por cada fila.
-  static consulta(usuario_id, inquilino_id, esAdmin, filtros = {}, items = null) {
+  static consulta(usuario_id, inquilino_id, esAdmin, filtros = {}, items = null, tiendaId = null) {
     if (!filtros || typeof filtros !== 'object' || Array.isArray(filtros)) throw errorValidacion('Los filtros no son válidos.');
     const replacements = { usuario_id, inquilino_id };
+    if (tiendaId != null) replacements.tienda_id = tiendaId;
+    const landingActualSql = `
+      SELECT l.id
+      FROM landings l
+      WHERE l.inquilino_id = :inquilino_id
+        AND l.tienda_id = :tienda_id
+        AND l.activo = true
+      ORDER BY
+        CASE WHEN l.es_home = true THEN 0 ELSE 1 END,
+        l.created_at DESC,
+        l.id DESC
+      LIMIT 1
+    `;
     const base = `
       SELECT 'producto' AS tipo, p.id, p.id AS producto_id, p.sku, p.nombre, p.creado_por, p.created_at,
         cat.nombre AS categoria, pr.nombre AS proveedor,
@@ -78,9 +91,22 @@ class PrecioUsuarioMasivoService {
       }
     }
     if (filtros.tipo && filtros.tipo !== 'todos') {
-      if (!['producto', 'combo'].includes(filtros.tipo)) throw errorValidacion('Tipo de producto inválido.');
-      replacements.tipo = filtros.tipo;
-      condiciones.push('t.tipo = :tipo');
+      if (!['producto', 'combo', 'landing'].includes(filtros.tipo)) throw errorValidacion('Tipo de producto inválido.');
+      if (filtros.tipo === 'landing') {
+        condiciones.push(tiendaId == null ? 'false' : `EXISTS (
+          SELECT 1
+          FROM landing_items li
+          WHERE li.landing_id = (${landingActualSql})
+            AND (
+              (t.tipo = 'producto' AND li.tipo = 'producto')
+              OR (t.tipo = 'combo' AND li.tipo = 'combo')
+            )
+            AND li.referencia_id = t.id
+        )`);
+      } else {
+        replacements.tipo = filtros.tipo;
+        condiciones.push('t.tipo = :tipo');
+      }
     }
     if (filtros.origen && filtros.origen !== 'todos') {
       if (!['propios', 'gesicomm'].includes(filtros.origen)) throw errorValidacion('Origen inválido.');
@@ -129,12 +155,12 @@ class PrecioUsuarioMasivoService {
       || porProducto.get(Number(f.producto_id ?? f.id)) || null]));
   }
 
-  static async buscar(usuario_id, inquilino_id, esAdmin, body = {}) {
+  static async buscar(usuario_id, inquilino_id, esAdmin, body = {}, tiendaId = null) {
     const page = Number(body.page ?? 1), limit = Number(body.limit ?? 25);
     if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw errorValidacion('La paginación no es válida (máximo 100 filas por página).');
     }
-    const { base, sql, replacements } = this.consulta(usuario_id, inquilino_id, esAdmin, body);
+    const { sql, replacements } = this.consulta(usuario_id, inquilino_id, esAdmin, body, null, tiendaId);
     const ordenes = { nombre: 'nombre ASC', recientes: 'created_at DESC', 'precio-asc': 'precio_actual ASC', 'precio-desc': 'precio_actual DESC' };
     const orden = Object.hasOwn(ordenes, body.orden || 'nombre') ? ordenes[body.orden || 'nombre'] : null;
     if (!orden) throw errorValidacion('Orden inválido.');
@@ -143,15 +169,15 @@ class PrecioUsuarioMasivoService {
       sequelize.query(`${sql} ORDER BY ${orden}, tipo ASC, id ASC LIMIT :limit OFFSET :offset`, {
         replacements: { ...replacements, limit, offset: (page - 1) * limit }, type: sequelize.QueryTypes.SELECT,
       }),
-      sequelize.query(`SELECT DISTINCT categoria AS nombre FROM (${base}) f WHERE categoria IS NOT NULL ORDER BY categoria`, { replacements, type: sequelize.QueryTypes.SELECT }),
-      sequelize.query(`SELECT DISTINCT proveedor AS nombre FROM (${base}) f WHERE proveedor IS NOT NULL ORDER BY proveedor`, { replacements, type: sequelize.QueryTypes.SELECT }),
+      sequelize.query(`SELECT DISTINCT categoria AS nombre FROM (${sql}) f WHERE categoria IS NOT NULL ORDER BY categoria`, { replacements, type: sequelize.QueryTypes.SELECT }),
+      sequelize.query(`SELECT DISTINCT proveedor AS nombre FROM (${sql}) f WHERE proveedor IS NOT NULL ORDER BY proveedor`, { replacements, type: sequelize.QueryTypes.SELECT }),
     ]);
     const total = Number(cuenta[0]?.total || 0);
     const fotos = await this.imagenes(filas, inquilino_id);
     return { items: filas.map(f => ({ ...this.fila(f), imagen: fotos.get(clave(f)) })), total, page, totalPages: Math.ceil(total / limit), categorias: categorias.map(c => c.nombre), proveedores: proveedores.map(p => p.nombre) };
   }
 
-  static async actualizar(usuario_id, inquilino_id, esAdmin, body = {}) {
+  static async actualizar(usuario_id, inquilino_id, esAdmin, body = {}, tiendaId = null) {
     const manual = body.modo === 'manual';
     if (!manual && body.modo !== 'reajuste') throw errorValidacion('Elegí edición manual o reajuste.');
     const porcentaje = body.porcentaje;
@@ -167,7 +193,7 @@ class PrecioUsuarioMasivoService {
     const exclusiones = new Set(excluidos.map(clave));
     const precios = new Map((items || []).map(i => [clave(i), i.precio]));
     const filtros = !manual && seleccion.todos ? seleccion.filtros || {} : {};
-    const { sql, replacements } = this.consulta(usuario_id, inquilino_id, esAdmin, filtros, items);
+    const { sql, replacements } = this.consulta(usuario_id, inquilino_id, esAdmin, filtros, items, tiendaId);
 
     return sequelize.transaction({ isolationLevel: 'REPEATABLE READ' }, async transaction => {
       const filas = await sequelize.query(sql, { replacements, type: sequelize.QueryTypes.SELECT, transaction });

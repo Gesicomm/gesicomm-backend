@@ -4,7 +4,7 @@ const service = require('../services/precioUsuarioMasivo.service');
 
 const ejecutar = metodo => async (req, res) => {
   try {
-    const resultado = await service[metodo](req.usuario.id, req.usuario.tenantId, req.usuario.rol === 'administrador', req.body);
+    const resultado = await service[metodo](req.usuario.id, req.usuario.tenantId, req.usuario.rol === 'administrador', req.body, req.usuario.tiendaId || null);
     return res.json(resultado);
   } catch (error) {
     if (error.status === 400) return res.status(400).json({ message: error.message, errores: error.errores });

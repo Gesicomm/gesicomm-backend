@@ -110,6 +110,40 @@ test('búsqueda pagina en SQL y devuelve catálogos para filtros', async () => {
   expect(opts.replacements).toMatchObject({ offset: 25, limit: 25, busqueda: "%50\\% ' OR 1=1%" });
 });
 
+test('Productos en mi landing se filtra en SQL antes de paginar y contar', async () => {
+  sequelize.query.mockImplementation(async sql => {
+    if (sql.startsWith('SELECT COUNT')) return [{ total: '2' }];
+    if (sql.startsWith('SELECT DISTINCT categoria')) return [{ nombre: 'Hogar' }];
+    if (sql.startsWith('SELECT DISTINCT proveedor')) return [{ nombre: 'Proveedor' }];
+    if (sql.includes('FROM producto_imagenes')) return [{ producto_id: 1, url: '/uploads/olla.jpg' }];
+    return [fila()];
+  });
+
+  await Service.buscar(42, 7, false, { page: 1, limit: 25, tipo: 'landing' }, 11);
+
+  const countSql = sequelize.query.mock.calls[0][0];
+  const dataSql = sequelize.query.mock.calls[1][0];
+  const categoriasSql = sequelize.query.mock.calls[2][0];
+  for (const sql of [countSql, dataSql, categoriasSql]) {
+    expect(sql).toContain('FROM landing_items li');
+    expect(sql).toContain("t.tipo = 'producto' AND li.tipo = 'producto'");
+    expect(sql).toContain("t.tipo = 'combo' AND li.tipo = 'combo'");
+    expect(sql).toContain('li.referencia_id = t.id');
+    expect(sql).toContain('l.tienda_id = :tienda_id');
+    expect(sql).toContain('l.activo = true');
+  }
+  expect(sequelize.query.mock.calls[0][1].replacements).toMatchObject({ tienda_id: 11 });
+});
+
+test('Productos en mi landing sin tienda activa no cae al catálogo completo', async () => {
+  sequelize.query.mockImplementation(async sql => sql.startsWith('SELECT COUNT') ? [{ total: '0' }] : []);
+
+  const resultado = await Service.buscar(42, 7, false, { page: 1, limit: 25, tipo: 'landing' }, null);
+
+  expect(resultado).toMatchObject({ items: [], total: 0, totalPages: 0 });
+  expect(sequelize.query.mock.calls[0][0]).toContain('WHERE false');
+});
+
 test('miniaturas por página: imagen del combo primero, luego producto principal y fallback vacío', async () => {
   sequelize.query.mockImplementation(async sql => sql.includes('FROM producto_combo_imagenes')
     ? [{ combo_id: 10, url: '/uploads/pack.jpg', storage_key: 'combos/pack.webp' }]
