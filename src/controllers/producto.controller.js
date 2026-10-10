@@ -19,6 +19,7 @@ const ProductoOpcionService = require('../services/productoOpcion.service');
 const OfertaService = require('../services/oferta.service');
 const ImagenService = require('../services/imagen.service');
 const ImportacionShopifyService = require('../services/productoImportacionShopify.service');
+const ImportacionMasivaService = require('../services/productoImportacionMasiva.service');
 
 async function buscar(req, res) {
   try {
@@ -291,7 +292,51 @@ async function importarShopify(req, res) {
   }
 }
 
+function contextoImportacion(req) {
+  return {
+    inquilinoId: req.usuario.tenantId,
+    usuarioId: req.usuario.id,
+    esAdmin: req.usuario.rol === 'administrador',
+    tiendaId: req.usuario.tiendaId || null,
+  };
+}
+
+function formatoImportacionMasiva(req, res) {
+  return res.json(ImportacionMasivaService.formato());
+}
+
+async function plantillaImportacionMasiva(req, res) {
+  try {
+    const buffer = await ImportacionMasivaService.generarPlantilla();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="plantilla-productos-gesicom.xlsx"');
+    return res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error('[plantilla importar productos]', err);
+    return res.status(500).json({ message: 'No se pudo generar la plantilla.' });
+  }
+}
+
+// Sin `aplicar` solo revisa el archivo (vista previa); con `aplicar=true`
+// crea los productos de las filas sin errores.
+async function importarMasivo(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'Subí la plantilla de Gesicom completa (.xlsx).' });
+    }
+    const aplicar = String(req.body?.aplicar) === 'true';
+    const resultado = await ImportacionMasivaService.importarMasivo(req.file, contextoImportacion(req), { aplicar });
+    return res.status(resultado.creados > 0 ? 201 : 200).json(resultado);
+  } catch (err) {
+    console.error('[importar productos masivo]', err);
+    return res.status(400).json({ message: err.message || 'No se pudo importar el archivo.' });
+  }
+}
+
 module.exports = {
+  formatoImportacionMasiva,
+  plantillaImportacionMasiva,
+  importarMasivo,
   buscar,
   crear,
   detalle,

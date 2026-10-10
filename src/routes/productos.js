@@ -21,7 +21,7 @@ const uploadImportacion = multer({
     if (nombre.endsWith('.csv') || nombre.endsWith('.xlsx') || nombre.endsWith('.xls')) {
       return cb(null, true);
     }
-    return cb(new Error('Solo se permiten archivos CSV o Excel exportados desde Shopify.'));
+    return cb(new Error('Solo se permiten archivos CSV o Excel.'));
   },
 });
 
@@ -39,6 +39,11 @@ router.use(resolverTiendaActiva);
 // Productos
 router.post('/buscar', verificarPermiso('ver_productos'), ctrl.buscar);
 router.post('/importar-shopify', verificarPermiso('crear_productos'), subirArchivoImportacion, ctrl.importarShopify);
+// Carga masiva con la plantilla de Gesicom: se baja la plantilla, se sube
+// completa y se revisa antes de crear nada (ver productoImportacionMasiva.service).
+router.get('/importar-masivo/formato', verificarPermiso('crear_productos'), ctrl.formatoImportacionMasiva);
+router.get('/importar-masivo/plantilla', verificarPermiso('crear_productos'), ctrl.plantillaImportacionMasiva);
+router.post('/importar-masivo', verificarPermiso('crear_productos'), subirArchivoImportacion, ctrl.importarMasivo);
 router.post('/', verificarPermiso('crear_productos'), ctrl.crear);
 router.get('/:id', verificarPermiso('ver_productos'), ctrl.detalle);
 router.get('/:id/historial-precios', verificarPermiso('ver_productos'), ctrl.historialPrecios);

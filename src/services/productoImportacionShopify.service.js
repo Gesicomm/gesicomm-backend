@@ -375,4 +375,9 @@ module.exports = {
   parseCsv,
   filasAObjetos,
   agruparPorHandle,
+  // Compartidos con la carga masiva de la plantilla de Gesicom.
+  limpiarTexto,
+  limitar,
+  normalizarNumero,
+  obtenerOCrearCategoria,
 };
