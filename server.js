@@ -180,6 +180,10 @@ app.use('/api/mis-landings-simples', express.json({ limit: '600kb' }));
 // 422); acá va 1mb porque serializar 600 KB de HTML a JSON, con todo el
 // escapado de comillas, pasa holgadamente de 600 kb en el transporte.
 app.use('/api/page-builder', express.json({ limit: '1mb' }));
+// Cambiar precios manda listas de filas ({tipo, id}): la selección que viene
+// de Mi catálogo y hasta 1000 precios editados a mano. Con 10kb el corte
+// caía cerca de las 300 filas y "Seleccionar todo" devolvía un 413.
+app.use('/api/vitrina/precios', express.json({ limit: '200kb' }));
 app.use(express.json({ limit: '10kb' })); // Límite de tamaño para prevenir ataques
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 // Servir imágenes de productos subidas
