@@ -7,6 +7,24 @@ const { auditoria } = require('../utils/logger');
 const EncryptionService = require('../utils/EncryptionService');
 const solicitudEliminacionController = require('../controllers/solicitudEliminacion.controller');
 
+// Graph API paging links can embed access tokens. Return navigation signals
+// and opaque cursors only; authenticated clients send cursors to our API.
+function publicMetaPaging(paging) {
+    if (!paging || typeof paging !== 'object') return null;
+    const cursors = {};
+    for (const name of ['before', 'after']) {
+        if (typeof paging.cursors?.[name] === 'string') {
+            cursors[name] = paging.cursors[name];
+        }
+    }
+    return {
+        cursors,
+        next: Boolean(paging.next),
+        previous: Boolean(paging.previous),
+    };
+}
+
+
 const router = express.Router();
 
 const FB_APP_ID = process.env.FACEBOOK_APP_ID;
@@ -557,7 +575,7 @@ router.post('/campaigns', verificarToken, async (req, res) => {
 
         return res.json({
             campaigns: campaignsResult,
-            paging: campsData.paging || null
+            paging: publicMetaPaging(campsData.paging)
         });
 
     } catch (err) {
