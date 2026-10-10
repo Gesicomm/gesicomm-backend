@@ -3443,6 +3443,27 @@ class LandingService {
     return items;
   }
 
+  static normalizarDescuentoBoton(valor) {
+    const n = Number(String(valor ?? '').replace(',', '.'));
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(95, Math.round(n * 10) / 10);
+  }
+
+  static maxDescuentoBotonLanding(landing, landingItem) {
+    const venta = landing?.content?.venta || {};
+    const fuente = venta.presentacion_productos?.[`${landingItem?.tipo}:${landingItem?.referencia_id}`] || {};
+    const valores = [
+      fuente.cta_descuento_pct,
+      ...(Array.isArray(fuente.botones_pago) ? fuente.botones_pago.map(b => b?.descuento_pct) : []),
+    ].map(v => this.normalizarDescuentoBoton(v));
+    return valores.reduce((max, pct) => Math.max(max, pct), 0);
+  }
+
+  static aplicarDescuentoBoton(precioUnitario, pct) {
+    const descuento = this.normalizarDescuentoBoton(pct);
+    return descuento > 0 ? Math.max(0, Math.round((Number(precioUnitario) || 0) * (100 - descuento) / 100)) : precioUnitario;
+  }
+
   static async resolverCarrito(tienda, slug, items, throwOnStockInsuficiente = false) {
     const where = { tienda_id: tienda.id };
     if (slug) where.slug = slug; else where.es_home = true;
@@ -3646,6 +3667,14 @@ class LandingService {
         throw err;
       }
 
+      const descuentoSolicitado = this.normalizarDescuentoBoton(pedido.descuento_boton_pct);
+      const descuentoPermitido = Math.min(descuentoSolicitado, this.maxDescuentoBotonLanding(landing, landingItem));
+      const precioUnitarioFinal = this.aplicarDescuentoBoton(resuelto.precio_unitario, descuentoPermitido);
+      const subtotalFinal = precioUnitarioFinal * resuelto.cantidad;
+      const precioNormalFinal = descuentoPermitido > 0
+        ? Math.max(Number(resuelto.precio_normal) || 0, Number(resuelto.precio_unitario) || 0)
+        : resuelto.precio_normal;
+
       itemsResueltos.push({
         content_id: pedido.content_id,
         // Se hace eco de lo que pidió el cliente (no de lo resuelto) para
@@ -3672,14 +3701,15 @@ class LandingService {
         oferta_nombre: resuelto.oferta_aplicada ? resuelto.oferta_aplicada.nombre : null,
         nombre_producto: resuelto.nombre_final,
         cantidad: resuelto.cantidad,
-        precio_unitario: resuelto.precio_unitario,
+        precio_unitario: precioUnitarioFinal,
         // Canal y precio de referencia — con esto la reportería separa la
         // venta incremental (order bump / combo de checkout) de la venta
         // normal sin volver a unir contra la oferta, que puede editarse o
         // darse de baja después (ver migrations/add_precios_order_bump.sql).
         origen_venta: resuelto.origen_venta,
-        precio_normal: resuelto.precio_normal,
-        subtotal: resuelto.subtotal,
+        precio_normal: precioNormalFinal,
+        subtotal: subtotalFinal,
+        descuento_boton_pct: descuentoPermitido || null,
         envio_incluido: landingItem?.envio_incluido === true,
         stock_suficiente: suficiente,
       });

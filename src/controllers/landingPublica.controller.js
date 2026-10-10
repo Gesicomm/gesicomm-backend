@@ -445,6 +445,7 @@ async function crearCheckout(req, res) {
         // .permite_elegir_variante) — se re-valida contra esa oferta y ese
         // producto en LandingService.resolverCarrito, acá solo se sanea el tipo.
         componente_variante_id: Number.isFinite(Number(i?.componente_variante_id)) ? Number(i.componente_variante_id) : undefined,
+        descuento_boton_pct: Number.isFinite(Number(i?.descuento_boton_pct)) ? Number(i.descuento_boton_pct) : undefined,
         cantidad: i?.cantidad,
       })) : [],
     };
@@ -567,6 +568,7 @@ async function recalcularCarrito(req, res) {
       variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
       oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
       componente_variante_id: Number.isFinite(Number(i?.componente_variante_id)) ? Number(i.componente_variante_id) : undefined,
+      descuento_boton_pct: Number.isFinite(Number(i?.descuento_boton_pct)) ? Number(i.descuento_boton_pct) : undefined,
       cantidad: i?.cantidad,
     })) : [];
 
@@ -601,6 +603,7 @@ async function validarCupon(req, res) {
       variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
       oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
       componente_variante_id: Number.isFinite(Number(i?.componente_variante_id)) ? Number(i.componente_variante_id) : undefined,
+      descuento_boton_pct: Number.isFinite(Number(i?.descuento_boton_pct)) ? Number(i.descuento_boton_pct) : undefined,
       cantidad: i?.cantidad,
     })) : [];
 
