@@ -21,6 +21,7 @@ const {
   SeguimientoEtiqueta, SeguimientoContacto,
 } = require('../../models');
 const { errorHttp } = require('../../utils/errorHttp');
+const { ETAPAS } = require('./flujosBase');
 
 /**
  * Fases activas del flujo, con su etiqueta.
@@ -212,6 +213,62 @@ async function validarEtiquetas(fasesNormalizadas, { usuarioId, esAdmin }, t) {
   }
 }
 
+/**
+ * Garantiza que la cuenta tenga al menos un flujo de cada etapa
+ * (Confirmación web, Venta por WhatsApp, Seguimiento de envío, Escalamiento
+ * de ventas). Crea solo lo que falta, con mensajes de partida editables, y
+ * lo deja como predeterminado de su etapa.
+ *
+ * Mira si existe ALGÚN flujo del tipo, activo o no: si la persona desactivó
+ * el suyo a propósito, no se le crea otro al lado.
+ *
+ * Se llama al listar los flujos y al abrir el tablero. Devuelve cuántos creó.
+ */
+async function asegurarFlujosBase({ usuarioId }) {
+  const existentes = await WhatsappFlujo.findAll({
+    where: { usuario_id: usuarioId },
+    attributes: ['tipo'],
+    group: ['tipo'],
+    raw: true,
+  });
+  const tiposQueTiene = new Set(existentes.map((f) => f.tipo));
+  const faltantes = ETAPAS.filter((etapa) => !tiposQueTiene.has(etapa.tipo));
+
+  let creados = 0;
+  for (const etapa of faltantes) {
+    try {
+      await sequelize.transaction(async (t) => {
+        const flujo = await WhatsappFlujo.create({
+          usuario_id: usuarioId,
+          nombre: etapa.nombre,
+          descripcion: etapa.descripcion,
+          activo: true,
+          tipo: etapa.tipo,
+          activacion: 'AUTOMATICA',
+          predeterminado: true,
+        }, { transaction: t });
+        for (const [i, fase] of etapa.fases.entries()) {
+          await WhatsappFlujoFase.create({
+            flujo_id: flujo.id,
+            nombre: fase.nombre,
+            mensaje: fase.mensaje,
+            orden: i + 1,
+            espera_sugerida_minutos: fase.espera,
+            etiqueta_id: null,
+            activo: true,
+          }, { transaction: t });
+        }
+      });
+      creados += 1;
+    } catch (error) {
+      // Dos pedidos a la vez pueden intentar crear el mismo flujo base: el
+      // índice único (usuario, tipo, predeterminado) deja pasar a uno solo.
+      if (error?.name !== 'SequelizeUniqueConstraintError') throw error;
+    }
+  }
+  return creados;
+}
+
 async function listarFlujos({ usuarioId, esAdmin, soloActivos = false }) {
   const where = filtroPropietario({ usuarioId, esAdmin });
   if (soloActivos) where.activo = true;
@@ -311,6 +368,20 @@ async function eliminarFlujo(id, { usuarioId, esAdmin }) {
   });
   if (!flujo) throw errorHttp('Flujo no encontrado', 404);
 
+  // Cada etapa tiene que conservar al menos un flujo: sin él, los pedidos de
+  // esa etapa no tendrían qué mensaje mandar (y asegurarFlujosBase lo
+  // volvería a crear igual). Se puede editar o desactivar, no dejar en cero.
+  const delMismoTipo = await WhatsappFlujo.count({
+    where: { usuario_id: flujo.usuario_id, tipo: flujo.tipo },
+  });
+  if (delMismoTipo <= 1) {
+    const etapa = ETAPAS.find((e) => e.tipo === flujo.tipo);
+    throw errorHttp(
+      `Este es el único flujo de "${etapa?.nombre || flujo.tipo}" y esa etapa tiene que tener uno. Podés editar sus mensajes o desactivarlo, pero no eliminarlo.`,
+      422,
+    );
+  }
+
   const faseIds = (flujo.fases || []).map((f) => f.id);
 
   return sequelize.transaction(async (t) => {
@@ -375,6 +446,7 @@ async function estadoFlujosDelPedido(envioId, { usuarioId, esAdmin }) {
 }
 
 module.exports = {
+  asegurarFlujosBase,
   listarFlujos,
   obtenerFlujo,
   crearFlujo,

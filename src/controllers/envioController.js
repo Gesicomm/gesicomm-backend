@@ -2630,16 +2630,18 @@ function alcanceSeguimiento(req) {
  * una columna por fase del flujo, cada una con su página de pedidos.
  *
  * Body (todo se filtra y pagina acá, nunca en el frontend):
- *   { flujo_id, cuando, busqueda, limit, paginas: { [claveColumna]: page } }
- * No depende del período: un pedido de la semana pasada que sigue sin
- * confirmar sigue siendo trabajo de hoy.
+ *   { etapa, flujo_id, cuando, busqueda, limit, paginas: { [claveColumna]: page } }
+ * `etapa` es el tipo de flujo (confirmación web, venta por WhatsApp,
+ * seguimiento de envío, escalamiento de ventas); qué pedidos caen en cada
+ * una lo decide su estado. No depende del período: un pedido de la semana
+ * pasada que sigue sin confirmar sigue siendo trabajo de hoy.
  */
 exports.tableroSeguimiento = async (req, res) => {
   try {
-    const { flujo_id, cuando, busqueda, limit, paginas } = req.body || {};
+    const { etapa, flujo_id, cuando, busqueda, limit, paginas } = req.body || {};
     const tablero = await pendientesSeguimientoService.tableroDeSeguimiento({
       ...alcanceSeguimiento(req),
-      filtros: { flujo_id, cuando, busqueda, limit, paginas: paginas && typeof paginas === 'object' ? paginas : {} },
+      filtros: { etapa, flujo_id, cuando, busqueda, limit, paginas: paginas && typeof paginas === 'object' ? paginas : {} },
     });
     res.json(tablero);
   } catch (error) {
@@ -2651,14 +2653,14 @@ exports.tableroSeguimiento = async (req, res) => {
 /**
  * POST /api/envios/seguimiento/pendientes — la misma lista del tablero pero
  * plana y paginada, para recorrerla como cola de trabajo.
- * Body: { flujo_id, fase, cuando, busqueda, page, limit }
+ * Body: { etapa, flujo_id, fase, cuando, busqueda, page, limit }
  */
 exports.pendientesSeguimiento = async (req, res) => {
   try {
-    const { flujo_id, fase, cuando, busqueda, page, limit } = req.body || {};
+    const { etapa, flujo_id, fase, cuando, busqueda, page, limit } = req.body || {};
     const pagina = await pendientesSeguimientoService.pendientesPaginados({
       ...alcanceSeguimiento(req),
-      filtros: { flujo_id, fase, cuando, busqueda, page, limit },
+      filtros: { etapa, flujo_id, fase, cuando, busqueda, page, limit },
     });
     res.json(pagina);
   } catch (error) {

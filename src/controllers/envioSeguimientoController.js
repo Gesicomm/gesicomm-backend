@@ -333,18 +333,48 @@ exports.completarFase = async (req, res) => {
     if (!yaEstaba) {
       await registrarHistorial(envio.id, usuario_id, `Mensaje enviado — ${fase.flujo.nombre} · Fase ${fase.orden}: ${fase.nombre} (marcado como completado)`, t);
     }
-    return { contacto, transicionAutomatica, recordatoriosCumplidos };
+
+    // El próximo contacto se agenda solo, con la espera que tiene cargada la
+    // fase siguiente: el operador no tiene que acordarse de programarlo. Si
+    // ya había un recordatorio a futuro, se respeta el que eligió la persona.
+    const siguiente = await WhatsappFlujoFase.findOne({
+      where: { flujo_id: fase.flujo_id, activo: true, orden: { [Op.gt]: fase.orden } },
+      order: [['orden', 'ASC']],
+      transaction: t,
+    });
+    let recordatorio = null;
+    const espera = Number(siguiente?.espera_sugerida_minutos) || 0;
+    if (siguiente && espera > 0 && !yaEstaba && req.body?.agendar_siguiente !== false) {
+      const yaAgendado = await SeguimientoRecordatorio.findOne({
+        where: { envio_id: envio.id, estado: 'PENDIENTE' },
+        transaction: t,
+      });
+      if (!yaAgendado) {
+        const cuando = new Date(Date.now() + espera * 60 * 1000);
+        recordatorio = await SeguimientoRecordatorio.create({
+          envio_id: envio.id,
+          usuario_id,
+          ejecutar_en: cuando,
+          nota: `Enviar "${siguiente.nombre}" (Fase ${siguiente.orden}) si el cliente no responde`,
+          fase_id: siguiente.id,
+          flujo_id: siguiente.flujo_id,
+        }, { transaction: t });
+        await registrarHistorial(envio.id, usuario_id, `Seguimiento programado para ${cuando.toLocaleString('es-PY')}`, t);
+      }
+    }
+
+    return { contacto, transicionAutomatica, recordatoriosCumplidos, siguiente, recordatorio };
   });
 
-  const siguiente = await WhatsappFlujoFase.findOne({
-    where: { flujo_id: fase.flujo_id, activo: true, orden: { [Op.gt]: fase.orden } },
-    order: [['orden', 'ASC']],
-  });
+  const { siguiente } = resultado;
+  if (resultado.recordatorio) await encolarRecordatorio(resultado.recordatorio);
 
   res.json({
     contacto: resultado.contacto,
     pedido_paso_a_en_seguimiento: resultado.transicionAutomatica,
     recordatorios_cumplidos: resultado.recordatoriosCumplidos,
+    // El recordatorio que quedó agendado para la fase siguiente, si hubo.
+    recordatorio: resultado.recordatorio,
     // Para que el panel ofrezca agendar la fase siguiente sin pedir el flujo de nuevo.
     siguiente_fase: siguiente ? {
       id: siguiente.id,
