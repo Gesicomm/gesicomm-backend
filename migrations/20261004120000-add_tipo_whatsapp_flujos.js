@@ -11,7 +11,7 @@ module.exports = {
       ALTER TABLE public.whatsapp_flujos
         DROP CONSTRAINT IF EXISTS whatsapp_flujos_tipo_check,
         ADD CONSTRAINT whatsapp_flujos_tipo_check
-          CHECK (tipo IN ('CONFIRMACION_PEDIDO_WEB', 'VENTA_WHATSAPP', 'SEGUIMIENTO_ENVIO', 'ESCALAMIENTO_VENTAS'));
+          CHECK (tipo IN ('CONFIRMACION_PEDIDO_WEB', 'VENTA_WHATSAPP', 'SEGUIMIENTO_ENVIO', 'ESCALAMIENTO_VENTAS', 'PERSONALIZADO'));
 
       ALTER TABLE public.whatsapp_flujos
         DROP CONSTRAINT IF EXISTS whatsapp_flujos_activacion_check,
@@ -36,4 +36,3 @@ module.exports = {
     `);
   },
 };
-

@@ -57,6 +57,7 @@ const TIPOS_FLUJO = new Set([
   'VENTA_WHATSAPP',
   'SEGUIMIENTO_ENVIO',
   'ESCALAMIENTO_VENTAS',
+  'PERSONALIZADO',
 ]);
 
 const ACTIVACIONES_FLUJO = new Set(['AUTOMATICA', 'MANUAL']);
@@ -374,10 +375,10 @@ async function eliminarFlujo(id, { usuarioId, esAdmin }) {
   const delMismoTipo = await WhatsappFlujo.count({
     where: { usuario_id: flujo.usuario_id, tipo: flujo.tipo },
   });
-  if (delMismoTipo <= 1) {
-    const etapa = ETAPAS.find((e) => e.tipo === flujo.tipo);
+  const etapa = ETAPAS.find((e) => e.tipo === flujo.tipo);
+  if (etapa && delMismoTipo <= 1) {
     throw errorHttp(
-      `Este es el único flujo de "${etapa?.nombre || flujo.tipo}" y esa etapa tiene que tener uno. Podés editar sus mensajes o desactivarlo, pero no eliminarlo.`,
+      `Este es el único flujo de "${etapa.nombre}" y esa etapa tiene que tener uno. Podés editar sus mensajes o desactivarlo, pero no eliminarlo.`,
       422,
     );
   }
