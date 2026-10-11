@@ -340,6 +340,12 @@ Envio.hasMany(SeguimientoRecordatorio, { as: 'recordatorios', foreignKey: 'envio
 SeguimientoRecordatorio.belongsTo(Envio, { foreignKey: 'envio_id' });
 Usuario.hasMany(SeguimientoRecordatorio, { foreignKey: 'usuario_id' });
 SeguimientoRecordatorio.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+// SET NULL por el mismo motivo que en los contactos: borrar una fase no puede
+// llevarse puesto el recordatorio de un pedido.
+WhatsappFlujo.hasMany(SeguimientoRecordatorio, { foreignKey: 'flujo_id', onDelete: 'SET NULL' });
+SeguimientoRecordatorio.belongsTo(WhatsappFlujo, { as: 'flujo', foreignKey: 'flujo_id' });
+WhatsappFlujoFase.hasMany(SeguimientoRecordatorio, { foreignKey: 'fase_id', onDelete: 'SET NULL' });
+SeguimientoRecordatorio.belongsTo(WhatsappFlujoFase, { as: 'fase', foreignKey: 'fase_id' });
 
 Usuario.hasMany(Notificacion, { foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 Notificacion.belongsTo(Usuario, { foreignKey: 'usuario_id' });

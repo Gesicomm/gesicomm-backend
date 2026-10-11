@@ -52,6 +52,9 @@ router.get('/:id/abastecimiento/timeline', envioController.timelineAbastecimient
 router.post('/:id/devolucion', envioController.registrarDevolucion);
 router.post('/:id/perdida', envioController.registrarPerdida);
 
+// Pestaña Resumen: ventas del período + mensajes de WhatsApp por enviar, por fase
+router.post('/resumen', envioController.resumenPedidos);
+
 // Contador de pedidos por estado, respetando los filtros activos (pestañas de la bandeja)
 router.post('/conteo-por-estado', envioController.conteoPorEstado);
 

@@ -4,6 +4,7 @@ const { Op, Sequelize, Transaction } = require('sequelize');
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
 const { cancelarSiEstadoTerminal, elegirRecordatorioVigente } = require('../services/seguimiento/seguimientoRecordatorio.service');
+const pendientesSeguimientoService = require('../services/seguimiento/pendientesSeguimiento.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const { envolverControlador } = require('../utils/asyncHandler');
 const PedidoNumeracion = require('../services/pedidoNumeracion.service');
@@ -1218,6 +1219,7 @@ function decorarEnvio(envio) {
     recordatorio_estado: estaVencido ? 'VENCIDO' : (ultimoRecordatorio?.estado || null),
     recordatorio_ejecutar_en: ultimoRecordatorio?.ejecutar_en || null,
     recordatorio_nota: ultimoRecordatorio?.nota || null,
+    recordatorio_fase_id: ultimoRecordatorio?.fase_id || null,
     recordatorio_vencido: Boolean(estaVencido),
     accion_siguiente: accionSiguientePedido(plano),
   };
@@ -1478,7 +1480,7 @@ exports.listEnviosPaginados = async (req, res) => {
           model: SeguimientoRecordatorio,
           as: 'recordatorios',
           required: false,
-          attributes: ['id', 'ejecutar_en', 'estado', 'nota', 'version'],
+          attributes: ['id', 'ejecutar_en', 'estado', 'nota', 'version', 'fase_id'],
         },
         {
           model: EnvioItem, as: 'items', attributes: ['id', 'producto_id', 'nombre_producto', 'cantidad', 'precio_unitario', 'subtotal', 'oferta_nombre'],
@@ -2599,6 +2601,35 @@ exports.registrarPerdida = async (req, res) => {
     if (!t.finished) await t.rollback();
     console.error('Error registrando pérdida:', error);
     res.status(400).json({ error: error.message || 'Error al registrar la pérdida' });
+  }
+};
+
+/**
+ * POST /api/envios/resumen — lo que muestra la pestaña Resumen de Pedidos:
+ * los pedidos del período agrupados por en qué quedaron, y los mensajes de
+ * WhatsApp por enviar agrupados por fase (con la lista de pedidos de la que
+ * salen esos números).
+ *
+ * Body: { fecha_desde, fecha_hasta } — solo acotan las ventas. Los mensajes
+ * por enviar no dependen del período: un pedido de la semana pasada que
+ * sigue sin confirmar sigue siendo trabajo de hoy.
+ */
+exports.resumenPedidos = async (req, res) => {
+  try {
+    const { fecha_desde, fecha_hasta } = req.body || {};
+    const whereBase = whereEnviosDeUsuario(req);
+    const [ventas, seguimiento] = await Promise.all([
+      pendientesSeguimientoService.ventasDelPeriodo({ whereBase, fecha_desde, fecha_hasta }),
+      pendientesSeguimientoService.pendientesDeSeguimiento({
+        whereBase,
+        usuarioId: req.usuario.id,
+        esAdmin: esAdministrador(req),
+      }),
+    ]);
+    res.json({ ventas, seguimiento });
+  } catch (error) {
+    console.error('Error armando el resumen de pedidos:', error);
+    res.status(500).json({ error: 'No se pudo armar el resumen de pedidos' });
   }
 };
 

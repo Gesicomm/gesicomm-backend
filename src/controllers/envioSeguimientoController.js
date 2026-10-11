@@ -84,12 +84,20 @@ async function cargarEnvioODevolver404(req, res, { conItems = false } = {}) {
  * dibujar el flujo: no hay "fase actual" guardada, se deriva del historial.
  */
 exports.flujosDelPedido = async (req, res) => {
-  const envio = await cargarEnvioODevolver404(req, res);
+  const envio = await cargarEnvioODevolver404(req, res, { conItems: true });
   if (!envio) return;
   const flujos = await flujoService.estadoFlujosDelPedido(envio.id, {
     usuarioId: req.usuario.id,
     esAdmin: esAdministrador(req),
   });
+  // El mensaje tal como va a salir para ESTE pedido, con la misma función
+  // que arma el enlace de WhatsApp: la vista previa del panel no puede
+  // mostrar algo distinto de lo que después se abre.
+  for (const flujo of flujos) {
+    for (const fase of flujo.fases || []) {
+      fase.mensaje_resuelto = resolverMensaje(fase.mensaje, envio);
+    }
+  }
   res.json(flujos);
 };
 
@@ -205,13 +213,38 @@ exports.registrarContacto = async (req, res) => {
       }
       await registrarHistorial(envio.id, usuario_id, detalleHistorial, t);
 
-      return { contacto, etiquetaAplicada, transicionAutomatica, intento };
+      // Abrir WhatsApp ES hacer el seguimiento: el recordatorio al que ya le
+      // llegó la hora queda cumplido, y también uno futuro que era justo
+      // para esta fase (se mandó antes de tiempo). Uno futuro para otra
+      // fase se deja como está.
+      const ahora = new Date();
+      const abiertos = await SeguimientoRecordatorio.findAll({
+        where: { envio_id: envio.id, estado: { [Op.in]: ESTADOS_ABIERTOS } },
+        transaction: t,
+      });
+      const cumplidos = abiertos.filter((r) => (
+        r.estado === 'VENCIDO'
+        || new Date(r.ejecutar_en).getTime() <= ahora.getTime()
+        || (fase && Number(r.fase_id) === Number(fase.id))
+      ));
+      for (const recordatorio of cumplidos) {
+        await recordatorio.update({ estado: 'COMPLETADO', completado_en: ahora }, { transaction: t });
+      }
+      if (cumplidos.length > 0) {
+        await registrarHistorial(envio.id, usuario_id, 'Seguimiento cumplido al abrir WhatsApp', t);
+      }
+
+      return {
+        contacto, etiquetaAplicada, transicionAutomatica, intento,
+        recordatoriosCumplidos: cumplidos.map((r) => r.id),
+      };
     });
 
     res.status(201).json({
       contacto: resultado.contacto,
       etiqueta_aplicada: resultado.etiquetaAplicada,
       pedido_paso_a_en_seguimiento: resultado.transicionAutomatica,
+      recordatorios_cumplidos: resultado.recordatoriosCumplidos,
       whatsapp_url: whatsappUrl(telefono, mensajeResuelto),
       // Para que el panel pueda ofrecer el recordatorio de la fase siguiente
       // sin volver a pedir el flujo entero.
@@ -317,13 +350,33 @@ exports.quitarEtiqueta = async (req, res) => {
  * crear uno nuevo — así es como el RF describe "reprogramación".
  *
  * Body: { ejecutar_en: ISO8601 } o { horas: number } (atajo para "dentro de N horas", BE-09).
+ * Opcional: { fase_id } — qué fase del flujo hay que mandar cuando llegue la
+ * hora. Es lo que permite contar "pendientes en Fase 2" en el Resumen. Sin
+ * la clave no se toca la fase que ya tenía; con null se la quita.
  */
 exports.programarRecordatorio = async (req, res) => {
   const usuario_id = req.usuario.id;
-  const { ejecutar_en, horas, nota } = req.body;
+  const { ejecutar_en, horas, nota, fase_id } = req.body;
 
   const envio = await cargarEnvioODevolver404(req, res);
   if (!envio) return;
+
+  let camposFase = {};
+  if (fase_id === null || fase_id === '') {
+    camposFase = { fase_id: null, flujo_id: null };
+  } else if (fase_id !== undefined) {
+    const fase = await WhatsappFlujoFase.findOne({
+      where: { id: fase_id },
+      include: [{
+        model: WhatsappFlujo,
+        as: 'flujo',
+        required: true,
+        where: esAdministrador(req) ? {} : { usuario_id },
+      }],
+    });
+    if (!fase) return res.status(404).json({ error: 'Fase no encontrada' });
+    camposFase = { fase_id: fase.id, flujo_id: fase.flujo_id };
+  }
 
   let fechaEjecucion;
   if (horas !== undefined) {
@@ -351,11 +404,13 @@ exports.programarRecordatorio = async (req, res) => {
         fila = existente;
         await fila.update({
           usuario_id, ejecutar_en: fechaEjecucion, nota: nota ?? fila.nota, version: fila.version + 1,
+          ...camposFase,
         }, { transaction: t });
         await registrarHistorial(envio.id, usuario_id, `Seguimiento reprogramado para ${fechaEjecucion.toLocaleString('es-PY')}`, t);
       } else {
         fila = await SeguimientoRecordatorio.create({
           envio_id: envio.id, usuario_id, ejecutar_en: fechaEjecucion, nota: nota || null,
+          ...camposFase,
         }, { transaction: t });
         await registrarHistorial(envio.id, usuario_id, `Seguimiento programado para ${fechaEjecucion.toLocaleString('es-PY')}`, t);
       }
