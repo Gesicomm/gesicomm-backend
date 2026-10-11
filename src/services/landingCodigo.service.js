@@ -676,6 +676,12 @@ const TIPOS_SECCION_INICIO = ['categoria', 'ofertas', 'mas_vendidos', 'novedades
 const urlMedia = v => (typeof v === 'string' && v.length <= 2048 && (/^https?:\/\/[^\s]+$/i.test(v) || /^\/(?!\/)[^\s]+$/.test(v)) ? v : '');
 const TIPOS_MEDIO = ['imagen', 'gif', 'video'];
 
+const POSICIONES_IMAGEN = [
+  'left top', 'center top', 'right top',
+  'left center', 'center center', 'right center',
+  'left bottom', 'center bottom', 'right bottom',
+];
+
 function limpiarBannerInicio(b) {
   if (!b || typeof b !== 'object') return null;
   return {
@@ -688,6 +694,68 @@ function limpiarBannerInicio(b) {
     enlace: textoCorto(b.enlace, 200),
     imagen: urlMedia(b.imagen),
     tipo_medio: TIPOS_MEDIO.includes(b.tipo_medio) ? b.tipo_medio : 'imagen',
+    // Overrides de celular y encuadre de la foto (ver normalizarInicioComercial
+    // en el frontend y el pintado de banners en runtimeGesicomm.js). Solo se
+    // guardan si el comercio los tocó: sin ellos el runtime hereda escritorio.
+    ...(urlMedia(b.imagen_mobile) ? { imagen_mobile: urlMedia(b.imagen_mobile) } : {}),
+    ...(b.activo_mobile === false ? { activo_mobile: false } : {}),
+    ...(POSICIONES_IMAGEN.includes(b.posicion_desktop) ? { posicion_desktop: b.posicion_desktop } : {}),
+    ...(POSICIONES_IMAGEN.includes(b.posicion_mobile) ? { posicion_mobile: b.posicion_mobile } : {}),
+  };
+}
+
+function numeroEntre(valor, min, max, fallback) {
+  const n = typeof valor === 'number' || (typeof valor === 'string' && valor.trim()) ? Number(valor) : NaN;
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+
+const VARIANTES_ENCABEZADO = ['normal', 'embebido'];
+
+// Encabezado del Inicio: mostrar/ocultar logo y nombre, tamaño, giro y
+// posición del logo, y la variante (normal / embebido en el banner). Espejo
+// de normalizarEncabezadoInicio (ConfigurarVentaCodigo.jsx) y de
+// encabezadoConfig (runtimeGesicomm.js). Faltaba acá: el preview del editor
+// lo mostraba (usa el estado en memoria) pero al guardar se descartaba, así
+// que la página publicada nunca se enteraba.
+function limpiarEncabezadoInicio(e) {
+  if (!e || typeof e !== 'object') return null;
+  return {
+    mostrar_logo: e.mostrar_logo !== false,
+    mostrar_nombre: e.mostrar_nombre !== false,
+    logo_tamano: numeroEntre(e.logo_tamano, 28, 76, 76),
+    logo_rotacion: numeroEntre(e.logo_rotacion, -180, 180, 0),
+    logo_posicion: e.logo_posicion === 'centro' ? 'centro' : 'izquierda',
+    variante: VARIANTES_ENCABEZADO.includes(e.variante) ? e.variante : 'normal',
+    // null = el celular hereda la variante de escritorio.
+    variante_mobile: VARIANTES_ENCABEZADO.includes(e.variante_mobile) ? e.variante_mobile : null,
+  };
+}
+
+// Testimonios del Inicio (EditorTestimoniosInicio en el frontend, lista
+// `testimonios_inicio` del runtime). Mismo problema que el encabezado: no
+// estaban en la lista blanca y se perdían al guardar.
+function limpiarTestimoniosInicio(t) {
+  if (!t || typeof t !== 'object') return null;
+  return {
+    activo: t.activo === true,
+    kicker: textoCorto(t.kicker, 40),
+    titulo: textoCorto(t.titulo, 100),
+    subtitulo: textoCorto(t.subtitulo, 180),
+    items: (Array.isArray(t.items) ? t.items : []).map((it) => {
+      if (!it || typeof it !== 'object') return null;
+      const nombre = textoCorto(it.nombre, 80);
+      const comentario = textoCorto(it.comentario || it.texto, 600);
+      const foto = urlMedia(it.foto || it.imagen);
+      if (!nombre && !comentario && !foto) return null;
+      return {
+        id: textoCorto(it.id, 60) || undefined,
+        nombre,
+        detalle: textoCorto(it.detalle, 120),
+        comentario,
+        foto,
+        calificacion: Math.round(numeroEntre(it.calificacion, 1, 5, 5)),
+      };
+    }).filter(Boolean).slice(0, 8),
   };
 }
 
@@ -719,7 +787,7 @@ function limpiarSeccionInicio(s) {
 const TIPOS_BLOQUE_INICIO = [
   'anuncios', 'banner', 'categorias', 'productos_categoria', 'destacados', 'confianza', 'marca',
   'banner_intermedio', 'secciones_inicio', 'mas_vendidos', 'ofertas_urgencia', 'ofertas_catalogo',
-  'novedades', 'combos', 'colecciones', 'preguntas', 'contacto',
+  'novedades', 'combos', 'colecciones', 'preguntas', 'contacto', 'testimonios',
 ];
 const TIPOS_MEDIO_MARCA = ['imagen', 'gif', 'video'];
 
@@ -818,6 +886,14 @@ function limpiarInicio(inicio) {
     bloques: limpiarBloquesInicio(inicio.bloques),
     anuncios: listaDe(inicio.anuncios, 8, limpiarAnuncioInicio),
     confianza: limpiarConfianza(inicio.confianza),
+    ...(() => {
+      const encabezado = limpiarEncabezadoInicio(inicio.encabezado);
+      return encabezado ? { encabezado } : {};
+    })(),
+    ...(() => {
+      const testimonios = limpiarTestimoniosInicio(inicio.testimonios);
+      return testimonios ? { testimonios } : {};
+    })(),
     ...(() => {
       const marca = limpiarMarca(inicio.marca);
       return marca ? { marca } : {};

@@ -426,6 +426,7 @@ describe('LandingCodigoService.limpiarVenta', () => {
       menu_links: [{ texto: 'Inicio', destino: '#inicio', visible: true }],
       menu_categorias: false,
       categorias: ['Cocina'],
+      banner_tamano: null,
       bloques: [],
       anuncios: [],
       confianza: [],
@@ -465,6 +466,64 @@ describe('LandingCodigoService.limpiarVenta', () => {
       { tipo: 'marca', visible: false },
       { tipo: 'confianza', visible: true },
     ]);
+  });
+
+  it('encabezado: persiste ocultar logo/nombre y el tamaño del logo (antes se perdía al guardar y la publicada no se enteraba)', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      inicio: {
+        encabezado: {
+          mostrar_logo: false, mostrar_nombre: false, logo_tamano: 40, logo_rotacion: 500,
+          logo_posicion: 'centro', variante: 'embebido', variante_mobile: 'raro', inventado: 1,
+        },
+      },
+    });
+    expect(v.inicio.encabezado).toEqual({
+      mostrar_logo: false, mostrar_nombre: false, logo_tamano: 40, logo_rotacion: 180,
+      logo_posicion: 'centro', variante: 'embebido', variante_mobile: null,
+    });
+    expect(v.inicio_comercial.encabezado).toEqual(v.inicio.encabezado);
+    // Sin encabezado en el payload no se inventa uno: el runtime usa sus defaults.
+    expect(LandingCodigoService.limpiarVenta({ inicio: { menu_categorias: true } }).inicio).not.toHaveProperty('encabezado');
+    expect(LandingCodigoService.limpiarVenta({ inicio: { encabezado: { logo_tamano: null } } }).inicio.encabezado.logo_tamano).toBe(76);
+  });
+
+  it('testimonios del Inicio: persiste textos, items y el bloque en el orden', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      inicio: {
+        bloques: [{ tipo: 'testimonios', visible: true }],
+        testimonios: {
+          activo: true, kicker: 'Opiniones', titulo: 'Clientes felices', subtitulo: '',
+          items: [
+            { id: 't-1', nombre: 'Ana', detalle: 'Asunción', comentario: 'Llegó rápido', foto: '/uploads/ana.webp', calificacion: 4 },
+            { nombre: '', comentario: '', foto: 'javascript:alert(1)' },
+            { nombre: 'Luis', calificacion: 99 },
+          ],
+        },
+      },
+    });
+    expect(v.inicio.bloques).toEqual([{ tipo: 'testimonios', visible: true }]);
+    expect(v.inicio.testimonios).toEqual({
+      activo: true, kicker: 'Opiniones', titulo: 'Clientes felices', subtitulo: '',
+      items: [
+        { id: 't-1', nombre: 'Ana', detalle: 'Asunción', comentario: 'Llegó rápido', foto: '/uploads/ana.webp', calificacion: 4 },
+        { nombre: 'Luis', detalle: '', comentario: '', foto: '', calificacion: 5 },
+      ],
+    });
+  });
+
+  it('banners: persiste la imagen de celular, ocultar en celular y el encuadre', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      inicio: {
+        banners: [{
+          titulo: 'Promo', imagen: 'https://cdn.test/b.jpg', imagen_mobile: 'https://cdn.test/m.jpg',
+          activo_mobile: false, posicion_desktop: 'right top', posicion_mobile: 'inventada',
+        }],
+      },
+    });
+    expect(v.inicio.banners[0]).toMatchObject({
+      imagen_mobile: 'https://cdn.test/m.jpg', activo_mobile: false, posicion_desktop: 'right top',
+    });
+    expect(v.inicio.banners[0]).not.toHaveProperty('posicion_mobile');
   });
 
   it('anuncios: acepta strings sueltos (legado) y objetos con ícono, descarta vacíos', () => {
