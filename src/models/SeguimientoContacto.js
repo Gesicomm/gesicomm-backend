@@ -47,7 +47,10 @@ const SeguimientoContacto = sequelize.define('SeguimientoContacto', {
     type: DataTypes.STRING(30),
     allowNull: false,
     defaultValue: 'ABIERTO_EN_WHATSAPP',
-    validate: { isIn: [['ABIERTO_EN_WHATSAPP', 'ENVIADO', 'ENTREGADO', 'LEIDO', 'FALLIDO']] },
+    // CONFIRMADO_POR_OPERADOR: la persona marcó la fase como completada
+    // ("lo envié"). Es lo que hace avanzar al pedido a la fase siguiente.
+    // No es ENVIADO: ese queda para cuando lo confirme la API de WhatsApp.
+    validate: { isIn: [['ABIERTO_EN_WHATSAPP', 'CONFIRMADO_POR_OPERADOR', 'ENVIADO', 'ENTREGADO', 'LEIDO', 'FALLIDO']] },
   },
   etiqueta_id: {
     type: DataTypes.INTEGER,

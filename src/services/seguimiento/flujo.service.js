@@ -337,18 +337,26 @@ async function estadoFlujosDelPedido(envioId, { usuarioId, esAdmin }) {
   const envios = await SeguimientoContacto.findAll({
     attributes: [
       'fase_id',
+      'estado',
       [fn('COUNT', col('id')), 'veces'],
       [fn('MAX', col('created_at')), 'ultimo'],
     ],
     where: { envio_id: envioId, fase_id: { [Op.ne]: null } },
-    group: ['fase_id'],
+    group: ['fase_id', 'estado'],
     raw: true,
   });
 
-  const porFase = new Map(envios.map((e) => [
-    Number(e.fase_id),
-    { veces: Number(e.veces), ultimo_envio_en: e.ultimo },
-  ]));
+  // Una fase puede tener aperturas sin confirmar y aperturas completadas:
+  // se suman las veces, y "completada" sale de si hay alguna confirmada.
+  const porFase = new Map();
+  for (const e of envios) {
+    const id = Number(e.fase_id);
+    const actual = porFase.get(id) || { veces: 0, ultimo_envio_en: null, completada: false };
+    actual.veces += Number(e.veces);
+    if (!actual.ultimo_envio_en || new Date(e.ultimo) > new Date(actual.ultimo_envio_en)) actual.ultimo_envio_en = e.ultimo;
+    if (e.estado === 'CONFIRMADO_POR_OPERADOR') actual.completada = true;
+    porFase.set(id, actual);
+  }
 
   return flujos.map((flujo) => {
     const plano = flujo.toJSON();
@@ -358,6 +366,7 @@ async function estadoFlujosDelPedido(envioId, { usuarioId, esAdmin }) {
         ...fase,
         envios: stats?.veces || 0,
         ultimo_envio_en: stats?.ultimo_envio_en || null,
+        completada: !!stats?.completada,
       };
     });
     plano.envios_totales = plano.fases.reduce((acc, f) => acc + f.envios, 0);

@@ -15,6 +15,7 @@ const {
 } = require('../models');
 const flujoService = require('../services/seguimiento/flujo.service');
 const { ESTADOS_ABIERTOS, elegirRecordatorioVigente } = require('../services/seguimiento/seguimientoRecordatorio.service');
+const { FASE_COMPLETADA } = require('../services/seguimiento/pendientesSeguimiento.service');
 const { registrarHistorial } = require('../utils/historial');
 const { resolverMensaje } = require('../services/seguimiento/plantillaResolver.service');
 const { encolarRecordatorio } = require('../services/queue/seguimientoQueue');
@@ -213,38 +214,15 @@ exports.registrarContacto = async (req, res) => {
       }
       await registrarHistorial(envio.id, usuario_id, detalleHistorial, t);
 
-      // Abrir WhatsApp ES hacer el seguimiento: el recordatorio al que ya le
-      // llegó la hora queda cumplido, y también uno futuro que era justo
-      // para esta fase (se mandó antes de tiempo). Uno futuro para otra
-      // fase se deja como está.
-      const ahora = new Date();
-      const abiertos = await SeguimientoRecordatorio.findAll({
-        where: { envio_id: envio.id, estado: { [Op.in]: ESTADOS_ABIERTOS } },
-        transaction: t,
-      });
-      const cumplidos = abiertos.filter((r) => (
-        r.estado === 'VENCIDO'
-        || new Date(r.ejecutar_en).getTime() <= ahora.getTime()
-        || (fase && Number(r.fase_id) === Number(fase.id))
-      ));
-      for (const recordatorio of cumplidos) {
-        await recordatorio.update({ estado: 'COMPLETADO', completado_en: ahora }, { transaction: t });
-      }
-      if (cumplidos.length > 0) {
-        await registrarHistorial(envio.id, usuario_id, 'Seguimiento cumplido al abrir WhatsApp', t);
-      }
-
-      return {
-        contacto, etiquetaAplicada, transicionAutomatica, intento,
-        recordatoriosCumplidos: cumplidos.map((r) => r.id),
-      };
+      // Abrir WhatsApp no avanza la fase ni cumple el recordatorio: eso lo
+      // hace el operador cuando marca la fase como completada (completarFase).
+      return { contacto, etiquetaAplicada, transicionAutomatica, intento };
     });
 
     res.status(201).json({
       contacto: resultado.contacto,
       etiqueta_aplicada: resultado.etiquetaAplicada,
       pedido_paso_a_en_seguimiento: resultado.transicionAutomatica,
-      recordatorios_cumplidos: resultado.recordatoriosCumplidos,
       whatsapp_url: whatsappUrl(telefono, mensajeResuelto),
       // Para que el panel pueda ofrecer el recordatorio de la fase siguiente
       // sin volver a pedir el flujo entero.
@@ -260,6 +238,148 @@ exports.registrarContacto = async (req, res) => {
     logger.error({ mensaje: '[Seguimiento] Error registrando contacto.', error: error.message });
     res.status(500).json({ error: 'Error al registrar el contacto' });
   }
+};
+
+async function buscarFaseDeLaCuenta(req, faseId) {
+  return WhatsappFlujoFase.findOne({
+    where: { id: faseId },
+    include: [{
+      model: WhatsappFlujo,
+      as: 'flujo',
+      required: true,
+      where: esAdministrador(req) ? {} : { usuario_id: req.usuario.id },
+    }],
+  });
+}
+
+/**
+ * Cumple los recordatorios que quedan resueltos al completar una fase: los
+ * que ya vencieron o les llegó la hora, y uno futuro que era justo para esta
+ * fase (se mandó antes de tiempo). Uno futuro para otra fase no se toca.
+ */
+async function cumplirRecordatoriosDeLaFase(envioId, fase, t) {
+  const ahora = new Date();
+  const abiertos = await SeguimientoRecordatorio.findAll({
+    where: { envio_id: envioId, estado: { [Op.in]: ESTADOS_ABIERTOS } },
+    transaction: t,
+  });
+  const cumplidos = abiertos.filter((r) => (
+    r.estado === 'VENCIDO'
+    || new Date(r.ejecutar_en).getTime() <= ahora.getTime()
+    || Number(r.fase_id) === Number(fase.id)
+  ));
+  for (const recordatorio of cumplidos) {
+    await recordatorio.update({ estado: 'COMPLETADO', completado_en: ahora }, { transaction: t });
+  }
+  return cumplidos.map((r) => r.id);
+}
+
+/**
+ * POST /api/envios/:id/seguimiento/fases/:faseId/completar — el operador
+ * confirma que mandó el mensaje de esta fase. Es lo ÚNICO que hace avanzar
+ * al pedido a la fase siguiente en el tablero: abrir WhatsApp no alcanza,
+ * porque con un enlace wa.me no se sabe si el mensaje salió.
+ *
+ * Marca como completada la apertura más reciente de la fase. Si el mensaje
+ * se mandó sin pasar por el botón (a mano, desde el teléfono), se registra
+ * igual. Repetirlo sobre una fase ya completada no hace nada.
+ *
+ * Completar no bloquea nada: la fase se puede volver a abrir y reenviar.
+ */
+exports.completarFase = async (req, res) => {
+  const usuario_id = req.usuario.id;
+  const envio = await cargarEnvioODevolver404(req, res, { conItems: true });
+  if (!envio) return;
+  const fase = await buscarFaseDeLaCuenta(req, req.params.faseId);
+  if (!fase) return res.status(404).json({ error: 'Fase no encontrada' });
+
+  const resultado = await sequelize.transaction(async (t) => {
+    const base = { envio_id: envio.id, fase_id: fase.id };
+    let contacto = await SeguimientoContacto.findOne({
+      where: { ...base, estado: 'ABIERTO_EN_WHATSAPP' },
+      order: [['created_at', 'DESC']],
+      transaction: t,
+    });
+    let yaEstaba = false;
+
+    if (contacto) {
+      await contacto.update({ estado: FASE_COMPLETADA }, { transaction: t });
+    } else {
+      contacto = await SeguimientoContacto.findOne({ where: { ...base, estado: FASE_COMPLETADA }, transaction: t });
+      yaEstaba = !!contacto;
+      if (!contacto) {
+        contacto = await SeguimientoContacto.create({
+          ...base,
+          flujo_id: fase.flujo_id,
+          etiqueta_id: fase.etiqueta_id || null,
+          usuario_id,
+          telefono: envio.telefono || '',
+          mensaje_generado: resolverMensaje(fase.mensaje, envio),
+          canal: 'WHATSAPP',
+          estado: FASE_COMPLETADA,
+        }, { transaction: t });
+        if (fase.etiqueta_id) await aplicarEtiqueta(envio.id, fase.etiqueta_id, usuario_id, 'fase', t);
+      }
+    }
+
+    let transicionAutomatica = false;
+    if (envio.estado === 'Pendiente') {
+      await envio.update({ estado: 'EnSeguimiento' }, { transaction: t });
+      await registrarHistorial(envio.id, usuario_id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
+      transicionAutomatica = true;
+    }
+
+    const recordatoriosCumplidos = await cumplirRecordatoriosDeLaFase(envio.id, fase, t);
+    if (!yaEstaba) {
+      await registrarHistorial(envio.id, usuario_id, `Mensaje enviado — ${fase.flujo.nombre} · Fase ${fase.orden}: ${fase.nombre} (marcado como completado)`, t);
+    }
+    return { contacto, transicionAutomatica, recordatoriosCumplidos };
+  });
+
+  const siguiente = await WhatsappFlujoFase.findOne({
+    where: { flujo_id: fase.flujo_id, activo: true, orden: { [Op.gt]: fase.orden } },
+    order: [['orden', 'ASC']],
+  });
+
+  res.json({
+    contacto: resultado.contacto,
+    pedido_paso_a_en_seguimiento: resultado.transicionAutomatica,
+    recordatorios_cumplidos: resultado.recordatoriosCumplidos,
+    // Para que el panel ofrezca agendar la fase siguiente sin pedir el flujo de nuevo.
+    siguiente_fase: siguiente ? {
+      id: siguiente.id,
+      flujo_id: siguiente.flujo_id,
+      orden: siguiente.orden,
+      nombre: siguiente.nombre,
+      espera_sugerida_minutos: siguiente.espera_sugerida_minutos || 0,
+    } : null,
+  });
+};
+
+/**
+ * DELETE /api/envios/:id/seguimiento/fases/:faseId/completar — deshace un
+ * "marcar como completado" hecho por error: el pedido vuelve a esa fase.
+ * No borra nada del historial; la apertura sigue registrada como abierta.
+ */
+exports.descompletarFase = async (req, res) => {
+  const usuario_id = req.usuario.id;
+  const envio = await cargarEnvioODevolver404(req, res);
+  if (!envio) return;
+  const fase = await buscarFaseDeLaCuenta(req, req.params.faseId);
+  if (!fase) return res.status(404).json({ error: 'Fase no encontrada' });
+
+  const completadas = await SeguimientoContacto.findAll({
+    where: { envio_id: envio.id, fase_id: fase.id, estado: FASE_COMPLETADA },
+  });
+  if (completadas.length === 0) return res.status(404).json({ error: 'Esa fase no estaba marcada como completada' });
+
+  await sequelize.transaction(async (t) => {
+    for (const contacto of completadas) {
+      await contacto.update({ estado: 'ABIERTO_EN_WHATSAPP' }, { transaction: t });
+    }
+    await registrarHistorial(envio.id, usuario_id, `Fase ${fase.orden}: ${fase.nombre} — se desmarcó como completada`, t);
+  });
+  res.status(204).send();
 };
 
 /** GET /api/envios/:id/seguimiento/contactos — historial de contactos de este pedido. */

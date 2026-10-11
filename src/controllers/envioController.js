@@ -2605,31 +2605,65 @@ exports.registrarPerdida = async (req, res) => {
 };
 
 /**
- * POST /api/envios/resumen — lo que muestra la pestaña Resumen de Pedidos:
- * los pedidos del período agrupados por en qué quedaron, y los mensajes de
- * WhatsApp por enviar agrupados por fase (con la lista de pedidos de la que
- * salen esos números).
- *
- * Body: { fecha_desde, fecha_hasta } — solo acotan las ventas. Los mensajes
- * por enviar no dependen del período: un pedido de la semana pasada que
- * sigue sin confirmar sigue siendo trabajo de hoy.
+ * POST /api/envios/resumen — los pedidos del período agrupados por en qué
+ * quedaron. Body: { fecha_desde, fecha_hasta }.
  */
 exports.resumenPedidos = async (req, res) => {
   try {
     const { fecha_desde, fecha_hasta } = req.body || {};
-    const whereBase = whereEnviosDeUsuario(req);
-    const [ventas, seguimiento] = await Promise.all([
-      pendientesSeguimientoService.ventasDelPeriodo({ whereBase, fecha_desde, fecha_hasta }),
-      pendientesSeguimientoService.pendientesDeSeguimiento({
-        whereBase,
-        usuarioId: req.usuario.id,
-        esAdmin: esAdministrador(req),
-      }),
-    ]);
-    res.json({ ventas, seguimiento });
+    const ventas = await pendientesSeguimientoService.ventasDelPeriodo({
+      whereBase: whereEnviosDeUsuario(req), fecha_desde, fecha_hasta,
+    });
+    res.json({ ventas });
   } catch (error) {
     console.error('Error armando el resumen de pedidos:', error);
     res.status(500).json({ error: 'No se pudo armar el resumen de pedidos' });
+  }
+};
+
+function alcanceSeguimiento(req) {
+  return { whereBase: whereEnviosDeUsuario(req), usuarioId: req.usuario.id, esAdmin: esAdministrador(req) };
+}
+
+/**
+ * POST /api/envios/seguimiento/tablero — el Kanban de mensajes por enviar:
+ * una columna por fase del flujo, cada una con su página de pedidos.
+ *
+ * Body (todo se filtra y pagina acá, nunca en el frontend):
+ *   { flujo_id, cuando, busqueda, limit, paginas: { [claveColumna]: page } }
+ * No depende del período: un pedido de la semana pasada que sigue sin
+ * confirmar sigue siendo trabajo de hoy.
+ */
+exports.tableroSeguimiento = async (req, res) => {
+  try {
+    const { flujo_id, cuando, busqueda, limit, paginas } = req.body || {};
+    const tablero = await pendientesSeguimientoService.tableroDeSeguimiento({
+      ...alcanceSeguimiento(req),
+      filtros: { flujo_id, cuando, busqueda, limit, paginas: paginas && typeof paginas === 'object' ? paginas : {} },
+    });
+    res.json(tablero);
+  } catch (error) {
+    console.error('Error armando el tablero de seguimiento:', error);
+    res.status(500).json({ error: 'No se pudo armar el tablero de seguimiento' });
+  }
+};
+
+/**
+ * POST /api/envios/seguimiento/pendientes — la misma lista del tablero pero
+ * plana y paginada, para recorrerla como cola de trabajo.
+ * Body: { flujo_id, fase, cuando, busqueda, page, limit }
+ */
+exports.pendientesSeguimiento = async (req, res) => {
+  try {
+    const { flujo_id, fase, cuando, busqueda, page, limit } = req.body || {};
+    const pagina = await pendientesSeguimientoService.pendientesPaginados({
+      ...alcanceSeguimiento(req),
+      filtros: { flujo_id, fase, cuando, busqueda, page, limit },
+    });
+    res.json(pagina);
+  } catch (error) {
+    console.error('Error listando pendientes de seguimiento:', error);
+    res.status(500).json({ error: 'No se pudieron listar los pendientes de seguimiento' });
   }
 };
 
