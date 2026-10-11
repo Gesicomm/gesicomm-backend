@@ -3,8 +3,10 @@ const router = express.Router();
 const envioController = require('../controllers/envioController');
 const seguimientoController = require('../controllers/envioSeguimientoController');
 const { verificarToken } = require('../middleware/autenticacion');
+const { exigirTiendaActiva } = require('../middleware/resolverTiendaActiva');
 
 router.use(verificarToken);
+router.use(exigirTiendaActiva);
 
 // Usamos POST para listar con filtros dinámicos (fecha, estado) según la regla global
 router.post('/list', envioController.listEnvios);

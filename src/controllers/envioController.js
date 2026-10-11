@@ -3,7 +3,7 @@ const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
-const { cancelarSiEstadoTerminal } = require('../services/seguimiento/seguimientoRecordatorio.service');
+const { cancelarSiEstadoTerminal, elegirRecordatorioVigente } = require('../services/seguimiento/seguimientoRecordatorio.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const { envolverControlador } = require('../utils/asyncHandler');
 const PedidoNumeracion = require('../services/pedidoNumeracion.service');
@@ -1205,9 +1205,7 @@ function accionSiguientePedido(envioLike) {
 
 function decorarEnvio(envio) {
   const plano = typeof envio.toJSON === 'function' ? envio.toJSON() : envio;
-  const ultimoRecordatorio = (plano.recordatorios && plano.recordatorios.length > 0)
-    ? plano.recordatorios.find(r => r.estado === 'PENDIENTE' || r.estado === 'VENCIDO') || plano.recordatorios[plano.recordatorios.length - 1]
-    : null;
+  const ultimoRecordatorio = elegirRecordatorioVigente(plano.recordatorios);
   const ahora = new Date();
   const estaVencido = ultimoRecordatorio && (
     ultimoRecordatorio.estado === 'VENCIDO' ||

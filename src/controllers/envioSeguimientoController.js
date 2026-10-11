@@ -14,6 +14,7 @@ const {
   SeguimientoContacto, SeguimientoRecordatorio, SeguimientoConfiguracion,
 } = require('../models');
 const flujoService = require('../services/seguimiento/flujo.service');
+const { ESTADOS_ABIERTOS, elegirRecordatorioVigente } = require('../services/seguimiento/seguimientoRecordatorio.service');
 const { registrarHistorial } = require('../utils/historial');
 const { resolverMensaje } = require('../services/seguimiento/plantillaResolver.service');
 const { encolarRecordatorio } = require('../services/queue/seguimientoQueue');
@@ -24,8 +25,15 @@ function esAdministrador(req) {
   return req.usuario?.rol === 'administrador';
 }
 
+// Mismo criterio que filtroEnvioPropio de envioController: el pedido tiene
+// que ser de la cuenta Y de la tienda activa. Sin el tienda_id, desde una
+// tienda se podía etiquetar, contactar o agendar sobre un pedido de otra
+// tienda de la misma cuenta con solo conocer el id.
 function filtroEnvio(req, id) {
-  return esAdministrador(req) ? { id } : { id, usuario_id: req.usuario.id };
+  if (esAdministrador(req)) return { id };
+  const where = { id, usuario_id: req.usuario.id };
+  if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+  return where;
 }
 
 function normalizarTelefono(telefono) {
@@ -352,6 +360,16 @@ exports.programarRecordatorio = async (req, res) => {
         await registrarHistorial(envio.id, usuario_id, `Seguimiento programado para ${fechaEjecucion.toLocaleString('es-PY')}`, t);
       }
 
+      // Agendar el próximo contacto resuelve el que había vencido: si no, el
+      // pedido seguía marcado como "acción vencida" aunque ya tuviera fecha
+      // nueva. Se cierra la fila vieja en vez de reprogramarla porque su
+      // notificación ya salió, y la unique de notificaciones no dejaría
+      // avisar una segunda vez por el mismo recordatorio.
+      await SeguimientoRecordatorio.update(
+        { estado: 'COMPLETADO', completado_en: new Date() },
+        { where: { envio_id: envio.id, estado: 'VENCIDO', id: { [Op.ne]: fila.id } }, transaction: t },
+      );
+
       return fila;
     });
 
@@ -363,17 +381,28 @@ exports.programarRecordatorio = async (req, res) => {
   }
 };
 
-/** PATCH /api/envios/:id/seguimiento/recordatorio/:recordatorioId/completar — el responsable marca el seguimiento como hecho antes de que venza. */
+/**
+ * El recordatorio abierto sobre el que actúa completar/cancelar: el que pidió
+ * el frontend si sigue abierto, y si no (id viejo en pantalla) el vigente del
+ * pedido. Vale tanto PENDIENTE como VENCIDO: el vencido es justamente el que
+ * más hace falta poder cerrar.
+ */
+async function buscarRecordatorioAbierto(envioId, recordatorioId) {
+  const abiertos = await SeguimientoRecordatorio.findAll({
+    where: { envio_id: envioId, estado: { [Op.in]: ESTADOS_ABIERTOS } },
+  });
+  return abiertos.find((r) => String(r.id) === String(recordatorioId))
+    || elegirRecordatorioVigente(abiertos);
+}
+
+/** PATCH /api/envios/:id/seguimiento/recordatorio/:recordatorioId/completar — el responsable marca el seguimiento como hecho, antes o después de que venza. */
 exports.completarRecordatorio = async (req, res) => {
   const usuario_id = req.usuario.id;
   const { recordatorioId } = req.params;
   const envio = await cargarEnvioODevolver404(req, res);
   if (!envio) return;
 
-  let recordatorio = await SeguimientoRecordatorio.findOne({ where: { id: recordatorioId, envio_id: envio.id, estado: 'PENDIENTE' } });
-  if (!recordatorio) {
-    recordatorio = await SeguimientoRecordatorio.findOne({ where: { envio_id: envio.id, estado: 'PENDIENTE' } });
-  }
+  const recordatorio = await buscarRecordatorioAbierto(envio.id, recordatorioId);
   if (!recordatorio) return res.status(404).json({ error: 'Recordatorio pendiente no encontrado' });
 
   await sequelize.transaction(async (t) => {
@@ -390,10 +419,7 @@ exports.cancelarRecordatorio = async (req, res) => {
   const envio = await cargarEnvioODevolver404(req, res);
   if (!envio) return;
 
-  let recordatorio = await SeguimientoRecordatorio.findOne({ where: { id: recordatorioId, envio_id: envio.id, estado: 'PENDIENTE' } });
-  if (!recordatorio) {
-    recordatorio = await SeguimientoRecordatorio.findOne({ where: { envio_id: envio.id, estado: 'PENDIENTE' } });
-  }
+  const recordatorio = await buscarRecordatorioAbierto(envio.id, recordatorioId);
   if (!recordatorio) return res.status(404).json({ error: 'Recordatorio pendiente no encontrado' });
 
   await sequelize.transaction(async (t) => {
