@@ -301,6 +301,23 @@ describe('el tablero: filtrado y paginación en el backend', () => {
     expect(tablero.columnas[1].conteo).toEqual({ ahora: 1, hoy: 1, despues: 0, sin_fecha: 1 });
   });
 
+  test('los vencidos se cuentan aparte: de los 26 "para ahora", solo 1 tenía recordatorio y se pasó', () => {
+    const tablero = servicio.armarTablero(items(), [FLUJO], { limit: 10 });
+
+    expect(tablero.vencidos).toBe(1);
+    expect(tablero.columnas.map((c) => c.vencidos)).toEqual([0, 1, 0, 0]);
+  });
+
+  test('el filtro "vencido" deja solo los que tenían recordatorio y se pasaron, no los nuevos', () => {
+    const tablero = servicio.armarTablero(items(), [FLUJO], { cuando: 'vencido', limit: 10 });
+
+    expect(tablero.columnas.map((c) => c.total)).toEqual([0, 1, 0, 0]);
+    expect(tablero.columnas[1].data[0]).toMatchObject({ envio_id: 30, motivo: 'vencido', cuando: 'ahora' });
+    // Los 25 pedidos nuevos están "para ahora" pero no son vencidos.
+    expect(tablero.columnas[0].conteo.ahora).toBe(25);
+    expect(servicio.filtrar(items(), { cuando: 'vencido' }).map((i) => i.envio_id)).toEqual([30]);
+  });
+
   test('cada columna se pagina por separado y las páginas no se pisan', () => {
     const todos = items();
     const pagina = (n) => servicio.armarTablero(todos, [FLUJO], { limit: 10, paginas: { 101: n } }).columnas[0];
@@ -355,10 +372,17 @@ describe('tableroDeSeguimiento', () => {
     WhatsappFlujo.findAll.mockImplementation(async (opciones) => (
       opciones.group ? TODOS_LOS_FLUJOS.map((f) => ({ tipo: f.tipo })) : TODOS_LOS_FLUJOS
     ));
-    Envio.findAll.mockImplementation(async (opciones) => (
-      opciones.group ? [{ estado: 'Pendiente', es_whatsapp: false, cantidad: '12' }, { estado: 'Despachado', es_whatsapp: false, cantidad: '4' }]
-        : Array.from({ length: 12 }, (_, i) => pedido(i + 1))
-    ));
+    // Tres consultas a envios: el conteo por etapa, los vencidos por etapa
+    // (la que trae el literal del recordatorio) y los pedidos de la etapa.
+    const esConteoDeVencidos = (o) => (o.where[Op.and] || []).some((c) => c && c.val && /seguimiento_recordatorios/.test(c.val));
+    Envio.findAll.mockImplementation(async (opciones) => {
+      if (!opciones.group) return Array.from({ length: 12 }, (_, i) => pedido(i + 1));
+      if (esConteoDeVencidos(opciones)) {
+        // SQL dice 7 vencidos en confirmación (se pisa con lo del tablero) y 2 en envío.
+        return [{ estado: 'EnSeguimiento', es_whatsapp: false, cantidad: '7' }, { estado: 'Despachado', es_whatsapp: false, cantidad: '2' }, { estado: 'Entregado', es_whatsapp: false, cantidad: '1' }];
+      }
+      return [{ estado: 'Pendiente', es_whatsapp: false, cantidad: '12' }, { estado: 'Despachado', es_whatsapp: false, cantidad: '4' }];
+    });
     Envio.count.mockResolvedValue(3);
     SeguimientoRecordatorio.findAll.mockResolvedValue([]);
     SeguimientoContacto.findAll.mockResolvedValue([]);
@@ -377,6 +401,10 @@ describe('tableroDeSeguimiento', () => {
     expect(res.etapas.map((e) => [e.tipo, e.pedidos])).toEqual([
       ['CONFIRMACION_PEDIDO_WEB', 12], ['VENTA_WHATSAPP', 0], ['SEGUIMIENTO_ENVIO', 4], ['ESCALAMIENTO_VENTAS', 3],
     ]);
+    // Vencidos por pestaña: la etapa abierta usa el número del tablero (0:
+    // los 12 son nuevos, ninguno tenía recordatorio); las otras, el del conteo.
+    expect(res.vencidos).toBe(0);
+    expect(res.etapas.map((e) => e.vencidos)).toEqual([0, 0, 2, 1]);
     // No faltaba ningún flujo base: no se creó nada.
     expect(WhatsappFlujo.create).not.toHaveBeenCalled();
 

@@ -31,6 +31,11 @@
  *  - despues    → toca otro día.
  *  - sin_fecha  → ya tiene mensajes completados y no quedó recordatorio.
  *
+ * VENCIDO es un caso particular de "ahora": había un recordatorio, ya le
+ * pasó la hora y el mensaje sigue sin marcarse como enviado. Se cuenta
+ * aparte (columna, tablero y pestaña de cada etapa) y tiene su propio
+ * filtro, porque es lo primero que el operador tiene que atender.
+ *
  * En escalamiento de ventas la espera del PRIMER mensaje se cuenta desde la
  * entrega: con "3 días" el pedido aparece agendado y pasa a "ahora" al
  * tercer día. Ese número se edita en el flujo.
@@ -60,6 +65,18 @@ const LIMITE_POR_PAGINA_MAXIMO = 50;
 // la historia como "para enviar ahora".
 const VENTANA_RECOMPRA_DIAS = 60;
 const ES_WHATSAPP = `(UPPER(COALESCE("Envio"."origen", '')) LIKE '%WHATSAPP%')`;
+// Mismo criterio que elegirRecordatorioVigente + clasificarCuando, en SQL:
+// el recordatorio que manda es el PENDIENTE si hay uno; si no, el VENCIDO.
+const TIENE_RECORDATORIO_VENCIDO = `(
+  EXISTS (SELECT 1 FROM seguimiento_recordatorios sr
+          WHERE sr.envio_id = "Envio"."id" AND sr.estado = 'PENDIENTE' AND sr.ejecutar_en <= NOW())
+  OR (
+    EXISTS (SELECT 1 FROM seguimiento_recordatorios sr
+            WHERE sr.envio_id = "Envio"."id" AND sr.estado = 'VENCIDO')
+    AND NOT EXISTS (SELECT 1 FROM seguimiento_recordatorios sr
+                    WHERE sr.envio_id = "Envio"."id" AND sr.estado = 'PENDIENTE')
+  )
+)`;
 
 /** Fecha de calendario en Paraguay (YYYY-MM-DD) de un instante. */
 function fechaLocal(instante) {
@@ -263,6 +280,9 @@ function contar(items) {
   return conteo;
 }
 
+const estaVencido = (item) => item.motivo === 'vencido';
+const contarVencidos = (items) => items.filter(estaVencido).length;
+
 /** Clave de la columna del tablero en la que cae un ítem. */
 function claveDeColumna(item) {
   return item.fase_id ? String(item.fase_id) : SIN_FASE;
@@ -283,6 +303,9 @@ function filtrar(items, { flujo_id, fase, cuando, busqueda } = {}) {
   return items.filter((item) => {
     if (flujo_id && Number(item.flujo_id) !== Number(flujo_id)) return false;
     if (fase !== undefined && fase !== null && fase !== '' && claveDeColumna(item) !== String(fase)) return false;
+    // 'vencido' no es un cuándo más: es el subconjunto de "ahora" que tenía
+    // recordatorio y se pasó.
+    if (cuando === 'vencido' && !estaVencido(item)) return false;
     if (cuando && CUANDO.includes(cuando) && item.cuando !== cuando) return false;
     return coincideBusqueda(item, busqueda);
   });
@@ -321,7 +344,12 @@ function armarTablero(items, flujos, { flujo_id, cuando, busqueda, paginas = {},
   const columna = (clave, datos) => {
     const todos = delFlujo.filter((i) => claveDeColumna(i) === clave);
     const visibles = filtrados.filter((i) => claveDeColumna(i) === clave);
-    return { clave, ...datos, conteo: contar(todos), ...paginar(visibles, { page: paginas[clave], limit }) };
+    return {
+      clave, ...datos,
+      conteo: contar(todos),
+      vencidos: contarVencidos(todos),
+      ...paginar(visibles, { page: paginas[clave], limit }),
+    };
   };
 
   const columnas = fasesOrdenadas(elegido).map((fase) => columna(String(fase.id), {
@@ -343,6 +371,7 @@ function armarTablero(items, flujos, { flujo_id, cuando, busqueda, paginas = {},
     })),
     flujo_id: elegido?.id || null,
     totales: contar(delFlujo),
+    vencidos: contarVencidos(delFlujo),
     columnas,
   };
 }
@@ -467,6 +496,45 @@ async function conteoPorEtapa({ whereBase, ahora = new Date() }) {
   return conteo;
 }
 
+/**
+ * Cuántos pedidos de cada etapa tienen un recordatorio vencido, para marcar
+ * en rojo la pestaña. Una sola consulta agrupada, sin traer filas.
+ *
+ * Es un conteo en SQL, así que puede diferir por algún pedido del cálculo
+ * fino del tablero (p. ej. un entregado que ya terminó su flujo). Por eso
+ * la etapa que se está mirando NO usa este número: tableroDeSeguimiento lo
+ * reemplaza por el del tablero, y lo que dice la pestaña abierta coincide
+ * siempre con las tarjetas que se ven.
+ */
+async function vencidosPorEtapa({ whereBase, ahora = new Date() }) {
+  const todosLosEstados = [...new Set(ETAPAS.flatMap((e) => e.estados))];
+  const corteRecompra = new Date(ahora.getTime() - VENTANA_RECOMPRA_DIAS * 86400e3);
+  const filas = await Envio.findAll({
+    where: {
+      ...whereBase,
+      [Op.and]: [
+        ...(whereBase[Op.and] || []),
+        { estado: { [Op.in]: todosLosEstados } },
+        { [Op.or]: [{ estado: { [Op.ne]: 'Entregado' } }, { updated_at: { [Op.gte]: corteRecompra } }] },
+        literal(TIENE_RECORDATORIO_VENCIDO),
+      ],
+    },
+    attributes: ['estado', [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
+    group: ['estado', literal(ES_WHATSAPP)],
+    raw: true,
+  });
+
+  const vencidos = Object.fromEntries(ETAPAS.map((e) => [e.tipo, 0]));
+  for (const fila of filas) {
+    const cantidad = Number(fila.cantidad) || 0;
+    const esWhatsapp = fila.es_whatsapp === true || fila.es_whatsapp === 't' || fila.es_whatsapp === 1;
+    if (ETAPAS[0].estados.includes(fila.estado)) vencidos[esWhatsapp ? 'VENTA_WHATSAPP' : 'CONFIRMACION_PEDIDO_WEB'] += cantidad;
+    else if (fila.estado === 'Entregado') vencidos[ETAPA_RECOMPRA] += cantidad;
+    else vencidos.SEGUIMIENTO_ENVIO += cantidad;
+  }
+  return vencidos;
+}
+
 /** Los productos solo se buscan para las tarjetas que efectivamente se devuelven. */
 async function completarProductos(items) {
   const ids = items.map((i) => i.envio_id);
@@ -497,16 +565,25 @@ async function tableroDeSeguimiento({ whereBase, usuarioId, esAdmin, filtros = {
   // Las cuatro etapas tienen que tener siempre su flujo.
   await flujoService.asegurarFlujosBase({ usuarioId });
 
-  const [{ items, flujos, truncado }, conteo] = await Promise.all([
+  const [{ items, flujos, truncado }, conteo, vencidos] = await Promise.all([
     cargarPendientes({ whereBase, usuarioId, esAdmin, etapa, ahora }),
     conteoPorEtapa({ whereBase, ahora }),
+    vencidosPorEtapa({ whereBase, ahora }),
   ]);
   const tablero = armarTablero(items, flujos, filtros);
   await completarProductos(tablero.columnas.flatMap((c) => c.data));
+  // La pestaña que se está mirando dice lo mismo que sus tarjetas.
+  vencidos[etapa] = contarVencidos(items);
 
   return {
     etapa,
-    etapas: ETAPAS.map((e) => ({ tipo: e.tipo, nombre: e.nombre, descripcion: e.descripcion, pedidos: conteo[e.tipo] || 0 })),
+    etapas: ETAPAS.map((e) => ({
+      tipo: e.tipo,
+      nombre: e.nombre,
+      descripcion: e.descripcion,
+      pedidos: conteo[e.tipo] || 0,
+      vencidos: vencidos[e.tipo] || 0,
+    })),
     ventana_recompra_dias: VENTANA_RECOMPRA_DIAS,
     ...tablero,
     truncado,
@@ -586,6 +663,7 @@ module.exports = {
   armarTablero,
   agruparVentas,
   conteoPorEtapa,
+  vencidosPorEtapa,
   tableroDeSeguimiento,
   pendientesPaginados,
   ventasDelPeriodo,
