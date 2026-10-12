@@ -175,6 +175,21 @@ async function obtenerPorSlug(req, res) {
         })
       : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview, { tipoPagina });
     if (resultado === null) {
+      // `tienda.com/<algo>` puede ser otra landing o un producto: el frontend
+      // pide primero la landing y, con el 404, recién ahí el producto. Ese 404
+      // no lo cachea nadie, así que cada visita a una ficha pagaba una ida y
+      // vuelta entera al origen (1-1,7s medidos) antes de empezar. Si no hay
+      // landing con ese slug se responde el producto acá mismo — la misma
+      // respuesta que /producto/:productoSlug. La landing sigue ganando si
+      // existen las dos.
+      const producto = !isCatalogo && !tipoPagina && req.method === 'GET' && req.params.slug
+        ? await LandingService.obtenerProductoPublico(tienda, null, req.params.slug)
+        : null;
+      if (producto) {
+        // Igual que obtenerProducto: sin rama de preview, siempre pública.
+        aplicarCacheDeBorde(req, res, { preview: false, disponible: producto.disponible !== false });
+        return res.status(200).json(producto);
+      }
       return res.status(404).json({ message: 'Landing no encontrada.' });
     }
     aplicarCacheDeBorde(req, res, { preview, disponible: resultado.disponible !== false });
@@ -182,6 +197,31 @@ async function obtenerPorSlug(req, res) {
   } catch (err) {
     console.error('[landing-publica] obtenerPorSlug:', err.message);
     return res.status(500).json({ message: 'Error al obtener la landing.' });
+  }
+}
+
+/**
+ * POST /api/l/[:slug/]productos — productos puntuales del lienzo, completos.
+ * Lo usa el carrito para los que no vinieron en la primera página de la
+ * landing (ver LandingService.obtenerProductosPublicos).
+ */
+async function obtenerProductos(req, res) {
+  try {
+    const { tienda } = await resolverTiendaYLanding(req);
+    if (!tienda) {
+      return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
+    }
+    const crudos = Array.isArray(req.body?.content_ids) ? req.body.content_ids : [];
+    const contentIds = [...new Set(crudos.filter(id => typeof id === 'string' && /^[a-z0-9-]{1,200}$/i.test(id)))].slice(0, MAX_CONTENT_IDS);
+    if (!contentIds.length) return res.status(200).json({ disponible: true, items: [] });
+
+    const resultado = await LandingService.obtenerProductosPublicos(tienda, req.params.slug || null, contentIds);
+    if (resultado === null) return res.status(404).json({ message: 'Landing no encontrada.' });
+    res.set('Cache-Control', 'private, no-store');
+    return res.status(200).json(resultado);
+  } catch (err) {
+    console.error('[landing-publica] obtenerProductos:', err.message);
+    return res.status(500).json({ message: 'Error al obtener los productos.' });
   }
 }
 
@@ -234,6 +274,41 @@ async function geografia(req, res) {
   } catch (err) {
     console.error('[landing-publica] geografia:', err.message);
     return res.status(500).json({ message: 'Error al obtener el catálogo geográfico.' });
+  }
+}
+
+/**
+ * Ciudades de envío de la tienda para el carrito/checkout público.
+ *
+ * Antes viajaban dentro de cada GET de landing y de catálogo: en una tienda
+ * con la red de Gesicomm eran ~200 KB (el 86% de la respuesta del catálogo) y
+ * tres consultas encadenadas, pagadas en cada visita aunque nadie llegara a
+ * comprar. Ahora el carrito las pide cuando tiene algo adentro.
+ *
+ * Mismo cache de borde que la landing: dependen solo de la tienda, no de quién
+ * pregunta, así que la respuesta es compartible.
+ */
+async function deliveryPublico(req, res) {
+  try {
+    let tienda = req.tienda;
+    // Sin tienda por hostname (gesicomm.com/l/:slug, local): por el slug, igual
+    // que obtenerPorSlug.
+    if (!tienda && req.params.slug) {
+      const l = await Landing.findOne({
+        where: { slug: req.params.slug },
+        include: [{ model: Tienda, include: [{ model: Usuario, attributes: ['id', 'activo'] }] }],
+      });
+      tienda = l?.Tienda || null;
+    }
+    if (!tienda) return res.status(404).json({ message: 'Tienda no encontrada.' });
+
+    const disponible = !!(tienda.activo && tienda.Usuario?.activo);
+    const ciudades = disponible ? await LandingService.obtenerOpcionesDelivery(tienda.usuario_id) : [];
+    aplicarCacheDeBorde(req, res, { preview: false, disponible });
+    return res.status(200).json({ delivery_ciudades: ciudades });
+  } catch (err) {
+    console.error('[landing-publica] delivery:', err.message);
+    return res.status(500).json({ message: 'Error al obtener las ciudades de envío.' });
   }
 }
 
@@ -395,6 +470,7 @@ async function crearCheckout(req, res) {
         // .permite_elegir_variante) — se re-valida contra esa oferta y ese
         // producto en LandingService.resolverCarrito, acá solo se sanea el tipo.
         componente_variante_id: Number.isFinite(Number(i?.componente_variante_id)) ? Number(i.componente_variante_id) : undefined,
+        descuento_boton_pct: Number.isFinite(Number(i?.descuento_boton_pct)) ? Number(i.descuento_boton_pct) : undefined,
         cantidad: i?.cantidad,
       })) : [],
     };
@@ -517,6 +593,7 @@ async function recalcularCarrito(req, res) {
       variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
       oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
       componente_variante_id: Number.isFinite(Number(i?.componente_variante_id)) ? Number(i.componente_variante_id) : undefined,
+      descuento_boton_pct: Number.isFinite(Number(i?.descuento_boton_pct)) ? Number(i.descuento_boton_pct) : undefined,
       cantidad: i?.cantidad,
     })) : [];
 
@@ -551,6 +628,7 @@ async function validarCupon(req, res) {
       variante_id: Number.isFinite(Number(i?.variante_id)) ? Number(i.variante_id) : undefined,
       oferta_id: Number.isFinite(Number(i?.oferta_id)) ? Number(i.oferta_id) : undefined,
       componente_variante_id: Number.isFinite(Number(i?.componente_variante_id)) ? Number(i.componente_variante_id) : undefined,
+      descuento_boton_pct: Number.isFinite(Number(i?.descuento_boton_pct)) ? Number(i.descuento_boton_pct) : undefined,
       cantidad: i?.cantidad,
     })) : [];
 
@@ -650,4 +728,4 @@ async function registrarVisitaPublica(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia };
+module.exports = { obtenerPorSlug, obtenerProducto, obtenerProductos, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia, deliveryPublico };

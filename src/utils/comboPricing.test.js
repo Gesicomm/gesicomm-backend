@@ -19,6 +19,7 @@ const {
   calcularPrecioMinimo,
   calcularDescuentoMaximo,
   calcularSensibilidad,
+  utilidadAPrecio,
 } = require('./comboPricing');
 
 // ─── Fixtures comunes ─────────────────────────────────────────────────────────
@@ -301,21 +302,50 @@ describe('Caso 8 — Múltiples Upsells', () => {
     expect(result.combo.upsellCosts).toBe(85000);
   });
 
-  test('costo total combo = costos principal + costos upsells', () => {
-    // costosPrincipal = 100.000 + 50.000(CPA) + 5.000 + 2.000 + 1.000 = 158.000
-    // costoUpsells = 85.000
-    // total = 243.000
-    expect(result.combo.totalCost).toBe(243000);
+  test('CPA se cobra sobre el precio del combo, no solo sobre el principal', () => {
+    // 395.000 * 20% = 79.000
+    expect(result.combo.cpa).toBe(79000);
+  });
+
+  test('costo total combo = productos + logística + CPA del combo', () => {
+    // productos = 100.000 + 85.000 = 185.000; logística = 8.000 → fijo 193.000
+    // CPA = 79.000 → total = 272.000
+    expect(result.combo.fixedCost).toBe(193000);
+    expect(result.combo.variableRate).toBeCloseTo(0.2, 6);
+    expect(result.combo.totalCost).toBe(272000);
   });
 
   test('utilidad combo = precioFinal - costoTotal', () => {
-    // 395.000 - 243.000 = 152.000
-    expect(result.combo.profit).toBe(152000);
+    // 395.000 - 272.000 = 123.000
+    expect(result.combo.profit).toBe(123000);
   });
 
   test('margen combo = utilidad / precioFinal', () => {
-    // 152.000 / 395.000 ≈ 0.3848
-    expect(result.combo.margin).toBeCloseTo(0.3848, 3);
+    // 123.000 / 395.000 ≈ 0.3114
+    expect(result.combo.margin).toBeCloseTo(0.3114, 3);
+  });
+
+  test('la comisión de cobro también va sobre el combo entero', () => {
+    const r = calcular({ principal: PRINCIPAL, upsells: UPSELLS, costs: { ...COSTS_DEFAULT, paymentCommissionPercentage: 5 } });
+    // 395.000 * 5% = 19.750
+    expect(r.combo.paymentCommissionCost).toBe(19750);
+    expect(r.combo.totalCost).toBe(291750);
+  });
+
+  test('la sensibilidad recalcula CPA sobre cada precio con descuento', () => {
+    const fila = result.sensitivity.find(s => s.discountPercentage === 10);
+    // precio 355.500 → utilidad = 355.500 - 193.000 - 71.100 = 91.400
+    expect(fila.price).toBe(355500);
+    expect(fila.profit).toBe(91400);
+  });
+
+  test('precio mínimo y recomendados cubren el CPA que cobra ese mismo precio', () => {
+    // equilibrio = 193.000 / 0.8 = 241.250
+    expect(result.minimumPrice).toBe(241250);
+    expect(utilidadAPrecio(result.minimumPrice, result.combo)).toBe(0);
+    const rec30 = result.recommendations.find(r => r.targetMargin === 30);
+    expect(rec30.suggestedPrice).toBe(386000); // 193.000 / 0.5
+    expect(rec30.estimatedProfit / rec30.suggestedPrice).toBeCloseTo(0.30, 6);
   });
 
   test('retorna 3 upsells calculados', () => {
@@ -327,24 +357,25 @@ describe('Caso 8 — Múltiples Upsells', () => {
 
 describe('Caso 9 — Precios recomendados', () => {
   const TOTAL_COST = 150000;
+  const COMBO = { fixedCost: TOTAL_COST, variableRate: 0 };
 
   test('precio para 15% = costo / (1 - 0.15)', () => {
-    const recs = calcularRecomendaciones(TOTAL_COST, [15]);
+    const recs = calcularRecomendaciones(COMBO, [15]);
     expect(recs[0].suggestedPrice).toBeCloseTo(150000 / 0.85, 0);
   });
 
   test('precio para 30% = costo / (1 - 0.30)', () => {
-    const recs = calcularRecomendaciones(TOTAL_COST, [30]);
+    const recs = calcularRecomendaciones(COMBO, [30]);
     expect(recs[0].suggestedPrice).toBeCloseTo(150000 / 0.70, 0);
   });
 
   test('precio para 45% = costo / (1 - 0.45)', () => {
-    const recs = calcularRecomendaciones(TOTAL_COST, [45]);
+    const recs = calcularRecomendaciones(COMBO, [45]);
     expect(recs[0].suggestedPrice).toBeCloseTo(150000 / 0.55, 0);
   });
 
   test('utilidad estimada = precio sugerido - costo', () => {
-    const recs = calcularRecomendaciones(TOTAL_COST, [30]);
+    const recs = calcularRecomendaciones(COMBO, [30]);
     expect(recs[0].estimatedProfit).toBeCloseTo(recs[0].suggestedPrice - TOTAL_COST, 0);
   });
 });
@@ -354,13 +385,13 @@ describe('Caso 9 — Precios recomendados', () => {
 describe('Caso 10 — Precio mínimo (punto de equilibrio)', () => {
   test('precio mínimo = costo total (equilibrio exacto)', () => {
     const totalCost = 200000;
-    const minPrice = calcularPrecioMinimo(totalCost);
+    const minPrice = calcularPrecioMinimo({ fixedCost: totalCost, variableRate: 0 });
     expect(minPrice).toBe(totalCost);
   });
 
   test('precio < costo → pérdida (verificación conceptual)', () => {
     const totalCost = 200000;
-    const minPrice = calcularPrecioMinimo(totalCost);
+    const minPrice = calcularPrecioMinimo({ fixedCost: totalCost, variableRate: 0 });
     expect(minPrice - 1 < totalCost).toBe(true);
   });
 });
@@ -371,16 +402,17 @@ describe('Caso 11 — Descuento máximo permitido', () => {
   const TOTAL_COST = 150000;
   const ORIGINAL_PRICE = 300000;
   const MINIMUM_MARGIN = 10; // 10%
+  const COMBO = { fixedCost: TOTAL_COST, variableRate: 0 };
 
   test('descuento máximo respeta el margen mínimo configurado', () => {
-    const maxDiscount = calcularDescuentoMaximo(TOTAL_COST, ORIGINAL_PRICE, MINIMUM_MARGIN);
+    const maxDiscount = calcularDescuentoMaximo(COMBO, ORIGINAL_PRICE, MINIMUM_MARGIN);
     // Precio mínimo = 150.000 / (1 - 0.10) = 166.666...
     // Desc max = 1 - (166.666 / 300.000) = 1 - 0.5555 = 0.4444 = 44.44%
     expect(maxDiscount).toBeCloseTo(44.44, 1);
   });
 
   test('precio con descuento máximo tiene exactamente el margen mínimo', () => {
-    const maxDiscount = calcularDescuentoMaximo(TOTAL_COST, ORIGINAL_PRICE, MINIMUM_MARGIN);
+    const maxDiscount = calcularDescuentoMaximo(COMBO, ORIGINAL_PRICE, MINIMUM_MARGIN);
     const finalPrice = ORIGINAL_PRICE * (1 - maxDiscount / 100);
     const margin = (finalPrice - TOTAL_COST) / finalPrice;
     expect(margin).toBeCloseTo(MINIMUM_MARGIN / 100, 2);
@@ -388,12 +420,19 @@ describe('Caso 11 — Descuento máximo permitido', () => {
 
   test('retorna null si no hay margen para ningún descuento', () => {
     // Costo > precio original → imposible descontar
-    const result = calcularDescuentoMaximo(400000, 300000, 10);
+    const result = calcularDescuentoMaximo({ fixedCost: 400000, variableRate: 0 }, 300000, 10);
     expect(result).toBeNull();
   });
 
+  test('con CPA, el descuento máximo deja el margen mínimo después de publicidad', () => {
+    const combo = { fixedCost: 150000, variableRate: 0.2 };
+    const maxDiscount = calcularDescuentoMaximo(combo, ORIGINAL_PRICE, MINIMUM_MARGIN);
+    const precio = ORIGINAL_PRICE * (1 - maxDiscount / 100);
+    expect(utilidadAPrecio(precio, combo) / precio).toBeCloseTo(MINIMUM_MARGIN / 100, 3);
+  });
+
   test('retorna null si precio original es 0', () => {
-    const result = calcularDescuentoMaximo(150000, 0, 10);
+    const result = calcularDescuentoMaximo({ fixedCost: 150000, variableRate: 0 }, 0, 10);
     expect(result).toBeNull();
   });
 });

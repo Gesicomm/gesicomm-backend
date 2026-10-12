@@ -618,28 +618,52 @@ async function getProgresoSidebar(req, res) {
         'orden',
       ],
     }) : [];
+    const modulosSidebarNormalizados = modulosSidebar.map((m) => ({
+      id: m.id,
+      moduloKey: m.modulo_key,
+      contexto: m.contexto,
+      seccion: m.seccion,
+      label: m.etiqueta,
+      path: m.path,
+      prefix: m.prefix,
+      icono: m.icono,
+      menuKey: m.menu_key,
+      rolesPermitidos: m.roles_permitidos || [],
+      requierePlan: m.requiere_plan,
+      badge: m.badge,
+      dangerBadgeKey: m.danger_badge_key,
+      orden: m.orden,
+    }));
+
+    if (!modulosSidebarNormalizados.some((m) => m.menuKey === 'importada-de-china')) {
+      modulosSidebarNormalizados.push({
+        id: 'importada-de-china',
+        moduloKey: 'importada-de-china',
+        contexto: 'ecommerce',
+        seccion: 'OPERACIONES',
+        label: 'Importada de China',
+        path: '/importada-de-china',
+        prefix: null,
+        icono: 'PackageSearch',
+        menuKey: 'importada-de-china',
+        rolesPermitidos: ['usuario', 'administrador'],
+        requierePlan: null,
+        badge: null,
+        dangerBadgeKey: null,
+        orden: 90,
+      });
+      modulosSidebarNormalizados.sort((a, b) => (
+        String(a.contexto).localeCompare(String(b.contexto)) ||
+        Number(a.orden || 0) - Number(b.orden || 0)
+      ));
+    }
 
     return res.json({
       menus_desbloqueados: desbloqueadosArr,
       menusDesbloqueados: desbloqueadosArr,
       menus_bloqueados: menusBloqueados,
       menusBloqueados: menusBloqueados,
-      modulos: modulosSidebar.map((m) => ({
-        id: m.id,
-        moduloKey: m.modulo_key,
-        contexto: m.contexto,
-        seccion: m.seccion,
-        label: m.etiqueta,
-        path: m.path,
-        prefix: m.prefix,
-        icono: m.icono,
-        menuKey: m.menu_key,
-        rolesPermitidos: m.roles_permitidos || [],
-        requierePlan: m.requiere_plan,
-        badge: m.badge,
-        dangerBadgeKey: m.danger_badge_key,
-        orden: m.orden,
-      })),
+      modulos: modulosSidebarNormalizados,
     });
   } catch (error) {
     console.error('Error al obtener progreso para sidebar:', error);

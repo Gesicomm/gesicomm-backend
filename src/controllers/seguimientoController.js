@@ -9,6 +9,7 @@
 const { Op } = require('sequelize');
 const { WhatsappPlantilla, SeguimientoEtiqueta, SeguimientoConfiguracion, Notificacion, Envio } = require('../models');
 const { listarVariablesDisponibles } = require('../services/seguimiento/plantillaResolver.service');
+const { ESTADOS_PEDIDO_CERRADO } = require('../services/seguimiento/seguimientoRecordatorio.service');
 const { envolverControlador } = require('../utils/asyncHandler');
 
 function esAdministrador(req) {
@@ -227,10 +228,30 @@ exports.listarNotificaciones = async (req, res) => {
   // Incluir conteo de seguimientos vencidos para el badge de la sidebar.
   // SeguimientoRecordatorio siempre cuelga de un pedido (envio_id NOT NULL),
   // así que acá sí se puede exigir el join en vez de tolerar el null.
+  //
+  // Cuenta PEDIDOS (no recordatorios) y deja afuera los que ya cerraron, con
+  // la misma definición que `seguimiento_vencidos` de conteoPorEstado: el
+  // número de la sidebar tiene que ser el que después se ve en la bandeja.
   const { SeguimientoRecordatorio } = require('../models');
   const seguimientosVencidos = await SeguimientoRecordatorio.count({
-    where: { usuario_id, estado: 'VENCIDO' },
-    include: tiendaId ? [{ model: Envio, attributes: [], where: { tienda_id: tiendaId }, required: true }] : [],
+    where: {
+      usuario_id,
+      [Op.or]: [
+        { estado: 'VENCIDO' },
+        { estado: 'PENDIENTE', ejecutar_en: { [Op.lte]: new Date() } },
+      ],
+    },
+    include: [{
+      model: Envio,
+      attributes: [],
+      required: true,
+      where: {
+        estado: { [Op.notIn]: ESTADOS_PEDIDO_CERRADO },
+        ...(tiendaId ? { tienda_id: tiendaId } : {}),
+      },
+    }],
+    distinct: true,
+    col: 'envio_id',
   });
 
   res.json({ data: notificaciones, no_leidas: noLeidas, seguimientos_vencidos: seguimientosVencidos });

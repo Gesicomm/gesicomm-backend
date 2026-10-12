@@ -12,3 +12,9 @@ logs
 Thumbs.db
 actions-runner-backend
 actions-runner-backend-test
+
+# Respaldos del .env (.env.bak-*) y .env.test: tienen secretos y no hacen
+# falta en la imagen (en produccion las variables llegan por env_file).
+.env.*
+!.env.example
+!.env.*.example

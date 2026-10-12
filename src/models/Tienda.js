@@ -111,6 +111,15 @@ const Tienda = sequelize.define('Tienda', {
   logo_imagen_size: { type: DataTypes.INTEGER, allowNull: true },
   logo_imagen_width: { type: DataTypes.INTEGER, allowNull: true },
   logo_imagen_height: { type: DataTypes.INTEGER, allowNull: true },
+  // --- Favicon: ícono de la pestaña del navegador, aparte del logo (un logo
+  // con texto queda ilegible a 16 px). NULL = la pestaña usa el logo. Se
+  // guarda ya procesado (PNG 192x192), por eso no lleva tamaño/mime. ---
+  favicon_imagen: {
+    type: DataTypes.STRING(700),
+    allowNull: true,
+    comment: 'URL pública del favicon (PNG 192x192 en R2).',
+  },
+  favicon_imagen_storage_key: { type: DataTypes.STRING(700), allowNull: true },
   // --- Contacto base ---
   whatsapp: {
     type: DataTypes.STRING(20),
@@ -137,7 +146,12 @@ const Tienda = sequelize.define('Tienda', {
   mensaje_contacto: {
     type: DataTypes.STRING(300),
     allowNull: true,
-    comment: 'Plantilla de mensaje de WhatsApp. Soporta el placeholder {producto}.',
+    comment: 'Plantilla de WhatsApp para consultas de PRODUCTO. Soporta {producto}, {precio} y {url}.',
+  },
+  mensaje_consulta_general: {
+    type: DataTypes.STRING(300),
+    allowNull: true,
+    comment: 'Plantilla de WhatsApp para consultas generales (inicio, categorías). Soporta {url}.',
   },
   nombre_contacto: {
     type: DataTypes.STRING(150),

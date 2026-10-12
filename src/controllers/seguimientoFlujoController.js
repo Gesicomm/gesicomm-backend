@@ -33,6 +33,9 @@ function manejarError(res, err, mensajePorDefecto) {
 
 /** GET /api/seguimiento/flujos?activo=true */
 exports.listar = async (req, res) => {
+  // Los cuatro flujos de base tienen que estar siempre: si a la cuenta le
+  // falta alguno, aparece acá ya creado.
+  await flujoService.asegurarFlujosBase({ usuarioId: req.usuario.id });
   const flujos = await flujoService.listarFlujos({
     ...contexto(req),
     soloActivos: req.query.activo === 'true',

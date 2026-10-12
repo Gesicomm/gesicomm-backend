@@ -39,6 +39,17 @@ const SeguimientoRecordatorio = sequelize.define('SeguimientoRecordatorio', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
+  // Qué fase hay que mandar cuando llegue la hora. No es la "fase actual" del
+  // pedido: es la intención de ESTE recordatorio. NULL en los que se agendan
+  // a mano sin elegir fase; ahí la fase se deriva del historial de contactos.
+  flujo_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  fase_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   version: {
     type: DataTypes.INTEGER,
     allowNull: false,

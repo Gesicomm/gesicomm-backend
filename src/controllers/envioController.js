@@ -3,7 +3,9 @@ const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
-const { cancelarSiEstadoTerminal } = require('../services/seguimiento/seguimientoRecordatorio.service');
+const { cancelarSiEstadoTerminal, elegirRecordatorioVigente } = require('../services/seguimiento/seguimientoRecordatorio.service');
+const pendientesSeguimientoService = require('../services/seguimiento/pendientesSeguimiento.service');
+const { accionSiguientePedido } = require('../services/pedidos/accionSiguientePedido');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const { envolverControlador } = require('../utils/asyncHandler');
 const PedidoNumeracion = require('../services/pedidoNumeracion.service');
@@ -835,7 +837,6 @@ async function registrarViaje(envio, { numero, resultado, costo, motivo = null, 
   }, { transaction: t });
 }
 
-const { ESTADOS_FINALES: ABASTECIMIENTO_ESTADOS_FINALES } = require('../services/abastecimiento/estadoMachine');
 
 const ABASTECIMIENTO_ESTADOS = [
   'no_requiere',
@@ -880,22 +881,6 @@ const ABASTECIMIENTO_GRUPOS = {
     'despachado_a_deposito_cliente', 'en_transito_a_deposito_cliente',
     'recibido_en_deposito_cliente', 'disponible_en_gesicomm',
   ],
-};
-
-/**
- * Texto de la acción "Avanzar" que ve el admin en cada estado operativo
- * intermedio (punto 12 del RF de seguimiento de abastecimiento). El backend
- * resuelve el siguiente estado real (ver estadoMachine.resolverSiguienteEstadoUnico);
- * esto es solo lo que se muestra en el botón.
- */
-const ACCIONES_ABASTECIMIENTO_AVANZAR = {
-  pago_validado: { cta: 'Contactar proveedor', descripcion: 'Pago validado. Iniciá la gestión con el proveedor.' },
-  proveedor_contactado: { cta: 'Marcar enviado por proveedor', descripcion: 'Proveedor contactado. Marcá cuando despache la mercadería.' },
-  enviado_por_proveedor: { cta: 'Marcar en tránsito a Gesicomm', descripcion: 'El proveedor ya despachó. Marcá cuando esté viajando hacia Gesicomm.' },
-  en_transito_a_gesicomm: { cta: 'Marcar recibido en Gesicomm', descripcion: 'En tránsito hacia Gesicomm. Marcá cuando llegue.' },
-  // recibido_en_gesicomm se resuelve distinto según tipo_logistica_abastecimiento (ver más abajo).
-  preparando_envio_a_deposito_cliente: { cta: 'Marcar despachado', descripcion: 'Gesicomm está preparando el envío al depósito del comercio.' },
-  despachado_a_deposito_cliente: { cta: 'Marcar en tránsito', descripcion: 'Despachado hacia el depósito del comercio.' },
 };
 
 function esAdministrador(req) {
@@ -1004,46 +989,18 @@ function esProductoCargadoPorAdmin(prod) {
 }
 
 /**
- * Detecta si un pedido contiene productos del catalogo Gesicom y calcula el
- * costo que debe pagar la tienda para iniciar el abastecimiento.
+ * El abastecimiento Gesicom por pedido YA NO EXISTE (2026-10-11): la tienda
+ * no paga ni espera mercadería para poder vender; el cliente paga por
+ * anticipado o contra entrega y el pedido sigue su curso normal
+ * (Confirmado → Preparado → Despachado → Entregado).
+ *
+ * Esta función se conserva con la misma forma porque la usan el alta y la
+ * confirmación del pedido, pero siempre responde "no requiere". Las
+ * columnas abastecimiento_* de envios quedan como historial de los pedidos
+ * viejos: nada las lee para decidir ni para bloquear.
  */
-async function calcularAbastecimientoDesdeItems(items, usuario_id, t) {
-  let costo = 0;
-  let requiere = false;
-  const totals = new Map();
-  for (const item of items || []) {
-    const receta = await resolverReceta(item, t);
-    for (const componente of receta) {
-      const key = `${componente.producto_id}:${componente.variante_id || 0}`;
-      const actual = totals.get(key) || { ...componente, cantidad: 0 };
-      actual.cantidad += componente.cantidad;
-      totals.set(key, actual);
-    }
-  }
-  for (const id of [...new Set([...totals.values()].map(c => c.producto_id))].sort((a, b) => a - b)) {
-    await Producto.findByPk(id, { transaction: t, lock: Transaction.LOCK.UPDATE });
-  }
-  for (const { producto_id, variante_id, cantidad } of totals.values()) {
-    const prod = await Producto.findByPk(producto_id, {
-      transaction: t,
-      include: [{ model: Usuario, as: 'Creador', include: [Rol] }],
-    });
-    if (!esProductoCargadoPorAdmin(prod)) continue;
-    // Stock received and owned by this merchant does not incur a second purchase.
-    const disponibleAcreditado = (await InventarioUbicacion.sum('cantidad_disponible', {
-      where: { usuario_id, producto_id, variante_id: variante_id || null },
-      transaction: t,
-    })) || 0;
-    const cantidadNueva = Math.max(0, (Number(cantidad) || 0) - disponibleAcreditado);
-    if (cantidadNueva <= 0) continue;
-    requiere = true;
-    costo += costoParaComerciante(prod, usuario_id) * cantidadNueva;
-  }
-  return {
-    requiere,
-    costo: Math.max(0, Math.round(costo)),
-    estado: requiere ? 'pendiente_pago' : 'no_requiere',
-  };
+async function calcularAbastecimientoDesdeItems() {
+  return { requiere: false, costo: 0, estado: 'no_requiere' };
 }
 
 async function aplicarAbastecimientoCalculado(envio, items, usuario_id, t) {
@@ -1057,157 +1014,9 @@ async function aplicarAbastecimientoCalculado(envio, items, usuario_id, t) {
   return abastecimiento;
 }
 
-function accionSiguientePedido(envioLike) {
-  const envio = typeof envioLike.toJSON === 'function' ? envioLike.toJSON() : envioLike;
-  const costo = Number(envio.abastecimiento_costo) || 0;
-  const abastecimiento = envio.abastecimiento_estado || 'no_requiere';
-
-  if (envio.estado === 'Pendiente') {
-    return {
-      tipo: 'confirmar',
-      titulo: 'Confirmar pedido',
-      descripcion: 'Validar datos, dirección y disponibilidad antes de mover stock.',
-      cta: 'Completar datos',
-      tono: 'warning',
-      siguiente_estado: 'Confirmado',
-      prioridad: 10,
-    };
-  }
-
-  if (envio.estado === 'Confirmado') {
-    if (abastecimiento === 'pendiente_pago') {
-      return {
-        tipo: 'pagar_abastecimiento',
-        titulo: `Pagar ${formatGsPlano(costo)} para iniciar abastecimiento`,
-        descripcion: 'Transferí el monto a la cuenta de Gesicom y subí el comprobante. Gesicom procesa el pedido recién cuando el pago esté validado.',
-        cta: 'Pagar abastecimiento',
-        tono: 'danger',
-        requiere_pago: true,
-        prioridad: 20,
-      };
-    }
-    if (abastecimiento === 'pago_enviado') {
-      return {
-        tipo: 'pago_enviado',
-        titulo: 'Comprobante subido, validando pago',
-        descripcion: 'El comercio envió el comprobante de transferencia. Un administrador debe validarlo o rechazarlo.',
-        cta: 'Validar pago',
-        tono: 'warning',
-        prioridad: 25,
-      };
-    }
-    if (abastecimiento === 'pago_rechazado') {
-      return {
-        tipo: 'pago_rechazado',
-        titulo: 'Comprobante rechazado',
-        descripcion: envio.abastecimiento_pago_rechazo_motivo || 'El administrador rechazó el comprobante. Subí uno nuevo para reintentar.',
-        cta: 'Reemplazar comprobante',
-        tono: 'danger',
-        prioridad: 22,
-      };
-    }
-    if (abastecimiento === 'recibido_en_gesicomm') {
-      const esPropia = envio.tipo_logistica_abastecimiento === 'PROPIA';
-      return {
-        tipo: 'abastecimiento_avanzar',
-        titulo: 'En seguimiento abastecimiento',
-        descripcion: 'La mercadería llegó a Gesicomm.',
-        cta: esPropia ? 'Iniciar preparación para envío' : 'Marcar disponible en Gesicomm',
-        tono: 'info',
-        prioridad: 30,
-      };
-    }
-    if (ACCIONES_ABASTECIMIENTO_AVANZAR[abastecimiento]) {
-      return {
-        tipo: 'abastecimiento_avanzar',
-        titulo: 'En seguimiento abastecimiento',
-        descripcion: ACCIONES_ABASTECIMIENTO_AVANZAR[abastecimiento].descripcion,
-        cta: ACCIONES_ABASTECIMIENTO_AVANZAR[abastecimiento].cta,
-        tono: 'info',
-        prioridad: 30,
-      };
-    }
-    if (abastecimiento === 'en_transito_a_deposito_cliente') {
-      return {
-        tipo: 'confirmar_recepcion_deposito',
-        titulo: 'En tránsito hacia tu depósito',
-        descripcion: 'Cuando recibas la mercadería, confirmá la recepción.',
-        cta: 'Confirmar recepción',
-        tono: 'info',
-        prioridad: 35,
-      };
-    }
-    if (abastecimiento === 'recibido_en_deposito_cliente' || abastecimiento === 'disponible_en_gesicomm') {
-      return {
-        tipo: 'listo_para_despacho',
-        titulo: 'Listo para despacho',
-        descripcion: 'La mercaderia ya llego al deposito.',
-        cta: 'Preparar pedido',
-        tono: 'success',
-        siguiente_estado: 'Preparado',
-        prioridad: 40,
-      };
-    }
-    return {
-      tipo: 'preparar',
-      titulo: 'Preparar pedido',
-      descripcion: 'Separar, embalar y dejar listo para enviar.',
-      cta: 'Preparar',
-      tono: 'info',
-      siguiente_estado: 'Preparado',
-      prioridad: 40,
-    };
-  }
-
-  if (envio.estado === 'Preparado') {
-    return {
-      tipo: 'despachar',
-      titulo: 'Despachar pedido',
-      descripcion: 'Asignar salida con courier o entrega propia.',
-      cta: 'Despachar',
-      tono: 'info',
-      siguiente_estado: 'Despachado',
-      prioridad: 50,
-    };
-  }
-
-  if (envio.estado === 'Despachado' || envio.estado === 'Reprogramado') {
-    return {
-      tipo: 'resultado_entrega',
-      titulo: 'Gestionar resultado de entrega',
-      descripcion: 'Marcar entregado, reprogramado, devuelto o perdido segun corresponda.',
-      cta: 'Actualizar resultado',
-      tono: 'warning',
-      prioridad: 60,
-    };
-  }
-
-  if (envio.estado === 'Entregado' && envio.estado_financiero === 'pendiente_liquidacion') {
-    return {
-      tipo: 'rendir',
-      titulo: 'Rendir dinero del pedido',
-      descripcion: 'Cerrar la liquidacion pendiente.',
-      cta: 'Rendir',
-      tono: 'success',
-      prioridad: 70,
-    };
-  }
-
-  return {
-    tipo: 'cerrado',
-    titulo: 'Sin acciones pendientes',
-    descripcion: 'El pedido no requiere una accion operativa ahora.',
-    cta: null,
-    tono: 'neutral',
-    prioridad: 999,
-  };
-}
-
 function decorarEnvio(envio) {
   const plano = typeof envio.toJSON === 'function' ? envio.toJSON() : envio;
-  const ultimoRecordatorio = (plano.recordatorios && plano.recordatorios.length > 0)
-    ? plano.recordatorios.find(r => r.estado === 'PENDIENTE' || r.estado === 'VENCIDO') || plano.recordatorios[plano.recordatorios.length - 1]
-    : null;
+  const ultimoRecordatorio = elegirRecordatorioVigente(plano.recordatorios);
   const ahora = new Date();
   const estaVencido = ultimoRecordatorio && (
     ultimoRecordatorio.estado === 'VENCIDO' ||
@@ -1220,6 +1029,7 @@ function decorarEnvio(envio) {
     recordatorio_estado: estaVencido ? 'VENCIDO' : (ultimoRecordatorio?.estado || null),
     recordatorio_ejecutar_en: ultimoRecordatorio?.ejecutar_en || null,
     recordatorio_nota: ultimoRecordatorio?.nota || null,
+    recordatorio_fase_id: ultimoRecordatorio?.fase_id || null,
     recordatorio_vencido: Boolean(estaVencido),
     accion_siguiente: accionSiguientePedido(plano),
   };
@@ -1236,10 +1046,6 @@ function resumenAccionesSiguientes(envios) {
       costo_total: 0,
     };
     actual.cantidad += 1;
-    if (accion.tipo === 'pagar_abastecimiento') {
-      actual.costo_total += Number(envio.abastecimiento_costo) || 0;
-      actual.titulo = `Pagar ${formatGsPlano(actual.costo_total)} para iniciar abastecimiento`;
-    }
     porTipo.set(accion.tipo, actual);
   }
   return Array.from(porTipo.values()).sort((a, b) => a.prioridad - b.prioridad);
@@ -1480,7 +1286,7 @@ exports.listEnviosPaginados = async (req, res) => {
           model: SeguimientoRecordatorio,
           as: 'recordatorios',
           required: false,
-          attributes: ['id', 'ejecutar_en', 'estado', 'nota', 'version'],
+          attributes: ['id', 'ejecutar_en', 'estado', 'nota', 'version', 'fase_id'],
         },
         {
           model: EnvioItem, as: 'items', attributes: ['id', 'producto_id', 'nombre_producto', 'cantidad', 'precio_unitario', 'subtotal', 'oferta_nombre'],
@@ -1685,19 +1491,11 @@ exports.createEnvio = async (req, res) => {
 
     // Si nace en "Confirmado", reserva stock real desde la creación.
     if (nuevoEnvio.estado === 'Confirmado') {
-      const abastecimiento = await aplicarAbastecimientoCalculado(nuevoEnvio, nuevoEnvio.items || [], usuario_id, t);
+      await aplicarAbastecimientoCalculado(nuevoEnvio, nuevoEnvio.items || [], usuario_id, t);
       await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id, { origenPreferidoId: origen_preferido_id, tiendaId: nuevoEnvio.tienda_id });
       await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
       await require('../services/speedbox/service').queueConfirmedOrder(nuevoEnvio, t);
       await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
-      if (abastecimiento.requiere) {
-        await registrarHistorial(
-          nuevoEnvio.id,
-          usuario_id,
-          `Abastecimiento Gesicom pendiente de pago: ${formatGsPlano(abastecimiento.costo)}`,
-          t
-        );
-      }
     } else {
       await registrarHistorial(nuevoEnvio.id, usuario_id, `Pedido creado manualmente (${nuevoEnvio.estado})`, t);
     }
@@ -1829,19 +1627,6 @@ exports.updateEstado = async (req, res) => {
         await t.rollback();
         return res.status(400).json({ error: `No se puede pasar de "${envio.estado}" a "${estado}".` });
       }
-      if (estado === 'Preparado' && !ABASTECIMIENTO_ESTADOS_FINALES.includes(envio.abastecimiento_estado)) {
-        await t.rollback();
-        const mensajesBloqueo = {
-          pendiente_pago: `Primero se debe pagar ${formatGsPlano(envio.abastecimiento_costo)} para iniciar el abastecimiento Gesicom.`,
-          pago_rechazado: 'El comprobante de pago del abastecimiento fue rechazado. Subí uno nuevo antes de preparar el pedido.',
-          en_transito_a_deposito_cliente: 'La mercadería está viajando a tu depósito. Confirmá la recepción antes de preparar el pedido.',
-        };
-        return res.status(400).json({
-          error: mensajesBloqueo[envio.abastecimiento_estado]
-            || 'El pedido todavía está en seguimiento de abastecimiento Gesicom. Esperá a que quede recibido antes de prepararlo.',
-        });
-      }
-
       // El pedido VENÍA de "Reprogramado": este cambio de estado —sea cual
       // sea el destino, incluso otro "Reprogramado"— es la resolución del
       // viaje que se acababa de hacer, así que es acá donde recién se sabe
@@ -1936,14 +1721,6 @@ exports.updateEstado = async (req, res) => {
           abastecimiento_pagado_at: null,
           abastecimiento_recibido_at: null,
         });
-        if (abastecimiento.requiere) {
-          await registrarHistorial(
-            envio.id,
-            usuario_id,
-            `Abastecimiento Gesicom pendiente de pago: ${formatGsPlano(abastecimiento.costo)}`,
-            t
-          );
-        }
         await descontarStockYSnapshot(envio.items || [], t, envio.usuario_id, { origenPreferidoId: origen_preferido_id, tiendaId: envio.tienda_id });
         updateData.stock_descontado = true;
       }
@@ -2601,6 +2378,71 @@ exports.registrarPerdida = async (req, res) => {
     if (!t.finished) await t.rollback();
     console.error('Error registrando pérdida:', error);
     res.status(400).json({ error: error.message || 'Error al registrar la pérdida' });
+  }
+};
+
+/**
+ * POST /api/envios/resumen — los pedidos del período agrupados por en qué
+ * quedaron. Body: { fecha_desde, fecha_hasta }.
+ */
+exports.resumenPedidos = async (req, res) => {
+  try {
+    const { fecha_desde, fecha_hasta } = req.body || {};
+    const ventas = await pendientesSeguimientoService.ventasDelPeriodo({
+      whereBase: whereEnviosDeUsuario(req), fecha_desde, fecha_hasta,
+    });
+    res.json({ ventas });
+  } catch (error) {
+    console.error('Error armando el resumen de pedidos:', error);
+    res.status(500).json({ error: 'No se pudo armar el resumen de pedidos' });
+  }
+};
+
+function alcanceSeguimiento(req) {
+  return { whereBase: whereEnviosDeUsuario(req), usuarioId: req.usuario.id, esAdmin: esAdministrador(req) };
+}
+
+/**
+ * POST /api/envios/seguimiento/tablero — el Kanban de mensajes por enviar:
+ * una columna por fase del flujo, cada una con su página de pedidos.
+ *
+ * Body (todo se filtra y pagina acá, nunca en el frontend):
+ *   { etapa, flujo_id, cuando, busqueda, limit, paginas: { [claveColumna]: page } }
+ * `etapa` es el tipo de flujo (confirmación web, venta por WhatsApp,
+ * seguimiento de envío, escalamiento de ventas); qué pedidos caen en cada
+ * una lo decide su estado. No depende del período: un pedido de la semana
+ * pasada que sigue sin confirmar sigue siendo trabajo de hoy.
+ */
+exports.tableroSeguimiento = async (req, res) => {
+  try {
+    const { etapa, flujo_id, cuando, busqueda, limit, paginas } = req.body || {};
+    const tablero = await pendientesSeguimientoService.tableroDeSeguimiento({
+      ...alcanceSeguimiento(req),
+      filtros: { etapa, flujo_id, cuando, busqueda, limit, paginas: paginas && typeof paginas === 'object' ? paginas : {} },
+    });
+    res.json(tablero);
+  } catch (error) {
+    console.error('Error armando el tablero de seguimiento:', error);
+    res.status(500).json({ error: 'No se pudo armar el tablero de seguimiento' });
+  }
+};
+
+/**
+ * POST /api/envios/seguimiento/pendientes — la misma lista del tablero pero
+ * plana y paginada, para recorrerla como cola de trabajo.
+ * Body: { etapa, flujo_id, fase, cuando, busqueda, page, limit }
+ */
+exports.pendientesSeguimiento = async (req, res) => {
+  try {
+    const { etapa, flujo_id, fase, cuando, busqueda, page, limit } = req.body || {};
+    const pagina = await pendientesSeguimientoService.pendientesPaginados({
+      ...alcanceSeguimiento(req),
+      filtros: { etapa, flujo_id, fase, cuando, busqueda, page, limit },
+    });
+    res.json(pagina);
+  } catch (error) {
+    console.error('Error listando pendientes de seguimiento:', error);
+    res.status(500).json({ error: 'No se pudieron listar los pendientes de seguimiento' });
   }
 };
 

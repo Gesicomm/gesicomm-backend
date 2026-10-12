@@ -27,6 +27,7 @@ function hoyPy() {
 class CuponService {
   static serializar(cupon) {
     const data = cupon.toJSON ? cupon.toJSON() : cupon;
+    const estado = CuponService.estado(data);
     return {
       id: data.id,
       codigo: data.codigo,
@@ -37,17 +38,23 @@ class CuponService {
       usos: data.usos,
       activo: data.activo,
       producto_ids: (data.productos || []).map(p => p.producto_id),
+      usos_restantes: data.max_usos == null ? null : Math.max(0, Number(data.max_usos) - Number(data.usos || 0)),
+      estado_motivo: estado.motivo,
       // Se calcula acá y no en el frontend para que la lista y el checkout
       // usen exactamente el mismo criterio de "está vigente".
-      vigente: CuponService.estaVigente(data),
+      vigente: estado.vigente,
     };
   }
 
   static estaVigente(data) {
-    if (!data.activo) return false;
-    if (data.fecha_vencimiento && data.fecha_vencimiento < hoyPy()) return false;
-    if (data.max_usos != null && data.usos >= data.max_usos) return false;
-    return true;
+    return CuponService.estado(data).vigente;
+  }
+
+  static estado(data) {
+    if (!data.activo) return { vigente: false, motivo: 'desactivado' };
+    if (data.fecha_vencimiento && data.fecha_vencimiento < hoyPy()) return { vigente: false, motivo: 'vencido' };
+    if (data.max_usos != null && Number(data.usos || 0) >= Number(data.max_usos)) return { vigente: false, motivo: 'agotado' };
+    return { vigente: true, motivo: 'vigente' };
   }
 
   static async listar(usuario_id) {
@@ -66,6 +73,10 @@ class CuponService {
     const porcentaje = Number(datos.descuento_porcentaje);
     if (!(porcentaje > 0) || porcentaje > 100) {
       throw new Error('El descuento tiene que ser un porcentaje mayor a 0 y hasta 100.');
+    }
+    const maxUsos = datos.max_usos != null && datos.max_usos !== '' ? Number.parseInt(datos.max_usos, 10) : null;
+    if (maxUsos != null && (!Number.isSafeInteger(maxUsos) || maxUsos < 1)) {
+      throw new Error('El límite de canjes tiene que ser un número entero mayor a 0.');
     }
 
     const alcance = datos.alcance === 'productos' ? 'productos' : 'tienda';
@@ -87,7 +98,7 @@ class CuponService {
         descuento_porcentaje: porcentaje,
         alcance,
         fecha_vencimiento: datos.fecha_vencimiento || null,
-        max_usos: datos.max_usos != null && datos.max_usos !== '' ? parseInt(datos.max_usos, 10) : null,
+        max_usos: maxUsos,
         activo: datos.activo !== false,
       }, { transaction: t });
 
@@ -125,7 +136,11 @@ class CuponService {
     if (datos.activo !== undefined) cambios.activo = !!datos.activo;
     if (datos.fecha_vencimiento !== undefined) cambios.fecha_vencimiento = datos.fecha_vencimiento || null;
     if (datos.max_usos !== undefined) {
-      cambios.max_usos = datos.max_usos === '' || datos.max_usos == null ? null : parseInt(datos.max_usos, 10);
+      const maxUsos = datos.max_usos === '' || datos.max_usos == null ? null : Number.parseInt(datos.max_usos, 10);
+      if (maxUsos != null && (!Number.isSafeInteger(maxUsos) || maxUsos < 1)) {
+        throw new Error('El límite de canjes tiene que ser un número entero mayor a 0.');
+      }
+      cambios.max_usos = maxUsos;
     }
     // El código NO se puede cambiar: ya circula impreso o compartido, y
     // renombrarlo dejaría clientes con un código que dejó de existir.

@@ -143,6 +143,9 @@ class TiendaService {
     if (payload.mensaje_contacto && String(payload.mensaje_contacto).length > 300) {
       errores.push('mensaje_contacto no puede superar los 300 caracteres.');
     }
+    if (payload.mensaje_consulta_general && String(payload.mensaje_consulta_general).length > 300) {
+      errores.push('mensaje_consulta_general no puede superar los 300 caracteres.');
+    }
     for (const [campo, max] of [['nombre_contacto', 100], ['direccion_publica', 255], ['ciudad_publica', 100], ['horario_atencion', 150]]) {
       if (payload[campo] && String(payload[campo]).length > max) errores.push(`${campo} no puede superar los ${max} caracteres.`);
     }
@@ -164,7 +167,7 @@ class TiendaService {
   static camposEditables(payload) {
     const campos = {};
     for (const campo of [
-      'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'documento', 'ruc',
+      'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'mensaje_consulta_general', 'documento', 'ruc',
       'email', 'instagram', 'facebook', 'tiktok', 'youtube', 'twitter',
       'nombre_contacto', 'canal_contacto', 'direccion_publica', 'ciudad_publica', 'horario_atencion',
       'color_primario', 'color_secundario', 'color_fondo',
@@ -309,6 +312,22 @@ class TiendaService {
     tienda.logo_imagen_size = imagenData ? imagenData.size : null;
     tienda.logo_imagen_width = imagenData ? imagenData.width : null;
     tienda.logo_imagen_height = imagenData ? imagenData.height : null;
+    await tienda.save();
+
+    return { tienda: await this.obtener(tienda_id, usuario_id), anterior };
+  }
+
+  /** Igual que actualizarLogo, para el favicon de la pestaña. */
+  static async actualizarFavicon(tienda_id, usuario_id, imagenData) {
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
+    if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
+
+    const anterior = tienda.favicon_imagen
+      ? { url: tienda.favicon_imagen, storage_key: tienda.favicon_imagen_storage_key }
+      : null;
+
+    tienda.favicon_imagen = imagenData ? imagenData.url : null;
+    tienda.favicon_imagen_storage_key = imagenData ? imagenData.storage_key : null;
     await tienda.save();
 
     return { tienda: await this.obtener(tienda_id, usuario_id), anterior };

@@ -3,8 +3,10 @@ const router = express.Router();
 const envioController = require('../controllers/envioController');
 const seguimientoController = require('../controllers/envioSeguimientoController');
 const { verificarToken } = require('../middleware/autenticacion');
+const { exigirTiendaActiva } = require('../middleware/resolverTiendaActiva');
 
 router.use(verificarToken);
+router.use(exigirTiendaActiva);
 
 // Usamos POST para listar con filtros dinámicos (fecha, estado) según la regla global
 router.post('/list', envioController.listEnvios);
@@ -50,6 +52,12 @@ router.get('/:id/abastecimiento/timeline', envioController.timelineAbastecimient
 router.post('/:id/devolucion', envioController.registrarDevolucion);
 router.post('/:id/perdida', envioController.registrarPerdida);
 
+// Pestaña Resumen: ventas del período, y el Kanban de mensajes por enviar
+// (una columna por fase; filtrado y paginado en el servidor).
+router.post('/resumen', envioController.resumenPedidos);
+router.post('/seguimiento/tablero', envioController.tableroSeguimiento);
+router.post('/seguimiento/pendientes', envioController.pendientesSeguimiento);
+
 // Contador de pedidos por estado, respetando los filtros activos (pestañas de la bandeja)
 router.post('/conteo-por-estado', envioController.conteoPorEstado);
 
@@ -73,6 +81,9 @@ router.delete('/:id', envioController.deleteEnvio);
 router.get('/:id/seguimiento/flujos', seguimientoController.flujosDelPedido);
 router.post('/:id/seguimiento/contactos', seguimientoController.registrarContacto);
 router.get('/:id/seguimiento/contactos', seguimientoController.listarContactos);
+// El operador confirma que mandó el mensaje de la fase: es lo que la hace avanzar.
+router.post('/:id/seguimiento/fases/:faseId/completar', seguimientoController.completarFase);
+router.delete('/:id/seguimiento/fases/:faseId/completar', seguimientoController.descompletarFase);
 router.get('/:id/seguimiento/etiquetas', seguimientoController.listarEtiquetasDelPedido);
 router.post('/:id/seguimiento/etiquetas', seguimientoController.asociarEtiqueta);
 router.delete('/:id/seguimiento/etiquetas/:etiquetaId', seguimientoController.quitarEtiqueta);

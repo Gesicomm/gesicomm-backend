@@ -91,13 +91,20 @@ router.post('/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheck
 // frontend lo llama seguido (cada cambio de cantidad/oferta).
 router.post('/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
 router.post('/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);
+// Productos puntuales completos (el carrito los pide cuando no vinieron en
+// la primera página de la landing). Solo lectura: mismo límite que el GET.
+router.post('/productos', limitePublico, resolverTiendaOpcional, ctrl.obtenerProductos);
 router.get('/pagopar/resultado/:hash', limitePublico, resolverTiendaOpcional, ctrl.resultadoPago);
 router.get('/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 // Catálogo de departamentos/ciudades de Paraguay (no es de ninguna tienda en
 // particular): va antes del catch-all /:slug, si no "geografia" se
 // interpretaría como un slug de landing.
 router.get('/geografia', limitePublico, ctrl.geografia);
+// Ciudades de envío de la tienda (el carrito las pide aparte, ya no viajan en
+// la landing). Mismo motivo para ir antes del catch-all /:slug.
+router.get('/delivery', limitePublico, resolverTiendaOpcional, ctrl.deliveryPublico);
 router.get('/:slug', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);
+router.get('/:slug/delivery', limitePublico, resolverTiendaOpcional, ctrl.deliveryPublico);
 router.post('/:slug/buscar', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug); // busqueda catalogo
 router.get('/:slug/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 router.post('/:slug/eventos', limiteEventos, resolverTiendaOpcional, ctrl.registrarEvento);
@@ -105,5 +112,6 @@ router.post('/:slug/visita', limiteVisita, resolverTiendaOpcional, ctrl.registra
 router.post('/:slug/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheckout);
 router.post('/:slug/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
 router.post('/:slug/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);
+router.post('/:slug/productos', limitePublico, resolverTiendaOpcional, ctrl.obtenerProductos);
 
 module.exports = router;

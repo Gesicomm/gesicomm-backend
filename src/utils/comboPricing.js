@@ -116,12 +116,21 @@ function calcularUpsell(upsell) {
 /**
  * Calcula precios y costos del combo completo.
  *
- * @param {{ salePrice }} principal
+ * Publicidad (CPA) y comisión de cobro son un % del precio DEL COMBO, igual
+ * que en el análisis de sensibilidad de productos: el cliente paga el combo
+ * entero y la pasarela cobra sobre todo eso. Por eso el costo del combo tiene
+ * dos partes:
+ * - fixedCost: productos + envío + confirmación + empaque (no cambia con el precio).
+ * - variableRate: (CPA% + comisión%) / 100, se cobra sobre el precio que se elija.
+ * Cualquier cálculo a otro precio (descuentos, precio mínimo, precio sugerido)
+ * tiene que usar utilidadAPrecio()/precioParaMargen(), nunca `totalCost` fijo.
+ *
+ * @param {{ cost, salePrice }} principal
  * @param {Array} upsellResults - Resultado de calcularUpsell() para cada upsell
- * @param {number} principalTotalCosts - costoTotal del producto principal (incluye CPA, envío, etc.)
- * @returns {{ originalPrice, finalPrice, discountAmount, discountPercentage, upsellCosts, totalCost, profit, margin, ticket }}
+ * @param {{ cpaPercentage, shipping, confirmation, packaging, paymentCommissionPercentage }} costs
+ * @returns {{ originalPrice, finalPrice, discountAmount, discountPercentage, productCost, upsellCosts, logisticsCost, cpa, paymentCommissionCost, fixedCost, variableRate, totalCost, profit, margin, ticket }}
  */
-function calcularCombo(principal, upsellResults, principalTotalCosts) {
+function calcularCombo(principal, upsellResults, costs) {
   const precioOriginalPrincipal = principal.salePrice || 0;
 
   const sumaOriginalUpsells = upsellResults.reduce((acc, u) => acc + u.originalPrice, 0);
@@ -134,7 +143,13 @@ function calcularCombo(principal, upsellResults, principalTotalCosts) {
   const discountPercentage = r4(div(discountAmount, originalPrice));
 
   const upsellCosts = r2(sumaCostosUpsells);
-  const totalCost = r2(principalTotalCosts + upsellCosts);
+  const productCost = r2((principal.cost || 0) + sumaCostosUpsells);
+  const logisticsCost = r2((costs.shipping || 0) + (costs.confirmation || 0) + (costs.packaging || 0));
+  const fixedCost = r2(productCost + logisticsCost);
+  const variableRate = ((costs.cpaPercentage || 0) + (costs.paymentCommissionPercentage || 0)) / 100;
+  const cpa = r2(finalPrice * ((costs.cpaPercentage || 0) / 100));
+  const paymentCommissionCost = r2(finalPrice * ((costs.paymentCommissionPercentage || 0) / 100));
+  const totalCost = r2(fixedCost + cpa + paymentCommissionCost);
   const profit = r2(finalPrice - totalCost);
   const margin = r4(div(profit, finalPrice));
 
@@ -143,12 +158,42 @@ function calcularCombo(principal, upsellResults, principalTotalCosts) {
     finalPrice,
     discountAmount,
     discountPercentage,
+    productCost,
     upsellCosts,
+    logisticsCost,
+    cpa,
+    paymentCommissionCost,
+    fixedCost,
+    variableRate,
     totalCost,
     profit,
     margin,
     ticket: finalPrice, // Alias semántico para claridad en UI
   };
+}
+
+/**
+ * Utilidad del combo si se cobra `price` en vez de su finalPrice: CPA y
+ * comisión se recalculan sobre ese precio.
+ *
+ * @param {number} price
+ * @param {{ fixedCost, variableRate }} combo - Resultado de calcularCombo()
+ */
+function utilidadAPrecio(price, combo) {
+  return r2(price - combo.fixedCost - price * (combo.variableRate || 0));
+}
+
+/**
+ * Precio mínimo para que el combo deje `margin` (fracción) de margen.
+ * precio − fijo − precio·v = margen·precio → precio = fijo / (1 − v − margen).
+ * null si CPA + comisión + margen ya se comen el 100% del precio.
+ *
+ * @param {number} margin - Fracción (0.10 = 10%)
+ * @param {{ fixedCost, variableRate }} combo
+ */
+function precioParaMargen(margin, combo) {
+  const denominador = 1 - (combo.variableRate || 0) - margin;
+  return denominador > 0 ? r2(combo.fixedCost / denominador) : null;
 }
 
 // ─── Comparativa Solo vs Combo ────────────────────────────────────────────────
@@ -241,18 +286,17 @@ const RENTABILIDAD_META = {
 /**
  * Calcula precios sugeridos para alcanzar distintos márgenes objetivo.
  *
- * Fórmula: precio_sugerido = costo_total / (1 - margen_objetivo)
+ * Fórmula: precio_sugerido = costo_fijo / (1 - %variable - margen_objetivo)
  *
- * @param {number} totalCost - Costo total del combo
+ * @param {{ fixedCost, variableRate }} combo - Resultado de calcularCombo()
  * @param {number[]} targetMargins - Array de porcentajes (ej: [15, 30, 45])
  * @returns {Array<{ targetMargin, suggestedPrice, estimatedProfit }>}
  */
-function calcularRecomendaciones(totalCost, targetMargins = [15, 30, 45]) {
+function calcularRecomendaciones(combo, targetMargins = [15, 30, 45]) {
   return targetMargins.map(marginPct => {
-    const marginDecimal = marginPct / 100;
-    // Si margen objetivo >= 100%, no hay precio posible
-    const suggestedPrice = marginDecimal < 1 ? r2(totalCost / (1 - marginDecimal)) : null;
-    const estimatedProfit = suggestedPrice !== null ? r2(suggestedPrice - totalCost) : null;
+    // Si CPA + comisión + margen objetivo >= 100%, no hay precio posible
+    const suggestedPrice = precioParaMargen(marginPct / 100, combo);
+    const estimatedProfit = suggestedPrice !== null ? utilidadAPrecio(suggestedPrice, combo) : null;
     return { targetMargin: marginPct, suggestedPrice, estimatedProfit };
   });
 }
@@ -264,29 +308,28 @@ function calcularRecomendaciones(totalCost, targetMargins = [15, 30, 45]) {
  * precio < costo → pérdida
  * precio = costo → equilibrio (margen 0)
  * precio > costo → ganancia
+ * Con CPA y comisión sobre el precio: equilibrio = costo_fijo / (1 - %variable).
  *
- * @param {number} totalCost
- * @returns {number}
+ * @param {{ fixedCost, variableRate }} combo
+ * @returns {number|null}
  */
-function calcularPrecioMinimo(totalCost) {
-  return r2(totalCost);
+function calcularPrecioMinimo(combo) {
+  return precioParaMargen(0, combo);
 }
 
 /**
  * Descuento máximo permitido manteniendo el margen mínimo configurado.
  * Retorna null si no existe margen disponible para ningún descuento.
  *
- * @param {number} totalCost - Costo total del combo
+ * @param {{ fixedCost, variableRate }} combo
  * @param {number} originalPrice - Precio original del combo (sin descuentos de upsells)
  * @param {number} minimumMarginPct - Margen mínimo deseado en porcentaje (ej: 10)
  * @returns {number|null} - Porcentaje de descuento máximo (0-100) o null
  */
-function calcularDescuentoMaximo(totalCost, originalPrice, minimumMarginPct = 10) {
+function calcularDescuentoMaximo(combo, originalPrice, minimumMarginPct = 10) {
   if (!originalPrice || originalPrice === 0) return null;
-  const minimumMarginDecimal = minimumMarginPct / 100;
-  if (minimumMarginDecimal >= 1) return null;
-
-  const precioMinimoPermitido = r2(totalCost / (1 - minimumMarginDecimal));
+  const precioMinimoPermitido = precioParaMargen(minimumMarginPct / 100, combo);
+  if (precioMinimoPermitido === null) return null;
   const descuentoMaximo = r4(1 - div(precioMinimoPermitido, originalPrice));
 
   // Si es negativo, el precio mínimo ya supera el precio original → sin margen para descuentos
@@ -300,7 +343,9 @@ function calcularDescuentoMaximo(totalCost, originalPrice, minimumMarginPct = 10
 /**
  * Genera tabla de escenarios con distintos descuentos aplicados al precio del combo.
  *
- * @param {{ finalPrice: number, totalCost: number }} comboData
+ * CPA y comisión bajan junto con el precio: cada fila los recalcula.
+ *
+ * @param {{ finalPrice: number, fixedCost: number, variableRate: number }} comboData
  * @param {number[]} scenarios - Porcentajes de descuento a simular
  * @param {{ minimumMargin: number }} thresholds
  * @returns {Array<{ discountPercentage, price, profit, margin, status }>}
@@ -308,7 +353,7 @@ function calcularDescuentoMaximo(totalCost, originalPrice, minimumMarginPct = 10
 function calcularSensibilidad(comboData, scenarios = [0, 5, 10, 15, 20, 25, 30, 35], thresholds = { minimumMargin: 0.10 }) {
   return scenarios.map(descPct => {
     const price = r2(comboData.finalPrice * (1 - descPct / 100));
-    const profit = r2(price - comboData.totalCost);
+    const profit = utilidadAPrecio(price, comboData);
     const margin = r4(div(profit, price));
     const status = clasificarRentabilidad(margin, thresholds.minimumMargin);
     return { discountPercentage: descPct, price, profit, margin, status };
@@ -362,7 +407,7 @@ function calcular(input) {
   });
 
   // 3. Combo completo
-  const comboResult = calcularCombo(principal, upsellResults, principalResult.totalCosts);
+  const comboResult = calcularCombo(principal, upsellResults, costs);
 
   // 4. Comparativa
   const standaloneProfit = principalResult.profit;
@@ -384,19 +429,19 @@ function calcular(input) {
   }
 
   // 5. Recomendaciones
-  const recommendations = calcularRecomendaciones(comboResult.totalCost, targetMargins);
+  const recommendations = calcularRecomendaciones(comboResult, targetMargins);
 
   // 6. Precio mínimo y descuento máximo
-  const minimumPrice = calcularPrecioMinimo(comboResult.totalCost);
+  const minimumPrice = calcularPrecioMinimo(comboResult);
   const maximumDiscountPercentage = calcularDescuentoMaximo(
-    comboResult.totalCost,
+    comboResult,
     comboResult.originalPrice,
     minimumMargin,
   );
 
   // 7. Sensibilidad
   const sensitivity = calcularSensibilidad(
-    { finalPrice: comboResult.finalPrice, totalCost: comboResult.totalCost },
+    comboResult,
     discountScenarios,
     { minimumMargin: minimumMarginDecimal },
   );
@@ -423,6 +468,8 @@ module.exports = {
   simularDescuentosPrincipal,
   calcularUpsell,
   calcularCombo,
+  utilidadAPrecio,
+  precioParaMargen,
   calcularComparativa,
   clasificarOferta,
   clasificarRentabilidad,

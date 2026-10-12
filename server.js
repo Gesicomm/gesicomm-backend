@@ -38,6 +38,7 @@ const redFulfillmentRoutes = require('./src/routes/redFulfillment');
 const envioRoutes = require('./src/routes/envioRoutes');
 const inventarioRoutes = require('./src/routes/inventarioRoutes');
 const solicitudAbastecimientoRoutes = require('./src/routes/solicitudAbastecimientoRoutes');
+const importadaChinaRoutes = require('./src/routes/importadaChinaRoutes');
 const seguimientoRoutes = require('./src/routes/seguimientoRoutes');
 const metodoPagoRoutes = require('./src/routes/metodoPagoRoutes');
 const liquidacionRoutes = require('./src/routes/liquidacionRoutes');
@@ -183,6 +184,10 @@ app.use('/api/page-builder', express.json({ limit: '1mb' }));
 // Un lote de carga inicial (POST .../v1/productos/lote) manda hasta 200
 // productos con imágenes y tags en un solo body — 10kb no alcanza.
 app.use('/api/integraciones/productos/v1', express.json({ limit: '2mb' }));
+// Cambiar precios manda listas de filas ({tipo, id}): la selección que viene
+// de Mi catálogo y hasta 1000 precios editados a mano. Con 10kb el corte
+// caía cerca de las 300 filas y "Seleccionar todo" devolvía un 413.
+app.use('/api/vitrina/precios', express.json({ limit: '200kb' }));
 app.use(express.json({ limit: '10kb' })); // Límite de tamaño para prevenir ataques
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 // Servir imágenes de productos subidas
@@ -229,6 +234,7 @@ app.use('/api/fulfillment', redFulfillmentRoutes);
 app.use('/api/envios', envioRoutes);
 app.use('/api/inventario', inventarioRoutes);
 app.use('/api/solicitudes-abastecimiento', solicitudAbastecimientoRoutes);
+app.use('/api/importada-china', importadaChinaRoutes);
 app.use('/api/seguimiento', seguimientoRoutes);
 app.use('/api/metodos-pago', metodoPagoRoutes);
 app.use('/api/liquidaciones', liquidacionRoutes);

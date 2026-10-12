@@ -52,7 +52,13 @@ const MAX_ITEMS_LIENZO = 500;
 // Cuántos productos del lienzo se arman COMPLETOS (galería, variantes,
 // ofertas, FAQ) en la respuesta de la landing. El resto se pide paginado a
 // obtenerCatalogoPublico, que trae imágenes solo de la página pedida.
-const PRIMERA_PAGINA_LIENZO = 24;
+// Aparte de estos viajan los que la configuración nombra (destacados,
+// vitrinas, recomendados…) y el de la ficha — ver primeraPaginaLienzo.
+const PRIMERA_PAGINA_LIENZO = 100;
+// Tope de productos "nombrados por la configuración" que se suman a la
+// primera página: una landing con cientos de ids escritos a mano no puede
+// volver a inflar la respuesta que este recorte existe para achicar.
+const MAX_REFERIDOS_LIENZO = 200;
 const ATRIBUTOS_IMAGEN_PRODUCTO = [
   'id', 'producto_id', 'variante_id', 'url', 'storage_key', 'es_principal', 'orden',
   'width', 'height', 'visual_modo', 'focal_x', 'focal_y', 'optimizacion_json',
@@ -1803,6 +1809,144 @@ class LandingService {
     return salida;
   }
 
+  /**
+   * Los content_id que la landing NOMBRA: lo que el comercio eligió en
+   * "Configurar tienda" (destacados, vitrinas, productos por categoría,
+   * oferta con urgencia, recomendados, principal) y los ids escritos en su
+   * HTML. Son los que el inicio tiene que poder pintar aunque no caigan en
+   * la primera página.
+   */
+  static contentIdsReferidosLienzo(content, extra = []) {
+    const venta = content?.venta || {};
+    const inicio = venta.inicio || venta.inicio_comercial || {};
+    const ids = new Set();
+    const sumar = (v) => {
+      const id = typeof v === 'string' ? v.trim() : (v && typeof v === 'object' ? String(v.id || v.content_id || '').trim() : '');
+      if (id && /^[a-z0-9-]{1,200}$/i.test(id) && ids.size < MAX_REFERIDOS_LIENZO) ids.add(id);
+    };
+    const lista = v => (Array.isArray(v) ? v : []);
+    extra.forEach(sumar);
+    if (Number(venta.principal_id) > 0) sumar(`producto-${Number(venta.principal_id)}`);
+    lista(venta.destacados).forEach(sumar);
+    lista(inicio.secciones).forEach(s => lista(s?.productos).forEach(sumar));
+    lista(inicio.productos_categoria?.items).forEach(sumar);
+    [venta.urgencia?.producto_id, venta.prueba_social?.producto_id].forEach(sumar);
+    lista(venta.urgencia?.productos).forEach(sumar);
+    lista(venta.recomendados?.items).forEach(sumar);
+    lista(venta.checkout_recomendados?.items).forEach(sumar);
+    // Ids escritos en el HTML del inicio: vitrinas curadas (JSON en el
+    // atributo) y botones que compran o abren un producto puntual.
+    const html = String(content?.codigo?.html || '');
+    for (const m of html.matchAll(/data-gesicomm-productos-curados=(["'])([\s\S]*?)\1/gi)) {
+      try { lista(JSON.parse(m[2].replace(/&quot;/g, '"'))).forEach(sumar); } catch { /* atributo roto: se ignora */ }
+    }
+    for (const m of html.matchAll(/data-gesicomm-(?:comprar|agregar|ver|checkout)=(["'])([a-z0-9-]{1,200})\1/gi)) {
+      if (m[2] !== 'principal') sumar(m[2]);
+    }
+    return [...ids];
+  }
+
+  /**
+   * Lista MANUAL larga de un lienzo: qué items se arman completos en la
+   * respuesta de la landing. Antes iban todos — una tienda con 366 productos
+   * elegidos a mano bajaba 1 MB en el inicio, en cada ficha y en el checkout,
+   * y el navegador era el que filtraba. Ahora:
+   *
+   *   - los primeros PRIMERA_PAGINA_LIENZO, en el orden del comercio;
+   *   - los que la configuración nombra (contentIdsReferidosLienzo);
+   *   - los primeros de cada categoría que tiene vitrina en el inicio;
+   *   - el de la ficha pedida.
+   *
+   * El resto lo sirve obtenerCatalogoPublico, paginado y filtrado en el
+   * servidor. Como el navegador ya no tiene el catálogo entero, el total y
+   * las categorías (con su cantidad y una foto) salen de acá, calculados
+   * sobre TODA la lista: si los dedujera de lo que le llega, el menú perdería
+   * las categorías que no cayeron en la primera página.
+   *
+   * @returns {{items: object[], total: number, categorias: {nombre: string, cantidad: number, imagen: string|null}[]}}
+   */
+  static async primeraPaginaLienzo(landing, items, { asegurarContentId = null } = {}) {
+    const idsProducto = items.filter(i => i.tipo === 'producto').map(i => Number(i.referencia_id));
+    const idsCombo = items.filter(i => i.tipo === 'combo').map(i => Number(i.referencia_id));
+    // Pasada liviana sobre TODA la lista: solo lo necesario para contar,
+    // agrupar por categoría y traducir content_id → item. Sin precios,
+    // imágenes ni variantes (eso es lo que pesa y se arma después, solo para
+    // los elegidos).
+    const [productos, combos] = await Promise.all([
+      idsProducto.length
+        ? Producto.findAll({
+          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
+          attributes: ['id', 'slug'],
+          include: [{ association: 'categoria', attributes: ['nombre'] }],
+        })
+        : [],
+      idsCombo.length
+        ? ProductoCombo.findAll({
+          where: { id: { [Op.in]: idsCombo }, estado: 'ACTIVO' },
+          attributes: ['id'],
+          include: [{
+            model: Producto, as: 'producto_padre', attributes: ['id'], where: { activo: true }, required: true,
+            include: [{ association: 'categoria', attributes: ['nombre'] }],
+          }],
+        })
+        : [],
+    ]);
+    const infoProducto = new Map(productos.map(p => [p.id, { contentId: p.slug || `producto-${p.id}`, categoria: p.categoria?.nombre || null, productoImagenId: p.id }]));
+    const infoCombo = new Map(combos.map(c => [c.id, { contentId: `combo-${c.id}`, categoria: c.producto_padre?.categoria?.nombre || null, productoImagenId: c.producto_padre?.id || null }]));
+    const vendibles = items
+      .map(item => ({ item, info: (item.tipo === 'combo' ? infoCombo : infoProducto).get(Number(item.referencia_id)) }))
+      .filter(v => v.info);
+
+    const elegidos = new Set(vendibles.slice(0, PRIMERA_PAGINA_LIENZO).map(v => v.item));
+    const referidos = new Set(this.contentIdsReferidosLienzo(landing.content, asegurarContentId ? [asegurarContentId] : []));
+    // `producto-ID` vale aunque el producto tenga slug (así llega principal_id).
+    vendibles.forEach((v) => {
+      if (referidos.has(v.info.contentId) || referidos.has(`${v.item.tipo}-${Number(v.item.referencia_id)}`)) elegidos.add(v.item);
+    });
+    // Vitrinas "por categoría" del inicio: sus primeros productos, en el
+    // orden del comercio, aunque esa categoría empiece después del corte.
+    const inicio = landing.content?.venta?.inicio || landing.content?.venta?.inicio_comercial || {};
+    (Array.isArray(inicio.secciones) ? inicio.secciones : [])
+      .filter(s => s && s.activo !== false && s.tipo === 'categoria' && s.categoria)
+      .forEach((s) => {
+        const limite = Math.max(1, Math.min(24, Number(s.limite) || 4));
+        vendibles
+          .filter(v => v.info.categoria === s.categoria && v.item.mostrar_en_inicio !== false)
+          .slice(0, limite)
+          .forEach(v => elegidos.add(v.item));
+      });
+
+    // Categorías de todo el catálogo, con la foto de su primer producto.
+    const porCategoria = new Map();
+    vendibles.forEach((v) => {
+      const nombre = v.info.categoria;
+      if (!nombre) return;
+      const actual = porCategoria.get(nombre) || { nombre, cantidad: 0, productoImagenId: null };
+      actual.cantidad += 1;
+      if (!actual.productoImagenId) actual.productoImagenId = v.info.productoImagenId;
+      porCategoria.set(nombre, actual);
+    });
+    const idsFoto = [...porCategoria.values()].map(c => c.productoImagenId).filter(Boolean);
+    const fotos = idsFoto.length
+      ? await ProductoImagen.findAll({
+        where: { producto_id: { [Op.in]: idsFoto }, variante_id: null },
+        attributes: ATRIBUTOS_IMAGEN_PRODUCTO,
+        order: [['es_principal', 'DESC'], ['orden', 'ASC']],
+      })
+      : [];
+    const fotoPorProducto = new Map();
+    fotos.forEach((img) => { if (!fotoPorProducto.has(img.producto_id)) fotoPorProducto.set(img.producto_id, ImagenService.serializar(img).url); });
+    const categorias = [...porCategoria.values()]
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+      .map(c => ({ nombre: c.nombre, cantidad: c.cantidad, imagen: fotoPorProducto.get(c.productoImagenId) || null }));
+
+    return {
+      items: vendibles.filter(v => elegidos.has(v.item)).map(v => v.item),
+      total: vendibles.length,
+      categorias,
+    };
+  }
+
   static async itemsDelLienzo(landing, tienda, { contentIds = null, limite = null, asegurar = null } = {}) {
     const venta = landing.content?.venta;
     let items;
@@ -1910,7 +2054,7 @@ class LandingService {
     // LandingItem que le faltaría para que todo el pipeline de abajo
     // (precios, variantes, ofertas, imágenes, FAQ) lo resuelva igual que a
     // cualquier producto de una landing normal, sin duplicar esa lógica.
-    const items = (landing.tipo_pagina === 'funnel' && landing.producto_id && !(landing.items || []).length)
+    let items = (landing.tipo_pagina === 'funnel' && landing.producto_id && !(landing.items || []).length)
       ? [{
         tipo: 'producto',
         referencia_id: landing.producto_id,
@@ -1922,6 +2066,17 @@ class LandingService {
       : (itemsFallbackCodigo || null)
         ? itemsFallbackCodigo
       : (landing.items || []);
+    // Lienzo con lista manual larga: completos van solo la primera página
+    // y lo que la configuración nombra; el total y las categorías se
+    // calculan sobre toda la lista (ver primeraPaginaLienzo).
+    let catalogoLienzo = null;
+    if (esCodigo && Array.isArray(opciones.soloContentIds)) {
+      // Pedido puntual (obtenerProductosPublicos): solo estos, completos.
+      items = await this.itemsDelLienzo(landing, tienda, { contentIds: opciones.soloContentIds });
+    } else if (esCodigo && !itemsFallbackCodigo && items.length > PRIMERA_PAGINA_LIENZO) {
+      catalogoLienzo = await this.primeraPaginaLienzo(landing, items, { asegurarContentId: opciones.asegurarContentId || null });
+      items = catalogoLienzo.items;
+    }
     // Lienzo "directo en un producto": la landing abre en la ficha del
     // principal, así que tiene que venir primero (y aunque la regla lo deje
     // fuera del primer lote).
@@ -2633,13 +2788,10 @@ class LandingService {
         faq: faqDto,
         banner: bannerDto,
       });
-    // Estas 3 llamadas son independientes entre si (delivery, pasarelas de
-    // pago, landings hermanas) y ninguna depende del resultado de las otras
-    // -- antes se esperaban una atras de otra, sumando 3 round-trips
-    // completos a una DB que vive detras de un tunel (ver latencia real en
-    // produccion). En paralelo, el costo es el de la mas lenta de las tres.
-    const [deliveryCiudadesDto, pasarelasPublicas, landingsHermanas] = await Promise.all([
-      this.obtenerOpcionesDelivery(tienda.usuario_id),
+    // Independientes entre si: en paralelo, el costo es el de la mas lenta.
+    // Las ciudades de envio ya no van aca (ver deliveryPublico): pesaban mas
+    // que todo el resto de la respuesta y solo las usa el checkout.
+    const [pasarelasPublicas, landingsHermanas] = await Promise.all([
       PaymentService.getPublicGateways(tienda.usuario_id),
       Landing.findAll({
         where: { tienda_id: tienda.id, activo: true },
@@ -2681,6 +2833,10 @@ class LandingService {
           ? { vistas: this.vistasPublicas(landing.content, opciones.asegurarContentId, itemsDto.find(i => i.tipo === 'producto')?.content_id) }
           : {}),
         ...(landing.content?.venta ? { venta: { ...landing.content.venta, payment_logos: paymentLogos } } : { venta: { payment_logos: paymentLogos } }),
+        // Catálogo recortado: el navegador recibe solo una parte, así que el
+        // total real y el aviso de que el resto se pide al servidor salen de
+        // acá (los lee datosRuntimePublico en el frontend).
+        ...(catalogoLienzo ? { catalogo: { total: catalogoLienzo.total, paginado: true } } : {}),
       } : {
         ofertas_carrito: landing.content?.ofertas_carrito || [],
         ofertas_producto_vista: landing.content?.ofertas_producto_vista || [],
@@ -2728,6 +2884,8 @@ class LandingService {
         nombre: tienda.nombre,
         subdominio: tienda.subdominio,
         logo_imagen: tienda.logo_imagen || null,
+        // Ícono de la pestaña; null = el front cae al logo.
+        favicon_imagen: tienda.favicon_imagen || null,
         // Branding de Mi Tienda tal cual: la landing HTML (lienzo en blanco)
         // arranca con estos colores (ver --tienda-* en construirDocumentoCodigo).
         colores: coloresDeTienda(tienda),
@@ -2781,6 +2939,8 @@ class LandingService {
         whatsapp: landing.mostrar_whatsapp ? (tienda.whatsapp || null) : null,
         telefono: tienda.telefono,
         mensaje: tienda.mensaje_contacto,
+        // Consultas sin producto (inicio, categorías): plantilla aparte.
+        mensaje_general: tienda.mensaje_consulta_general || null,
         incluir_precio: !!landing.whatsapp_incluir_precio,
         incluir_url: !!landing.whatsapp_incluir_url,
       },
@@ -2789,9 +2949,6 @@ class LandingService {
         redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp,
         pasarelas: pasarelasPublicas,
       },
-      // Opciones oficiales del checkout público. Nacen de la matriz de
-      // tarifas de couriers activa para evitar cargar zonas por duplicado.
-      delivery_ciudades: deliveryCiudadesDto,
       // null si está apagado o si no se cargó ni imagen ni título — así el
       // frontend público no tiene que repetir esa condición.
       banner: bannerDto,
@@ -2829,6 +2986,9 @@ class LandingService {
       // JSON, no viaja como null.
       items: esRigida ? itemsHomeDto : undefined,
       catalogo_items: itemsDto,
+      // Solo con el catálogo recortado: categorías de TODA la lista (el
+      // navegador ya no puede deducirlas de los productos que recibe).
+      categorias_catalogo: catalogoLienzo ? catalogoLienzo.categorias : undefined,
       secciones: secciones,
       secciones_producto: secciones_producto,
       testimonios: testimoniosDto,
@@ -2937,7 +3097,7 @@ class LandingService {
     // los idsProducto enteros, paginar no ahorraría nada — el punto de
     // paginar es no pagar esa galería completa para productos que ni
     // siquiera se van a mostrar en esta página.
-    const [productos, combos, precios, deliveryCiudadesDto, pasarelasPublicas] = await Promise.all([
+    const [productos, combos, precios, pasarelasPublicas] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
           where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
@@ -2975,12 +3135,9 @@ class LandingService {
           },
         })
         : Promise.resolve([]),
-      // Antes venían hardcodeados en [] en esta vista liviana: el carrito de
-      // la página de Catálogo (CartDrawer) se abría sin ciudades de envío ni
-      // pasarelas de pago reales, aunque en el home/ficha de producto sí las
-      // tenía. Van en el mismo Promise.all que el resto de fase 1 porque no
-      // dependen de nada de acá — sumarlas no agrega ningún round-trip extra.
-      this.obtenerOpcionesDelivery(tienda.usuario_id),
+      // Pasarelas reales para el CartDrawer de esta página (antes venían en
+      // []). Las ciudades de envío las pide el carrito aparte, cuando hay
+      // algo para comprar (ver deliveryPublico).
       PaymentService.getPublicGateways(tienda.usuario_id),
     ]);
 
@@ -3210,7 +3367,7 @@ class LandingService {
       catalogo_titulo: landing.catalogo_titulo || null,
       catalogo_descripcion: landing.catalogo_descripcion || null,
       template: landing.template ? { slug: landing.template.slug, kind: landing.template.kind } : null,
-      tienda: { nombre: tienda.nombre, subdominio: tienda.subdominio, logo_imagen: tienda.logo_imagen || null, colores: coloresDeTienda(tienda) },
+      tienda: { nombre: tienda.nombre, subdominio: tienda.subdominio, logo_imagen: tienda.logo_imagen || null, favicon_imagen: tienda.favicon_imagen || null, colores: coloresDeTienda(tienda) },
       tema: (esRigida || esFunnel) ? {
         modo: landing.tema_modo,
         primario: landing.color_primario || (esRigida ? tienda.color_primario : null),
@@ -3239,12 +3396,13 @@ class LandingService {
         whatsapp: landing.mostrar_whatsapp ? (tienda.whatsapp || null) : null,
         telefono: tienda.telefono,
         mensaje: tienda.mensaje_contacto,
+        // Consultas sin producto (inicio, categorías): plantilla aparte.
+        mensaje_general: tienda.mensaje_consulta_general || null,
         incluir_precio: !!landing.whatsapp_incluir_precio,
         incluir_url: !!landing.whatsapp_incluir_url,
       },
       content: { ofertas_carrito: [] },
       checkout: { redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp, pasarelas: pasarelasPublicas },
-      delivery_ciudades: deliveryCiudadesDto,
       banner: null,
       seo: {
         titulo: landing.seo_titulo || landing.titulo,
@@ -3272,6 +3430,21 @@ class LandingService {
       beneficios: [],
       paginas_hermanas: [],
     };
+  }
+
+  /**
+   * Productos puntuales de un lienzo, COMPLETOS (variantes, ofertas, galería).
+   * La respuesta de la landing ya no trae todo el catálogo y las páginas del
+   * listado son livianas (sin ofertas): cuando el carrito tiene un producto
+   * que el navegador no recibió entero, lo pide acá para poder ofrecer su
+   * order bump y sus upsells. Solo devuelve lo que la landing vende
+   * (itemsDelLienzo): no sirve para leer productos de otra tienda.
+   */
+  static async obtenerProductosPublicos(tienda, slug, contentIds) {
+    const landing = await this.obtenerPublica(tienda, slug, false, { soloContentIds: contentIds });
+    if (landing === null) return null;
+    if (!landing.disponible) return landing;
+    return { disponible: true, items: landing.catalogo_items || [] };
   }
 
   static async obtenerProductoPublico(tienda, slug, productoSlug) {
@@ -3445,6 +3618,27 @@ class LandingService {
       }));
     }
     return items;
+  }
+
+  static normalizarDescuentoBoton(valor) {
+    const n = Number(String(valor ?? '').replace(',', '.'));
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(95, Math.round(n * 10) / 10);
+  }
+
+  static maxDescuentoBotonLanding(landing, landingItem) {
+    const venta = landing?.content?.venta || {};
+    const fuente = venta.presentacion_productos?.[`${landingItem?.tipo}:${landingItem?.referencia_id}`] || {};
+    const valores = [
+      fuente.cta_descuento_pct,
+      ...(Array.isArray(fuente.botones_pago) ? fuente.botones_pago.map(b => b?.descuento_pct) : []),
+    ].map(v => this.normalizarDescuentoBoton(v));
+    return valores.reduce((max, pct) => Math.max(max, pct), 0);
+  }
+
+  static aplicarDescuentoBoton(precioUnitario, pct) {
+    const descuento = this.normalizarDescuentoBoton(pct);
+    return descuento > 0 ? Math.max(0, Math.round((Number(precioUnitario) || 0) * (100 - descuento) / 100)) : precioUnitario;
   }
 
   static async resolverCarrito(tienda, slug, items, throwOnStockInsuficiente = false) {
@@ -3650,6 +3844,14 @@ class LandingService {
         throw err;
       }
 
+      const descuentoSolicitado = this.normalizarDescuentoBoton(pedido.descuento_boton_pct);
+      const descuentoPermitido = Math.min(descuentoSolicitado, this.maxDescuentoBotonLanding(landing, landingItem));
+      const precioUnitarioFinal = this.aplicarDescuentoBoton(resuelto.precio_unitario, descuentoPermitido);
+      const subtotalFinal = precioUnitarioFinal * resuelto.cantidad;
+      const precioNormalFinal = descuentoPermitido > 0
+        ? Math.max(Number(resuelto.precio_normal) || 0, Number(resuelto.precio_unitario) || 0)
+        : resuelto.precio_normal;
+
       itemsResueltos.push({
         content_id: pedido.content_id,
         // Se hace eco de lo que pidió el cliente (no de lo resuelto) para
@@ -3676,14 +3878,15 @@ class LandingService {
         oferta_nombre: resuelto.oferta_aplicada ? resuelto.oferta_aplicada.nombre : null,
         nombre_producto: resuelto.nombre_final,
         cantidad: resuelto.cantidad,
-        precio_unitario: resuelto.precio_unitario,
+        precio_unitario: precioUnitarioFinal,
         // Canal y precio de referencia — con esto la reportería separa la
         // venta incremental (order bump / combo de checkout) de la venta
         // normal sin volver a unir contra la oferta, que puede editarse o
         // darse de baja después (ver migrations/add_precios_order_bump.sql).
         origen_venta: resuelto.origen_venta,
-        precio_normal: resuelto.precio_normal,
-        subtotal: resuelto.subtotal,
+        precio_normal: precioNormalFinal,
+        subtotal: subtotalFinal,
+        descuento_boton_pct: descuentoPermitido || null,
         envio_incluido: landingItem?.envio_incluido === true,
         stock_suficiente: suficiente,
       });
@@ -3803,12 +4006,10 @@ class LandingService {
       ? null
       : this.buscarOpcionDelivery(opcionesDelivery, ciudad, departamento);
 
-    if (!envioIncluido && opcionesDelivery.length && !opcionDelivery) {
-      const error = new Error('La ciudad seleccionada no está disponible para delivery.');
-      error.status = 400;
-      throw error;
-    }
-
+    // Ciudad sin delivery configurado: el pedido se crea igual, con envío en
+    // cero y sin courier, y la tienda coordina el envío después (misma regla
+    // que la tarifa: solo coincidencia exacta, sin match queda para carga
+    // manual). Antes se rechazaba y el cliente perdía la compra.
     const costoEnvio = envioIncluido ? 0 : (Number(opcionDelivery?.costo) || 0);
     const courierIdDelivery = envioIncluido ? null : (opcionDelivery?.courier_id || null);
     const ciudadEnvio = opcionDelivery?.ciudad || ciudad.trim();

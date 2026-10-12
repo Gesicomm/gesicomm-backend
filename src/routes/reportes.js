@@ -2,6 +2,11 @@ const express = require('express');
 const router = express.Router();
 const ReporteService = require('../services/reporteService');
 const { verificarToken } = require('../middleware/autenticacion');
+const { exigirTiendaActiva } = require('../middleware/resolverTiendaActiva');
+
+// Todos los reportes filtran por la tienda activa; sin ella (cuenta de 2+
+// tiendas que todavía no eligió) sumarían las ventas de todas juntas.
+router.use(verificarToken, exigirTiendaActiva);
 
 // POST /api/reportes/kpis
 router.post('/kpis', verificarToken, async (req, res) => {

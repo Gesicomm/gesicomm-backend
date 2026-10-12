@@ -31,7 +31,7 @@ const { logger: loggerPorDefecto } = require('./logger');
  *
  *   ⚠️ Seguir vivo no es "ya está resuelto": cada línea de estas es un bug
  *   a arreglar en el origen. Para eso se loguea con `evento` propio, para
- *   poder buscarlas en logs/errores.log.
+ *   poder buscarlas en logs/errores-<fecha>.log.
  *
  * `uncaughtException` → SE LOGUEA Y EL PROCESO MUERE (exit 1).
  *

@@ -3,7 +3,7 @@
 const ExcelJS = require('exceljs');
 const slugify = require('slugify');
 const { Op } = require('sequelize');
-const { sequelize, Categoria, Producto, ProductoImagen } = require('../models');
+const { sequelize, Categoria, Producto, ProductoImagen, ProductoFaq } = require('../models');
 const ProductoService = require('./producto.service');
 const ProductoVarianteService = require('./productoVariante.service');
 
@@ -25,6 +25,180 @@ function quitarHtml(valor) {
     .replace(/&#39;/g, "'")
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function decodificarHtml(valor) {
+  return limpiarTexto(valor)
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&aacute;/gi, 'á')
+    .replace(/&eacute;/gi, 'é')
+    .replace(/&iacute;/gi, 'í')
+    .replace(/&oacute;/gi, 'ó')
+    .replace(/&uacute;/gi, 'ú')
+    .replace(/&ntilde;/gi, 'ñ');
+}
+
+function textoDesdeHtml(valor) {
+  return decodificarHtml(valor)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<img\b[^>]*>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+    .replace(/<li\b[^>]*>/gi, '\n- ')
+    .replace(/<h[1-6]\b[^>]*>/gi, '\n# ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function normalizarClaveSeccion(titulo) {
+  const t = limpiarTexto(titulo).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (!t) return null;
+  if (/(envio|delivery|pago|retiro|transportadora)/.test(t)) return 'ignorar';
+  if (/(beneficio|ventaja|por que elegir)/.test(t)) return 'beneficios';
+  if (/(caracteristica|especificacion|detalle|que incluye|incluye)/.test(t)) return 'caracteristicas';
+  if (/(ideal para|uso|aplicacion|para quien|modo de uso|como usar)/.test(t)) return 'usos';
+  if (/(pregunta|faq|duda)/.test(t)) return 'faq';
+  return null;
+}
+
+function lineasUnicas(lineas, max = 12) {
+  const vistas = new Set();
+  return (lineas || [])
+    .map((linea) => limpiarTexto(linea).replace(/\s+/g, ' ').replace(/\s+([.,;:!?])/g, '$1'))
+    .filter(Boolean)
+    .filter((linea) => {
+      const clave = linea.toLowerCase();
+      if (vistas.has(clave)) return false;
+      vistas.add(clave);
+      return true;
+    })
+    .slice(0, max);
+}
+
+function extraerSeccionesShopify(bodyHtml) {
+  const texto = textoDesdeHtml(bodyHtml);
+  const secciones = {
+    intro: [],
+    beneficios: [],
+    caracteristicas: [],
+    usos: [],
+    faq: [],
+  };
+  let actual = 'intro';
+
+  texto.split('\n').map((linea) => linea.trim()).filter(Boolean).forEach((linea) => {
+    const esTitulo = linea.startsWith('# ');
+    const limpio = linea.replace(/^#\s*/, '').replace(/^-\s*/, '').trim();
+    if (!limpio) return;
+
+    if (esTitulo) {
+      const clave = normalizarClaveSeccion(limpio);
+      if (clave === 'ignorar') actual = null;
+      else if (clave) actual = clave;
+      else if (actual === 'intro') secciones.intro.push(limpio);
+      return;
+    }
+
+    if (!actual) return;
+    secciones[actual].push(limpio);
+  });
+
+  return Object.fromEntries(Object.entries(secciones).map(([clave, lineas]) => [clave, lineasUnicas(lineas)]));
+}
+
+function armarFaqShopify(nombre, secciones) {
+  const faq = [];
+  const primerBeneficio = secciones.beneficios[0];
+  const caracteristicas = secciones.caracteristicas.slice(0, 3).join(' ');
+  const usos = secciones.usos.slice(0, 4).join(', ').replace(/\.,/g, ',').replace(/\.$/, '');
+
+  if (primerBeneficio) {
+    faq.push({
+      pregunta: `¿Para qué sirve ${nombre}?`,
+      respuesta: primerBeneficio,
+    });
+  }
+  if (caracteristicas) {
+    faq.push({
+      pregunta: '¿Qué características tiene?',
+      respuesta: caracteristicas,
+    });
+  }
+  if (usos) {
+    faq.push({
+      pregunta: '¿Dónde o cuándo se puede usar?',
+      respuesta: usos,
+    });
+  }
+
+  return faq.slice(0, 4);
+}
+
+function armarDescripcionLargaShopify(secciones, resumen) {
+  const bloques = [];
+  if (resumen) bloques.push(resumen);
+  [
+    ['Beneficios', secciones.beneficios],
+    ['Características', secciones.caracteristicas],
+    ['Ideal para', secciones.usos],
+  ].forEach(([titulo, lineas]) => {
+    if (!lineas.length) return;
+    bloques.push(`${titulo}\n${lineas.map((linea) => `- ${linea}`).join('\n')}`);
+  });
+  return bloques.join('\n\n') || resumen;
+}
+
+function estructurarContenidoShopify(row) {
+  const nombre = limpiarTexto(row.Title);
+  const bodyHtml = limpiarTexto(row['Body (HTML)']);
+  const secciones = extraerSeccionesShopify(bodyHtml);
+  const introSinTitulosCortos = secciones.intro.filter((linea, index) => !(index === 0 && linea.length <= 45 && !/[.!?]$/.test(linea)));
+  const intro = introSinTitulosCortos.length ? introSinTitulosCortos : secciones.intro;
+  const resumenFallback = lineasUnicas([
+    ...secciones.beneficios.slice(0, 2),
+    ...secciones.caracteristicas.slice(0, 2),
+  ], 4).join(' ');
+  const resumen = limitar(intro.join('\n\n') || resumenFallback || quitarHtml(bodyHtml), 500);
+  const propuesta = limitar(limpiarTexto(row['SEO Description']) || intro[0] || resumen || nombre, 240);
+  const beneficios = secciones.beneficios.slice(0, 6).map((texto) => ({
+    icono: 'CheckCircle2',
+    titulo: limitar(texto.replace(/\.$/, ''), 120),
+    texto: '',
+  }));
+  const beneficiosRapidos = lineasUnicas([
+    ...secciones.beneficios,
+    ...secciones.caracteristicas,
+  ], 6).map((linea) => limitar(linea.replace(/\.$/, ''), 140));
+  const usos = secciones.usos.slice(0, 4).map((titulo, index) => ({
+    paso: String(index + 1),
+    titulo: limitar(titulo.replace(/\.$/, ''), 120),
+    texto: '',
+  }));
+  const fichaDatos = {
+    beneficios_rapidos: beneficiosRapidos,
+    basico_descripcion_texto: resumen,
+    basico_descripcion_encabezado: secciones.intro[0] && secciones.intro[0] !== intro[0] ? secciones.intro[0] : '',
+    basico_descripcion_destacados: secciones.caracteristicas.slice(0, 4).map((linea) => limitar(linea.replace(/\.$/, ''), 140)),
+    basico_usos: usos,
+  };
+
+  return {
+    descripcion: resumen,
+    descripcionLarga: armarDescripcionLargaShopify(secciones, resumen),
+    propuesta,
+    beneficios,
+    fichaDatos,
+    faq: armarFaqShopify(nombre, secciones),
+  };
 }
 
 function limitar(valor, max) {
@@ -298,16 +472,19 @@ async function importarShopify(file, contexto) {
 
     const t = await sequelize.transaction();
     try {
-      const descripcion = quitarHtml(principal['Body (HTML)']);
+      const contenido = estructurarContenidoShopify(principal);
       const categoriaId = await obtenerOCrearCategoria(nombreCategoria(principal), contexto.inquilinoId, t);
       const producto = await ProductoService.crear({
         nombre,
         sku,
         categoria_id: categoriaId,
         tags: splitTags(principal.Tags),
-        descripcion_corta: limitar(principal['SEO Description'] || descripcion, 500),
-        descripcion_larga: descripcion,
-        propuesta_valor: limitar(principal['SEO Description'] || descripcion, 240),
+        descripcion_corta: limitar(principal['SEO Description'] || contenido.descripcion, 500),
+        descripcion_larga: contenido.descripcionLarga,
+        propuesta_valor: contenido.propuesta,
+        beneficios: contenido.beneficios,
+        sobre_este_producto: contenido.descripcion,
+        faq_titulo: contenido.faq.length ? 'Preguntas frecuentes' : null,
         precio_base: precioBase,
         precio_tachado: normalizarNumero(principal['Variant Compare At Price'], null),
         cantidad_disponible: stockPrincipal,
@@ -318,6 +495,7 @@ async function importarShopify(file, contexto) {
         meta_titulo: limitar(principal['SEO Title'], 160),
         meta_descripcion: limitar(principal['SEO Description'], 320),
         ficha_datos: {
+          ...contenido.fichaDatos,
           shopify: {
             handle: grupo.handle,
             vendor: limpiarTexto(principal.Vendor),
@@ -350,6 +528,15 @@ async function importarShopify(file, contexto) {
         imagenesCreadas += imagenes.length;
       }
 
+      if (contenido.faq.length > 0) {
+        await ProductoFaq.bulkCreate(contenido.faq.map((faq, index) => ({
+          producto_id: producto.id,
+          pregunta: faq.pregunta,
+          respuesta: faq.respuesta,
+          orden: index,
+        })), { transaction: t });
+      }
+
       await t.commit();
       creados.push({ id: producto.id, nombre, sku, handle: grupo.handle });
     } catch (err) {
@@ -375,4 +562,10 @@ module.exports = {
   parseCsv,
   filasAObjetos,
   agruparPorHandle,
+  estructurarContenidoShopify,
+  // Compartidos con la carga masiva de la plantilla de Gesicom.
+  limpiarTexto,
+  limitar,
+  normalizarNumero,
+  obtenerOCrearCategoria,
 };

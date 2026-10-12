@@ -135,6 +135,40 @@ test('Productos en mi landing se filtra en SQL antes de paginar y contar', async
   expect(sequelize.query.mock.calls[0][1].replacements).toMatchObject({ tienda_id: 11 });
 });
 
+test('Seleccionados acota búsqueda, conteo y filtros a las filas marcadas en Mi catálogo', async () => {
+  sequelize.query.mockImplementation(async sql => sql.startsWith('SELECT COUNT') ? [{ total: '2' }] : sql.startsWith('SELECT DISTINCT') ? [] : sql.includes('_imagenes') ? [] : [fila()]);
+
+  const resultado = await Service.buscar(42, 7, false, { page: 1, limit: 25, busqueda: 'olla', items: [{ tipo: 'producto', id: 1 }, { tipo: 'producto', id: 5 }, { tipo: 'combo', id: 9 }] });
+
+  expect(resultado.total).toBe(2);
+  for (const [sql, opts] of sequelize.query.mock.calls.slice(0, 4)) {
+    expect(sql).toContain("(t.tipo = 'producto' AND t.id IN (:filtro_productos)) OR (t.tipo = 'combo' AND t.id IN (:filtro_combos))");
+    expect(sql).toContain('t.nombre ILIKE :busqueda');
+    expect(opts.replacements).toMatchObject({ filtro_productos: [1, 5], filtro_combos: [9] });
+  }
+});
+
+test('reajuste a "todos" dentro de Seleccionados no sale de esa selección', async () => {
+  sequelize.query.mockResolvedValue([fila(), fila({ id: 5 })]);
+
+  const resultado = await Service.actualizar(42, 7, false, { modo: 'reajuste', porcentaje: 5, seleccion: { todos: true, filtros: { items: [{ tipo: 'producto', id: 1 }, { tipo: 'producto', id: 5 }, { tipo: 'producto', id: 8 }] }, excluidos: [{ tipo: 'producto', id: 5 }] } });
+
+  expect(resultado.seleccionados).toBe(1);
+  const [sql, opts] = sequelize.query.mock.calls[0];
+  expect(sql).toContain("(t.tipo = 'producto' AND t.id IN (:filtro_productos))");
+  expect(opts.replacements.filtro_productos).toEqual([1, 5, 8]);
+});
+
+test.each([[[{ tipo: 'otro', id: 1 }]], [[{ tipo: 'producto', id: '1' }]], ['producto:1']])('Seleccionados rechaza una lista inválida %p', async items => {
+  await expect(Service.buscar(42, 7, false, { items })).rejects.toMatchObject({ status: 400 });
+});
+
+test('Seleccionados con la lista vacía no cae al catálogo completo', async () => {
+  sequelize.query.mockImplementation(async sql => sql.startsWith('SELECT COUNT') ? [{ total: '0' }] : []);
+  await Service.buscar(42, 7, false, { items: [] });
+  expect(sequelize.query.mock.calls[0][0]).toContain('WHERE false');
+});
+
 test('Productos en mi landing sin tienda activa no cae al catálogo completo', async () => {
   sequelize.query.mockImplementation(async sql => sql.startsWith('SELECT COUNT') ? [{ total: '0' }] : []);
 

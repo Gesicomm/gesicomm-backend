@@ -55,6 +55,8 @@ router.get('/fulfillment/cobertura', ctrl.coberturaGesicomm);
 
 router.post('/logo', subirImagenMiddleware, ctrl.subirLogo);
 router.delete('/logo', ctrl.eliminarLogo);
+router.post('/favicon', subirImagenMiddleware, ctrl.subirFavicon);
+router.delete('/favicon', ctrl.eliminarFavicon);
 
 router.put('/typography', ctrl.guardarTipografia);
 router.post('/typography/fonts', subirFuenteMiddleware, ctrl.subirFuente);

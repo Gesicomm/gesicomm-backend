@@ -107,8 +107,16 @@ async function manejarSolicitudPublica(req, res) {
     // primera imagen de item, así que el paso "SEO" del editor no tenía
     // ningún efecto sobre lo que ve un bot real.
     const seo = resultado.seo || {};
-    const imagenRelativa = seo.og_imagen || resultado.items.find(i => i.imagen)?.imagen || null;
-    const imagenAbsoluta = imagenRelativa ? `${req.protocol}://${req.get('host')}${imagenRelativa}` : null;
+    // `items` viaja solo cuando difiere de `catalogo_items` (ver
+    // obtenerPublica). Leerlo a secas tiraba 500 — título "Error" en el
+    // preview de WhatsApp/Facebook — en toda landing sin imagen OG propia.
+    const items = resultado.items ?? resultado.catalogo_items ?? [];
+    const imagenRelativa = seo.og_imagen || items.find(i => i.imagen)?.imagen || null;
+    // Las imágenes de R2 ya vienen absolutas; solo una ruta propia
+    // (/uploads legacy) necesita el host adelante.
+    const imagenAbsoluta = imagenRelativa
+      ? (/^https?:\/\//i.test(imagenRelativa) ? imagenRelativa : `${req.protocol}://${req.get('host')}${imagenRelativa}`)
+      : null;
 
     return res.status(200).send(paginaOg({
       titulo: seo.titulo || resultado.titulo || resultado.tienda?.nombre || 'Catálogo',
@@ -116,6 +124,8 @@ async function manejarSolicitudPublica(req, res) {
       imagen: imagenAbsoluta,
       url: destino,
       keywords: seo.keywords || null,
+      // Mismo orden que la pestaña en el SPA (LandingPublica.jsx).
+      favicon: resultado.tienda?.favicon_imagen || resultado.logo_imagen || resultado.tienda?.logo_imagen || null,
       cta: 'Ver catálogo',
     }));
   } catch (err) {

@@ -1,10 +1,29 @@
 const express = require('express');
 const crypto = require('crypto');
+const { Op } = require('sequelize');
 const { verificarToken } = require('../middleware/autenticacion');
 const { MetaIntegration } = require('../models');
 const { auditoria } = require('../utils/logger');
 const EncryptionService = require('../utils/EncryptionService');
 const solicitudEliminacionController = require('../controllers/solicitudEliminacion.controller');
+
+// Graph API paging links can embed access tokens. Return navigation signals
+// and opaque cursors only; authenticated clients send cursors to our API.
+function publicMetaPaging(paging) {
+    if (!paging || typeof paging !== 'object') return null;
+    const cursors = {};
+    for (const name of ['before', 'after']) {
+        if (typeof paging.cursors?.[name] === 'string') {
+            cursors[name] = paging.cursors[name];
+        }
+    }
+    return {
+        cursors,
+        next: Boolean(paging.next),
+        previous: Boolean(paging.previous),
+    };
+}
+
 
 const router = express.Router();
 
@@ -21,6 +40,50 @@ const fetchMeta = async (url) => {
     return data;
 };
 
+// Solo rutas internas del frontend. El destino final se arma como
+// FRONTEND_URL + redirect_to, así que algo como "@otro-sitio.com" terminaba en
+// https://gesicomm.com@otro-sitio.com: un open redirect.
+const rutaInternaSegura = (ruta) => (
+    typeof ruta === 'string' && /^\/(?![/\\])[^@\s]*$/.test(ruta) ? ruta : '/settings'
+);
+
+// Revoca la autorización de la app en Meta (DELETE /me/permissions).
+//
+// Revocar invalida TODOS los tokens de ese usuario de Meta para la app, no
+// solo el de esta fila: si otra conexión (de otra tienda o de otro usuario de
+// Gesicom) depende del mismo usuario de Meta, se deja la autorización viva y
+// solo se borra el token local. Las conexiones anteriores a meta_user_id no lo
+// tienen cargado: para esas se usa el BM como aproximado. Nunca hace fallar la
+// desconexión: si el token ya venció o Meta no responde, el borrado local
+// sigue igual.
+const revocarEnMeta = async (integracion) => {
+    if (!integracion.access_token) return;
+    try {
+        const accessToken = EncryptionService.decrypt(integracion.access_token);
+        const metaUserId = integracion.meta_user_id
+            || (await fetchMeta(`https://graph.facebook.com/${FB_API_VERSION}/me?fields=id&access_token=${accessToken}`)).id;
+
+        const mismoUsuario = [{ meta_user_id: metaUserId }];
+        if (integracion.business_id) {
+            mismoUsuario.push({ meta_user_id: null, business_id: integracion.business_id });
+        }
+        const otrasConexiones = await MetaIntegration.count({
+            where: { [Op.or]: mismoUsuario, estado: 'conectado', id: { [Op.ne]: integracion.id } }
+        });
+        if (otrasConexiones > 0) return;
+
+        const res = await fetch(
+            `https://graph.facebook.com/${FB_API_VERSION}/me/permissions?access_token=${accessToken}`,
+            { method: 'DELETE' }
+        );
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.message);
+        auditoria('META_PERMISOS_REVOCADOS', { integracionId: integracion.id });
+    } catch (err) {
+        console.warn(`No se pudo revocar en Meta la integración ${integracion.id}:`, err.message);
+    }
+};
+
 // GET /api/meta/connect -> Inicia el flujo OAuth
 // Query param opcional: ?mode=add_store para agregar una nueva tienda sin reemplazar la actual
 // Query param opcional: ?redirect_to= para indicar a dónde redirigir al finalizar
@@ -31,7 +94,7 @@ router.get('/connect', verificarToken, (req, res) => {
 
     const state = crypto.randomBytes(16).toString('hex');
     const mode = req.query.mode || 'connect'; // 'connect' | 'add_store'
-    const redirectTo = req.query.redirect_to || '/settings';
+    const redirectTo = rutaInternaSegura(req.query.redirect_to);
 
     res.cookie('meta_oauth_state', state, {
         httpOnly: true,
@@ -68,7 +131,12 @@ router.get('/connect', verificarToken, (req, res) => {
         maxAge: 10 * 60 * 1000
     });
 
-    const scope = 'ads_management,business_management';
+    // Permisos mínimos: Gesicom solo LEE (nunca crea ni edita anuncios), así
+    // que ads_management no corresponde. business_management hace falta para
+    // /me/businesses y /{bm}/owned_ad_accounts, que arman el selector de BM.
+    // Si se agrega un permiso, actualizar antes la Política de Privacidad (§4.1)
+    // y Seguridad (§4.1), que los enumeran.
+    const scope = 'ads_read,business_management';
     const authUrl = `https://www.facebook.com/${FB_API_VERSION}/dialog/oauth`
         + `?client_id=${FB_APP_ID}`
         + `&redirect_uri=${encodeURIComponent(FB_REDIRECT_URI)}`
@@ -85,7 +153,7 @@ router.get('/callback', async (req, res) => {
     const tenantId = req.cookies?.meta_oauth_tenant;
     const userId = req.cookies?.meta_oauth_user;
     const mode = req.cookies?.meta_oauth_mode || 'connect';
-    const redirectPath = req.cookies?.meta_oauth_redirect || '/settings';
+    const redirectPath = rutaInternaSegura(req.cookies?.meta_oauth_redirect);
 
     const frontendRedirect = process.env.FRONTEND_URL;
 
@@ -149,6 +217,11 @@ router.get('/callback', async (req, res) => {
         const business = businessData.data[0];
         const encryptedToken = EncryptionService.encrypt(longLivedToken);
 
+        // ID app-scoped de quien autorizó: es lo que manda Meta en el Data
+        // Deletion Callback, y sin él no se puede encontrar esta conexión.
+        const metaUser = await fetchMeta(`https://graph.facebook.com/${FB_API_VERSION}/me?fields=id&access_token=${longLivedToken}`);
+        const metaUserId = String(metaUser.id);
+
         // 6. Guardar según el modo
         if (mode === 'add_store') {
             // Verificar que este BM no esté ya conectado para este tenant
@@ -169,6 +242,7 @@ router.get('/callback', async (req, res) => {
                 usuario_id: userId,
                 nombre: business.name,
                 access_token: encryptedToken,
+                meta_user_id: metaUserId,
                 business_id: business.id,
                 business_name: business.name,
                 estado: 'conectado'
@@ -180,6 +254,7 @@ router.get('/callback', async (req, res) => {
                 defaults: {
                     nombre: business.name,
                     access_token: encryptedToken,
+                    meta_user_id: metaUserId,
                     business_name: business.name,
                     estado: 'conectado'
                 }
@@ -188,6 +263,7 @@ router.get('/callback', async (req, res) => {
                 await integracion.update({
                     nombre: business.name,
                     access_token: encryptedToken,
+                    meta_user_id: metaUserId,
                     business_name: business.name,
                     estado: 'conectado'
                 });
@@ -262,7 +338,9 @@ router.delete('/stores/:id', verificarToken, async (req, res) => {
         if (!integracion) {
             return res.status(404).json({ message: 'Tienda no encontrada.' });
         }
+        await revocarEnMeta(integracion);
         await integracion.destroy();
+        auditoria('META_DESCONECTADO', { tenantId: req.usuario.tenantId, integracionId: integracion.id });
         return res.json({ message: 'Tienda desconectada correctamente.' });
     } catch (err) {
         console.error(err);
@@ -497,7 +575,7 @@ router.post('/campaigns', verificarToken, async (req, res) => {
 
         return res.json({
             campaigns: campaignsResult,
-            paging: campsData.paging || null
+            paging: publicMetaPaging(campsData.paging)
         });
 
     } catch (err) {
@@ -517,8 +595,10 @@ router.post('/disconnect', verificarToken, async (req, res) => {
             return res.status(404).json({ message: 'No hay integración de Meta para este tenant.' });
         }
 
+        await revocarEnMeta(integracion);
         await integracion.update({
             access_token: null,
+            meta_user_id: null,
             business_id: null,
             business_name: null,
             estado: 'desconectado'

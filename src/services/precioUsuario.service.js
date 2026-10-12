@@ -989,8 +989,11 @@ class PrecioUsuarioService {
     const profit = Math.round((precioEfectivo - totalCosts) * 100) / 100;
     const margin = precioEfectivo > 0 ? Math.round((profit / precioEfectivo) * 10000) / 10000 : 0;
 
+    // CPA y comisión son % del precio: en cada escenario bajan con él.
+    const fixedCost = totalCosts - cpaMax - paymentCommissionCost;
+    const variableRate = ((Number(costs.cpaPercentage) || 0) + (Number(costs.paymentCommissionPercentage) || 0)) / 100;
     const sensitivity = this.anotarSensibilidad(comboPricing.calcularSensibilidad(
-      { finalPrice: precioEfectivo, totalCost: totalCosts },
+      { finalPrice: precioEfectivo, fixedCost, variableRate },
       config.escenarios_descuento || undefined,
       { minimumMargin: minimumMarginDecimal },
     ));

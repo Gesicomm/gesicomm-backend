@@ -18,7 +18,7 @@
 
 jest.mock('../../models', () => ({
   sequelize: { transaction: (cb) => cb('TX') },
-  WhatsappFlujo: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), destroy: jest.fn() },
+  WhatsappFlujo: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), destroy: jest.fn(), count: jest.fn(async () => 2) },
   WhatsappFlujoFase: { findAll: jest.fn(), create: jest.fn(), update: jest.fn() },
   SeguimientoEtiqueta: { findAll: jest.fn() },
   SeguimientoContacto: { findAll: jest.fn() },
@@ -162,6 +162,24 @@ describe('validación de fases', () => {
 
     expect(WhatsappFlujoFase.create.mock.calls[0][0].espera_sugerida_minutos).toBe(0);
   });
+
+  test('permite crear flujos manuales personalizados', async () => {
+    WhatsappFlujo.create.mockResolvedValue(fila({ id: 57 }));
+    WhatsappFlujo.findOne.mockResolvedValue(fila({ id: 57, fases: [] }));
+
+    await flujoService.crearFlujo({
+      nombre: 'Garantías',
+      tipo: 'PERSONALIZADO',
+      activacion: 'MANUAL',
+      fases: [{ nombre: 'Primer mensaje', mensaje: 'Hola {cliente_nombre}' }],
+    }, CTX);
+
+    expect(WhatsappFlujo.create.mock.calls[0][0]).toMatchObject({
+      nombre: 'Garantías',
+      tipo: 'PERSONALIZADO',
+      activacion: 'MANUAL',
+    });
+  });
 });
 
 describe('sacar una fase del flujo', () => {
@@ -219,5 +237,17 @@ describe('eliminarFlujo', () => {
   test('un flujo de otro usuario no existe', async () => {
     WhatsappFlujo.findOne.mockResolvedValue(null);
     await expect(flujoService.eliminarFlujo(10, CTX)).rejects.toMatchObject({ status: 404 });
+  });
+
+  test('permite eliminar el único flujo personalizado', async () => {
+    const flujo = fila({ id: 20, nombre: 'Garantías', tipo: 'PERSONALIZADO', fases: [] });
+    WhatsappFlujo.findOne.mockResolvedValue(flujo);
+    WhatsappFlujo.count.mockResolvedValueOnce(1);
+    SeguimientoContacto.findAll.mockResolvedValue([]);
+
+    const res = await flujoService.eliminarFlujo(20, CTX);
+
+    expect(res).toEqual({ desactivado: false });
+    expect(flujo.destroy).toHaveBeenCalled();
   });
 });

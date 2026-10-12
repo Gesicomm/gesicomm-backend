@@ -17,6 +17,8 @@
  * DELETE /api/mi-tienda/dominio-propio             → revocar dominio propio
  * POST   /api/mi-tienda/logo                        → subir/reemplazar logo
  * DELETE /api/mi-tienda/logo                        → quitar logo
+ * POST   /api/mi-tienda/favicon                     → subir/reemplazar favicon
+ * DELETE /api/mi-tienda/favicon                     → quitar favicon (vuelve a usarse el logo)
  */
 
 const TiendaService = require('../services/tienda.service');
@@ -238,6 +240,30 @@ async function eliminarLogo(req, res) {
   }
 }
 
+async function subirFavicon(req, res) {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
+    const tiendaId = exigirTiendaActiva(req);
+    const imagenData = await ImagenService.procesarFaviconParaR2(req.file, `tiendas/favicon/${tiendaId}`);
+    const { tienda, anterior } = await TiendaService.actualizarFavicon(tiendaId, req.usuario.id, imagenData);
+    if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
+    return res.status(201).json(tienda);
+  } catch (err) {
+    await ImagenService.borrarArchivoSeguro(req.file?.path);
+    return manejarError(res, err, 'Error al subir el favicon.');
+  }
+}
+
+async function eliminarFavicon(req, res) {
+  try {
+    const { tienda, anterior } = await TiendaService.actualizarFavicon(exigirTiendaActiva(req), req.usuario.id, null);
+    if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
+    return res.json(tienda);
+  } catch (err) {
+    return manejarError(res, err, 'Error al quitar el favicon.');
+  }
+}
+
 async function guardarTipografia(req, res) {
   try {
     const typography = await TypographyService.guardarConfigTienda(exigirTiendaActiva(req), req.usuario.id, req.body || {});
@@ -272,5 +298,6 @@ module.exports = {
   eliminarDominioPropio, whoisDominio,
   obtenerFulfillment, listarDepositosFulfillment, guardarFulfillment,
   subirLogo, eliminarLogo,
+  subirFavicon, eliminarFavicon,
   guardarTipografia, subirFuente, eliminarFuente,
 };

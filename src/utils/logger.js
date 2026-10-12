@@ -12,7 +12,24 @@
  *   SHOPIFY_CONECTADO, META_CONECTADO, WHATSAPP_CONECTADO
  */
 const { createLogger, format, transports } = require('winston');
+const DailyRotateFile = require('winston-daily-rotate-file');
 const { combine, timestamp, json, errors } = format;
+
+// Un archivo por día; los de más de 365 días se borran solos. Es el plazo que
+// la Política de Privacidad declara para "Registros de acceso y auditoría":
+// si se cambia acá, cambiarlo allá.
+//
+// En producción logs/ es un volumen del host (~/gesicomm/logs/<servicio> en
+// docker-compose.yml). Sin ese volumen los archivos vivían dentro del
+// contenedor y se perdían en cada deploy.
+const archivoDiario = (nombre, opciones = {}) => new DailyRotateFile({
+  dirname: 'logs',
+  filename: `${nombre}-%DATE%.log`,
+  datePattern: 'YYYY-MM-DD',
+  zippedArchive: true,
+  maxFiles: '365d',
+  ...opciones,
+});
 
 const logger = createLogger({
   level: 'info',
@@ -25,9 +42,9 @@ const logger = createLogger({
     // Consola (para Docker logs)
     new transports.Console(),
     // Archivo de errores
-    new transports.File({ filename: 'logs/errores.log', level: 'error' }),
+    archivoDiario('errores', { level: 'error' }),
     // Archivo de auditoría general
-    new transports.File({ filename: 'logs/auditoria.log' }),
+    archivoDiario('auditoria'),
   ],
 });
 

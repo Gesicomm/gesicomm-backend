@@ -112,14 +112,21 @@ class PrecioUsuarioMasivoService {
       if (!['propios', 'gesicomm'].includes(filtros.origen)) throw errorValidacion('Origen inválido.');
       condiciones.push(filtros.origen === 'propios' ? 't.creado_por = :usuario_id' : 't.creado_por IS DISTINCT FROM :usuario_id');
     }
-    if (items !== null) {
-      const productos = items.filter(i => i.tipo === 'producto').map(i => i.id);
-      const combos = items.filter(i => i.tipo === 'combo').map(i => i.id);
-      const seleccion = [];
-      if (productos.length) { replacements.productos = productos; seleccion.push("(t.tipo = 'producto' AND t.id IN (:productos))"); }
-      if (combos.length) { replacements.combos = combos; seleccion.push("(t.tipo = 'combo' AND t.id IN (:combos))"); }
-      condiciones.push(seleccion.length ? `(${seleccion.join(' OR ')})` : 'false');
-    }
+    const soloFilas = (lista, prefijo = '') => {
+      const partes = [];
+      for (const tipo of ['producto', 'combo']) {
+        const ids = lista.filter(i => i.tipo === tipo).map(i => i.id);
+        if (!ids.length) continue;
+        replacements[`${prefijo}${tipo}s`] = ids;
+        partes.push(`(t.tipo = '${tipo}' AND t.id IN (:${prefijo}${tipo}s))`);
+      }
+      return partes.length ? `(${partes.join(' OR ')})` : 'false';
+    };
+    // Sección "Seleccionados": lo que el usuario marcó en Mi catálogo antes de
+    // entrar. Es un filtro más, así que búsqueda, paginado y "seleccionar
+    // todos" quedan acotados a esas filas (sin esto, "todos" es el catálogo).
+    if (filtros.items != null) condiciones.push(soloFilas(normalizarItems(filtros.items), 'filtro_'));
+    if (items !== null) condiciones.push(soloFilas(items));
     return { base, sql: `SELECT * FROM (${base}) t${condiciones.length ? ` WHERE ${condiciones.join(' AND ')}` : ''}`, replacements };
   }
 

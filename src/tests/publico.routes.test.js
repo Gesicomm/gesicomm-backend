@@ -27,6 +27,10 @@ jest.mock('../models', () => {
     Usuario: {
       findOne: jest.fn().mockResolvedValue({ id: 1, correo_electronico: 'ana@example.com', inquilino_id: 1 }),
     },
+    MetaIntegration: {
+      findAll: jest.fn().mockResolvedValue([]),
+      destroy: jest.fn().mockResolvedValue(0),
+    },
     MensajeContacto: {
       findAndCountAll: jest.fn().mockResolvedValue({ rows: [], count: 0 }),
       create: jest.fn(async (datos) => ({ ...datos, id: 1, created_at: new Date() })),
