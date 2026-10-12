@@ -174,7 +174,12 @@ app.use((req, res, next) => (
 // abajo ve el body ya leído y no lo vuelve a medir. El límite real por
 // campo (y el 422 con el motivo) lo pone landingCodigo.service.js; esto
 // es solo el techo del transporte.
-app.use('/api/mis-landings-simples', express.json({ limit: '600kb' }));
+// 1mb y no 600kb: un guardado lleva varias vistas a la vez (inicio, ficha,
+// catálogo, categoría, checkout, legales), cada una con su propio tope de
+// 350 KB, más la lista de productos. Con 600kb una tienda con todas las
+// vistas guardadas y una lista larga recibía un 413 y no guardaba nada.
+// No subir de 1mb sin tocar nginx: su client_max_body_size por defecto es 1m.
+app.use('/api/mis-landings-simples', express.json({ limit: '1mb' }));
 // Mismo motivo que la línea de arriba: una página del Page Builder manda
 // su HTML/CSS/JS entero en el body. El techo de producto son 600 KB
 // sumando los tres campos (lo valida builderPageVersion.service.js con un

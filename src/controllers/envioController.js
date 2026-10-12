@@ -1241,6 +1241,7 @@ exports.listEnviosPaginados = async (req, res) => {
       seguimiento_vencido,     // true = tiene un recordatorio PENDIENTE cuyo ejecutar_en ya pasó
       seguimiento_fecha_desde, // rango sobre ejecutar_en del próximo recordatorio PENDIENTE
       seguimiento_fecha_hasta,
+      incluir_seguimiento,     // true = cada pedido trae el mensaje del flujo que le toca (columna Seguimiento)
     } = req.body;
 
 
@@ -1424,8 +1425,21 @@ exports.listEnviosPaginados = async (req, res) => {
       distinct: true, // necesario con includes para que count sea correcto
     });
 
+    const data = rows.map(decorarEnvio);
+    if (incluir_seguimiento) {
+      // Dato accesorio: si falla, la bandeja se muestra igual, sin esa columna.
+      try {
+        const seguimientos = await pendientesSeguimientoService.seguimientoDePedidos({
+          pedidos: data, usuarioId: usuario_id, esAdmin: esAdministrador(req),
+        });
+        for (const envio of data) envio.seguimiento = seguimientos.get(Number(envio.id)) || null;
+      } catch (errSeguimiento) {
+        console.error('Error calculando el seguimiento de la bandeja:', errSeguimiento);
+      }
+    }
+
     res.json({
-      data: rows.map(decorarEnvio),
+      data,
       total: count,
       page: pageNum,
       limit: limitNum,

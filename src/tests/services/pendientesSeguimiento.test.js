@@ -610,3 +610,77 @@ describe('marcar una fase como completada', () => {
     expect(SeguimientoRecordatorio.create.mock.calls[0][0]).toMatchObject({ envio_id: 50, fase_id: 102, flujo_id: 10 });
   });
 });
+
+describe('seguimiento de los pedidos de la bandeja', () => {
+  const calcular = (pedidos) => servicio.seguimientoDePedidos({ pedidos, usuarioId: 7, esAdmin: false, ahora: AHORA });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    WhatsappFlujo.findAll.mockResolvedValue(TODOS_LOS_FLUJOS);
+    SeguimientoRecordatorio.findAll.mockResolvedValue([]);
+    SeguimientoContacto.findAll.mockResolvedValue([]);
+    EnvioHistorial.findAll.mockResolvedValue([]);
+  });
+
+  test('cada pedido trae el mensaje de SU etapa, aunque lleguen mezclados; los cerrados sin venta no traen nada', async () => {
+    // El despachado ya tiene enviado el primer aviso del seguimiento de envío.
+    SeguimientoContacto.findAll.mockResolvedValue([completada(2, 301, 5, 30)]);
+
+    const mapa = await calcular([
+      pedido(1),
+      pedido(2, { estado: 'Despachado' }),
+      pedido(3, { estado: 'Entregado', updated_at: enHoras(-24) }),
+      pedido(4, { estado: 'Cancelado' }),
+      pedido(5, { estado: 'Perdido' }),
+    ]);
+
+    expect(mapa.get(1)).toMatchObject({
+      etapa: 'CONFIRMACION_PEDIDO_WEB', etapa_nombre: 'Confirmación de pedido web',
+      fase_id: 101, fase_posicion: 1, total_fases: 3, cuando: 'ahora', motivo: 'nuevo', terminado: false,
+    });
+    expect(mapa.get(2)).toMatchObject({ etapa: 'SEGUIMIENTO_ENVIO', fase_id: 302, fase_posicion: 2, total_fases: 2, terminado: false });
+    // Entregado ayer: el primer mensaje de recompra espera 3 días desde la entrega.
+    expect(mapa.get(3)).toMatchObject({ etapa: 'ESCALAMIENTO_VENTAS', fase_id: 401, cuando: 'despues', motivo: 'programado' });
+    expect(mapa.has(4)).toBe(false);
+    expect(mapa.has(5)).toBe(false);
+  });
+
+  test('con todos los mensajes enviados dice que el flujo terminó, también en recompra', async () => {
+    SeguimientoContacto.findAll.mockResolvedValue([
+      completada(2, 301, 9, 30), completada(2, 302, 6, 30),
+      completada(3, 401, 9, 40), completada(3, 402, 6, 40),
+    ]);
+
+    const mapa = await calcular([
+      pedido(2, { estado: 'Preparado' }),
+      pedido(3, { estado: 'Entregado', updated_at: enHoras(-24) }),
+    ]);
+
+    expect(mapa.get(2)).toMatchObject({ etapa: 'SEGUIMIENTO_ENVIO', terminado: true, fase_id: null, cuando: null });
+    expect(mapa.get(3)).toMatchObject({ etapa: 'ESCALAMIENTO_VENTAS', terminado: true, fase_id: null, cuando: null });
+  });
+
+  test('un entregado fuera de la ventana de recompra no trae seguimiento', async () => {
+    const mapa = await calcular([pedido(3, { estado: 'Entregado', updated_at: enHoras(-24 * 90) })]);
+
+    expect(mapa.has(3)).toBe(false);
+  });
+
+  test('una cuenta sin flujo para esa etapa no trae seguimiento, y no se le crea ninguno', async () => {
+    WhatsappFlujo.findAll.mockResolvedValue([FLUJO]);
+
+    const mapa = await calcular([pedido(1), pedido(2, { estado: 'Confirmado' })]);
+
+    expect(mapa.has(1)).toBe(true);
+    expect(mapa.has(2)).toBe(false);
+    expect(WhatsappFlujo.create).not.toHaveBeenCalled();
+  });
+
+  test('sin pedidos con etapa no consulta nada', async () => {
+    const mapa = await calcular([pedido(4, { estado: 'Cancelado' })]);
+
+    expect(mapa.size).toBe(0);
+    expect(WhatsappFlujo.findAll).not.toHaveBeenCalled();
+    expect(SeguimientoContacto.findAll).not.toHaveBeenCalled();
+  });
+});

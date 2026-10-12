@@ -48,7 +48,7 @@ const {
 } = require('../../models');
 const flujoService = require('./flujo.service');
 const { ESTADOS_ABIERTOS, elegirRecordatorioVigente } = require('./seguimientoRecordatorio.service');
-const { ETAPAS, ETAPA_INICIAL, etapaPorTipo } = require('./flujosBase');
+const { ETAPAS, ETAPA_INICIAL, etapaPorTipo, etapaDelPedido } = require('./flujosBase');
 
 const ZONA_HORARIA = 'America/Asuncion';
 const CUANDO = ['ahora', 'hoy', 'despues', 'sin_fecha'];
@@ -599,6 +599,109 @@ async function pendientesPaginados({ whereBase, usuarioId, esAdmin, filtros = {}
   return { etapa, ...pagina, truncado };
 }
 
+/**
+ * El mensaje que le toca a cada pedido de una lista ya cargada (la página de
+ * la bandeja de Pedidos), con la misma regla que el tablero: armarPendientes.
+ * A diferencia del tablero, los pedidos llegan mezclados de todas las etapas.
+ *
+ * Devuelve Map envio_id → resumen. No hay entrada para los pedidos que no
+ * tienen nada que enviar: cerrados sin venta (cancelado, devuelto, perdido),
+ * cuentas sin flujo para esa etapa, o entregados fuera de la ventana de
+ * recompra. Solo lee: no crea los flujos base que falten.
+ */
+async function seguimientoDePedidos({ pedidos, usuarioId, esAdmin, ahora = new Date() }) {
+  const resultado = new Map();
+  const porEtapa = new Map();
+  for (const pedido of pedidos) {
+    const etapa = etapaDelPedido(pedido);
+    if (!etapa) continue;
+    if (!porEtapa.has(etapa)) porEtapa.set(etapa, []);
+    porEtapa.get(etapa).push(pedido);
+  }
+  if (porEtapa.size === 0) return resultado;
+
+  const flujos = (await flujoService.listarFlujos({ usuarioId, esAdmin, soloActivos: true }))
+    .map((f) => (typeof f.toJSON === 'function' ? f.toJSON() : f))
+    .filter((f) => porEtapa.has(f.tipo));
+  if (flujos.length === 0) return resultado;
+
+  const ids = [...porEtapa.values()].flat().map((p) => p.id);
+  const entregados = porEtapa.get(ETAPA_RECOMPRA) || [];
+  const [recordatorios, contactos, entregas] = await Promise.all([
+    SeguimientoRecordatorio.findAll({
+      where: { envio_id: { [Op.in]: ids }, estado: { [Op.in]: ESTADOS_ABIERTOS } },
+      attributes: ['id', 'envio_id', 'estado', 'ejecutar_en', 'nota', 'flujo_id', 'fase_id'],
+      raw: true,
+    }),
+    SeguimientoContacto.findAll({
+      where: {
+        envio_id: { [Op.in]: ids },
+        fase_id: { [Op.ne]: null },
+        flujo_id: { [Op.in]: flujos.map((f) => f.id) },
+      },
+      attributes: [
+        'envio_id', 'flujo_id', 'fase_id', 'estado',
+        [fn('COUNT', col('id')), 'veces'],
+        [fn('MAX', col('created_at')), 'ultimo'],
+      ],
+      group: ['envio_id', 'flujo_id', 'fase_id', 'estado'],
+      raw: true,
+    }),
+    fechasDeEntrega(entregados.map((p) => p.id)),
+  ]);
+
+  const corteRecompra = ahora.getTime() - VENTANA_RECOMPRA_DIAS * 86400e3;
+  for (const [etapa, lista] of porEtapa) {
+    const esRecompra = etapa === ETAPA_RECOMPRA;
+    const deLaEtapa = esRecompra
+      ? lista.filter((p) => new Date(entregas.get(Number(p.id)) || p.updated_at).getTime() >= corteRecompra)
+      : lista;
+    const nombreEtapa = etapaPorTipo(etapa).nombre;
+    const fasesPorFlujo = new Map(flujos.map((f) => [Number(f.id), fasesOrdenadas(f)]));
+    const resumen = (item) => {
+      const fasesDelFlujo = fasesPorFlujo.get(Number(item.flujo_id)) || [];
+      return {
+        etapa,
+        etapa_nombre: nombreEtapa,
+        flujo_id: item.flujo_id,
+        flujo_nombre: item.flujo_nombre,
+        fase_id: item.fase_id,
+        fase_nombre: item.fase_nombre,
+        // "Mensaje 2 de 3": la posición entre los mensajes activos, no el campo orden.
+        fase_posicion: item.fase_id ? fasesDelFlujo.findIndex((f) => Number(f.id) === Number(item.fase_id)) + 1 : null,
+        total_fases: fasesDelFlujo.length,
+        terminado: !item.fase_id,
+        cuando: item.fase_id ? item.cuando : null,
+        motivo: item.fase_id ? item.motivo : null,
+        toca_en: item.toca_en,
+        fase_abierta_en: item.fase_abierta_en,
+        entregado_en: item.entregado_en,
+      };
+    };
+
+    const items = armarPendientes({ etapa, pedidos: deLaEtapa, recordatorios, contactos, flujos, entregas, ahora });
+    for (const item of items) {
+      if (item.flujo_id) resultado.set(Number(item.envio_id), resumen(item));
+    }
+
+    // En escalamiento de ventas armarPendientes deja afuera a quien ya
+    // recibió todos los mensajes; en la bandeja el pedido sigue estando, y
+    // lo que corresponde decir es que su flujo terminó.
+    if (esRecompra) {
+      const conFlujo = new Set(flujos.filter((f) => f.tipo === etapa).map((f) => Number(f.usuario_id)));
+      for (const pedido of deLaEtapa) {
+        if (resultado.has(Number(pedido.id)) || !conFlujo.has(Number(pedido.usuario_id))) continue;
+        resultado.set(Number(pedido.id), {
+          ...resumen({ entregado_en: entregas.get(Number(pedido.id)) || pedido.updated_at || null }),
+          flujo_id: null, flujo_nombre: null, fase_id: null, fase_nombre: null,
+          toca_en: null, fase_abierta_en: null,
+        });
+      }
+    }
+  }
+  return resultado;
+}
+
 // Cada estado cae en exactamente un grupo: la suma de los grupos es el total
 // de pedidos recibidos, sin pedidos contados dos veces ni perdidos.
 const GRUPOS_DE_VENTA = {
@@ -666,5 +769,6 @@ module.exports = {
   vencidosPorEtapa,
   tableroDeSeguimiento,
   pendientesPaginados,
+  seguimientoDePedidos,
   ventasDelPeriodo,
 };

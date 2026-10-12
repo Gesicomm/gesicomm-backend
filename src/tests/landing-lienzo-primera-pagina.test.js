@@ -54,6 +54,17 @@ describe('primeraPaginaLienzo', () => {
     expect(res.total).toBe(366);
   });
 
+  it('el total y las categorías no cuentan lo que el filtro de la tienda deja afuera', async () => {
+    const items = tiendaGrande();
+    // La base, con el filtro aplicado, ya no devuelve los 66 de Hogar.
+    mockProductoFindAll.mockResolvedValue(items.slice(0, 300).map(i => producto(i.referencia_id, i.referencia_id <= 200 ? 'Cocina' : 'Audio')));
+    const whereProducto = { creado_por: 20 };
+    const res = await LandingService.primeraPaginaLienzo({ content: {} }, items, { whereProducto });
+    expect(mockProductoFindAll.mock.calls[0][0].where).toMatchObject(whereProducto);
+    expect(res.total).toBe(300);
+    expect(res.categorias.map(c => c.nombre)).toEqual(['Audio', 'Cocina']);
+  });
+
   it('la pasada sobre toda la lista es liviana: sin precios ni imágenes de los 366', async () => {
     const items = tiendaGrande();
     await LandingService.primeraPaginaLienzo({ content: {} }, items);

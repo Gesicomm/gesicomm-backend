@@ -1649,6 +1649,17 @@ class LandingService {
     return condicion ? { [Op.and]: [condicion] } : {};
   }
 
+  /**
+   * Filtro de Producto para una lista MANUAL (LandingItem): lo mismo que ve
+   * el dueño en su panel. whereDeEstaTienda solo no alcanza: deja pasar el
+   * producto de CUALQUIER otro usuario (`creado_por != dueño`), y un item
+   * así quedaba publicado en la tienda sin que el dueño pudiera verlo en la
+   * vista previa ni despublicarlo desde Mi catálogo (el panel no lo lista).
+   */
+  static async whereVisibleEnTienda(tienda) {
+    return (await this.visibilidadDeTienda(tienda)).producto;
+  }
+
   static async visibilidadDeTienda(tienda) {
     const administradoresIds = await PrecioUsuarioService.obtenerIdsAdministradores(tienda.inquilino_id);
     const duenoId = tienda.usuario_id ?? null;
@@ -1900,7 +1911,7 @@ class LandingService {
    *
    * @returns {{items: object[], total: number, categorias: {nombre: string, cantidad: number, imagen: string|null}[]}}
    */
-  static async primeraPaginaLienzo(landing, items, { asegurarContentId = null } = {}) {
+  static async primeraPaginaLienzo(landing, items, { asegurarContentId = null, whereProducto = {} } = {}) {
     const idsProducto = items.filter(i => i.tipo === 'producto').map(i => Number(i.referencia_id));
     const idsCombo = items.filter(i => i.tipo === 'combo').map(i => Number(i.referencia_id));
     // Pasada liviana sobre TODA la lista: solo lo necesario para contar,
@@ -1910,7 +1921,7 @@ class LandingService {
     const [productos, combos] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
-          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
+          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...whereProducto },
           attributes: ['id', 'slug'],
           include: [{ association: 'categoria', attributes: ['nombre'] }],
         })
@@ -2111,7 +2122,11 @@ class LandingService {
       // Pedido puntual (obtenerProductosPublicos): solo estos, completos.
       items = await this.itemsDelLienzo(landing, tienda, { contentIds: opciones.soloContentIds });
     } else if (esCodigo && !itemsFallbackCodigo && items.length > PRIMERA_PAGINA_LIENZO) {
-      catalogoLienzo = await this.primeraPaginaLienzo(landing, items, { asegurarContentId: opciones.asegurarContentId || null });
+      catalogoLienzo = await this.primeraPaginaLienzo(landing, items, {
+        asegurarContentId: opciones.asegurarContentId || null,
+        // El total y las categorías no cuentan lo que después no se muestra.
+        whereProducto: await this.whereVisibleEnTienda(tienda),
+      });
       items = catalogoLienzo.items;
     }
     // Lienzo "directo en un producto": la landing abre en la ficha del
@@ -2127,10 +2142,12 @@ class LandingService {
     // Templates rígidos (Fitness/Beauty/Tech/Básico), funnels y lienzo en
     // blanco: ver landingSimple.service.js / funnel.service.js.
 
+    // Mismo filtro que el panel del dueño (ver whereVisibleEnTienda).
+    const visiblesEnTienda = await this.whereVisibleEnTienda(tienda);
     const [productos, combos, ofertas, testimonios, faqs, beneficios] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
-          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...this.whereDeEstaTienda(tienda) },
+          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...visiblesEnTienda },
           include: [{ association: 'categoria', attributes: ['nombre'] }, { model: Marca, attributes: ['nombre'] }],
         })
         : Promise.resolve([]),
@@ -3142,10 +3159,12 @@ class LandingService {
     // los idsProducto enteros, paginar no ahorraría nada — el punto de
     // paginar es no pagar esa galería completa para productos que ni
     // siquiera se van a mostrar en esta página.
+    // Mismo filtro que el panel del dueño (ver whereVisibleEnTienda).
+    const visiblesEnTienda = await this.whereVisibleEnTienda(tienda);
     const [productos, combos, precios, pasarelasPublicas] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
-          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...this.whereDeEstaTienda(tienda) },
+          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...visiblesEnTienda },
           attributes: [
             'id', 'slug', 'nombre', 'descripcion_corta', 'precio_base', 'precio_minimo',
             'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin',
@@ -3743,9 +3762,11 @@ class LandingService {
     const idsProducto = landingItems.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
     const idsCombo = landingItems.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
 
+    // Mismo filtro que el panel del dueño (ver whereVisibleEnTienda).
+    const visiblesEnTienda = await this.whereVisibleEnTienda(tienda);
     const [productos, combos, ofertasDisponibles] = await Promise.all([
       idsProducto.length
-        ? Producto.findAll({ where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...this.whereDeEstaTienda(tienda) } })
+        ? Producto.findAll({ where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...visiblesEnTienda } })
         : Promise.resolve([]),
       idsCombo.length
         ? ProductoCombo.findAll({

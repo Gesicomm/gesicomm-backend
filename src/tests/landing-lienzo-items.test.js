@@ -224,6 +224,15 @@ describe('catálogo por regla: solo lo que la tienda puede vender (tenant único
     expect(ids(vista)).toEqual(['combo:11', 'combo:12', 'producto:1', 'producto:2', 'producto:3']);
   });
 
+  it('lista manual: un producto de otro usuario que quedó guardado en la landing no se publica', async () => {
+    // obtenerPublica, obtenerCatalogoPublico y resolverCarrito leen los
+    // LandingItem con este filtro: el dueño no ve ese producto en su panel,
+    // así que tampoco podía sacarlo de la tienda.
+    const where = await LandingService.whereVisibleEnTienda(tienda);
+    const publicados = PRODUCTOS.filter(p => cumple({ id: { [Op.in]: [1, 2, 3, 4] }, ...where }, p)).map(p => p.id);
+    expect(publicados).toEqual([1, 2, 3]);
+  });
+
   it('una tienda sin dueño resuelto no ve nada ajeno (falla cerrado)', async () => {
     const items = await LandingService.itemsDelLienzo({ content: { venta: reglaTodos } }, { inquilino_id: 7 });
     expect(ids(items)).toEqual(['combo:11', 'producto:1', 'producto:2']);
