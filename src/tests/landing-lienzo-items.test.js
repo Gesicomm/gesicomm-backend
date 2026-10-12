@@ -128,6 +128,16 @@ describe('lista manual', () => {
     const items = await LandingService.itemsDelLienzo(landing, tienda, { contentIds: ['remera', 'combo-9', 'combo-99', 'producto-42'] });
     expect(items.map(i => `${i.tipo}:${i.referencia_id}`).sort()).toEqual(['combo:9', 'producto:3']);
   });
+
+  it('manual configurado y vacío no rellena la página publicada con el catálogo', async () => {
+    const items = await LandingService.itemsDelLienzo({
+      content: { venta: { configurado: true, seleccion: 'manual' } },
+      items: [],
+    }, tienda);
+    expect(items).toEqual([]);
+    expect(mockProductoFindAll).not.toHaveBeenCalled();
+    expect(mockComboFindAll).not.toHaveBeenCalled();
+  });
 });
 
 /**

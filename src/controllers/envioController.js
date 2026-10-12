@@ -10,6 +10,7 @@ const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const { envolverControlador } = require('../utils/asyncHandler');
 const PedidoNumeracion = require('../services/pedidoNumeracion.service');
 const ProductoService = require('../services/producto.service');
+const StockPorTienda = require('../services/stockPorTienda.service');
 const path = require('path');
 const multer = require('multer');
 const AbastecimientoFlujo = require('../services/abastecimiento/abastecimientoFlujo.service');
@@ -153,15 +154,76 @@ function costoParaComerciante(prod, usuario_id) {
  * cantidad total vendida, sino con `desdeDeposito`: si la venta sale completa
  * del salón, InventarioUbicacion no se toca.
  */
-async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadNecesaria, t, permiteGesicomm, usuario_id, origenPreferidoId = null) {
+/**
+ * De qué ubicaciones puede salir un pedido de esta tienda.
+ *
+ * Depósitos y salones son de UNA tienda (Deposito.tienda_id), pero
+ * InventarioUbicacion se guarda por cuenta: sin este filtro, el pedido de una
+ * tienda se reservaba del depósito de otra tienda de la misma cuenta.
+ *
+ * - Ubicación propia: solo las de la tienda del pedido.
+ * - Centro Gesicomm: solo si la tienda eligió modalidad GESICOMM — sus
+ *   couriers propios no tienen forma de retirar de ahí. No es de ninguna
+ *   tienda, así que no se filtra por tienda_id.
+ *
+ * Sin tiendaId (pedidos viejos, cuentas sin tienda) se conserva el criterio
+ * anterior: todas las ubicaciones propias de la cuenta.
+ */
+function whereUbicacionesDespachables(tiendaId, permiteGesicomm) {
+  if (!tiendaId) {
+    return { activo: true, ...(permiteGesicomm ? {} : { alcance: { [Op.ne]: 'GESICOMM' } }) };
+  }
+  const deLaTienda = { tienda_id: tiendaId, alcance: { [Op.ne]: 'GESICOMM' } };
+  return {
+    activo: true,
+    ...(permiteGesicomm ? { [Op.or]: [deLaTienda, { alcance: 'GESICOMM' }] } : deLaTienda),
+  };
+}
+
+/**
+ * Modo automático en una cuenta con 2+ tiendas: el producto tiene stock
+ * cargado en ubicaciones de OTRA tienda y en las de esta no alcanza. Se
+ * rechaza en vez de dejarlo pasar, porque el total del producto
+ * (cantidad_disponible / stock_salon / stock_deposito) es uno solo para toda
+ * la cuenta: si pasara, esta tienda estaría vendiendo las unidades que
+ * físicamente tiene la otra, y la otra quedaría con ubicaciones que dicen
+ * tener stock que el total ya no respalda.
+ *
+ * Solo aplica cuando hay algo que proteger (stock en otra tienda). Una cuenta
+ * de una sola tienda, o un producto sin stock cargado por ubicación, siguen
+ * exactamente como antes.
+ *
+ * Es la última barrera, no la primera: la tienda pública y el checkout ya
+ * muestran ese producto sin stock con la MISMA regla (StockPorTienda), así
+ * que acá solo se llega por un pedido cargado a mano o por stock que cambió
+ * entre la compra y la confirmación.
+ */
+async function exigirStockEnLaTienda({ producto_id, variante_id, cantidad, nombre }, t, usuario_id, tiendaId, permiteGesicomm) {
+  if (!tiendaId) return;
+
+  const reparto = await StockPorTienda.repartoPorTienda({
+    usuarioId: usuario_id, tiendaId, permiteGesicomm, productoIds: [producto_id], transaction: t,
+  });
+  const { enLaTienda = 0, enOtraTienda = 0 } = reparto.get(StockPorTienda.clave(producto_id, variante_id)) || {};
+
+  if (enOtraTienda > 0 && enLaTienda < cantidad) {
+    const err = new Error(
+      `"${nombre}" no tiene stock suficiente en las ubicaciones de esta tienda (disponible: ${enLaTienda}, pedido: ${cantidad}). `
+      + 'El resto está cargado en ubicaciones de otra tienda: cargá stock en un salón o depósito de esta tienda.',
+    );
+    err.status = 409;
+    err.code = 'SIN_STOCK_EN_LA_TIENDA';
+    throw err;
+  }
+}
+
+async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadNecesaria, t, permiteGesicomm, usuario_id, origenPreferidoId = null, tiendaId = null) {
   if (cantidadNecesaria <= 0) return null;
 
   // Un deposito propio trackeado (llego por Abastecimiento a "mi deposito")
-  // siempre es candidato: es informacion propia del comercio, no depende de
-  // como reparte sus entregas. Un Centro Gesicomm solo es candidato si la
-  // tienda eligio modalidad GESICOMM — sus couriers propios no tienen forma
-  // de retirar de ahi.
-  const depositoWhere = permiteGesicomm ? {} : { alcance: { [Op.ne]: 'GESICOMM' } };
+  // es candidato si es de la tienda del pedido; un Centro Gesicomm, solo con
+  // modalidad GESICOMM. Ver whereUbicacionesDespachables.
+  const depositoWhere = whereUbicacionesDespachables(tiendaId, permiteGesicomm);
 
   const ubicacion = await InventarioUbicacion.findOne({
     where: {
@@ -171,7 +233,7 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
       cantidad_disponible: { [Op.gte]: cantidadNecesaria },
       ...(origenPreferidoId ? { deposito_id: origenPreferidoId } : {}),
     },
-    include: [{ model: Deposito, as: 'Deposito', where: { ...depositoWhere, activo: true }, attributes: ['alcance', 'tipo_ubicacion'] }],
+    include: [{ model: Deposito, as: 'Deposito', where: depositoWhere, attributes: ['alcance', 'tipo_ubicacion'] }],
     order: [['cantidad_disponible', 'DESC']],
     transaction: t,
     lock: { level: Transaction.LOCK.UPDATE, of: InventarioUbicacion },
@@ -186,7 +248,7 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
         ...(origenPreferidoId ? { deposito_id: origenPreferidoId } : {}),
       },
       attributes: ['cantidad_disponible'],
-      include: [{ model: Deposito, as: 'Deposito', where: { ...depositoWhere, activo: true }, attributes: ['id'] }],
+      include: [{ model: Deposito, as: 'Deposito', where: depositoWhere, attributes: ['id'] }],
       transaction: t,
     });
     const disponibleTrackeado = ubicacionesTrackeadas
@@ -229,7 +291,15 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
  * se puede despachar en un solo paquete: se rechaza con 409 antes de tocar
  * stock.
  */
-async function resolverPlanFulfillment(items, t, usuario_id) {
+async function resolverPlanFulfillment(items, t, usuario_id, tiendaId = null) {
+  // Las ubicaciones de otra tienda de la cuenta no cuentan para el plan: no
+  // son un origen posible de este pedido (ver whereUbicacionesDespachables).
+  // Los Centros Gesicomm se siguen mirando siempre, como antes: acá solo se
+  // decide si el pedido cabe en un único paquete.
+  const depositoWhere = tiendaId
+    ? { activo: true, [Op.or]: [{ tienda_id: tiendaId }, { alcance: 'GESICOMM' }] }
+    : { activo: true };
+
   const totalPorClave = new Map();
   for (const item of items || []) {
     const receta = await resolverReceta(item, t);
@@ -251,7 +321,7 @@ async function resolverPlanFulfillment(items, t, usuario_id) {
         variante_id: variante_id || null,
         cantidad_disponible: { [Op.gt]: 0 },
       },
-      include: [{ model: Deposito, as: 'Deposito', where: { activo: true }, attributes: ['alcance'] }],
+      include: [{ model: Deposito, as: 'Deposito', where: depositoWhere, attributes: ['alcance'] }],
       order: [['cantidad_disponible', 'DESC']],
       transaction: t,
     });
@@ -290,6 +360,34 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
     ? await Tienda.findByPk(opciones.tiendaId, { transaction: t })
     : await Tienda.findOne({ where: { usuario_id }, transaction: t });
   const permiteGesicomm = tienda?.modalidad_fulfillment === 'GESICOMM';
+  // Solo la tienda que trae el pedido. Sin ella (pedido viejo sin tienda_id)
+  // no se adivina con "la" tienda del usuario: se cae al criterio por cuenta.
+  const tiendaIdPedido = opciones.tiendaId ? Number(opciones.tiendaId) : null;
+
+  // El origen elegido a mano tiene que ser una ubicación de la tienda DEL
+  // PEDIDO. Sin esto alcanzaba con mandar el id: InventarioUbicacion se
+  // filtra por cuenta, no por tienda, así que un pedido de una tienda podía
+  // reservar del depósito de otra tienda de la misma cuenta. La única
+  // ubicación ajena válida es un Centro Gesicomm, y solo si la tienda
+  // despacha con esa modalidad (misma regla que reservarDesdeUbicacionTracked).
+  if (origenPreferidoId) {
+    const propia = { usuario_id, ...(opciones.tiendaId ? { tienda_id: opciones.tiendaId } : {}) };
+    const origenValido = await Deposito.findOne({
+      where: {
+        id: origenPreferidoId,
+        activo: true,
+        ...(permiteGesicomm ? { [Op.or]: [propia, { alcance: 'GESICOMM' }] } : propia),
+      },
+      attributes: ['id'],
+      transaction: t,
+    });
+    if (!origenValido) {
+      const err = new Error('La ubicación de despacho elegida no pertenece a esta tienda o está inactiva.');
+      err.status = 400;
+      err.code = 'ORIGEN_DESPACHO_AJENO';
+      throw err;
+    }
+  }
 
   const recetaPorItem = new Map();
   // Agrupado por producto_id:variante_id — un mismo producto puede aparecer
@@ -318,7 +416,7 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
     if (!prod) throw Object.assign(new Error(`Producto #${id} no encontrado.`), { status: 404 });
     productosPorId.set(id, prod);
   }
-  await resolverPlanFulfillment(items, t, usuario_id);
+  await resolverPlanFulfillment(items, t, usuario_id, tiendaIdPedido);
 
   for (const { producto_id, variante_id, cantidad: cantidadTotal } of totalPorClave.values()) {
     const clave = `${producto_id}:${variante_id || ''}`;
@@ -332,9 +430,15 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
 
       const salonActual = parseInt(variante.stock_salon) || 0;
       const depositoActual = parseInt(variante.stock_deposito) || 0;
+      if (!origenPreferidoId) {
+        await exigirStockEnLaTienda(
+          { producto_id, variante_id, cantidad: cantidadTotal, nombre: `${productosPorId.get(producto_id)?.nombre || 'El producto'} (${variante.nombre})` },
+          t, usuario_id, tiendaIdPedido, permiteGesicomm,
+        );
+      }
       const origenUbicacion = origenPreferidoId
-        ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId)
-        : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id);
+        ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId, tiendaIdPedido)
+        : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id, null, tiendaIdPedido);
       const { desdeSalon, desdeDeposito } = origenPreferidoId
         ? {
           desdeSalon: origenUbicacion?.tipo_ubicacion === 'SALON' ? cantidadTotal : 0,
@@ -393,9 +497,15 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
     // para decidir cuándo reponer.
     const salonActual = parseInt(prod.stock_salon) || 0;
     const depositoActual = parseInt(prod.stock_deposito) || 0;
+    if (!origenPreferidoId) {
+      await exigirStockEnLaTienda(
+        { producto_id, variante_id, cantidad: cantidadTotal, nombre: prod.nombre },
+        t, usuario_id, tiendaIdPedido, permiteGesicomm,
+      );
+    }
     const origenUbicacion = origenPreferidoId
-      ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId)
-      : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id);
+      ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId, tiendaIdPedido)
+      : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id, null, tiendaIdPedido);
     const { desdeSalon, desdeDeposito } = origenPreferidoId
       ? {
         desdeSalon: origenUbicacion?.tipo_ubicacion === 'SALON' ? cantidadTotal : 0,

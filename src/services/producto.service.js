@@ -78,6 +78,11 @@ class ProductoService {
     if (usuarioId == null || tiendaId == null) return {};
     return {
       [Op.or]: [
+        // Aparte del `!=`: en SQL `creado_por != :yo` es NULL (no verdadero)
+        // cuando creado_por es NULL, y los productos del catálogo sin creador
+        // quedaban afuera. Mismo criterio que el `IS DISTINCT FROM` de
+        // PrecioUsuarioService.visibilidadTiendaProductoSql.
+        { creado_por: null },
         { creado_por: { [Op.ne]: usuarioId } },
         { creado_por: usuarioId, tienda_id: tiendaId },
       ],

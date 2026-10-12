@@ -14,7 +14,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca, ProductoVariante, Oferta, Categoria } = require('../models');
+const { sequelize, Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca, ProductoVariante, Oferta, Categoria } = require('../models');
 const ComboConfiguracionService = require('./comboConfiguracion.service');
 const ComboService = require('./combo.service');
 const comboPricing = require('../utils/comboPricing');
@@ -135,6 +135,10 @@ class PrecioUsuarioService {
     if (usuario_id == null || tiendaId == null) return {};
     return {
       [Op.or]: [
+        // Aparte del `!=`: `creado_por != :yo` es NULL cuando creado_por es
+        // NULL — tiene que dar lo mismo que el `IS DISTINCT FROM` de
+        // visibilidadTiendaProductoSql, que sí los incluye.
+        { creado_por: null },
         { creado_por: { [Op.ne]: usuario_id } },
         { creado_por: usuario_id, tienda_id: tiendaId },
       ],
@@ -469,7 +473,11 @@ class PrecioUsuarioService {
         AND l.tienda_id = :tienda_id
         AND l.activo = true
       ORDER BY
-        CASE WHEN l.es_home = true THEN 0 ELSE 1 END,
+        CASE
+          WHEN l.tipo_pagina = 'catalogo' THEN 0
+          WHEN l.es_home = true THEN 1
+          ELSE 2
+        END,
         l.created_at DESC,
         l.id DESC
       LIMIT 1
@@ -908,6 +916,79 @@ class PrecioUsuarioService {
     }
 
     return { tipo, referencia_id, precio: precioNum };
+  }
+
+  static normalizarItemsLanding(items = []) {
+    if (!Array.isArray(items)) throw new Error('La selección no es válida.');
+    const vistos = new Set();
+    return items.map(item => {
+      const tipo = item?.tipo;
+      const id = Number(item?.id ?? item?.referencia_id);
+      if (!['producto', 'combo'].includes(tipo) || !Number.isInteger(id) || id <= 0) {
+        throw new Error('La selección no es válida.');
+      }
+      const key = `${tipo}:${id}`;
+      if (vistos.has(key)) return null;
+      vistos.add(key);
+      return { tipo, id };
+    }).filter(Boolean);
+  }
+
+  static async despublicarDeLandingActiva(usuario_id, inquilino_id, items = [], esAdmin = false, tiendaId = null) {
+    if (!tiendaId) {
+      const err = new Error('Seleccioná una tienda para despublicar productos de la landing.');
+      err.status = 409;
+      throw err;
+    }
+    const seleccion = this.normalizarItemsLanding(items);
+    if (!seleccion.length) throw new Error('Seleccioná al menos un producto para despublicar.');
+
+    const { Landing, LandingItem } = require('../models');
+    const whereLanding = { inquilino_id, tienda_id: tiendaId, activo: true };
+    if (!esAdmin) whereLanding.tienda_id = tiendaId;
+    const landing = await Landing.findOne({
+      where: whereLanding,
+      include: [{ model: LandingItem, as: 'items' }],
+      order: [
+        [sequelize.literal("CASE WHEN tipo_pagina = 'catalogo' THEN 0 WHEN es_home = true THEN 1 ELSE 2 END"), 'ASC'],
+        ['created_at', 'DESC'],
+        ['id', 'DESC'],
+      ],
+    });
+    if (!landing) {
+      const err = new Error('No se encontró una landing activa para esta tienda.');
+      err.status = 404;
+      throw err;
+    }
+
+    const claves = new Set(seleccion.map(item => `${item.tipo}:${item.id}`));
+    const actuales = Array.isArray(landing.items) ? landing.items : [];
+    const eliminados = actuales.filter(item => claves.has(`${item.tipo}:${Number(item.referencia_id)}`)).length;
+    if (eliminados > 0) {
+      await LandingItem.destroy({
+        where: {
+          landing_id: landing.id,
+          [Op.or]: seleccion.map(item => ({ tipo: item.tipo, referencia_id: item.id })),
+        },
+      });
+    }
+
+    const content = landing.content && typeof landing.content === 'object' && !Array.isArray(landing.content)
+      ? { ...landing.content }
+      : {};
+    const venta = content.venta && typeof content.venta === 'object' && !Array.isArray(content.venta)
+      ? { ...content.venta }
+      : {};
+    content.venta = { ...venta, configurado: true, seleccion: 'manual' };
+    landing.content = content;
+    landing.changed?.('content', true);
+    await landing.save?.();
+
+    return {
+      landing_id: landing.id,
+      despublicados: eliminados,
+      restantes: Math.max(0, actuales.length - eliminados),
+    };
   }
 
   static async categorizarProductos(usuario_id, inquilino_id, payload = {}, esAdmin = false, tiendaId = null) {

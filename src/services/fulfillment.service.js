@@ -111,8 +111,19 @@ class FulfillmentService {
     return null;
   }
 
-  static async opcionesFiltrosDepositos(usuarioId) {
-    const base = { usuario_id: usuarioId, activo: true };
+  /**
+   * Los depósitos y salones son de UNA tienda (Deposito.tienda_id), no de la
+   * cuenta: con 2+ tiendas, cada una elige y despacha desde los suyos. Sin
+   * tiendaId (cuenta de una sola tienda sin claim) se cae a los de la cuenta.
+   */
+  static whereDepositosDeTienda(usuarioId, tiendaId = null, extra = {}) {
+    const where = { ...extra, usuario_id: usuarioId, activo: true };
+    if (tiendaId) where.tienda_id = tiendaId;
+    return where;
+  }
+
+  static async opcionesFiltrosDepositos(usuarioId, tiendaId = null) {
+    const base = this.whereDepositosDeTienda(usuarioId, tiendaId);
     const [ciudades, departamentos] = await Promise.all([
       Deposito.findAll({
         where: { ...base, ciudad: { [Op.ne]: null } },
@@ -136,7 +147,7 @@ class FulfillmentService {
     };
   }
 
-  static async listarDepositosPropios(usuarioId, payload = {}) {
+  static async listarDepositosPropios(usuarioId, payload = {}, tiendaId = null) {
     const filtros = payload.filtros || payload.filters || {};
     const buscar = this.normalizarFiltroTexto(payload.buscar || filtros.buscar);
     const ciudad = this.normalizarFiltroTexto(payload.ciudad || filtros.ciudad);
@@ -148,7 +159,7 @@ class FulfillmentService {
     const limit = Math.min(30, Math.max(1, parseInt(payload.limit, 10) || 6));
     const offset = (page - 1) * limit;
 
-    const where = { usuario_id: usuarioId, activo: true };
+    const where = this.whereDepositosDeTienda(usuarioId, tiendaId);
     if (ciudad) where.ciudad = ciudad;
     if (departamento) where.departamento = departamento;
     if (buscar) {
@@ -172,7 +183,7 @@ class FulfillmentService {
         limit,
         offset,
       }),
-      this.opcionesFiltrosDepositos(usuarioId),
+      this.opcionesFiltrosDepositos(usuarioId, tiendaId),
     ]);
 
     const ids = rows.map((d) => d.id);
@@ -181,7 +192,7 @@ class FulfillmentService {
 
     if (depositoSeleccionadoId && !ids.includes(depositoSeleccionadoId)) {
       const deposito = await Deposito.findOne({
-        where: { id: depositoSeleccionadoId, usuario_id: usuarioId, activo: true },
+        where: this.whereDepositosDeTienda(usuarioId, tiendaId, { id: depositoSeleccionadoId }),
       });
       if (deposito) {
         const couriersSeleccionado = await DepositoCourierService.couriersHabilitadosPorDeposito([deposito.id]);
@@ -210,7 +221,7 @@ class FulfillmentService {
 
     const [depositos, proveedoresGesicomm] = await Promise.all([
       Deposito.findAll({
-        where: { usuario_id: usuarioId, activo: true },
+        where: this.whereDepositosDeTienda(usuarioId, tienda.id),
         attributes: ['id'],
         order: [['nombre', 'ASC']],
       }),
@@ -251,10 +262,10 @@ class FulfillmentService {
     const cambios = { modalidad_fulfillment: valor };
 
     if (valor === 'PROPIA') {
-      // El depósito se valida contra los del comercio: no alcanza con que
-      // llegue un id en el body.
+      // El depósito se valida contra los de ESTA tienda: no alcanza con que
+      // llegue un id en el body, ni con que sea de otra tienda de la cuenta.
       const deposito = await Deposito.findOne({
-        where: { id: depositoId, usuario_id: usuarioId, activo: true },
+        where: this.whereDepositosDeTienda(usuarioId, tienda.id, { id: depositoId }),
       });
       if (!deposito) {
         throw errorHttp('Elegí un depósito activo tuyo para despachar tus pedidos.');

@@ -26,6 +26,7 @@ router.post('/precios/actualizar', verificarPermiso('gestionar_precio_propio'), 
 
 router.put('/productos/:id/precio', verificarPermiso('gestionar_precio_propio'), ctrl.guardarPrecioProducto);
 router.post('/productos/categorizar', verificarPermiso('gestionar_precio_propio'), ctrl.categorizarProductos);
+router.post('/landing/despublicar', verificarPermiso('gestionar_landing'), ctrl.despublicarLanding);
 router.put('/combos/:id/precio', verificarPermiso('gestionar_precio_propio'), ctrl.guardarPrecioCombo);
 
 router.get('/productos/:id/sensibilidad', verificarPermiso('ver_analisis_sensibilidad'), ctrl.sensibilidadProducto);

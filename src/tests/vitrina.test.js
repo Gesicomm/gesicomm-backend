@@ -1,10 +1,11 @@
 const PrecioUsuarioService = require('../services/precioUsuario.service');
-const { sequelize, Categoria, Producto, ProductoCombo, ProductoImagen, PrecioUsuario, Marca, Proveedor, ComboConfiguracion, Usuario } = require('../models');
+const { sequelize, Categoria, Producto, ProductoCombo, ProductoImagen, PrecioUsuario, Marca, Proveedor, ComboConfiguracion, Usuario, Landing, LandingItem } = require('../models');
 const { Op } = require('sequelize');
 
 jest.mock('../models', () => ({
   sequelize: {
     query: jest.fn(),
+    literal: jest.fn(sql => sql),
     QueryTypes: { SELECT: 'SELECT' },
   },
   Categoria: {
@@ -48,6 +49,12 @@ jest.mock('../models', () => ({
   Usuario: {
     findAll: jest.fn(),
   },
+  Landing: {
+    findOne: jest.fn(),
+  },
+  LandingItem: {
+    destroy: jest.fn(),
+  },
   Rol: {},
 }));
 
@@ -57,6 +64,8 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     PrecioUsuario.findAll.mockResolvedValue([]);
     PrecioUsuario.findOrCreate.mockResolvedValue([{ precio: '120000', save: jest.fn() }]);
     Usuario.findAll.mockResolvedValue([{ id: 1 }]);
+    Landing.findOne.mockReset();
+    LandingItem.destroy.mockReset();
   });
 
   test('incluye filtro p.creado_por = :usuario_id en la consulta SQL cuando solamenteMios es true', async () => {
@@ -216,6 +225,8 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
       expect(sql).toContain('li.referencia_id = c.id');
       expect(sql).toContain('l.tienda_id = :tienda_id');
       expect(sql).toContain('l.activo = true');
+      expect(sql).toContain("WHEN l.tipo_pagina = 'catalogo' THEN 0");
+      expect(sql).toContain('WHEN l.es_home = true THEN 1');
     }
     expect(dataSql).toContain('LIMIT :limit OFFSET :offset');
     expect(categoriasSql).toContain('FROM landing_items li');
@@ -235,6 +246,37 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
       marcas: [],
     });
     expect(sequelize.query).not.toHaveBeenCalled();
+  });
+
+  test('despublicar de mi landing quita LandingItem y no elimina el producto del catálogo', async () => {
+    const landing = {
+      id: 11,
+      content: { venta: { configurado: true, seleccion: 'manual' } },
+      items: [
+        { tipo: 'producto', referencia_id: 1 },
+        { tipo: 'combo', referencia_id: 9 },
+      ],
+      changed: jest.fn(),
+      save: jest.fn().mockResolvedValue(),
+    };
+    Landing.findOne.mockResolvedValue(landing);
+    LandingItem.destroy.mockResolvedValue(1);
+
+    const res = await PrecioUsuarioService.despublicarDeLandingActiva(42, 1, [{ tipo: 'producto', id: 1 }], false, 7);
+
+    expect(res).toEqual({ landing_id: 11, despublicados: 1, restantes: 1 });
+    expect(Landing.findOne).toHaveBeenCalledWith(expect.objectContaining({
+      order: expect.arrayContaining([
+        expect.arrayContaining(["CASE WHEN tipo_pagina = 'catalogo' THEN 0 WHEN es_home = true THEN 1 ELSE 2 END", 'ASC']),
+      ]),
+    }));
+    expect(LandingItem.destroy).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ landing_id: 11 }),
+    }));
+    expect(Producto.findAll).not.toHaveBeenCalled();
+    expect(landing.content.venta).toMatchObject({ configurado: true, seleccion: 'manual' });
+    expect(landing.changed).toHaveBeenCalledWith('content', true);
+    expect(landing.save).toHaveBeenCalled();
   });
 });
 

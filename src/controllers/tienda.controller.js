@@ -176,7 +176,7 @@ async function obtenerFulfillment(req, res) {
 /** POST /api/mi-tienda/fulfillment/depositos — listado paginado para elegir depósito propio. */
 async function listarDepositosFulfillment(req, res) {
   try {
-    return res.json(await FulfillmentService.listarDepositosPropios(req.usuario.id, req.body || {}));
+    return res.json(await FulfillmentService.listarDepositosPropios(req.usuario.id, req.body || {}, req.usuario.tiendaId || null));
   } catch (err) {
     const status = err.status || 500;
     if (status >= 500) console.error('[tienda] listarDepositosFulfillment:', err);

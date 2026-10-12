@@ -53,6 +53,14 @@ const esquemaLogin = z.object({
 
 const esquemaRegistro = z.object({
   nombre: z.string().min(2, { message: 'El nombre es requerido.' }),
+  telefono: z
+    .string({ required_error: 'El teléfono es requerido.' })
+    .trim()
+    .min(6, { message: 'El teléfono es requerido.' })
+    .max(40, { message: 'El teléfono no puede superar 40 caracteres.' })
+    .refine((valor) => valor.replace(/\D/g, '').length >= 6, {
+      message: 'Ingresá un teléfono válido.',
+    }),
   email: z.string().email({ message: 'Email inválido.' }),
   password: z
     .string()

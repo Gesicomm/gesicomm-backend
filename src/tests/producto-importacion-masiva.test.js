@@ -14,6 +14,7 @@ jest.mock('../services/producto.service', () => ({ crear: jest.fn(), sincronizar
 jest.mock('../services/productoVariante.service', () => ({}));
 
 const ExcelJS = require('exceljs');
+const JSZip = require('jszip');
 const { sequelize, Categoria, Producto, ProductoImagen, Deposito } = require('../models');
 const ProductoService = require('../services/producto.service');
 const {
@@ -137,7 +138,7 @@ describe('Carga masiva de productos con la plantilla de Gesicom', () => {
     Deposito.findAll.mockResolvedValue([]);
     const ninguna = await importarMasivo(await archivo([completo, { ...completo, sku: 'SIN-STOCK', stock: 0 }]), contexto);
     expect(ninguna).toMatchObject({ listos: 1 });
-    expect(erroresDe(ninguna)).toEqual(['2 MOUSE-1: Para cargar stock primero creá una ubicación en Mi Tienda → Depósitos (o dejá el stock en 0).']);
+    expect(erroresDe(ninguna)).toEqual(['2 MOUSE-1: Para cargar stock primero creá una ubicación en Depósitos, desde el sidebar (o dejá el stock en 0).']);
   });
 
   test('un producto que falla al crearse no frena a los demás', async () => {
@@ -146,6 +147,26 @@ describe('Carga masiva de productos con la plantilla de Gesicom', () => {
 
     expect(resultado).toMatchObject({ listos: 2, creados: 1, productos: [{ sku: 'MOUSE-2' }] });
     expect(resultado.errores).toEqual([{ hoja: 'Productos', fila: 2, sku: 'MOUSE-1', error: 'El SKU "MOUSE-1" ya está usado en el producto "Otro".' }]);
+  });
+
+  test('lee la plantilla aunque no la haya guardado Excel: XML con prefijo y notas con ruta absoluta', async () => {
+    // Así la reescriben las herramientas de .NET: <x:workbook> en vez de
+    // <workbook> y las relaciones apuntando a /xl/... ExcelJS solo no la abre.
+    const { originalname, buffer } = await archivo([completo]);
+    const zip = await JSZip.loadAsync(buffer);
+    for (const nombre of Object.keys(zip.files).filter((n) => /^xl\/.*\.(xml|rels)$/.test(n) && !n.includes('/theme/'))) {
+      const xml = await zip.file(nombre).async('string');
+      zip.file(nombre, nombre.endsWith('.rels')
+        ? xml.replace(/Target="\.\.\//g, 'Target="/xl/')
+        : xml
+          .replace(/<(\/?)([A-Za-z]\w*)(?=[\s>/])/g, '<$1x:$2')
+          .replace(/\sxmlns="http:\/\/schemas\.openxmlformats\.org\/spreadsheetml\/2006\/main"/, ' xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'));
+    }
+    const reescrito = await zip.generateAsync({ type: 'nodebuffer' });
+    await expect(new ExcelJS.Workbook().xlsx.load(reescrito)).rejects.toThrow();
+
+    const resultado = await importarMasivo({ originalname, buffer: reescrito }, contexto);
+    expect(resultado).toMatchObject({ total_leidos: 1, listos: 1, errores: [] });
   });
 
   test('rechaza un archivo sin las columnas obligatorias y pide una tienda a quien no es admin', async () => {

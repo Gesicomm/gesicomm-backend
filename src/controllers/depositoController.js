@@ -34,9 +34,26 @@ function validarCamposObligatorios(datos) {
   return faltantes;
 }
 
+/**
+ * Depósitos y salones son de UNA tienda, no de la cuenta (ver migración
+ * 20261006150000-add_tienda_id_depositos_couriers). Mismo criterio que
+ * courierDelUsuario y DepositoCourierService.depositoDelUsuario.
+ *
+ * Las dos condiciones van con AND. Con un OR ("de la tienda activa O de la
+ * cuenta") la segunda mitad ya incluye todo lo de la cuenta y el filtro por
+ * tienda queda anulado: cada tienda veía — y podía editar o despachar desde —
+ * los depósitos y salones de las otras tiendas de la misma cuenta.
+ *
+ * tiendaId falta solo en una cuenta sin tiendas (ver resolverTiendaActiva).
+ */
+function whereDelComercio(req, extra = {}) {
+  const where = { ...extra, usuario_id: req.usuario.id };
+  if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
+  return where;
+}
+
 exports.listar = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
     const {
       page = 1,
       limit = 10,
@@ -49,15 +66,7 @@ exports.listar = async (req, res) => {
       activo,
     } = req.body || {};
 
-    const where = {};
-    if (req.usuario.tiendaId) {
-      where[Op.or] = [
-        { tienda_id: req.usuario.tiendaId },
-        { usuario_id: usuario_id }
-      ];
-    } else {
-      where.usuario_id = usuario_id;
-    }
+    const where = whereDelComercio(req);
 
     if (nombre && String(nombre).trim()) {
       where.nombre = { [Op.iLike]: `%${String(nombre).trim()}%` };
@@ -115,17 +124,8 @@ exports.listar = async (req, res) => {
 
 exports.obtenerPorId = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const where = { id };
-    if (req.usuario.tiendaId) {
-      where[Op.or] = [
-        { tienda_id: req.usuario.tiendaId },
-        { usuario_id: usuario_id }
-      ];
-    } else {
-      where.usuario_id = usuario_id;
-    }
+    const where = whereDelComercio(req, { id });
     const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
     res.json(deposito);
@@ -155,17 +155,8 @@ exports.crear = async (req, res) => {
 
 exports.editar = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const where = { id };
-    if (req.usuario.tiendaId) {
-      where[Op.or] = [
-        { tienda_id: req.usuario.tiendaId },
-        { usuario_id: usuario_id }
-      ];
-    } else {
-      where.usuario_id = usuario_id;
-    }
+    const where = whereDelComercio(req, { id });
     const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 
@@ -185,22 +176,13 @@ exports.editar = async (req, res) => {
 
 exports.cambiarEstado = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
     const { id } = req.params;
     const { activo } = req.body || {};
     if (typeof activo !== 'boolean') {
       return res.status(400).json({ error: 'El campo activo es obligatorio y debe ser booleano' });
     }
 
-    const whereActivo = { id };
-    if (req.usuario.tiendaId) {
-      whereActivo[Op.or] = [
-        { tienda_id: req.usuario.tiendaId },
-        { usuario_id: usuario_id }
-      ];
-    } else {
-      whereActivo.usuario_id = usuario_id;
-    }
+    const whereActivo = whereDelComercio(req, { id });
     const deposito = await Deposito.findOne({ where: whereActivo });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 
@@ -214,17 +196,8 @@ exports.cambiarEstado = async (req, res) => {
 
 exports.eliminar = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const where = { id };
-    if (req.usuario.tiendaId) {
-      where[Op.or] = [
-        { tienda_id: req.usuario.tiendaId },
-        { usuario_id: usuario_id }
-      ];
-    } else {
-      where.usuario_id = usuario_id;
-    }
+    const where = whereDelComercio(req, { id });
     const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 

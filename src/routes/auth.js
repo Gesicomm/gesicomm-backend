@@ -326,7 +326,7 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
   const t = await sequelize.transaction();
 
   try {
-    const { nombre, email, password, token_suscripcion } = req.body;
+    const { nombre, telefono, email, password, token_suscripcion } = req.body;
 
     // Alta con suscripcion paga: el flujo es elegir plan -> pagar -> recien
     // ahi registrarse, asi que el token acredita que ese correo ya pago.
@@ -383,6 +383,7 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
       inquilino_id: inquilino.id,
       rol_id: rolUsuario.id,
       nombre,
+      telefono,
       correo_electronico: email,
       contrasena_hash,
       email_verificado: false,

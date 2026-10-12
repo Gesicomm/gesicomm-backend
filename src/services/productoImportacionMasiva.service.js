@@ -16,6 +16,7 @@
  */
 
 const ExcelJS = require('exceljs');
+const JSZip = require('jszip');
 const { Op } = require('sequelize');
 const { sequelize, Producto, ProductoImagen, Deposito } = require('../models');
 const ProductoService = require('./producto.service');
@@ -40,7 +41,7 @@ const COLUMNAS_PRODUCTOS = [
   { clave: 'precio', titulo: 'Precio de venta', obligatoria: true, ancho: 16, ayuda: 'En guaraníes, solo el número. Ej: 89000. No puede ser menor al costo de compra.', ejemplo: '89000' },
   { clave: 'stock', titulo: 'Stock', obligatoria: true, ancho: 10, ayuda: 'Unidades disponibles. Con 0 la tienda lo muestra sin stock y no deja comprarlo.', ejemplo: '20' },
   { clave: 'descripcion', titulo: 'Descripción', obligatoria: true, ancho: 50, ayuda: 'Qué es, para quién es, qué problema resuelve y cómo se usa. De 2 a 4 oraciones.', ejemplo: 'Mouse inalámbrico con receptor USB y clic silencioso. Pensado para trabajar en la oficina o en casa sin cables ni ruido. Se conecta solo: enchufás el receptor y listo.' },
-  { clave: 'ubicacion', titulo: 'Ubicación del stock', ancho: 22, ayuda: 'Nombre de la ubicación (Mi Tienda → Depósitos) donde está el stock. Si tenés una sola, dejalo vacío.', ejemplo: 'Depósito Central' },
+  { clave: 'ubicacion', titulo: 'Ubicación del stock', ancho: 22, ayuda: 'Nombre de la ubicación configurada en Depósitos, desde el sidebar, donde está el stock. Si tenés una sola, dejalo vacío.', ejemplo: 'Depósito Central' },
   { clave: 'categoria', titulo: 'Categoría', ancho: 22, ayuda: 'Nombre de la categoría. Si no existe, se crea. Ordena el catálogo, los filtros y los productos relacionados.', ejemplo: 'Tecnología' },
   { clave: 'propuesta_valor', titulo: 'Propuesta de valor', ancho: 44, ayuda: 'Una oración corta que dice qué gana el cliente. Se muestra debajo del nombre.', ejemplo: 'Trabajá sin cables y sin ruido.' },
   { clave: 'beneficios', titulo: 'Beneficios', ancho: 40, ayuda: 'De 2 a 5 palabras cada uno, uno por renglón (Alt+Enter) o separados con |. La ficha muestra los 4 primeros.', ejemplo: 'Batería de larga duración | Clic silencioso | Conexión inmediata | Cómodo todo el día' },
@@ -98,13 +99,51 @@ function filasDeHoja(hoja, columnas) {
   return { claves: (claves || []).filter(Boolean), filas };
 }
 
+const NS_HOJA = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+const PREFIJO_NS_HOJA = new RegExp(`\\sxmlns:([\\w.-]+)="${NS_HOJA}"`);
+const REL_DE_NOTAS = /<Relationship\b[^>]*\bType="[^"]*\/(?:comments|vmlDrawing)"[^>]*?(?:\/>|>\s*<\/Relationship>)/g;
+
+/**
+ * Deja el .xlsx como lo lee ExcelJS. Un archivo que no guardó Excel sino otra
+ * herramienta (las de .NET, que es con lo que varios asistentes completan la
+ * plantilla) es igual de válido pero viene distinto en dos cosas que ExcelJS
+ * no soporta:
+ *  - el XML con prefijo (<x:workbook>, <x:sheet>): no reconoce ninguna etiqueta;
+ *  - las notas de ayuda de los encabezados enlazadas con rutas absolutas: falla
+ *    al buscarlas. Se descartan, porque acá solo se leen los valores.
+ */
+async function normalizarXlsx(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  let cambio = false;
+  for (const entrada of Object.values(zip.files)) {
+    if (entrada.dir || !/\.(xml|rels)$/i.test(entrada.name)) continue;
+    const original = await entrada.async('string');
+    let xml = original;
+    if (/worksheets\/_rels\/[^/]+\.rels$/i.test(entrada.name)) {
+      xml = xml.replace(REL_DE_NOTAS, '');
+    } else {
+      const prefijo = xml.match(PREFIJO_NS_HOJA)?.[1];
+      if (prefijo) {
+        xml = xml
+          .replace(PREFIJO_NS_HOJA, ` xmlns="${NS_HOJA}"`)
+          .replace(new RegExp(`<(/?)${prefijo.replace(/\./g, '\\.')}:`, 'g'), '<$1');
+      }
+    }
+    if (xml !== original) {
+      zip.file(entrada.name, xml);
+      cambio = true;
+    }
+  }
+  return cambio ? zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }) : buffer;
+}
+
 async function leerLibro(file) {
   if (!limpiarTexto(file?.originalname).toLowerCase().endsWith('.xlsx')) {
     throw new Error('Subí la plantilla de Gesicom en formato Excel (.xlsx).');
   }
   const libro = new ExcelJS.Workbook();
   try {
-    await libro.xlsx.load(file.buffer);
+    await libro.xlsx.load(await normalizarXlsx(file.buffer));
   } catch {
     throw new Error('No se pudo leer el archivo. Descargá la plantilla y completala sin cambiar el formato.');
   }
@@ -234,7 +273,7 @@ async function asignarUbicaciones(productos, errores, contexto) {
 
   for (const producto of conStock) {
     let motivo = null;
-    if (!ubicaciones.length) motivo = 'Para cargar stock primero creá una ubicación en Mi Tienda → Depósitos (o dejá el stock en 0).';
+    if (!ubicaciones.length) motivo = 'Para cargar stock primero creá una ubicación en Depósitos, desde el sidebar (o dejá el stock en 0).';
     else if (producto.ubicacion && !porNombre.has(claveUbicacion(producto.ubicacion))) motivo = `La ubicación "${producto.ubicacion}" no existe. Tus ubicaciones: ${nombres}.`;
     else if (!producto.ubicacion && ubicaciones.length > 1) motivo = `Tenés varias ubicaciones: escribí en "Ubicación del stock" una de estas: ${nombres}.`;
 
@@ -384,7 +423,7 @@ async function generarPlantilla() {
     'No cambies los nombres de las hojas ni de los encabezados. El orden de las columnas no importa.',
     'Para varias imágenes o beneficios en una celda: uno por renglón (Alt+Enter) o separados con |',
     'El costo de compra y el precio de venta van en guaraníes. Con esos dos datos se calculan la ganancia y el margen.',
-    'El stock se guarda en una ubicación de Mi Tienda → Depósitos. Si tenés más de una, completá "Ubicación del stock".',
+    'El stock se guarda en una ubicación configurada en Depósitos, desde el sidebar. Si tenés más de una, completá "Ubicación del stock".',
     'Al subir el archivo primero se revisa y te muestra qué filas tienen errores. No se crea nada hasta que confirmes.',
     'Lo demás (variantes, preguntas frecuentes, opiniones, ofertas) se completa después dentro de cada producto.',
   ].forEach((linea) => ayuda.addRow([linea]));

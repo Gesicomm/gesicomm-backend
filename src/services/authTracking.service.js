@@ -726,6 +726,7 @@ async function listarEventos({ pagina = 1, filtros = {} } = {}) {
         { tipo: { [Op.iLike]: q } },
         { '$usuario.nombre$': { [Op.iLike]: q } },
         { '$usuario.correo_electronico$': { [Op.iLike]: q } },
+        { '$usuario.telefono$': { [Op.iLike]: q } },
       ];
     }
   }
@@ -734,7 +735,7 @@ async function listarEventos({ pagina = 1, filtros = {} } = {}) {
   return buscarPaginado(AuthEvent, {
     where,
     order: [['created_at', 'DESC']],
-    include: [{ model: Usuario, as: 'usuario', attributes: ['id', 'nombre', 'correo_electronico', 'email_verificado', 'plan'] }],
+    include: [{ model: Usuario, as: 'usuario', attributes: ['id', 'nombre', 'telefono', 'correo_electronico', 'email_verificado', 'plan'] }],
   }, pagina);
 }
 
@@ -760,6 +761,7 @@ async function listarSesionesActivas({ pagina = 1, filtros = {} } = {}) {
     usuarioWhere[Op.or] = [
       { nombre: { [Op.iLike]: q } },
       { correo_electronico: { [Op.iLike]: q } },
+      { telefono: { [Op.iLike]: q } },
     ];
   }
 
@@ -769,7 +771,7 @@ async function listarSesionesActivas({ pagina = 1, filtros = {} } = {}) {
     include: [{
       model: Usuario,
       as: 'usuario',
-      attributes: ['id', 'nombre', 'correo_electronico', 'email_verificado', 'plan'],
+      attributes: ['id', 'nombre', 'telefono', 'correo_electronico', 'email_verificado', 'plan'],
       ...(Object.keys(usuarioWhere).length > 0 ? { where: usuarioWhere } : {}),
     }],
   }, pagina);
@@ -793,6 +795,7 @@ async function listarNotificaciones({ pagina = 1, filtros = {} } = {}) {
         { mensaje: { [Op.iLike]: q } },
         { '$usuario.nombre$': { [Op.iLike]: q } },
         { '$usuario.correo_electronico$': { [Op.iLike]: q } },
+        { '$usuario.telefono$': { [Op.iLike]: q } },
       ];
     }
   }
@@ -801,7 +804,7 @@ async function listarNotificaciones({ pagina = 1, filtros = {} } = {}) {
   return buscarPaginado(AuthNotification, {
     where,
     order: [['created_at', 'DESC']],
-    include: [{ model: Usuario, as: 'usuario', attributes: ['id', 'nombre', 'correo_electronico'] }],
+    include: [{ model: Usuario, as: 'usuario', attributes: ['id', 'nombre', 'telefono', 'correo_electronico'] }],
   }, pagina);
 }
 

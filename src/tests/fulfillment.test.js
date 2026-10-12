@@ -69,9 +69,11 @@ beforeEach(() => {
   jest.clearAllMocks();
   __almacen.tiendas = [{ id: 1, usuario_id: COMERCIO, nombre: 'Tienda', modalidad_fulfillment: 'PROPIA', deposito_fulfillment_id: null }];
   __almacen.depositos = [
-    { id: 10, usuario_id: COMERCIO, nombre: 'Luque', ciudad: 'Luque', activo: true },
-    { id: 11, usuario_id: COMERCIO, nombre: 'Sin couriers', ciudad: 'Asunción', activo: true },
-    { id: 20, usuario_id: 2, nombre: 'Ajeno', ciudad: 'Encarnación', activo: true },
+    { id: 10, usuario_id: COMERCIO, tienda_id: 1, nombre: 'Luque', ciudad: 'Luque', activo: true },
+    { id: 11, usuario_id: COMERCIO, tienda_id: 1, nombre: 'Sin couriers', ciudad: 'Asunción', activo: true },
+    { id: 20, usuario_id: 2, tienda_id: 9, nombre: 'Ajeno', ciudad: 'Encarnación', activo: true },
+    // Misma cuenta, OTRA tienda: no es un depósito de la tienda 1.
+    { id: 30, usuario_id: COMERCIO, tienda_id: 2, nombre: 'De mi otra tienda', ciudad: 'Asunción', activo: true },
   ];
   __almacen.proveedores = [];
   // Sólo el depósito 10 tiene couriers; el 11 existe pero está vacío.
@@ -95,6 +97,12 @@ describe('obtenerConfiguracion', () => {
     expect(cfg.propia.disponible).toBe(true);
     expect(cfg.propia.total_depositos).toBe(2);
     expect(cfg.propia.depositos).toEqual([]);
+  });
+
+  it('cuenta solo los depósitos de la tienda, no los de otras tiendas de la cuenta', async () => {
+    const cfg = await Fulfillment.obtenerConfiguracion(COMERCIO, 1);
+
+    expect(cfg.propia.total_depositos).toBe(2);
   });
 
   it('sin proveedores de la red, esa modalidad no está disponible', async () => {
@@ -140,6 +148,12 @@ describe('guardarConfiguracion', () => {
 
   it('propia exige un depósito del comercio', async () => {
     await expect(Fulfillment.guardarConfiguracion(COMERCIO, { modalidad: 'PROPIA', depositoId: 20 }))
+      .rejects.toMatchObject({ status: 400 });
+    expect(tienda().deposito_fulfillment_id).toBeNull();
+  });
+
+  it('propia rechaza el depósito de otra tienda de la misma cuenta', async () => {
+    await expect(Fulfillment.guardarConfiguracion(COMERCIO, { modalidad: 'PROPIA', depositoId: 30 }, 1))
       .rejects.toMatchObject({ status: 400 });
     expect(tienda().deposito_fulfillment_id).toBeNull();
   });

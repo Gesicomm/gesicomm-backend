@@ -27,6 +27,7 @@ const {
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 const { registrarHistorial } = require('../utils/historial');
 const PricingService = require('./pricing.service');
+const StockPorTienda = require('./stockPorTienda.service');
 const TarifaDeliveryService = require('./tarifaDelivery.service');
 const FulfillmentService = require('./fulfillment.service');
 const PaymentService = require('./payments/paymentService');
@@ -1615,15 +1616,49 @@ class LandingService {
    * Devuelve fragmentos de where envueltos en Op.and para combinarlos con el
    * Op.or de los content_ids sin pisarlo.
    */
+  /**
+   * Un producto que el comercio cargó en UNA de sus tiendas
+   * (Producto.tienda_id) se vende solo en esa tienda: no existe para las
+   * otras tiendas de la misma cuenta. El panel ya lo separa así
+   * (ProductoService.visibilidadTiendaProducto); sin esto la tienda pública
+   * no — por regla mostraba los productos de todas las tiendas del dueño.
+   *
+   * Lo único que se excluye es "producto del dueño asignado a OTRA tienda".
+   * Siguen entrando el catálogo que no es suyo (creado_por NULL o de un
+   * admin) y sus productos viejos sin tienda asignada (tienda_id NULL,
+   * anteriores a 2026-10-08): sacarlos vaciaría tiendas que hoy venden.
+   *
+   * @returns la condición suelta, o null si no hay dueño/tienda que comparar.
+   */
+  static condicionDeEstaTienda(tienda) {
+    const duenoId = tienda?.usuario_id ?? null;
+    if (duenoId == null || tienda?.id == null) return null;
+    return {
+      [Op.or]: [
+        { creado_por: null },
+        { creado_por: { [Op.ne]: duenoId } },
+        { tienda_id: null },
+        { tienda_id: tienda.id },
+      ],
+    };
+  }
+
+  /** condicionDeEstaTienda lista para desparramar en un `where` de Producto. */
+  static whereDeEstaTienda(tienda) {
+    const condicion = this.condicionDeEstaTienda(tienda);
+    return condicion ? { [Op.and]: [condicion] } : {};
+  }
+
   static async visibilidadDeTienda(tienda) {
     const administradoresIds = await PrecioUsuarioService.obtenerIdsAdministradores(tienda.inquilino_id);
     const duenoId = tienda.usuario_id ?? null;
     const duenoEsAdmin = duenoId != null && administradoresIds.includes(duenoId);
     const producto = PrecioUsuarioService.visibilidadCatalogoWhere(duenoId, false, false, administradoresIds);
+    const deEstaTienda = this.condicionDeEstaTienda(tienda);
     const combo = duenoEsAdmin
       ? { [Op.or]: [{ creado_por: null }, { creado_por: { [Op.in]: administradoresIds } }] }
       : PrecioUsuarioService.visibilidadComboWhere(duenoId, false, false, administradoresIds);
-    return { producto: { [Op.and]: [producto] }, combo: { [Op.and]: [combo] } };
+    return { producto: { [Op.and]: [producto, ...(deEstaTienda ? [deEstaTienda] : [])] }, combo: { [Op.and]: [combo] } };
   }
 
   /**
@@ -1737,7 +1772,7 @@ class LandingService {
             model: Producto,
             as: 'producto_padre',
             attributes: ['id'],
-            where: { activo: true },
+            where: { activo: true, ...this.whereDeEstaTienda(tienda) },
             required: true,
             include: filtroCategoria,
           }],
@@ -1770,7 +1805,7 @@ class LandingService {
       Producto.count({ where: { inquilino_id: tienda.inquilino_id, activo: true, estado_venta: 'en_venta', ...visibles.producto }, include: filtroCategoria }),
       venta.incluir_combos === false ? 0 : ProductoCombo.count({
         where: { inquilino_id: tienda.inquilino_id, estado: 'ACTIVO', ...visibles.combo },
-        include: [{ model: Producto, as: 'producto_padre', attributes: [], where: { activo: true }, required: true, include: filtroCategoria }],
+        include: [{ model: Producto, as: 'producto_padre', attributes: [], where: { activo: true, ...this.whereDeEstaTienda(tienda) }, required: true, include: filtroCategoria }],
       }),
     ]);
     return nProductos + nCombos;
@@ -1968,7 +2003,9 @@ class LandingService {
 
     items = (landing.items || []).length
       ? [...landing.items].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0))
-      : await this.itemsFallbackLienzo(tienda);
+      : venta?.configurado && venta.seleccion === 'manual'
+        ? []
+        : await this.itemsFallbackLienzo(tienda);
 
     if (contentIds || (asegurar && limite && items.length > limite)) {
       const buscados = contentIds || [asegurar];
@@ -2045,7 +2082,7 @@ class LandingService {
     // combos). Sin configuración, todo el catálogo — el comportamiento de
     // siempre. El checkout valida con la misma regla (resolverCarrito).
     let itemsFallbackCodigo = null;
-    if (esCodigo && !(landing.items || []).length) {
+    if (esCodigo && !(landing.items || []).length && this.debeSintetizarCatalogoCodigo(landing)) {
       itemsFallbackCodigo = await this.itemsSegunReglaCodigo(landing, tienda);
     }
 
@@ -2093,7 +2130,7 @@ class LandingService {
     const [productos, combos, ofertas, testimonios, faqs, beneficios] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
-          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
+          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...this.whereDeEstaTienda(tienda) },
           include: [{ association: 'categoria', attributes: ['nombre'] }, { model: Marca, attributes: ['nombre'] }],
         })
         : Promise.resolve([]),
@@ -2104,7 +2141,7 @@ class LandingService {
             {
               model: Producto,
               as: 'producto_padre',
-              where: { activo: true },
+              where: { activo: true, ...this.whereDeEstaTienda(tienda) },
               include: [{ association: 'categoria', attributes: ['nombre'] }, { model: Marca, attributes: ['nombre'] }],
             },
             {
@@ -2376,6 +2413,14 @@ class LandingService {
         mapaOpciones.set(o.producto_id, lista);
       });
     }
+
+    // Stock de ESTA tienda, no el total de la cuenta: lo cargado en las
+    // ubicaciones de otra tienda no se puede vender acá, así que sale "sin
+    // stock" en vez de dejar comprar algo que después no se puede confirmar.
+    await StockPorTienda.ajustarStockALaTienda(tienda, {
+      productos: [...mapaProducto.values(), ...combos.map(c => c.producto_padre)],
+      variantes: [...mapaVariantes.values()].flat(),
+    });
 
     const itemsDto = [];
     for (const item of items) {
@@ -3100,7 +3145,7 @@ class LandingService {
     const [productos, combos, precios, pasarelasPublicas] = await Promise.all([
       idsProducto.length
         ? Producto.findAll({
-          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' },
+          where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...this.whereDeEstaTienda(tienda) },
           attributes: [
             'id', 'slug', 'nombre', 'descripcion_corta', 'precio_base', 'precio_minimo',
             'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin',
@@ -3116,7 +3161,7 @@ class LandingService {
             {
               model: Producto,
               as: 'producto_padre',
-              where: { activo: true },
+              where: { activo: true, ...this.whereDeEstaTienda(tienda) },
               attributes: ['id', 'nombre', 'cantidad_disponible'],
               include: [{ association: 'categoria', attributes: ['nombre'] }, { model: Marca, attributes: ['nombre'] }],
             },
@@ -3144,6 +3189,12 @@ class LandingService {
     const mapaProducto = new Map(productos.map(p => [p.id, p]));
     const mapaCombo = new Map(combos.map(c => [c.id, c]));
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
+
+    // Stock de ESTA tienda (ver obtenerPublica). Va antes de armar el
+    // listado porque el filtro "en stock / agotados" se resuelve sobre él.
+    await StockPorTienda.ajustarStockALaTienda(tienda, {
+      productos: [...productos, ...combos.map(c => c.producto_padre)],
+    });
 
     const resolverPrecioProducto = (prod, tipo = 'producto') => {
       const precioBase = parseFloat(tipo === 'combo' ? prod.precio_total : prod.precio_base);
@@ -3620,6 +3671,13 @@ class LandingService {
     return items;
   }
 
+  static debeSintetizarCatalogoCodigo(landing) {
+    const venta = landing?.content?.venta || {};
+    if (venta.configurado && venta.seleccion === 'manual') return false;
+    if (venta.configurado) return ['todos', 'categoria'].includes(venta.seleccion);
+    return true;
+  }
+
   static normalizarDescuentoBoton(valor) {
     const n = Number(String(valor ?? '').replace(',', '.'));
     if (!Number.isFinite(n) || n <= 0) return 0;
@@ -3662,7 +3720,7 @@ class LandingService {
     // Lienzo en blanco sin productos curados = catálogo por regla (o el
     // respaldo "todo el catálogo" de obtenerPublica): se arman los items
     // con lo que pide el carrito, validado contra la regla y el inquilino.
-    if (landing.template?.kind === 'codigo' && !landingItems.length) {
+    if (landing.template?.kind === 'codigo' && !landingItems.length && this.debeSintetizarCatalogoCodigo(landing)) {
       const acotar = { producto: [], combo: [], slugs: [] };
       for (const pedido of items) {
         const cid = String(pedido?.content_id || '');
@@ -3687,12 +3745,12 @@ class LandingService {
 
     const [productos, combos, ofertasDisponibles] = await Promise.all([
       idsProducto.length
-        ? Producto.findAll({ where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta' } })
+        ? Producto.findAll({ where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...this.whereDeEstaTienda(tienda) } })
         : Promise.resolve([]),
       idsCombo.length
         ? ProductoCombo.findAll({
           where: { id: { [Op.in]: idsCombo }, estado: 'ACTIVO' },
-          include: [{ model: Producto, as: 'producto_padre', where: { activo: true } }],
+          include: [{ model: Producto, as: 'producto_padre', where: { activo: true, ...this.whereDeEstaTienda(tienda) } }],
         })
         : Promise.resolve([]),
       idsProducto.length
@@ -3765,6 +3823,14 @@ class LandingService {
       if (c.variante && !mapaVariantePorId.has(c.variante.id)) mapaVariantePorId.set(c.variante.id, c.variante);
     }));
 
+    // Todo lo que sigue valida contra el stock de ESTA tienda, igual que la
+    // vitrina (ver obtenerPublica): si el visitante llega al checkout con
+    // algo que la tienda no tiene, se corta acá y no al confirmar el pedido.
+    await StockPorTienda.ajustarStockALaTienda(tienda, {
+      productos: [...mapaStock.values(), ...combos.map(c => c.producto_padre)],
+      variantes: [...mapaVariantePorId.values()],
+    });
+
     // content_id público (slug || "<tipo>-<id>") → item real de ESTA
     // landing — mismo identificador que le entrega obtenerPublica() al
     // navegador, así el carrito arma sus items con el mismo id que acá.
@@ -3814,7 +3880,10 @@ class LandingService {
             varianteElegida = await ProductoVariante.findOne({
               where: { id: Number(pedido.componente_variante_id), producto_id: elegible.producto_id, activo: true },
             });
-            if (varianteElegida) mapaVariantePorId.set(varianteElegida.id, varianteElegida);
+            if (varianteElegida) {
+              await StockPorTienda.ajustarStockALaTienda(tienda, { variantes: [varianteElegida] });
+              mapaVariantePorId.set(varianteElegida.id, varianteElegida);
+            }
           }
           if (varianteElegida && varianteElegida.producto_id === elegible.producto_id) {
             componenteVarianteId = Number(pedido.componente_variante_id);

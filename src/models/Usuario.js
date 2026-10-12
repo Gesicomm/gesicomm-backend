@@ -29,6 +29,11 @@ const Usuario = sequelize.define('Usuario', {
     type: DataTypes.STRING,
     allowNull: false,
   },
+  telefono: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+    comment: 'Teléfono personal/de contacto del usuario. Distinto del teléfono o WhatsApp público de sus tiendas.',
+  },
   correo_electronico: {
     type: DataTypes.STRING,
     allowNull: false,
