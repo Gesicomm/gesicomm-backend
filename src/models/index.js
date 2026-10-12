@@ -52,6 +52,17 @@ RahaSolicitud.belongsTo(Tienda, { as: 'tienda', foreignKey: 'tienda_id', onDelet
 RahaSolicitud.belongsTo(Usuario, { as: 'solicitante', foreignKey: 'usuario_id', onDelete: 'RESTRICT' });
 RahaSolicitud.hasMany(RahaDocumento, { as: 'documentos', foreignKey: 'solicitud_id', onDelete: 'CASCADE' });
 RahaDocumento.belongsTo(RahaSolicitud, { foreignKey: 'solicitud_id' });
+const IntegracionCredencial = require('./IntegracionCredencial');
+const IntegracionProducto = require('./IntegracionProducto');
+const IntegracionEvento = require('./IntegracionEvento');
+Tienda.hasMany(IntegracionCredencial, { as: 'integraciones', foreignKey: 'tienda_id', onDelete: 'CASCADE' });
+IntegracionCredencial.belongsTo(Tienda, { as: 'tienda', foreignKey: 'tienda_id' });
+IntegracionCredencial.hasMany(IntegracionProducto, { as: 'productos_sincronizados', foreignKey: 'integracion_id', onDelete: 'CASCADE' });
+IntegracionProducto.belongsTo(IntegracionCredencial, { as: 'integracion', foreignKey: 'integracion_id' });
+IntegracionProducto.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id', onDelete: 'CASCADE' });
+Producto.hasOne(IntegracionProducto, { as: 'mapeo_integracion', foreignKey: 'producto_id' });
+IntegracionCredencial.hasMany(IntegracionEvento, { as: 'eventos', foreignKey: 'integracion_id', onDelete: 'CASCADE' });
+IntegracionEvento.belongsTo(IntegracionCredencial, { as: 'integracion', foreignKey: 'integracion_id' });
 const Page = require('./Page');
 const PageVersion = require('./PageVersion');
 const AiGenerationLog = require('./AiGenerationLog');
@@ -857,6 +868,9 @@ module.exports = {
   SpeedboxEvento,
   RahaSolicitud,
   RahaDocumento,
+  IntegracionCredencial,
+  IntegracionProducto,
+  IntegracionEvento,
   LandingTemplate,
   Landing,
   TiendaPagina,
