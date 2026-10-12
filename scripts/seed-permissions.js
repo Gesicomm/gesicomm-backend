@@ -22,6 +22,7 @@ const permisosDisponibles = [
   { nombre: 'gestionar_landing', descripcion: 'Crear, editar, publicar y despublicar landings públicas propias' },
   { nombre: 'gestionar_tienda', descripcion: 'Configurar la tienda propia: subdominio, dominio propio, colores, contacto y pixel' },
   { nombre: 'gestionar_meta_ads', descripcion: 'Crear campañas internas de Meta Ads, importar reportes CSV y ver métricas por producto' },
+  { nombre: 'gestionar_integraciones', descripcion: 'Generar y revocar API Keys para que sistemas externos sincronicen productos con la tienda propia' },
   // Page Builder — el permiso existe desde ya, pero routes/pageBuilder.js
   // todavía usa soloAdministrador: el módulo no está liberado a los
   // usuarios. Cuando se libere, se cambian dos líneas ahí y este permiso
@@ -42,12 +43,12 @@ const rolesBasicos = [
       'ver_combos', 'crear_combos', 'editar_combos', 'activar_combos', 'configurar_combos',
       'ver_productos', 'crear_productos', 'editar_productos', 'eliminar_productos',
       'ver_analisis_sensibilidad', 'gestionar_solicitudes_datos', 'gestionar_meta_ads',
-      'ver_costos_gastos', 'gestionar_costos_gastos',
+      'ver_costos_gastos', 'gestionar_costos_gastos', 'gestionar_integraciones',
     ],
   },
   {
     nombre: 'usuario',
-    permisos: ['ver_dashboard', 'ver_productos', 'ver_combos', 'ver_analisis_sensibilidad', 'gestionar_precio_propio', 'gestionar_landing', 'gestionar_tienda', 'gestionar_meta_ads', 'ver_costos_gastos', 'gestionar_costos_gastos'],
+    permisos: ['ver_dashboard', 'ver_productos', 'ver_combos', 'ver_analisis_sensibilidad', 'gestionar_precio_propio', 'gestionar_landing', 'gestionar_tienda', 'gestionar_meta_ads', 'ver_costos_gastos', 'gestionar_costos_gastos', 'gestionar_integraciones'],
   },
 ];
 

@@ -181,6 +181,9 @@ app.use('/api/mis-landings-simples', express.json({ limit: '600kb' }));
 // 422); acá va 1mb porque serializar 600 KB de HTML a JSON, con todo el
 // escapado de comillas, pasa holgadamente de 600 kb en el transporte.
 app.use('/api/page-builder', express.json({ limit: '1mb' }));
+// Un lote de carga inicial (POST .../v1/productos/lote) manda hasta 200
+// productos con imágenes y tags en un solo body — 10kb no alcanza.
+app.use('/api/integraciones/productos/v1', express.json({ limit: '2mb' }));
 // Cambiar precios manda listas de filas ({tipo, id}): la selección que viene
 // de Mi catálogo y hasta 1000 precios editados a mano. Con 10kb el corte
 // caía cerca de las 300 filas y "Seleccionar todo" devolvía un 413.
@@ -270,6 +273,12 @@ app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/brevo', brevoRoutes);
 app.use('/api/integraciones/speedbox', require('./src/routes/speedbox'));
 app.use('/api/integraciones/raha', require('./src/routes/raha'));
+// El mount de /v1 (API Key, socios externos) va ANTES que el de
+// /productos (sesión, panel propio): Express matchea por prefijo de ruta,
+// así que si el admin fuera primero, /v1/* entraría a su router y
+// verificarToken rechazaría con 401 antes de llegar nunca al de abajo.
+app.use('/api/integraciones/productos/v1', require('./src/routes/integracionesProductosApi'));
+app.use('/api/integraciones/productos', require('./src/routes/integracionesProductosAdmin'));
 // Planes y suscripciones de Gesicomm (publicas: son el paso previo al alta)
 app.use('/api', suscripcionesRoutes);
 
