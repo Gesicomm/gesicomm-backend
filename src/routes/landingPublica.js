@@ -91,6 +91,9 @@ router.post('/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheck
 // frontend lo llama seguido (cada cambio de cantidad/oferta).
 router.post('/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
 router.post('/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);
+// Productos puntuales completos (el carrito los pide cuando no vinieron en
+// la primera página de la landing). Solo lectura: mismo límite que el GET.
+router.post('/productos', limitePublico, resolverTiendaOpcional, ctrl.obtenerProductos);
 router.get('/pagopar/resultado/:hash', limitePublico, resolverTiendaOpcional, ctrl.resultadoPago);
 router.get('/producto/:productoSlug', limitePublico, resolverTiendaOpcional, ctrl.obtenerProducto);
 // Catálogo de departamentos/ciudades de Paraguay (no es de ninguna tienda en
@@ -109,5 +112,6 @@ router.post('/:slug/visita', limiteVisita, resolverTiendaOpcional, ctrl.registra
 router.post('/:slug/checkout', limiteCheckout, resolverTiendaOpcional, ctrl.crearCheckout);
 router.post('/:slug/carrito', limitePublico, resolverTiendaOpcional, ctrl.recalcularCarrito);
 router.post('/:slug/cupon', limitePublico, resolverTiendaOpcional, ctrl.validarCupon);
+router.post('/:slug/productos', limitePublico, resolverTiendaOpcional, ctrl.obtenerProductos);
 
 module.exports = router;

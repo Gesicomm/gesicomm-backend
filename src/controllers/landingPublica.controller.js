@@ -200,6 +200,31 @@ async function obtenerPorSlug(req, res) {
   }
 }
 
+/**
+ * POST /api/l/[:slug/]productos — productos puntuales del lienzo, completos.
+ * Lo usa el carrito para los que no vinieron en la primera página de la
+ * landing (ver LandingService.obtenerProductosPublicos).
+ */
+async function obtenerProductos(req, res) {
+  try {
+    const { tienda } = await resolverTiendaYLanding(req);
+    if (!tienda) {
+      return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
+    }
+    const crudos = Array.isArray(req.body?.content_ids) ? req.body.content_ids : [];
+    const contentIds = [...new Set(crudos.filter(id => typeof id === 'string' && /^[a-z0-9-]{1,200}$/i.test(id)))].slice(0, MAX_CONTENT_IDS);
+    if (!contentIds.length) return res.status(200).json({ disponible: true, items: [] });
+
+    const resultado = await LandingService.obtenerProductosPublicos(tienda, req.params.slug || null, contentIds);
+    if (resultado === null) return res.status(404).json({ message: 'Landing no encontrada.' });
+    res.set('Cache-Control', 'private, no-store');
+    return res.status(200).json(resultado);
+  } catch (err) {
+    console.error('[landing-publica] obtenerProductos:', err.message);
+    return res.status(500).json({ message: 'Error al obtener los productos.' });
+  }
+}
+
 async function obtenerProducto(req, res) {
   try {
     let tienda = req.tienda;
@@ -703,4 +728,4 @@ async function registrarVisitaPublica(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, obtenerProducto, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia, deliveryPublico };
+module.exports = { obtenerPorSlug, obtenerProducto, obtenerProductos, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia, deliveryPublico };
