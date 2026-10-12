@@ -948,7 +948,9 @@ class PrecioUsuarioService {
     if (!esAdmin) whereLanding.tienda_id = tiendaId;
     const landing = await Landing.findOne({
       where: whereLanding,
-      include: [{ model: LandingItem, as: 'items' }],
+      // separate: en un JOIN el content de la landing (el lienzo entero) viaja
+      // repetido en cada fila de item; con cientos de items son cientos de MB.
+      include: [{ model: LandingItem, as: 'items', attributes: ['tipo', 'referencia_id'], separate: true }],
       order: [
         [sequelize.literal("CASE WHEN tipo_pagina = 'catalogo' THEN 0 WHEN es_home = true THEN 1 ELSE 2 END"), 'ASC'],
         ['created_at', 'DESC'],
