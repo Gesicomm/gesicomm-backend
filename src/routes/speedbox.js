@@ -22,9 +22,10 @@ const handle = handler => async (req, res, next) => {
   }
 };
 function publicBaseFromRequest(req) {
-  const proto = String(req.get('x-forwarded-proto') || req.protocol || '').split(',')[0].trim();
+  let proto = String(req.get('x-forwarded-proto') || req.protocol || '').split(',')[0].trim();
   const host = String(req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
   if (!proto || !host) return null;
+  if (proto === 'http' && !/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(host)) proto = 'https';
   return `${proto}://${host}`;
 }
 router.get('/', handle(req => service.status(req.usuario.id, { publicBaseUrl: publicBaseFromRequest(req) })));
