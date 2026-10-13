@@ -35,4 +35,21 @@ describe('RAHA Portal & User Management', () => {
       service.portalLogin({ email: '', password: '' })
     ).rejects.toThrow('Email y contrasena son obligatorios.');
   });
+
+  test('portalList supports structured pagination and date filters', async () => {
+    const resHoy = await service.portalList({ rango_fecha: 'hoy', page: 1, limit: 10 });
+    expect(resHoy).toHaveProperty('total');
+    expect(resHoy).toHaveProperty('page', 1);
+    expect(resHoy).toHaveProperty('limit', 10);
+    expect(resHoy).toHaveProperty('totalPaginas');
+    expect(resHoy).toHaveProperty('resumen');
+    expect(resHoy).toHaveProperty('solicitudes');
+    expect(resHoy.rango).toEqual(expect.objectContaining({ rango_fecha: 'hoy' }));
+
+    const resAyer = await service.portalList({ rango_fecha: 'ayer' });
+    expect(resAyer.rango).toEqual(expect.objectContaining({ rango_fecha: 'ayer' }));
+
+    const resCustom = await service.portalList({ fecha_desde: '2026-10-10', fecha_hasta: '2026-10-13' });
+    expect(resCustom.rango).toEqual({ fecha_desde: '2026-10-10', fecha_hasta: '2026-10-13', rango_fecha: 'custom' });
+  });
 });

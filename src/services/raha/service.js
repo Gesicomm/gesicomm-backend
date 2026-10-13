@@ -128,17 +128,99 @@ async function submit(actor, input) {
   await notify(row, actor, true).catch(() => logger.error({ mensaje: 'Raha: notificacion pendiente', solicitudId: row.id }));
   return serialize(row);
 }
-async function list(actor, { estado, offset = 0 } = {}) {
+function normalizarRangoFechas({ rango_fecha, fecha_desde, fecha_hasta } = {}) {
+  const ahora = new Date();
+  const aIsoAsuncion = d => d.toLocaleDateString('sv-SE', { timeZone: 'America/Asuncion' });
+
+  let desdeStr = fecha_desde ? String(fecha_desde).trim().slice(0, 10) : '';
+  let hastaStr = fecha_hasta ? String(fecha_hasta).trim().slice(0, 10) : '';
+
+  if (rango_fecha === 'hoy') {
+    const hoy = aIsoAsuncion(ahora);
+    desdeStr = hoy;
+    hastaStr = hoy;
+  } else if (rango_fecha === 'ayer') {
+    const ayerD = new Date(ahora);
+    ayerD.setDate(ayerD.getDate() - 1);
+    const ayer = aIsoAsuncion(ayerD);
+    desdeStr = ayer;
+    hastaStr = ayer;
+  } else if (rango_fecha === '7d') {
+    const inicio = new Date(ahora);
+    inicio.setDate(inicio.getDate() - 6);
+    desdeStr = aIsoAsuncion(inicio);
+    hastaStr = aIsoAsuncion(ahora);
+  } else if (rango_fecha === '30d') {
+    const inicio = new Date(ahora);
+    inicio.setDate(inicio.getDate() - 29);
+    desdeStr = aIsoAsuncion(inicio);
+    hastaStr = aIsoAsuncion(ahora);
+  } else if (rango_fecha === 'mes') {
+    const hoy = aIsoAsuncion(ahora);
+    desdeStr = `${hoy.slice(0, 7)}-01`;
+    hastaStr = hoy;
+  }
+
+  if (desdeStr && !hastaStr) hastaStr = desdeStr;
+  else if (!desdeStr && hastaStr) desdeStr = hastaStr;
+
+  if (!desdeStr && !hastaStr) return null;
+
+  const dInicio = new Date(`${desdeStr}T00:00:00.000-03:00`);
+  const dFin = new Date(`${hastaStr}T23:59:59.999-03:00`);
+  if (isNaN(dInicio.getTime()) || isNaN(dFin.getTime())) return null;
+
+  return {
+    fecha_desde: desdeStr,
+    fecha_hasta: hastaStr,
+    inicio: dInicio,
+    fin: dFin,
+  };
+}
+
+async function list(actor, input = {}) {
   admin(actor); const usuario = await identity(actor);
+  const { estado, offset, page = 1, limit = 20, rango_fecha = '', fecha_desde = '', fecha_hasta = '' } = input;
   if (estado && !['en_revision', 'observada', 'enviada_raha', 'aprobada', 'rechazada'].includes(estado)) fail('Estado invalido.');
-  if (!/^\d+$/.test(String(offset)) || Number(offset) > 100000) fail('Pagina invalida.');
+  const computedLimit = Math.min(100, Math.max(1, Number(limit) || 20));
+  let computedOffset = 0;
+  if (offset !== undefined && offset !== null && offset !== '') {
+    computedOffset = Math.max(0, Number(offset) || 0);
+  } else if (page !== undefined && page !== null && page !== '') {
+    computedOffset = (Math.max(1, Number(page) || 1) - 1) * computedLimit;
+  }
+  if (!/^\d+$/.test(String(computedOffset)) || computedOffset > 100000) fail('Pagina invalida.');
+
+  const rango = normalizarRangoFechas({ rango_fecha, fecha_desde, fecha_hasta });
+  const where = { inquilino_id: usuario.inquilino_id, estado: estado || { [require('sequelize').Op.ne]: 'borrador' } };
+
+  if (rango?.inicio && rango?.fin) {
+    where[Op.and] = [
+      ...(where[Op.and] || []),
+      sequelize.where(
+        sequelize.fn('COALESCE', sequelize.col('RahaSolicitud.enviado_at'), sequelize.col('RahaSolicitud.created_at')),
+        { [Op.between]: [rango.inicio, rango.fin] }
+      ),
+    ];
+  }
+
   const { count, rows } = await RahaSolicitud.findAndCountAll({
-    where: { inquilino_id: usuario.inquilino_id, estado: estado || { [require('sequelize').Op.ne]: 'borrador' } },
+    where,
     attributes: ['id', 'estado', 'enviado_at', 'updated_at', 'version'],
     include: [{ model: Tienda, as: 'tienda', attributes: ['nombre'] }],
-    order: [['updated_at', 'DESC'], ['id', 'DESC']], limit: 30, offset: Number(offset),
+    order: [['updated_at', 'DESC'], ['id', 'DESC']],
+    limit: computedLimit,
+    offset: computedOffset,
   });
-  return { total: count, solicitudes: rows };
+
+  return {
+    total: count,
+    page: Math.floor(computedOffset / computedLimit) + 1,
+    limit: computedLimit,
+    totalPaginas: Math.ceil(count / computedLimit) || 1,
+    rango: rango ? { fecha_desde: rango.fecha_desde, fecha_hasta: rango.fecha_hasta, rango_fecha: rango_fecha || 'custom' } : null,
+    solicitudes: rows,
+  };
 }
 async function review(actor, id, input) {
   admin(actor);
@@ -218,9 +300,27 @@ async function portalFind(id, transaction) {
   return solicitud;
 }
 async function portalList(input = {}) {
-  const { estado = '', buscar = '', offset = 0 } = input;
+  const {
+    estado = '',
+    buscar = '',
+    offset,
+    page = 1,
+    limit = 20,
+    rango_fecha = '',
+    fecha_desde = '',
+    fecha_hasta = '',
+  } = input;
   if (estado && !FILTROS_PORTAL[estado]) fail('Estado invalido.');
-  if (!/^\d+$/.test(String(offset)) || Number(offset) > 100000) fail('Pagina invalida.');
+  const computedLimit = Math.min(100, Math.max(1, Number(limit) || 20));
+  let computedOffset = 0;
+  if (offset !== undefined && offset !== null && offset !== '') {
+    computedOffset = Math.max(0, Number(offset) || 0);
+  } else if (page !== undefined && page !== null && page !== '') {
+    computedOffset = (Math.max(1, Number(page) || 1) - 1) * computedLimit;
+  }
+  if (!/^\d+$/.test(String(computedOffset)) || computedOffset > 100000) fail('Pagina invalida.');
+
+  const rango = normalizarRangoFechas({ rango_fecha, fecha_desde, fecha_hasta });
   const where = { estado: estado ? { [Op.in]: FILTROS_PORTAL[estado] } : { [Op.ne]: 'borrador' } };
   const q = String(buscar || '').trim().slice(0, 100).replace(/[\\%_]/g, c => `\\${c}`);
   if (q) where[Op.or] = [
@@ -228,16 +328,60 @@ async function portalList(input = {}) {
     sequelize.where(sequelize.literal(`"RahaSolicitud"."datos"->>'razon_social'`), { [Op.iLike]: `%${q}%` }),
     sequelize.where(sequelize.literal(`"RahaSolicitud"."datos"->>'ruc'`), { [Op.iLike]: `%${q}%` }),
   ];
+
+  if (rango?.inicio && rango?.fin) {
+    where[Op.and] = [
+      ...(where[Op.and] || []),
+      sequelize.where(
+        sequelize.fn('COALESCE', sequelize.col('RahaSolicitud.enviado_at'), sequelize.col('RahaSolicitud.created_at')),
+        { [Op.between]: [rango.inicio, rango.fin] }
+      ),
+    ];
+  }
+
   const { count, rows } = await RahaSolicitud.findAndCountAll({
     where, attributes: ['id', 'estado', 'datos', 'enviado_at', 'updated_at'],
     include: [{ model: Tienda, as: 'tienda', attributes: ['nombre'] }],
-    order: [['enviado_at', 'DESC'], ['id', 'DESC']], limit: 30, offset: Number(offset), subQuery: false,
+    order: [['enviado_at', 'DESC'], ['id', 'DESC']], limit: computedLimit, offset: computedOffset, subQuery: false,
   });
-  const conteo = await RahaSolicitud.findAll({ where: { estado: { [Op.ne]: 'borrador' } }, attributes: ['estado', [sequelize.fn('COUNT', sequelize.col('id')), 'total']], group: ['estado'], raw: true });
+
+  const conteoWhere = { estado: { [Op.ne]: 'borrador' } };
+  if (rango?.inicio && rango?.fin) {
+    conteoWhere[Op.and] = [
+      sequelize.where(
+        sequelize.fn('COALESCE', sequelize.col('RahaSolicitud.enviado_at'), sequelize.col('RahaSolicitud.created_at')),
+        { [Op.between]: [rango.inicio, rango.fin] }
+      ),
+    ];
+  }
+
+  const conteo = await RahaSolicitud.findAll({
+    where: conteoWhere,
+    attributes: ['estado', [sequelize.fn('COUNT', sequelize.col('id')), 'total']],
+    group: ['estado'],
+    raw: true,
+  });
+
   const resumen = { pendiente: 0, observada: 0, aprobada: 0, rechazada: 0 };
   for (const c of conteo) resumen[PENDIENTES.includes(c.estado) ? 'pendiente' : c.estado] = (resumen[PENDIENTES.includes(c.estado) ? 'pendiente' : c.estado] || 0) + Number(c.total);
-  return { total: count, resumen, solicitudes: rows.map(r => ({ id: r.id, estado: r.estado, enviado_at: r.enviado_at, updated_at: r.updated_at,
-    tienda: r.tienda?.nombre || '', razon_social: r.datos?.razon_social || '', ruc: r.datos?.ruc || '' })) };
+
+  return {
+    total: count,
+    page: Math.floor(computedOffset / computedLimit) + 1,
+    limit: computedLimit,
+    totalPaginas: Math.ceil(count / computedLimit) || 1,
+    resumen,
+    rango: rango ? { fecha_desde: rango.fecha_desde, fecha_hasta: rango.fecha_hasta, rango_fecha: rango_fecha || 'custom' } : null,
+    solicitudes: rows.map(r => ({
+      id: r.id,
+      estado: r.estado,
+      enviado_at: r.enviado_at,
+      updated_at: r.updated_at,
+      tienda: r.tienda?.nombre || '',
+      razon_social: r.datos?.razon_social || '',
+      ruc: r.datos?.ruc || '',
+    })),
+  };
 }
 async function portalDetail(id) {
   const row = await portalFind(id);
