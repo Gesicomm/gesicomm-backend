@@ -258,6 +258,7 @@ SolicitudAbastecimiento.belongsTo(ProductoVariante, { as: 'variante', foreignKey
 SolicitudAbastecimiento.belongsTo(Deposito, { as: 'depositoDestino', foreignKey: 'deposito_destino_id' });
 SolicitudAbastecimiento.belongsTo(Deposito, { as: 'centroGesicomm', foreignKey: 'centro_gesicomm_id' });
 SolicitudAbastecimiento.hasMany(HistorialSolicitudAbastecimiento, { as: 'historial', foreignKey: 'solicitud_id', onDelete: 'CASCADE' });
+SpeedboxPedido.belongsTo(SolicitudAbastecimiento, { as: 'solicitudAbastecimiento', foreignKey: 'solicitud_abastecimiento_id' });
 HistorialSolicitudAbastecimiento.belongsTo(SolicitudAbastecimiento, { foreignKey: 'solicitud_id' });
 HistorialSolicitudAbastecimiento.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 

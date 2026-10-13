@@ -12,6 +12,9 @@ beforeEach(() => {
     sequelize: { transaction: jest.fn(async () => transaction), query: jest.fn() },
     showAllTables: jest.fn(async () => [...tables.keys()]),
     createTable: jest.fn(async (name, columns) => { tables.set(name, columns); indexes.set(name, []); }),
+    describeTable: jest.fn(async name => tables.get(name) || {}),
+    addColumn: jest.fn(async (name, column, definition) => { tables.get(name)[column] = definition; }),
+    changeColumn: jest.fn(async (name, column, definition) => { tables.get(name)[column] = definition; }),
     showIndex: jest.fn(async name => indexes.get(name) || []),
     addIndex: jest.fn(async (name, fields, options) => { indexes.get(name).push({ ...options, fields }); }),
   };

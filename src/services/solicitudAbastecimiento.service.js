@@ -136,6 +136,7 @@ class SolicitudAbastecimientoService {
       }, { transaction: t });
 
       await this.registrarHistorial(solicitud.id, usuario_id, 'pendiente_pago', TEXTOS.pendiente_pago, t);
+      await require('./speedbox/service').queueSupplyRequest(solicitud, t);
       return solicitud;
     });
   }

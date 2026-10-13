@@ -2,9 +2,9 @@
 const { Op } = require('sequelize');
 const { z } = require('zod');
 const { sequelize, Tienda, Envio, EnvioItem, EnvioItemComponente, Producto, ProductoVariante,
-  SpeedboxTienda, SpeedboxPedido, SpeedboxEvento, SolicitudAbastecimiento } = require('../../models');
+  Deposito, SpeedboxTienda, SpeedboxPedido, SpeedboxEvento, SolicitudAbastecimiento } = require('../../models');
 const client = require('./client');
-const { buildOrder } = require('./payload');
+const { buildOrder, buildSupplyOrder } = require('./payload');
 
 function environment() { return process.env.SPEEDBOX_ENVIRONMENT || 'sandbox'; }
 function fail(message, status = 400) { throw Object.assign(new Error(message), { status }); }
@@ -106,6 +106,16 @@ async function dispatchConfirmedOrder(usuarioId, envioId) {
   }
 }
 
+async function dispatchSupplyRequest(usuarioId, solicitudId) {
+  try {
+    const queued = await SpeedboxPedido.findOne({ where: { usuario_id: usuarioId, solicitud_abastecimiento_id: solicitudId, environment: environment(), estado: 'pendiente' } });
+    if (queued) await sendSupplyRequest(usuarioId, solicitudId);
+  } catch (error) {
+    require('../../utils/logger').logger.warn({ evento: 'SPEEDBOX_SUPPLY_DISPATCH_FAILED', solicitudId,
+      message: client.redact(error.message) });
+  }
+}
+
 async function queueConfirmedOrder(envio, transaction) {
   if (process.env.SPEEDBOX_ENABLED !== 'true' || envio.estado !== 'Confirmado' || !envio.stock_descontado || envio.stock_liberado) return null;
   const connection = await SpeedboxTienda.findOne({ where: { usuario_id: envio.usuario_id, environment: environment(), activo: true }, transaction });
@@ -117,6 +127,26 @@ async function queueConfirmedOrder(envio, transaction) {
   if (mapping.estado === 'pendiente') {
     // Commit the outbox with confirmation; never send an uncommitted order.
     transaction.afterCommit(() => { setImmediate(() => { void dispatchConfirmedOrder(envio.usuario_id, envio.id); }); });
+  }
+  return mapping;
+}
+
+async function queueSupplyRequest(solicitud, transaction) {
+  if (solicitud.tipo_logistica !== 'PROPIA') return null;
+  const connection = await SpeedboxTienda.findOne({ where: { usuario_id: solicitud.usuario_id, environment: environment(), activo: true }, transaction });
+  if (!connection?.tienda_id) fail('RAHA no está activo o vinculado para esta tienda.', 409);
+  credentialsFor(connection, {}, { allowInput: false });
+  const [mapping] = await SpeedboxPedido.findOrCreate({
+    where: { environment: environment(), solicitud_abastecimiento_id: solicitud.id },
+    defaults: {
+      usuario_id: solicitud.usuario_id,
+      envio_id: null,
+      external_order_id: `GESICOMM-ABAST-${environment()}-${solicitud.usuario_id}-${solicitud.id}`,
+    },
+    transaction,
+  });
+  if (mapping.estado === 'pendiente') {
+    transaction.afterCommit(() => { setImmediate(() => { void dispatchSupplyRequest(solicitud.usuario_id, solicitud.id); }); });
   }
   return mapping;
 }
@@ -359,6 +389,71 @@ async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncerta
   return mapping;
 }
 
+async function sendSupplyRequest(usuarioId, solicitudId, { retry = false, acknowledgeUncertain = false } = {}) {
+  const claimed = await sequelize.transaction(async transaction => {
+    const connection = await connectionFor(usuarioId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!connection.activo || !connection.tienda_id) fail('RAHA no está activo para esta tienda.', 409);
+    const solicitud = await SolicitudAbastecimiento.findOne({ where: { id: solicitudId, usuario_id: usuarioId }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!solicitud) fail('Solicitud de abastecimiento no encontrada.', 404);
+    if (solicitud.tipo_logistica !== 'PROPIA' || !solicitud.deposito_destino_id) {
+      fail('El pedido RAHA de abastecimiento necesita un depósito propio de destino.', 409);
+    }
+    const [mapping] = await SpeedboxPedido.findOrCreate({
+      where: { environment: environment(), solicitud_abastecimiento_id: solicitud.id },
+      defaults: {
+        usuario_id: usuarioId,
+        envio_id: null,
+        external_order_id: `GESICOMM-ABAST-${environment()}-${usuarioId}-${solicitud.id}`,
+      },
+      transaction,
+    });
+    if (mapping.order_id) return { mapping, sent: true };
+    const credentials = credentialsFor(connection, {}, { allowInput: false });
+    if (mapping.estado === 'enviando' && Date.now() - new Date(mapping.updated_at).getTime() < 120000) fail('El envio sigue en curso. Espera antes de conciliar o reintentar.', 409);
+    if (mapping.estado !== 'pendiente' && !retry) fail('El pedido requiere un reintento manual.', 409);
+    if (['enviando', 'incierto'].includes(mapping.estado) && !acknowledgeUncertain) fail('Verificá en RAHA si el pedido ya existe antes de autorizar el reintento.', 409);
+    let payload = mapping.request_payload;
+    if (!payload || mapping.estado === 'error') {
+      const [tienda, producto, deposito] = await Promise.all([
+        Tienda.findOne({ where: { usuario_id: usuarioId }, transaction }),
+        Producto.findByPk(solicitud.producto_id, { transaction }),
+        Deposito.findOne({ where: { id: solicitud.deposito_destino_id, usuario_id: usuarioId }, transaction }),
+      ]);
+      if (!tienda) fail('Tienda no encontrada.', 404);
+      if (!producto) fail('Producto no encontrado.', 404);
+      if (!deposito) fail('Depósito de destino no encontrado.', 404);
+      const variante = solicitud.variante_id
+        ? await ProductoVariante.findOne({ where: { id: solicitud.variante_id, producto_id: solicitud.producto_id }, transaction })
+        : null;
+      try {
+        payload = buildSupplyOrder(solicitud, tienda, connection, { producto, variante, deposito });
+      } catch (error) {
+        await mapping.update({ estado: 'error', error: error.message }, { transaction });
+        return { mapping, validationError: error };
+      }
+    }
+    await mapping.update({ estado: 'enviando', request_payload: payload, error: null, intentos: mapping.intentos + 1 }, { transaction });
+    return { mapping, credentials };
+  });
+  if (claimed.validationError) throw claimed.validationError;
+  if (claimed.sent) return claimed.mapping;
+  const mapping = claimed.mapping;
+  let response;
+  try {
+    response = await client.request('order', { method: 'POST', credentials: claimed.credentials, body: mapping.request_payload });
+    const order = response.order;
+    const orderId = client.remoteId(order?.order_id);
+    if (order?.external_order_id !== mapping.external_order_id) throw Object.assign(new Error('La respuesta no corresponde al abastecimiento enviado.'), { uncertain: true });
+    await mapping.update({ estado: 'enviado', order_id: orderId, status: order.status || 'pendiente_confirmacion',
+      response_payload: client.redact(response), remote_http_status: 201, error: null });
+  } catch (error) {
+    await mapping.update({ estado: error.uncertain || response ? 'incierto' : 'error', error: client.redact(error.message),
+      response_payload: client.redact(response || error.remoteResponse || null), remote_http_status: error.remoteStatus || null });
+    throw error;
+  }
+  return mapping;
+}
+
 async function runCycle() {
   if (process.env.SPEEDBOX_ENABLED !== 'true') return;
   const [candidates] = await sequelize.query(`
@@ -381,6 +476,21 @@ async function runCycle() {
   for (const candidate of candidates) {
     try { await sendOrder(candidate.usuario_id, candidate.id); }
     catch (error) { logger.warn({ evento: 'SPEEDBOX_ORDER_FAILED', envioId: candidate.id, message: client.redact(error.message) }); }
+  }
+  const [supplyCandidates] = await sequelize.query(`
+    SELECT sa.id, sa.usuario_id
+    FROM solicitudes_abastecimiento sa
+    JOIN speedbox_tiendas s ON s.usuario_id = sa.usuario_id AND s.environment = :environment
+    LEFT JOIN speedbox_pedidos p ON p.solicitud_abastecimiento_id = sa.id AND p.environment = s.environment
+    WHERE sa.tipo_logistica = 'PROPIA'
+      AND sa.deposito_destino_id IS NOT NULL
+      AND s.activo = TRUE AND s.tienda_id IS NOT NULL
+      AND sa.created_at >= COALESCE(s.enabled_at, '1970-01-01'::timestamptz)
+      AND (p.id IS NULL OR p.estado = 'pendiente')
+    ORDER BY sa.id LIMIT 20`, { replacements: { environment: environment() } });
+  for (const candidate of supplyCandidates) {
+    try { await sendSupplyRequest(candidate.usuario_id, candidate.id); }
+    catch (error) { logger.warn({ evento: 'SPEEDBOX_SUPPLY_FAILED', solicitudId: candidate.id, message: client.redact(error.message) }); }
   }
   const events = require('./events');
   await events.retryPending();
@@ -407,4 +517,5 @@ async function assertCanChange(envio, changes, transaction) {
 }
 
 module.exports = { environment, registrationUrl, productionRequestUrl, webhookUrl, queueConfirmedOrder, dispatchConfirmedOrder,
-  connectionFor, status, configure, registerStore, verifySpec, verifyOrder, verifyUpdates, sendOrder, runCycle, assertCanChange };
+  queueSupplyRequest, dispatchSupplyRequest, connectionFor, status, configure, registerStore, verifySpec, verifyOrder,
+  verifyUpdates, sendOrder, sendSupplyRequest, runCycle, assertCanChange };

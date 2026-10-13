@@ -3,7 +3,8 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 module.exports = sequelize.define('SpeedboxPedido', {
   id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-  envio_id: { type: DataTypes.INTEGER, allowNull: false },
+  envio_id: { type: DataTypes.INTEGER, allowNull: true },
+  solicitud_abastecimiento_id: { type: DataTypes.INTEGER, allowNull: true },
   usuario_id: { type: DataTypes.INTEGER, allowNull: false },
   environment: { type: DataTypes.STRING(20), allowNull: false },
   external_order_id: { type: DataTypes.STRING(100), allowNull: false },
@@ -17,4 +18,8 @@ module.exports = sequelize.define('SpeedboxPedido', {
   error: { type: DataTypes.TEXT, allowNull: true },
   remote_http_status: { type: DataTypes.INTEGER, allowNull: true },
 }, { tableName: 'speedbox_pedidos', timestamps: true, createdAt: 'created_at', updatedAt: 'updated_at',
-  indexes: [{ unique: true, fields: ['environment', 'envio_id'] }, { unique: true, fields: ['environment', 'order_id'] }] });
+  indexes: [
+    { unique: true, fields: ['environment', 'envio_id'] },
+    { unique: true, fields: ['environment', 'solicitud_abastecimiento_id'] },
+    { unique: true, fields: ['environment', 'order_id'] },
+  ] });

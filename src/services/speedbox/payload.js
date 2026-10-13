@@ -51,4 +51,53 @@ function buildOrder(envio, tienda, connection, variants = new Map(), options = {
   return validated.data;
 }
 
-module.exports = { buildOrder };
+function plain(row) {
+  return row?.toJSON ? row.toJSON() : (row || {});
+}
+
+function buildSupplyOrder(solicitud, tienda, connection, { producto, variante = null, deposito }) {
+  const pedido = plain(solicitud);
+  const product = plain(producto);
+  const variant = variante ? plain(variante) : null;
+  const destination = plain(deposito);
+  const sku = variant?.sku_variante || product.sku;
+  if (!sku?.trim()) throw Object.assign(new Error(`Falta SKU Speedbox para ${product.nombre || `producto #${pedido.producto_id}`}.`), { status: 422 });
+  if (!destination?.direccion || !destination?.ciudad) {
+    throw Object.assign(new Error('El deposito de destino necesita direccion y ciudad para enviar el pedido a RAHA.'), { status: 422 });
+  }
+  const quantity = Number(pedido.cantidad);
+  const unitPrice = quantity > 0 ? Math.round((Number(pedido.costo_producto) || 0) / quantity) : 0;
+  const payload = {
+    external_order_id: `GESICOMM-ABAST-${connection.environment}-${pedido.usuario_id}-${pedido.id}`,
+    order_name: `#ABAST-${pedido.id}`,
+    tienda_id: String(connection.tienda_id),
+    created_at: new Date(pedido.created_at || Date.now()).toISOString(),
+    currency: 'PYG',
+    total_price: Number(pedido.costo_producto) || 0,
+    financial_status: 'pending',
+    payment_method: 'abastecimiento_deposito',
+    store_name: tienda.nombre,
+    customer: {
+      name: destination.persona_contacto || tienda.nombre || 'Deposito',
+      phone: destination.telefono_contacto || tienda.whatsapp || '0981000000',
+    },
+    shipping_address: {
+      address: destination.direccion,
+      reference: destination.referencia || destination.nombre || '',
+      city: destination.ciudad,
+      department: destination.departamento || '',
+      google_maps_url: destination.link_maps || '',
+    },
+    items: [{
+      sku: sku.trim(),
+      title: [product.nombre, variant?.nombre].filter(Boolean).join(' - '),
+      quantity,
+      price: unitPrice,
+    }],
+  };
+  const validated = orderSchema.safeParse(payload);
+  if (!validated.success) throw Object.assign(new Error(`Completa los datos del abastecimiento: ${validated.error.issues.map(issue => issue.path.join('.')).join(', ')}.`), { status: 422 });
+  return validated.data;
+}
+
+module.exports = { buildOrder, buildSupplyOrder };

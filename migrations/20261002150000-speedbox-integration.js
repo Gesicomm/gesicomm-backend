@@ -16,13 +16,15 @@ async function up(qi, S) {
       speedbox_tiendas: { ...common,
         usuario_id: { type: S.INTEGER, allowNull: false, references: { model: 'usuarios', key: 'id' } },
         tienda_id: { type: S.STRING(100), allowNull: true }, courier_id: { type: S.INTEGER, allowNull: true, references: { model: 'couriers', key: 'id' } },
+        public_key: { type: S.STRING(255), allowNull: true }, private_key: { type: S.TEXT, allowNull: true },
         activo: { type: S.BOOLEAN, allowNull: false, defaultValue: false }, enabled_at: { type: S.DATE, allowNull: true },
         since_at: { type: S.STRING(50), allowNull: true }, spec_verified_at: { type: S.DATE, allowNull: true },
         order_verified_at: { type: S.DATE, allowNull: true },
         updates_verified_at: { type: S.DATE, allowNull: true }, webhook_verified_at: { type: S.DATE, allowNull: true },
       },
       speedbox_pedidos: { ...common,
-        envio_id: { type: S.INTEGER, allowNull: false, references: { model: 'envios', key: 'id' }, onDelete: 'CASCADE' },
+        envio_id: { type: S.INTEGER, allowNull: true, references: { model: 'envios', key: 'id' }, onDelete: 'CASCADE' },
+        solicitud_abastecimiento_id: { type: S.INTEGER, allowNull: true, references: { model: 'solicitudes_abastecimiento', key: 'id' }, onDelete: 'CASCADE' },
         usuario_id: { type: S.INTEGER, allowNull: false, references: { model: 'usuarios', key: 'id' } },
         external_order_id: { type: S.STRING(100), allowNull: false }, order_id: { type: S.STRING(100), allowNull: true },
         estado: { type: S.STRING(30), allowNull: false, defaultValue: 'pendiente' }, status: { type: S.STRING(50), allowNull: true },
@@ -42,11 +44,23 @@ async function up(qi, S) {
     }
     if (tables.includes('speedbox_tiendas')) {
       const columns = await qi.describeTable('speedbox_tiendas', { transaction });
+      if (!columns.public_key) await qi.addColumn('speedbox_tiendas', 'public_key', { type: S.STRING(255), allowNull: true }, { transaction });
+      if (!columns.private_key) await qi.addColumn('speedbox_tiendas', 'private_key', { type: S.TEXT, allowNull: true }, { transaction });
       if (!columns.order_verified_at) await qi.addColumn('speedbox_tiendas', 'order_verified_at', { type: S.DATE, allowNull: true }, { transaction });
+    }
+    if (tables.includes('speedbox_pedidos')) {
+      const columns = await qi.describeTable('speedbox_pedidos', { transaction });
+      if (!columns.solicitud_abastecimiento_id) await qi.addColumn('speedbox_pedidos', 'solicitud_abastecimiento_id', {
+        type: S.INTEGER, allowNull: true, references: { model: 'solicitudes_abastecimiento', key: 'id' }, onDelete: 'CASCADE',
+      }, { transaction });
+      if (columns.envio_id?.allowNull === false) await qi.changeColumn('speedbox_pedidos', 'envio_id', {
+        type: S.INTEGER, allowNull: true, references: { model: 'envios', key: 'id' }, onDelete: 'CASCADE',
+      }, { transaction });
     }
     for (const [table, fields, unique] of [
       ['speedbox_tiendas', ['usuario_id', 'environment'], true], ['speedbox_tiendas', ['environment', 'tienda_id'], true],
-      ['speedbox_pedidos', ['environment', 'envio_id'], true], ['speedbox_pedidos', ['environment', 'order_id'], true],
+      ['speedbox_pedidos', ['environment', 'envio_id'], true], ['speedbox_pedidos', ['environment', 'solicitud_abastecimiento_id'], true],
+      ['speedbox_pedidos', ['environment', 'order_id'], true],
       ['speedbox_eventos', ['environment', 'event_key'], true], ['speedbox_eventos', ['usuario_id', 'tipo'], false],
     ]) {
       const name = `${table}_${fields.join('_')}`;

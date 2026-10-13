@@ -56,6 +56,21 @@ async function apply(event, transaction) {
   if (!mapping) return event.update({ estado: 'pendiente', detalle: 'Pedido Speedbox todavia no vinculado.' }, { transaction });
   const connection = await SpeedboxTienda.findOne({ where: { environment: event.environment, usuario_id: mapping.usuario_id }, transaction });
   if (event.tienda_id && event.tienda_id !== connection?.tienda_id) fail('El evento no corresponde a la tienda del pedido.', 409);
+  if (mapping.solicitud_abastecimiento_id && !mapping.envio_id) {
+    const status = data.status;
+    const oldTime = mapping.status_at ? new Date(mapping.status_at).getTime() : null;
+    const stale = oldTime && event.occurred_at && event.occurred_at.getTime() < oldTime;
+    const regresses = RANK[status] < (RANK[mapping.status] || 0);
+    const conflicts = RANK[mapping.status] === 3 && mapping.status !== status;
+    if (stale || regresses || conflicts) {
+      return event.update({ usuario_id: mapping.usuario_id, estado: 'ignorado', detalle: 'Evento anterior o incompatible con el estado terminal.' }, { transaction });
+    }
+    await mapping.update({ status, status_at: event.occurred_at || mapping.status_at }, { transaction });
+    await event.update({ usuario_id: mapping.usuario_id, estado: 'procesado', detalle: null }, { transaction });
+    if (event.source === 'webhook') await SpeedboxTienda.update({ webhook_verified_at: new Date() },
+      { where: { usuario_id: mapping.usuario_id, environment: event.environment }, transaction });
+    return event;
+  }
   const envio = await Envio.findOne({ where: { id: mapping.envio_id, usuario_id: mapping.usuario_id }, transaction, lock: transaction.LOCK.UPDATE });
   if (!envio) return event.update({ estado: 'ignorado', detalle: 'Pedido local eliminado.' }, { transaction });
   const status = data.status;

@@ -1,11 +1,13 @@
 jest.mock('../../models', () => ({
   sequelize: { transaction: jest.fn(), query: jest.fn() },
   Tienda: { findOne: jest.fn() }, Courier: { findOne: jest.fn() }, Envio: { findOne: jest.fn() },
-  EnvioItem: { findAll: jest.fn() }, EnvioItemComponente: { findAll: jest.fn() }, Producto: {}, ProductoVariante: { findAll: jest.fn() },
+  EnvioItem: { findAll: jest.fn() }, EnvioItemComponente: { findAll: jest.fn() },
+  Producto: { findByPk: jest.fn() }, ProductoVariante: { findAll: jest.fn(), findOne: jest.fn() },
+  Deposito: { findOne: jest.fn() }, SolicitudAbastecimiento: { findOne: jest.fn() },
   SpeedboxTienda: { findOne: jest.fn(), findOrCreate: jest.fn() }, SpeedboxPedido: { findOrCreate: jest.fn(), findOne: jest.fn() }, SpeedboxEvento: {},
 }));
 jest.mock('../../services/speedbox/client', () => ({ configuration: jest.fn(() => ({ environment: 'sandbox' })), request: jest.fn(), remoteId: value => String(value), redact: value => value }));
-jest.mock('../../services/speedbox/payload', () => ({ buildOrder: jest.fn() }));
+jest.mock('../../services/speedbox/payload', () => ({ buildOrder: jest.fn(), buildSupplyOrder: jest.fn() }));
 jest.mock('../../utils/logger', () => ({ logger: { warn: jest.fn() } }));
 const models = require('../../models');
 const client = require('../../services/speedbox/client');
@@ -29,11 +31,22 @@ beforeEach(() => {
   models.SpeedboxTienda.findOrCreate.mockResolvedValue([connection, false]);
   models.Envio.findOne.mockResolvedValue(envio);
   models.SpeedboxPedido.findOrCreate.mockResolvedValue([mapping, true]);
+  models.SolicitudAbastecimiento.findOne.mockResolvedValue(instance({
+    id: 44, usuario_id: 7, producto_id: 9, variante_id: null, cantidad: 2, tipo_logistica: 'PROPIA',
+    deposito_destino_id: 6, costo_producto: 170000, created_at: new Date('2026-10-13T12:00:00Z'),
+  }));
+  models.Producto.findByPk.mockResolvedValue({ id: 9, sku: 'RAHA-9', nombre: 'Producto RAHA', creado_por: 1 });
+  models.ProductoVariante.findOne.mockResolvedValue(null);
+  models.Deposito.findOne.mockResolvedValue({ id: 6, nombre: 'Depósito Luque', direccion: 'Av. Test 123', ciudad: 'Luque', departamento: 'Central', persona_contacto: 'Martin', telefono_contacto: '0981000000' });
   models.EnvioItemComponente.findAll.mockResolvedValue([{ producto: { id: 9, creado_por: 1 } }]);
   models.EnvioItem.findAll.mockResolvedValue([{ componentes_vendidos: [] }]);
   models.Tienda.findOne.mockResolvedValue({ nombre: 'Mi tienda' });
   models.Courier.findOne.mockResolvedValue({ id: 2, activo: true });
   payload.buildOrder.mockReturnValue({ external_order_id: mapping.external_order_id, total_price: 85000 });
+  payload.buildSupplyOrder.mockImplementation((solicitud, _tienda, conn) => ({
+    external_order_id: `GESICOMM-ABAST-${conn.environment}-${solicitud.usuario_id}-${solicitud.id}`,
+    total_price: 170000,
+  }));
   client.request.mockResolvedValue({ ok: true, order: { external_order_id: mapping.external_order_id, order_id: '900000000123456', status: 'pendiente_confirmacion' } });
 });
 afterEach(() => {
@@ -234,6 +247,38 @@ it('dispatches the persisted confirmation through the normal idempotent sender',
   await service.dispatchConfirmedOrder(7, 31);
   expect(mapping.estado).toBe('enviado');
   expect(client.request).toHaveBeenCalledTimes(1);
+});
+
+it('queues a deposito supply request and sends it to RAHA with stored credentials', async () => {
+  const solicitud = instance({
+    id: 44,
+    usuario_id: 7,
+    tipo_logistica: 'PROPIA',
+    deposito_destino_id: 6,
+  });
+  const transaction = { afterCommit: jest.fn() };
+  await service.queueSupplyRequest(solicitud, transaction);
+  expect(models.SpeedboxPedido.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+    where: { environment: 'sandbox', solicitud_abastecimiento_id: 44 },
+    defaults: expect.objectContaining({
+      envio_id: null,
+      external_order_id: 'GESICOMM-ABAST-sandbox-7-44',
+    }),
+  }));
+  expect(transaction.afterCommit).toHaveBeenCalledTimes(1);
+
+  mapping = instance({ external_order_id: 'GESICOMM-ABAST-sandbox-7-44', estado: 'pendiente', intentos: 0 });
+  models.SpeedboxPedido.findOrCreate.mockResolvedValueOnce([mapping, false]);
+  client.request.mockResolvedValueOnce({ ok: true, order: { external_order_id: 'GESICOMM-ABAST-sandbox-7-44', order_id: '900000000123999', status: 'pendiente_confirmacion' } });
+  await expect(service.sendSupplyRequest(7, 44)).resolves.toMatchObject({ estado: 'enviado', order_id: '900000000123999' });
+  expect(payload.buildSupplyOrder).toHaveBeenCalledWith(expect.objectContaining({ id: 44 }), expect.anything(), expect.anything(), expect.objectContaining({
+    producto: expect.objectContaining({ sku: 'RAHA-9' }),
+    deposito: expect.objectContaining({ id: 6 }),
+  }));
+  expect(client.request).toHaveBeenCalledWith('order', expect.objectContaining({
+    credentials: { environment: 'sandbox', apiKey: 'stored_public', secret: 'stored_secret' },
+    body: expect.objectContaining({ external_order_id: 'GESICOMM-ABAST-sandbox-7-44' }),
+  }));
 });
 
 it('contains provider failure after confirmation and retains the uncertain result', async () => {
