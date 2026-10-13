@@ -12,6 +12,7 @@
 
 const multer = require('multer');
 const MetaReportesService = require('../services/metaReportes.service');
+const MetaCampanaGastosService = require('../services/metaCampanaGastos.service');
 
 const MAX_CSV_BYTES = 5 * 1024 * 1024; // 5MB — de sobra para un export de Ads Manager
 
@@ -78,6 +79,44 @@ async function eliminarCampana(req, res) {
     return res.json({ message: 'Campaña eliminada.' });
   } catch (err) {
     return manejarError(res, err, 'Error al eliminar la campaña.');
+  }
+}
+
+// ---- Gasto de la campaña (carga manual por rango de fechas) ----
+
+async function crearGasto(req, res) {
+  try {
+    const gasto = await MetaCampanaGastosService.crear(req.params.id, req.usuario.tenantId, req.usuario.id, req.body);
+    return res.status(201).json(gasto);
+  } catch (err) {
+    return manejarError(res, err, 'Error al cargar el gasto.');
+  }
+}
+
+async function listarGastos(req, res) {
+  try {
+    const historial = await MetaCampanaGastosService.listar(req.params.id, req.usuario.tenantId, req.usuario.id, req.body);
+    return res.json(historial);
+  } catch (err) {
+    return manejarError(res, err, 'Error al listar el gasto de la campaña.');
+  }
+}
+
+async function actualizarGasto(req, res) {
+  try {
+    const gasto = await MetaCampanaGastosService.actualizar(req.params.id, req.usuario.tenantId, req.usuario.id, req.body);
+    return res.json(gasto);
+  } catch (err) {
+    return manejarError(res, err, 'Error al actualizar el gasto.');
+  }
+}
+
+async function eliminarGasto(req, res) {
+  try {
+    await MetaCampanaGastosService.eliminar(req.params.id, req.usuario.tenantId, req.usuario.id);
+    return res.json({ message: 'Registro de gasto eliminado.' });
+  } catch (err) {
+    return manejarError(res, err, 'Error al eliminar el gasto.');
   }
 }
 
@@ -203,6 +242,10 @@ module.exports = {
   listarCampanas,
   actualizarCampana,
   eliminarCampana,
+  crearGasto,
+  listarGastos,
+  actualizarGasto,
+  eliminarGasto,
   analizarCSV,
   importarCSV,
   listarImportaciones,

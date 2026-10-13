@@ -5,6 +5,7 @@ const { Op, fn, col, literal } = require('sequelize');
 const sequelize = require('../config/database');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
 const MetaReportesService = require('./metaReportes.service');
+const MetaCampanaGastosService = require('./metaCampanaGastos.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 
 /**
@@ -411,8 +412,9 @@ function getRentabilidadCanales(envios, gastosOperativos, canalesCatalogo = []) 
 // del módulo, regla "no duplicar importes cuando un costo ya esté asociado
 // a una venta".
 /**
- * Gasto de publicidad que YA está cargado en Ads & Campañas (los CSV
- * importados de Meta Ads Manager), para el período del dashboard.
+ * Gasto de publicidad que YA está cargado en Ads & Campañas (el gasto
+ * manual de cada campaña, más los CSV de Meta Ads Manager importados antes
+ * de que existiera la carga manual), para el período del dashboard.
  *
  * Existe porque el gasto de Meta no se carga a mano en Control financiero:
  * se importa en su propio módulo. Antes el dashboard solo miraba CostoGasto y
@@ -499,6 +501,16 @@ async function getGastoMetaAds(usuario_id, inquilino_id, desde, hasta) {
     } else {
       sinAtribuir += gastoDelPeriodo;
     }
+  }
+
+  // Gasto cargado a mano por campaña y rango de fechas: es como se registra
+  // la inversión desde que Ads & Campañas dejó de importar CSV. Se suma a lo
+  // importado (que queda como historial) con el mismo prorrateo por días.
+  const manual = await MetaCampanaGastosService.gastoEnPeriodo(usuario_id, inquilino_id, desde, hasta);
+  total += manual.total;
+  sinAtribuir += manual.sin_atribuir;
+  for (const [pid, monto] of Object.entries(manual.directo_por_producto)) {
+    directoPorProducto[pid] = (directoPorProducto[pid] || 0) + monto;
   }
 
   return { total, sin_atribuir: sinAtribuir, directo_por_producto: directoPorProducto };

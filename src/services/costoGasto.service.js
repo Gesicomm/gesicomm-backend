@@ -17,6 +17,7 @@ const {
   MetaReporteImport,
 } = require('../models');
 const MetaReportesService = require('./metaReportes.service');
+const MetaCampanaGastosService = require('./metaCampanaGastos.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const { METRIC_TERMS } = require('../utils/metricGlossary');
 
@@ -528,7 +529,11 @@ class CostoGastoService {
     const desdeMs = aMs(fecha_desde);
     const hastaMs = aMs(fecha_hasta);
 
-    return Math.round(filas.reduce((acc, fila) => {
+    // Lo cargado a mano en Ads & Campañas se suma a lo importado: mismo
+    // número que la línea "Meta (ads)" del dashboard.
+    const manual = await MetaCampanaGastosService.gastoEnPeriodo(usuario_id, inquilino_id, fecha_desde, fecha_hasta);
+
+    return Math.round(manual.total + filas.reduce((acc, fila) => {
       const gasto = Number(fila.importe_gastado) || 0;
       const iniMs = aMs(fila.fecha_inicio);
       const finMs = aMs(fila.fecha_fin);

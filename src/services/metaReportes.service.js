@@ -1,12 +1,13 @@
 'use strict';
 
 const crypto = require('crypto');
-const { Op } = require('sequelize');
+const { Op, fn, col } = require('sequelize');
 const {
   sequelize,
   MetaCampanaInterna,
   MetaReporteImport,
   MetaReporteFila,
+  MetaCampanaGasto,
   MetaIntegration,
   Landing,
   LandingTemplate,
@@ -239,9 +240,30 @@ class MetaReportesService {
       : [];
     const mapaProductos = new Map(productos.map(p => [p.id, p.toJSON()]));
 
+    // Gasto cargado a mano (ver MetaCampanaGastosService): el total de la
+    // campaña es la suma de todos sus registros, sin recorte de período.
+    const gastos = campanas.length
+      ? await MetaCampanaGasto.findAll({
+        where: { meta_campana_interna_id: { [Op.in]: campanas.map(c => c.id) } },
+        attributes: [
+          'meta_campana_interna_id',
+          [fn('SUM', col('monto')), 'total'],
+          [fn('COUNT', col('id')), 'registros'],
+          [fn('MAX', col('fecha_hasta')), 'ultimo_dia'],
+        ],
+        group: ['meta_campana_interna_id'],
+        raw: true,
+      })
+      : [];
+    const mapaGastos = new Map(gastos.map(g => [g.meta_campana_interna_id, g]));
+
     return campanas.map(c => {
       const json = c.toJSON();
       json.productos = (json.producto_ids || []).map(id => mapaProductos.get(id)).filter(Boolean);
+      const gasto = mapaGastos.get(json.id);
+      json.gasto_total = Number(gasto?.total) || 0;
+      json.gasto_registros = Number(gasto?.registros) || 0;
+      json.gasto_ultimo_dia = gasto?.ultimo_dia || null;
       return json;
     });
   }
@@ -299,6 +321,10 @@ class MetaReportesService {
     const filasVinculadas = await MetaReporteFila.count({ where: { meta_campana_interna_id: id } });
     if (filasVinculadas > 0) {
       throw new Error(`Esta campaña ya tiene ${filasVinculadas} fila(s) de reporte importadas. Archivala en vez de eliminarla para no perder el historial.`);
+    }
+    const gastosCargados = await MetaCampanaGasto.count({ where: { meta_campana_interna_id: id } });
+    if (gastosCargados > 0) {
+      throw new Error(`Esta campaña ya tiene ${gastosCargados} registro(s) de gasto cargados. Archivala en vez de eliminarla para no perder el historial.`);
     }
     await campana.destroy();
   }

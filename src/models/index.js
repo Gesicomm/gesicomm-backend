@@ -83,6 +83,7 @@ const MensajeContacto = require('./MensajeContacto');
 const MetaCampanaInterna = require('./MetaCampanaInterna');
 const MetaReporteImport = require('./MetaReporteImport');
 const MetaReporteFila = require('./MetaReporteFila');
+const MetaCampanaGasto = require('./MetaCampanaGasto');
 const Proveedor = require('./Proveedor');
 const CategoriaCostoGasto = require('./CategoriaCostoGasto');
 const CostoGasto = require('./CostoGasto');
@@ -598,6 +599,12 @@ MetaReporteFila.belongsTo(MetaReporteImport, { foreignKey: 'meta_reporte_import_
 MetaCampanaInterna.hasMany(MetaReporteFila, { as: 'filas_reporte', foreignKey: 'meta_campana_interna_id', onDelete: 'SET NULL' });
 MetaReporteFila.belongsTo(MetaCampanaInterna, { foreignKey: 'meta_campana_interna_id', as: 'campana' });
 
+// Gasto cargado a mano por rango de fechas. CASCADE solo para que borrar un
+// usuario no quede trabado: una campaña con gastos no se elimina desde la
+// app (ver MetaReportesService.eliminarCampana), se archiva.
+MetaCampanaInterna.hasMany(MetaCampanaGasto, { as: 'gastos', foreignKey: 'meta_campana_interna_id', onDelete: 'CASCADE' });
+MetaCampanaGasto.belongsTo(MetaCampanaInterna, { foreignKey: 'meta_campana_interna_id', as: 'campana' });
+
 // ============================================================
 // Relaciones de Control financiero (Finanzas)
 // ============================================================
@@ -894,6 +901,7 @@ module.exports = {
   MetaCampanaInterna,
   MetaReporteImport,
   MetaReporteFila,
+  MetaCampanaGasto,
   Proveedor,
   CategoriaCostoGasto,
   CanalVenta,

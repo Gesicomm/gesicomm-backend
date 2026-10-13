@@ -6,7 +6,11 @@
  * POST   /campanas                    → crear campaña interna (genera nombre_interno)
  * GET    /campanas                    → listar campañas internas
  * PUT    /campanas/:id                → editar campaña interna
- * DELETE /campanas/:id                → eliminar (si no tiene reportes vinculados)
+ * DELETE /campanas/:id                → eliminar (si no tiene gasto ni reportes vinculados)
+ * POST   /campanas/:id/gastos         → cargar gasto de un rango de fechas
+ * POST   /campanas/:id/gastos/listar  → histórico de gasto (paginado) + total
+ * PUT    /gastos/:id                  → corregir un registro de gasto
+ * DELETE /gastos/:id                  → eliminar un registro de gasto
  * POST   /importar                    → subir CSV de Meta Ads Manager
  * GET    /importaciones               → historial de importaciones
  * DELETE /importaciones/:id           → deshacer una importación (borra sus filas)
@@ -30,6 +34,11 @@ router.post('/campanas', ctrl.crearCampana);
 router.get('/campanas', ctrl.listarCampanas);
 router.put('/campanas/:id', ctrl.actualizarCampana);
 router.delete('/campanas/:id', ctrl.eliminarCampana);
+
+router.post('/campanas/:id/gastos', ctrl.crearGasto);
+router.post('/campanas/:id/gastos/listar', ctrl.listarGastos);
+router.put('/gastos/:id', ctrl.actualizarGasto);
+router.delete('/gastos/:id', ctrl.eliminarGasto);
 
 router.post('/importar/analizar', ctrl.subirCSVMiddleware, ctrl.analizarCSV);
 router.post('/importar', ctrl.subirCSVMiddleware, ctrl.importarCSV);
