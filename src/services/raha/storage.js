@@ -44,7 +44,9 @@ async function put(file) {
     await getR2Client().send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: normalized.body, ContentType: normalized.mime, CacheControl: 'private, no-store' }));
   }
   else {
-    if (process.env.NODE_ENV === 'production') throw Object.assign(new Error('El almacenamiento privado Raha no esta configurado.'), { status: 503 });
+    // En produccion solo se acepta disco local si se configuro explicitamente una
+    // ruta persistente (volumen montado, nunca servido por express.static).
+    if (process.env.NODE_ENV === 'production' && !process.env.RAHA_PRIVATE_STORAGE_PATH) throw Object.assign(new Error('El almacenamiento privado Raha no esta configurado.'), { status: 503 });
     const filename = localPath(key);
     await fs.mkdir(path.dirname(filename), { recursive: true });
     await fs.writeFile(filename, normalized.body, { flag: 'wx', mode: 0o600 });

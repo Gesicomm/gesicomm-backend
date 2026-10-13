@@ -1,31 +1,42 @@
 'use strict';
 const { orderSchema } = require('./client');
 
-function buildOrder(envio, tienda, connection, variants = new Map()) {
+function esProductoExterno(product, usuarioId) {
+  return usuarioId != null && Number(product?.creado_por) !== Number(usuarioId);
+}
+
+function buildOrder(envio, tienda, connection, variants = new Map(), options = {}) {
   const items = [];
   for (const item of envio.items || []) {
     const components = item.componentes_vendidos || [];
     if (!components.length) throw Object.assign(new Error('El pedido no tiene componentes de stock confirmados.'), { status: 422 });
     const units = components.reduce((sum, component) => sum + Number(component.cantidad), 0);
+    const included = new Set(components
+      .filter(component => !options.onlyExternalProducts || esProductoExterno(component.producto, options.usuarioId))
+      .map(component => component.id ?? component));
     let remaining = Number(item.subtotal);
     for (let index = 0; index < components.length; index++) {
       const component = components[index];
       const product = component.producto;
       const variant = component.variante_id ? variants.get(component.variante_id) : null;
       const sku = component.variante_id ? variant?.sku_variante : product?.sku;
-      if (!sku?.trim()) throw Object.assign(new Error(`Falta SKU Speedbox para ${product?.nombre || item.nombre_producto}.`), { status: 422 });
       // Flatten the immutable stock recipe; distribute the commercial line total.
       const subtotal = index === components.length - 1 ? remaining : Math.floor(Number(item.subtotal) * Number(component.cantidad) / units);
       remaining -= subtotal;
+      if (!included.has(component.id ?? component)) continue;
+      if (!sku?.trim()) throw Object.assign(new Error(`Falta SKU Speedbox para ${product?.nombre || item.nombre_producto}.`), { status: 422 });
       items.push({ sku: sku.trim(), title: [product?.nombre || item.nombre_producto, variant?.nombre].filter(Boolean).join(' - '),
         quantity: Number(component.cantidad), price: subtotal / Number(component.cantidad) });
     }
   }
+  if (!items.length) throw Object.assign(new Error('El pedido no tiene productos RAHA para enviar a Speedbox.'), { status: 422 });
   const payload = {
     external_order_id: `GESICOMM-${connection.environment}-${envio.usuario_id}-${envio.id}`,
     order_name: `#${envio.numero_pedido}`, tienda_id: String(connection.tienda_id),
     created_at: new Date(envio.created_at).toISOString(), currency: 'PYG',
-    total_price: Number(envio.monto) + (envio.delivery_a_cargo === 'negocio' ? 0 : Number(envio.costo_envio)),
+    total_price: options.onlyExternalProducts
+      ? items.reduce((sum, item) => sum + (Number(item.price) * Number(item.quantity)), 0)
+      : Number(envio.monto) + (envio.delivery_a_cargo === 'negocio' ? 0 : Number(envio.costo_envio)),
     financial_status: envio.pago_anticipado ? 'paid' : 'pending',
     payment_method: envio.pago_anticipado ? (envio.metodo_pago || 'anticipado') : 'contra_entrega', store_name: tienda.nombre,
     customer: { name: envio.cliente, phone: envio.telefono || '' },

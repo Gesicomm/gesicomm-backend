@@ -52,6 +52,7 @@ RahaSolicitud.belongsTo(Tienda, { as: 'tienda', foreignKey: 'tienda_id', onDelet
 RahaSolicitud.belongsTo(Usuario, { as: 'solicitante', foreignKey: 'usuario_id', onDelete: 'RESTRICT' });
 RahaSolicitud.hasMany(RahaDocumento, { as: 'documentos', foreignKey: 'solicitud_id', onDelete: 'CASCADE' });
 RahaDocumento.belongsTo(RahaSolicitud, { foreignKey: 'solicitud_id' });
+const RahaPortalUsuario = require('./RahaPortalUsuario');
 const IntegracionCredencial = require('./IntegracionCredencial');
 const IntegracionProducto = require('./IntegracionProducto');
 const IntegracionEvento = require('./IntegracionEvento');
@@ -868,6 +869,7 @@ module.exports = {
   SpeedboxEvento,
   RahaSolicitud,
   RahaDocumento,
+  RahaPortalUsuario,
   IntegracionCredencial,
   IntegracionProducto,
   IntegracionEvento,

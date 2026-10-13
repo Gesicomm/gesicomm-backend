@@ -593,6 +593,7 @@ async function tableroDeSeguimiento({ whereBase, usuarioId, esAdmin, filtros = {
 /** POST /envios/seguimiento/pendientes — lista paginada de una etapa, sin separar por columna. */
 async function pendientesPaginados({ whereBase, usuarioId, esAdmin, filtros = {}, ahora = new Date() }) {
   const etapa = etapaValida(filtros.etapa);
+  await flujoService.asegurarFlujosBase({ usuarioId });
   const { items, truncado } = await cargarPendientes({ whereBase, usuarioId, esAdmin, etapa, ahora });
   const pagina = paginar(filtrar(items, filtros), filtros);
   await completarProductos(pagina.data);
@@ -607,7 +608,7 @@ async function pendientesPaginados({ whereBase, usuarioId, esAdmin, filtros = {}
  * Devuelve Map envio_id → resumen. No hay entrada para los pedidos que no
  * tienen nada que enviar: cerrados sin venta (cancelado, devuelto, perdido),
  * cuentas sin flujo para esa etapa, o entregados fuera de la ventana de
- * recompra. Solo lee: no crea los flujos base que falten.
+ * recompra.
  */
 async function seguimientoDePedidos({ pedidos, usuarioId, esAdmin, ahora = new Date() }) {
   const resultado = new Map();
@@ -620,6 +621,7 @@ async function seguimientoDePedidos({ pedidos, usuarioId, esAdmin, ahora = new D
   }
   if (porEtapa.size === 0) return resultado;
 
+  await flujoService.asegurarFlujosBase({ usuarioId });
   const flujos = (await flujoService.listarFlujos({ usuarioId, esAdmin, soloActivos: true }))
     .map((f) => (typeof f.toJSON === 'function' ? f.toJSON() : f))
     .filter((f) => porEtapa.has(f.tipo));

@@ -62,6 +62,18 @@ const TIPOS_FLUJO = new Set([
 
 const ACTIVACIONES_FLUJO = new Set(['AUTOMATICA', 'MANUAL']);
 
+const NOMBRES_LEGACY_POR_TIPO = {
+  CONFIRMACION_PEDIDO_WEB: new Set(['contacto inicial']),
+};
+
+function normalizarNombreBase(nombre) {
+  return String(nombre || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
 /**
  * Valida y normaliza las fases que llegan del frontend.
  * Devuelve el array ya con `orden` asignado por posición.
@@ -228,17 +240,51 @@ async function validarEtiquetas(fasesNormalizadas, { usuarioId, esAdmin }, t) {
 async function asegurarFlujosBase({ usuarioId }) {
   const existentes = await WhatsappFlujo.findAll({
     where: { usuario_id: usuarioId },
-    attributes: ['tipo'],
-    group: ['tipo'],
+    attributes: ['id', 'tipo', 'nombre', 'predeterminado', 'activo'],
     raw: true,
   });
-  const tiposQueTiene = new Set(existentes.map((f) => f.tipo));
-  const faltantes = ETAPAS.filter((etapa) => !tiposQueTiene.has(etapa.tipo));
+  const porTipo = existentes.reduce((mapa, flujo) => {
+    if (!mapa.has(flujo.tipo)) mapa.set(flujo.tipo, []);
+    mapa.get(flujo.tipo).push(flujo);
+    return mapa;
+  }, new Map());
+
+  const necesitaBaseCanonica = (etapa) => {
+    const delTipo = porTipo.get(etapa.tipo) || [];
+    if (delTipo.length === 0) return true;
+
+    const nombreCanonico = normalizarNombreBase(etapa.nombre);
+    if (delTipo.some((flujo) => normalizarNombreBase(flujo.nombre) === nombreCanonico)) return false;
+
+    // Migración conservadora: cuentas viejas tenían "Contacto inicial" como
+    // flujo de confirmación web. No lo borramos; creamos el flujo base real y
+    // lo dejamos como predeterminado para que los pedidos web caigan ahí.
+    const nombresLegacy = NOMBRES_LEGACY_POR_TIPO[etapa.tipo];
+    return !!nombresLegacy && delTipo.some((flujo) => nombresLegacy.has(normalizarNombreBase(flujo.nombre)));
+  };
+
+  const idsLegacyDelTipo = (etapa) => {
+    const nombresLegacy = NOMBRES_LEGACY_POR_TIPO[etapa.tipo];
+    if (!nombresLegacy) return [];
+    return (porTipo.get(etapa.tipo) || [])
+      .filter((flujo) => nombresLegacy.has(normalizarNombreBase(flujo.nombre)))
+      .map((flujo) => flujo.id);
+  };
+
+  const faltantes = ETAPAS.filter(necesitaBaseCanonica);
 
   let creados = 0;
   for (const etapa of faltantes) {
     try {
       await sequelize.transaction(async (t) => {
+        await limpiarPredeterminado({ usuarioId, esAdmin: false, tipo: etapa.tipo }, t);
+        const legacyIds = idsLegacyDelTipo(etapa);
+        if (legacyIds.length > 0) {
+          await WhatsappFlujo.update(
+            { activo: false, predeterminado: false },
+            { where: { usuario_id: usuarioId, id: { [Op.in]: legacyIds } }, transaction: t },
+          );
+        }
         const flujo = await WhatsappFlujo.create({
           usuario_id: usuarioId,
           nombre: etapa.nombre,

@@ -8,6 +8,28 @@ const { buildOrder } = require('./payload');
 
 function environment() { return process.env.SPEEDBOX_ENVIRONMENT || 'sandbox'; }
 function fail(message, status = 400) { throw Object.assign(new Error(message), { status }); }
+function temporaryCredentials(input = {}) {
+  const apiKey = String(input.api_key || input.public_key || input.apiKey || '').trim();
+  const secret = String(input.api_secret || input.private_key || input.secret || '').trim();
+  if (!apiKey || !secret) fail('Pegá la public key y la private key de RAHA para ejecutar esta prueba.', 400);
+  if (apiKey.length > 255 || secret.length > 512) fail('Las credenciales RAHA tienen un formato inválido.', 400);
+  return { environment: 'sandbox', apiKey, secret };
+}
+function esProductoExterno(producto, usuarioId) {
+  return usuarioId != null && Number(producto?.creado_por) !== Number(usuarioId);
+}
+
+async function envioTieneProductosExternos(envioId, usuarioId, transaction) {
+  const componentes = await EnvioItemComponente.findAll({
+    attributes: ['id'],
+    include: [
+      { model: EnvioItem, where: { envio_id: envioId }, attributes: [], required: true },
+      { model: Producto, as: 'producto', attributes: ['id', 'creado_por'], required: true },
+    ],
+    transaction,
+  });
+  return componentes.some(component => esProductoExterno(component.producto, usuarioId));
+}
 
 function registrationUrl() {
   try {
@@ -16,6 +38,25 @@ function registrationUrl() {
     const url = new URL(raw);
     if (url.protocol !== 'https:' || url.username || url.password ||
         [...url.searchParams.keys()].some(key => /secret|token|authorization|api.?key/i.test(key))) return null;
+    return url.href;
+  } catch { return null; }
+}
+
+function productionRequestUrl() {
+  return 'https://speedboxpy.com/speedbox_api_cliente.php';
+}
+
+function webhookUrl() {
+  const token = process.env.SPEEDBOX_WEBHOOK_TOKEN;
+  if (!token || token.length < 32) return null;
+  const rawBase = process.env.SPEEDBOX_WEBHOOK_PUBLIC_BASE_URL || process.env.API_PUBLIC_URL ||
+    process.env.BACKEND_PUBLIC_URL || process.env.PUBLIC_API_URL || process.env.FRONTEND_URL;
+  if (!rawBase) return null;
+  try {
+    const url = new URL('/api/webhooks/speedbox', rawBase);
+    if (url.protocol !== 'https:' && process.env.NODE_ENV === 'production') return null;
+    url.searchParams.set('environment', environment());
+    url.searchParams.set('token', token);
     return url.href;
   } catch { return null; }
 }
@@ -34,7 +75,9 @@ async function dispatchConfirmedOrder(usuarioId, envioId) {
 async function queueConfirmedOrder(envio, transaction) {
   if (process.env.SPEEDBOX_ENABLED !== 'true' || envio.estado !== 'Confirmado' || !envio.stock_descontado || envio.stock_liberado) return null;
   const connection = await SpeedboxTienda.findOne({ where: { usuario_id: envio.usuario_id, environment: environment(), activo: true }, transaction });
-  if (!connection?.tienda_id || connection.courier_id !== envio.courier_id) return null;
+  if (!connection?.tienda_id) return null;
+  const pedidoRaha = await envioTieneProductosExternos(envio.id, envio.usuario_id, transaction);
+  if (!pedidoRaha && connection.courier_id !== envio.courier_id) return null;
   const [mapping] = await SpeedboxPedido.findOrCreate({ where: { environment: environment(), envio_id: envio.id },
     defaults: { usuario_id: envio.usuario_id, external_order_id: `GESICOMM-${environment()}-${envio.usuario_id}-${envio.id}` }, transaction });
   if (mapping.estado === 'pendiente') {
@@ -45,8 +88,9 @@ async function queueConfirmedOrder(envio, transaction) {
 }
 
 async function connectionFor(usuarioId, options = {}) {
-  const connection = await SpeedboxTienda.findOne({ where: { usuario_id: usuarioId, environment: environment() }, ...options });
-  if (!connection) fail('Vincula primero tu tienda con Speedbox.', 409);
+  const { environment: targetEnvironment = environment(), ...queryOptions } = options;
+  const connection = await SpeedboxTienda.findOne({ where: { usuario_id: usuarioId, environment: targetEnvironment }, ...queryOptions });
+  if (!connection) fail('Vinculá primero tu tienda con RAHA.', 409);
   return connection;
 }
 
@@ -64,54 +108,65 @@ async function status(usuarioId) {
   const [availableOrders] = await sequelize.query(`
     SELECT e.id, e.numero_pedido, e.cliente FROM envios e
     LEFT JOIN speedbox_pedidos p ON p.envio_id = e.id AND p.environment = :environment
-    WHERE e.usuario_id = :usuario AND e.courier_id = :courier AND p.id IS NULL
+    WHERE e.usuario_id = :usuario
+      AND (e.courier_id = :courier OR EXISTS (
+        SELECT 1 FROM envio_items i
+        JOIN envio_item_componentes c ON c.envio_item_id = i.id
+        JOIN productos pr ON pr.id = c.producto_id
+        WHERE i.envio_id = e.id AND pr.creado_por IS DISTINCT FROM e.usuario_id
+      ))
+      AND p.id IS NULL
       AND e.estado IN ('Confirmado', 'Preparado', 'Despachado', 'Reprogramado')
       AND e.stock_descontado = TRUE AND e.stock_liberado = FALSE
     ORDER BY e.id DESC LIMIT 50`, { replacements: { usuario: usuarioId, courier: connection?.courier_id || null, environment: environment() } });
   let credentials = false;
   try { client.configuration(); credentials = true; } catch { /* Configuration is private and may be incomplete. */ }
   return { environment: environment(), credentials_configured: credentials,
+    sandbox_endpoint: 'https://speedboxpy.com/api/speedbox_sandbox.php',
     registration_url: registrationUrl(),
+    production_request_url: productionRequestUrl(),
+    webhook_url: webhookUrl(),
     automatic_enabled: process.env.SPEEDBOX_ENABLED === 'true',
     webhook_configured: Boolean(process.env.SPEEDBOX_WEBHOOK_TOKEN?.length >= 32),
     connection, orders: orders.map(order => ({ ...order.toJSON(), finanzas: order.envio ? require('./finanzas').desglose(order.envio) : null })),
     events, solicitudes_abastecimiento: solicitudes, available_orders: availableOrders,
-    checks: { spec: Boolean(connection?.spec_verified_at), order: orderVerified > 0,
+    checks: { spec: Boolean(connection?.spec_verified_at), order: Boolean(connection?.order_verified_at) || orderVerified > 0,
       updates: Boolean(connection?.updates_verified_at), webhook: Boolean(connection?.webhook_verified_at) } };
 }
 
 const configSchema = z.object({ courier_id: z.number().int().positive().nullable(), activo: z.boolean() }).strict();
 async function configure(usuarioId, input) {
   const parsed = configSchema.safeParse(input);
-  if (!parsed.success) fail('Configuracion Speedbox invalida.');
+  if (!parsed.success) fail('Configuración RAHA inválida.');
   const { courier_id: courierId, activo } = parsed.data;
   if (courierId) {
     const courier = await Courier.findOne({ where: { id: courierId, activo: true, [Op.or]: [{ usuario_id: usuarioId }, { alcance: 'GESICOMM' }] } });
     if (!courier) fail('Courier no disponible para esta tienda.');
   }
-  if (activo && !courierId) fail('Selecciona el courier Speedbox.');
+  if (activo && !courierId) fail('Seleccioná el courier RAHA.');
   if (activo) {
     client.configuration();
     if (!process.env.SPEEDBOX_WEBHOOK_TOKEN || process.env.SPEEDBOX_WEBHOOK_TOKEN.length < 32) fail('Configura el token privado del webhook en el servidor.', 409);
   }
   return sequelize.transaction(async transaction => {
     const connection = await connectionFor(usuarioId, { transaction, lock: transaction.LOCK.UPDATE });
-    if (activo && !connection.tienda_id) fail('Vincula primero tu tienda Speedbox.', 409);
+    if (activo && !connection.tienda_id) fail('Vinculá primero tu tienda RAHA.', 409);
     return connection.update({ courier_id: courierId, activo,
       enabled_at: activo && !connection.activo ? new Date() : connection.enabled_at,
       since_at: connection.since_at || new Date().toISOString() }, { transaction });
   });
 }
 
-async function registerStore(usuarioId) {
-  const { environment: env } = client.configuration();
+async function registerStore(usuarioId, input = {}) {
+  const credentials = Object.keys(input || {}).length ? temporaryCredentials(input) : null;
+  const { environment: env } = client.configuration(credentials || undefined);
   const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
   if (!tienda) fail('Primero configura tu tienda.', 404);
   return sequelize.transaction(async transaction => {
     await sequelize.query('SELECT pg_advisory_xact_lock(84271004, :usuario)', { replacements: { usuario: Number(usuarioId) }, transaction });
     const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: env }, defaults: { since_at: new Date().toISOString() }, transaction });
     if (connection.tienda_id) return connection;
-    const response = await client.request('store', { method: 'POST', body: {
+    const response = await client.request('store', { method: 'POST', credentials, body: {
       external_store_id: `GESICOMM-${env}-${usuarioId}`, store_name: tienda.nombre,
       domain: tienda.dominio_propio_verificado && tienda.dominio_propio_habilitado && tienda.dominio_propio
         ? tienda.dominio_propio : `${tienda.subdominio}.${process.env.TIENDA_DOMINIO_BASE || 'gesicomm.com'}`,
@@ -124,41 +179,99 @@ async function registerStore(usuarioId) {
   });
 }
 
-async function verifySpec(usuarioId) {
+async function verifySpec(usuarioId, input = {}) {
+  const credentials = Object.keys(input || {}).length ? temporaryCredentials(input) : null;
   const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
   if (!tienda) fail('Primero configura tu tienda.', 404);
-  await client.request('spec');
-  const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: environment() }, defaults: { since_at: new Date().toISOString() } });
+  await client.request('spec', { credentials });
+  const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: credentials?.environment || environment() }, defaults: { since_at: new Date().toISOString() } });
   await connection.update({ spec_verified_at: new Date() });
   return { ok: true };
+}
+
+async function verifyOrder(usuarioId, input = {}) {
+  const credentials = temporaryCredentials(input);
+  const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
+  if (!tienda) fail('Primero configura tu tienda.', 404);
+  const connection = await connectionFor(usuarioId, { environment: credentials.environment });
+  if (!connection.tienda_id) fail('Primero vinculá la tienda sandbox de RAHA.', 409);
+  const now = new Date();
+  const externalId = `GESICOMM-TEST-${credentials.environment}-${usuarioId}-${now.getTime()}`;
+  const payload = {
+    external_order_id: externalId,
+    order_name: `#TEST-${now.getTime()}`,
+    tienda_id: String(connection.tienda_id),
+    created_at: now.toISOString(),
+    currency: 'PYG',
+    total_price: 85000,
+    financial_status: 'pending',
+    payment_method: 'contra_entrega',
+    store_name: tienda.nombre,
+    customer: { name: 'Cliente sandbox Gesicom', phone: tienda.whatsapp || '0981000000' },
+    shipping_address: {
+      address: tienda.direccion_publica || tienda.deposito_direccion || 'Av. Mariscal Lopez 1234',
+      reference: 'Pedido de validacion sandbox',
+      city: tienda.ciudad_publica || tienda.deposito_ciudad || 'Asuncion',
+      department: tienda.deposito_departamento || 'Central',
+      google_maps_url: '',
+    },
+    billing_document_type: 'CI',
+    billing_document_number: '1234567',
+    items: [{ sku: 'GESICOM-TEST-001', title: 'Producto sandbox Gesicom', quantity: 1, price: 85000 }],
+  };
+  const response = await client.request('order', { method: 'POST', credentials, body: payload });
+  const orderId = client.remoteId(response.order?.order_id);
+  if (response.order?.external_order_id !== externalId) fail('RAHA respondió un pedido distinto al enviado.', 502);
+  await connection.update({ order_verified_at: new Date() });
+  return { ok: true, order_id: orderId, status: response.order?.status || null };
+}
+
+async function verifyUpdates(usuarioId, input = {}) {
+  const credentials = temporaryCredentials(input);
+  const connection = await connectionFor(usuarioId, { environment: credentials.environment });
+  if (!connection.tienda_id) fail('Primero vinculá la tienda sandbox de RAHA.', 409);
+  const sinceAt = connection.since_at || new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const response = await client.request('updates', { credentials, sinceAt });
+  if (!Array.isArray(response.events) || typeof response.next_since_at !== 'string' || !Number.isFinite(Date.parse(response.next_since_at))) {
+    fail('RAHA devolvió una respuesta de updates inválida.', 502);
+  }
+  for (const inputEvent of response.events) await require('./events').ingest(inputEvent, 'updates');
+  await connection.update({ since_at: response.next_since_at, updates_verified_at: new Date() });
+  return { ok: true, events: response.events.length, next_since_at: response.next_since_at };
 }
 
 async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncertain = false } = {}) {
   client.configuration();
   const claimed = await sequelize.transaction(async transaction => {
     const connection = await connectionFor(usuarioId, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!connection.activo || !connection.tienda_id) fail('Speedbox no esta activo para esta tienda.', 409);
+    if (!connection.activo || !connection.tienda_id) fail('RAHA no está activo para esta tienda.', 409);
     const envio = await Envio.findOne({ where: { id: envioId, usuario_id: usuarioId }, transaction, lock: transaction.LOCK.UPDATE });
     if (!envio) fail('Pedido no encontrado.', 404);
+    const pedidoRaha = await envioTieneProductosExternos(envio.id, usuarioId, transaction);
     const [mapping] = await SpeedboxPedido.findOrCreate({ where: { environment: environment(), envio_id: envio.id },
       defaults: { usuario_id: usuarioId, external_order_id: `GESICOMM-${environment()}-${usuarioId}-${envio.id}` }, transaction });
     if (mapping.order_id) return { mapping, sent: true };
     if (mapping.estado === 'enviando' && Date.now() - new Date(mapping.updated_at).getTime() < 120000) fail('El envio sigue en curso. Espera antes de conciliar o reintentar.', 409);
     if (mapping.estado !== 'pendiente' && !retry) fail('El pedido requiere un reintento manual.', 409);
-    if (['enviando', 'incierto'].includes(mapping.estado) && !acknowledgeUncertain) fail('Verifica en Speedbox si el pedido ya existe antes de autorizar el reintento.', 409);
+    if (['enviando', 'incierto'].includes(mapping.estado) && !acknowledgeUncertain) fail('Verificá en RAHA si el pedido ya existe antes de autorizar el reintento.', 409);
     if (!['Confirmado', 'Preparado', 'Despachado', 'Reprogramado'].includes(envio.estado) || !envio.stock_descontado || envio.stock_liberado) fail('El pedido debe estar confirmado y con stock reservado.', 409);
-    if (envio.courier_id !== connection.courier_id) fail('El pedido debe estar asignado al courier Speedbox.', 409);
+    if (!pedidoRaha && envio.courier_id !== connection.courier_id) fail('El pedido debe estar asignado al courier RAHA.', 409);
     // An uncertain submission always retains its original payload and external ID.
     let payload = mapping.request_payload;
     if (!payload || mapping.estado === 'error') {
       const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId }, transaction });
       if (!tienda) fail('Tienda no encontrada.', 404);
       envio.items = await EnvioItem.findAll({ where: { envio_id: envio.id }, transaction, order: [['id', 'ASC']], include: [
-        { model: EnvioItemComponente, as: 'componentes_vendidos', include: [{ model: Producto, as: 'producto', attributes: ['id', 'sku', 'nombre'] }] },
+        { model: EnvioItemComponente, as: 'componentes_vendidos', include: [{ model: Producto, as: 'producto', attributes: ['id', 'sku', 'nombre', 'creado_por'] }] },
       ] });
       const ids = envio.items.flatMap(item => item.componentes_vendidos.map(component => component.variante_id)).filter(Boolean);
       const variants = ids.length ? await ProductoVariante.findAll({ where: { id: { [Op.in]: ids } }, transaction }) : [];
-      try { payload = buildOrder(envio, tienda, connection, new Map(variants.map(variant => [variant.id, variant]))); }
+      try {
+        payload = buildOrder(envio, tienda, connection, new Map(variants.map(variant => [variant.id, variant])), {
+          onlyExternalProducts: pedidoRaha,
+          usuarioId,
+        });
+      }
       catch (error) {
         await mapping.update({ estado: 'error', error: error.message }, { transaction });
         return { mapping, validationError: error };
@@ -193,7 +306,13 @@ async function runCycle() {
     SELECT e.id, e.usuario_id FROM envios e
     JOIN speedbox_tiendas s ON s.usuario_id = e.usuario_id AND s.environment = :environment
     LEFT JOIN speedbox_pedidos p ON p.envio_id = e.id AND p.environment = s.environment
-    WHERE s.activo = TRUE AND e.courier_id = s.courier_id
+    WHERE s.activo = TRUE AND s.tienda_id IS NOT NULL
+      AND (e.courier_id = s.courier_id OR EXISTS (
+        SELECT 1 FROM envio_items i
+        JOIN envio_item_componentes c ON c.envio_item_id = i.id
+        JOIN productos pr ON pr.id = c.producto_id
+        WHERE i.envio_id = e.id AND pr.creado_por IS DISTINCT FROM e.usuario_id
+      ))
       AND (e.created_at >= s.enabled_at OR p.estado = 'pendiente')
       AND e.estado IN ('Confirmado', 'Preparado', 'Despachado', 'Reprogramado')
       AND e.stock_descontado = TRUE AND e.stock_liberado = FALSE
@@ -215,9 +334,9 @@ async function assertCanChange(envio, changes, transaction) {
   const mapping = await SpeedboxPedido.findOne({ where: { environment: environment(), envio_id: envio.id,
     estado: { [Op.in]: ['enviando', 'enviado', 'incierto'] } }, transaction });
   if (mapping && (changes.estado === 'Cancelado' || changes.delete || String(changes.courier_id) !== String(envio.courier_id))) {
-    fail('Este pedido ya se envio a Speedbox. Concilia su cancelacion con el proveedor antes de liberar stock o cambiar el courier.', 409);
+    fail('Este pedido ya se envió a RAHA. Conciliá su cancelación con el proveedor antes de liberar stock o cambiar el courier.', 409);
   }
 }
 
-module.exports = { environment, registrationUrl, queueConfirmedOrder, dispatchConfirmedOrder,
-  connectionFor, status, configure, registerStore, verifySpec, sendOrder, runCycle, assertCanChange };
+module.exports = { environment, registrationUrl, productionRequestUrl, webhookUrl, queueConfirmedOrder, dispatchConfirmedOrder,
+  connectionFor, status, configure, registerStore, verifySpec, verifyOrder, verifyUpdates, sendOrder, runCycle, assertCanChange };

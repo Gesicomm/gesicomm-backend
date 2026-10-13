@@ -2,11 +2,10 @@
 const express = require('express');
 const { verificarToken } = require('../middleware/autenticacion');
 const service = require('../services/speedbox/service');
-const events = require('../services/speedbox/events');
 const router = express.Router();
 router.use(verificarToken);
 router.use(require('express-rate-limit')({ windowMs: 15 * 60 * 1000, max: 60,
-  message: { message: 'Demasiadas operaciones Speedbox. Intenta mas tarde.' } }));
+  message: { message: 'Demasiadas operaciones RAHA. Intentá más tarde.' } }));
 router.param('id', (req, res, next) => {
   if (!Number.isSafeInteger(Number(req.params.id)) || Number(req.params.id) <= 0) return res.status(400).json({ message: 'ID de pedido invalido.' });
   next();
@@ -24,15 +23,11 @@ const handle = handler => async (req, res, next) => {
 };
 router.get('/', handle(req => service.status(req.usuario.id)));
 router.put('/', handle(req => service.configure(req.usuario.id, req.body)));
-router.post('/store', handle(req => service.registerStore(req.usuario.id)));
-router.post('/spec', handle(req => service.verifySpec(req.usuario.id)));
+router.post('/store', handle(req => service.registerStore(req.usuario.id, req.body)));
+router.post('/spec', handle(req => service.verifySpec(req.usuario.id, req.body)));
+router.post('/order-test', handle(req => service.verifyOrder(req.usuario.id, req.body)));
 router.post('/eventos/:id/conciliar', handle(req => require('../services/speedbox/finanzas').conciliar(req.usuario.id, Number(req.params.id), req.body)));
-router.post('/updates', handle(async req => {
-  await service.connectionFor(req.usuario.id);
-  await events.retryPending();
-  await events.pollUpdates();
-  return { ok: true };
-}));
+router.post('/updates', handle(req => service.verifyUpdates(req.usuario.id, req.body)));
 router.post('/pedidos/:id/enviar', handle(req => service.sendOrder(req.usuario.id, Number(req.params.id))));
 router.post('/pedidos/:id/reintentar', handle(async req => {
   if (req.body?.acknowledge_uncertain !== undefined && typeof req.body.acknowledge_uncertain !== 'boolean') {

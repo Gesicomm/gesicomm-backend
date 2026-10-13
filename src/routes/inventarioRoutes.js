@@ -23,5 +23,6 @@ router.post('/ingresos/:id/habilitar-stock', inventarioController.habilitarStock
 
 // Rutas de Stock Físico (Existencias)
 router.post('/stock/listado', inventarioController.listarStockUbicacion);
+router.post('/stock/pedido-origenes', inventarioController.diagnosticarStockPedido);
 
 module.exports = router;

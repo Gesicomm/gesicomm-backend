@@ -2,18 +2,18 @@
 
 const { z } = require('zod');
 
-function configuration() {
-  const environment = process.env.SPEEDBOX_ENVIRONMENT || 'sandbox';
+function configuration(overrides = {}) {
+  const environment = overrides.environment || process.env.SPEEDBOX_ENVIRONMENT || 'sandbox';
   if (!['sandbox', 'production'].includes(environment)) throw Object.assign(new Error('Ambiente Speedbox invalido.'), { status: 503 });
-  const endpoint = process.env.SPEEDBOX_API_URL || (environment === 'sandbox' ? 'https://speedboxpy.com/api/speedbox_sandbox.php' : '');
+  const endpoint = overrides.endpoint || process.env.SPEEDBOX_API_URL || (environment === 'sandbox' ? 'https://speedboxpy.com/api/speedbox_sandbox.php' : '');
   let url;
   try { url = new URL(endpoint); } catch { throw Object.assign(new Error('Configura SPEEDBOX_API_URL.'), { status: 503 }); }
   if (url.protocol !== 'https:' || url.hostname !== 'speedboxpy.com' || url.username || url.password || url.search || url.hash ||
       (environment === 'production' && url.pathname.includes('sandbox'))) {
     throw Object.assign(new Error('Endpoint Speedbox invalido para el ambiente.'), { status: 503 });
   }
-  const apiKey = process.env.SPEEDBOX_API_KEY;
-  const secret = process.env.SPEEDBOX_API_SECRET;
+  const apiKey = overrides.apiKey || overrides.api_key || process.env.SPEEDBOX_API_KEY;
+  const secret = overrides.secret || overrides.api_secret || process.env.SPEEDBOX_API_SECRET;
   if (!apiKey || !secret) throw Object.assign(new Error('Faltan credenciales Speedbox en el servidor.'), { status: 503 });
   return { environment, endpoint: url.href, apiKey, secret };
 }
@@ -37,8 +37,8 @@ function remoteId(value) {
   return String(value);
 }
 
-async function request(action, { method = 'GET', body, sinceAt } = {}) {
-  const config = configuration();
+async function request(action, { method = 'GET', body, sinceAt, credentials } = {}) {
+  const config = configuration(credentials);
   const url = new URL(config.endpoint);
   url.searchParams.set('action', action);
   if (sinceAt) url.searchParams.set('since_at', sinceAt);

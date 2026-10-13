@@ -31,6 +31,7 @@ const StockPorTienda = require('./stockPorTienda.service');
 const TarifaDeliveryService = require('./tarifaDelivery.service');
 const FulfillmentService = require('./fulfillment.service');
 const PaymentService = require('./payments/paymentService');
+const { logger } = require('../utils/logger');
 const CanalVentaService = require('./canalVenta.service');
 const CuponService = require('./cupon.service');
 const PedidoNumeracion = require('./pedidoNumeracion.service');
@@ -2092,9 +2093,13 @@ class LandingService {
     // "Configurar venta" (todo el catálogo / por categoría, con o sin
     // combos). Sin configuración, todo el catálogo — el comportamiento de
     // siempre. El checkout valida con la misma regla (resolverCarrito).
+    // Con una regla configurada los LandingItem no son la lista de productos
+    // sino ajustes de algunos (ver lienzoVendePorRegla): antes, apenas el
+    // comercio le ponía nombre comercial o precio anterior a UN producto, la
+    // tienda publicada pasaba a mostrar solo ese.
     let itemsFallbackCodigo = null;
-    if (esCodigo && !(landing.items || []).length && this.debeSintetizarCatalogoCodigo(landing)) {
-      itemsFallbackCodigo = await this.itemsSegunReglaCodigo(landing, tienda);
+    if (esCodigo && this.debeSintetizarCatalogoCodigo(landing) && (this.lienzoVendePorRegla(landing) || !(landing.items || []).length)) {
+      itemsFallbackCodigo = this.conAjustesDeLanding(await this.itemsSegunReglaCodigo(landing, tienda), landing.items);
     }
 
     // Un funnel nunca tiene LandingItem: su único producto vive en
@@ -3690,6 +3695,33 @@ class LandingService {
     return items;
   }
 
+  /**
+   * El lienzo vende por regla ("Todo el catálogo" / "Por categoría") cuando
+   * así quedó en Configurar venta. En ese caso sus LandingItem NO son la lista
+   * de productos: el panel guarda ahí solo los ajustes de presentación de
+   * algunos (precio anterior, etiqueta, envío incluido, oculto en el inicio).
+   */
+  static lienzoVendePorRegla(landing) {
+    const venta = landing?.content?.venta || {};
+    return !!venta.configurado && ['todos', 'categoria'].includes(venta.seleccion);
+  }
+
+  /** Los items que da la regla, con los ajustes que el comercio guardó para algunos. */
+  static conAjustesDeLanding(items, filas) {
+    const ajustes = new Map((filas || []).map(f => [`${f.tipo}:${Number(f.referencia_id)}`, f]));
+    if (!ajustes.size) return items;
+    return items.map(i => {
+      const ajuste = ajustes.get(`${i.tipo}:${Number(i.referencia_id)}`);
+      return ajuste ? {
+        ...i,
+        precio_ancla: ajuste.precio_ancla,
+        etiqueta: ajuste.etiqueta,
+        mostrar_en_inicio: ajuste.mostrar_en_inicio !== false,
+        envio_incluido: ajuste.envio_incluido === true,
+      } : i;
+    });
+  }
+
   static debeSintetizarCatalogoCodigo(landing) {
     const venta = landing?.content?.venta || {};
     if (venta.configurado && venta.seleccion === 'manual') return false;
@@ -3734,12 +3766,15 @@ class LandingService {
     if (!Array.isArray(items) || items.length === 0) throw new Error('El carrito está vacío.');
     if (items.length > MAX_ITEMS_CHECKOUT) throw new Error(`No se pueden pedir más de ${MAX_ITEMS_CHECKOUT} ítems distintos.`);
 
-    const landingItems = landing.items || [];
+    let landingItems = landing.items || [];
 
     // Lienzo en blanco sin productos curados = catálogo por regla (o el
     // respaldo "todo el catálogo" de obtenerPublica): se arman los items
     // con lo que pide el carrito, validado contra la regla y el inquilino.
-    if (landing.template?.kind === 'codigo' && !landingItems.length && this.debeSintetizarCatalogoCodigo(landing)) {
+    // Con regla configurada vale aunque haya LandingItem: son ajustes de
+    // algunos productos, no la lista de lo que se puede comprar.
+    if (landing.template?.kind === 'codigo' && this.debeSintetizarCatalogoCodigo(landing)
+      && (this.lienzoVendePorRegla(landing) || !landingItems.length)) {
       const acotar = { producto: [], combo: [], slugs: [] };
       for (const pedido of items) {
         const cid = String(pedido?.content_id || '');
@@ -3747,7 +3782,7 @@ class LandingService {
         if (m) acotar[m[1]].push(Number(m[2]));
         else if (cid) acotar.slugs.push(cid);
       }
-      landingItems.push(...await this.itemsSegunReglaCodigo(landing, tienda, acotar));
+      landingItems = this.conAjustesDeLanding(await this.itemsSegunReglaCodigo(landing, tienda, acotar), landing.items);
     }
     
     // FASE 5: Commerce Engine Integration para Funnels
@@ -4059,6 +4094,50 @@ class LandingService {
     if (!ciudad?.trim()) throw new Error('La ciudad es obligatoria.');
     if (!direccion?.trim()) throw new Error('La dirección es obligatoria.');
 
+    // Pago anticipado = PagoPar. Sin la pasarela activa el comercio no puede
+    // cobrar por adelantado: se corta ANTES de crear nada. Antes el pedido se
+    // creaba igual (como efectivo) y recién después fallaba el cobro, así que
+    // al cliente le salía un error y al comercio le quedaba un pedido que el
+    // cliente creía fallido. La tienda ya no ofrece la opción; esto cubre una
+    // página vieja en caché o un pedido armado a mano.
+    if (String(datosCliente?.payment_method || '').toLowerCase() === 'pagopar') {
+      const pasarelas = await PaymentService.getPublicGateways(tienda.usuario_id);
+      if (!pasarelas.some(p => p.provider === 'pagopar')) {
+        throw new Error('Esta tienda no tiene habilitado el pago anticipado. Elegí pago contra entrega para completar tu pedido.');
+      }
+      // PagoPar no abre el cobro sin la cédula del comprador. Se pide ACÁ,
+      // antes de crear el pedido: si no, quedaba un pedido registrado y el
+      // cliente veía "no pudimos abrir el pago online" sin saber por qué.
+      if (!String(documento || ruc || '').trim()) {
+        throw new Error('Para pagar por adelantado necesitamos tu número de cédula o RUC.');
+      }
+    }
+    // Pidió factura: hacen falta el RUC y a nombre de quién va. Lo valida el
+    // formulario; acá se asegura para un pedido que no pase por él.
+    if (quiere_factura === true || quiere_factura === 'true') {
+      if (!String(ruc || '').trim()) throw new Error('Para emitir la factura necesitamos el RUC.');
+      if (!String(razon_social || '').trim()) throw new Error('Para emitir la factura necesitamos la razón social.');
+    }
+    // Correo del comprador: con pago anticipado lo exige el formulario del
+    // checkout de la tienda (ahí llega el comprobante). Acá no se bloquea por
+    // su falta porque los checkouts anteriores (embudos) no lo piden: a la
+    // pasarela le llega uno genérico. Si vino, tiene que ser un correo.
+    const emailLimpio = String(datosCliente?.email || '').trim().toLowerCase().slice(0, 160);
+    if (emailLimpio && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(emailLimpio)) {
+      throw new Error('Revisá tu correo electrónico: no parece válido.');
+    }
+    const aceptaPromociones = datosCliente?.acepta_promociones === true || datosCliente?.acepta_promociones === 'true';
+    // Lo que el cliente escribió en "Notas para la tienda" se descartaba: el
+    // comercio nunca veía la referencia de entrega ni el horario pedido. Va a
+    // `observaciones`, junto con el correo y si aceptó recibir promociones
+    // (todavía no tienen columna propia en `envios`).
+    const notasCliente = String(datosCliente?.notas || '').trim().slice(0, 500);
+    const observacionesPedido = [
+      notasCliente,
+      emailLimpio ? `Correo: ${emailLimpio}` : '',
+      emailLimpio ? `Acepta recibir promociones por correo: ${aceptaPromociones ? 'sí' : 'no'}` : '',
+    ].filter(Boolean).join('\n') || null;
+
     const { landing, itemsResueltos } = await this.resolverCarrito(tienda, slug, items, true);
 
     const subtotal = itemsResueltos.reduce((s, i) => s + i.subtotal, 0);
@@ -4135,6 +4214,7 @@ class LandingService {
         documento: documento?.trim() || null,
         ruc: rucLimpio,
         razon_social: razonSocialLimpia,
+        observaciones: observacionesPedido,
         telefono: telefono.trim(),
         ciudad: ciudadEnvio,
         departamento: departamentoEnvio,
@@ -4201,13 +4281,19 @@ class LandingService {
     
     if (paymentMethod === 'pagopar') {
       try {
+        // El correo no se guarda en una columna del pedido: se le pasa a la
+        // pasarela por acá (PagoParService lee envio.email). Antes le llegaba
+        // siempre "cliente@sin-email.com".
+        if (emailLimpio) nuevoEnvio.email = emailLimpio;
         const trx = await PaymentService.createTransaction(nuevoEnvio, 'pagopar', null);
         paymentData = {
           payment_url: trx.payment_url,
           hash_pedido: trx.hash_pedido,
         };
       } catch (error) {
-        console.error('[LandingService] Error al crear transacción de pago:', error.message);
+        // Al archivo de errores, no solo a la consola: es la única forma de
+        // saber después por qué PagoPar no abrió el cobro de un pedido.
+        logger.error(`[LandingService] Pedido ${nuevoEnvio.numero_pedido || nuevoEnvio.id}: no se pudo abrir el pago anticipado: ${error.message}`);
         // El pedido YA está creado, así que no se aborta: queda como pendiente
         // de pago manual y el comercio lo ve igual. Pero se marca el fallo de
         // forma explícita para que el frontend NO lo trate como un pedido

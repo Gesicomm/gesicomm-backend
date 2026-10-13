@@ -1,8 +1,7 @@
 'use strict';
 const express = require('express');
 const multer = require('multer');
-const archiver = require('archiver');
-const PDFDocument = require('pdfkit');
+const { enviarExpediente } = require('../services/raha/dossier');
 const { verificarToken } = require('../middleware/autenticacion');
 const service = require('../services/raha/service');
 const router = express.Router();
@@ -28,26 +27,14 @@ router.get('/documentos/:id', handle(async (req, res) => {
   res.attachment(doc.nombre).type(doc.mime).send(buffer);
 }));
 router.get('/admin', json(req => service.list(req.usuario, req.query)));
+// Cuentas del portal externo de Raha (las activa un admin de Gesicom).
+// Van antes de '/admin/:id' para que 'portal-usuarios' no se tome como id.
+router.get('/admin/portal-usuarios', json(req => service.listPortalUsers(req.usuario)));
+router.post('/admin/portal-usuarios', json(req => service.createPortalUser(req.usuario, req.body)));
+router.patch('/admin/portal-usuarios/:id', json(req => service.updatePortalUser(req.usuario, Number(req.params.id), req.body)));
 router.get('/admin/:id', json(req => service.detail(req.usuario, Number(req.params.id))));
 router.post('/admin/:id/revisar', json(req => service.review(req.usuario, Number(req.params.id), req.body)));
 router.get('/admin/:id/expediente', handle(async (req, res) => {
-  const { snapshot, archivos } = await service.dossier(req.usuario, Number(req.params.id));
-  const pdf = new PDFDocument({ margin: 45, size: 'A4' });
-  const parts = [];
-  const completed = new Promise((resolve, reject) => { pdf.on('data', chunk => parts.push(chunk)); pdf.on('end', () => resolve(Buffer.concat(parts))); pdf.on('error', reject); });
-  pdf.fontSize(18).text(`Solicitud Raha #${snapshot.id}`).moveDown();
-  pdf.fontSize(11).text(`Estado: ${snapshot.estado}`).text(`Presentada: ${snapshot.enviado_at}`).moveDown();
-  for (const [key, value] of Object.entries(snapshot.datos)) pdf.text(`${key.replace(/_/g, ' ')}: ${value}`).moveDown(0.4);
-  pdf.moveDown().text('Autorizacion de revision y envio manual registrada por el solicitante.');
-  pdf.end();
-  const resumen = await completed;
-  const zip = archiver('zip', { zlib: { level: 6 } });
-  zip.on('error', error => res.destroy(error));
-  res.attachment(`raha-solicitud-${snapshot.id}.zip`).type('application/zip');
-  zip.pipe(res);
-  zip.append(resumen, { name: 'resumen.pdf' });
-  zip.append(JSON.stringify(snapshot, null, 2), { name: 'solicitud.json' });
-  for (const archivo of archivos) zip.append(archivo.buffer, { name: archivo.nombre });
-  await zip.finalize();
+  await enviarExpediente(res, await service.dossier(req.usuario, Number(req.params.id)));
 }));
 module.exports = router;

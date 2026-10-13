@@ -291,7 +291,7 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
  * se puede despachar en un solo paquete: se rechaza con 409 antes de tocar
  * stock.
  */
-async function resolverPlanFulfillment(items, t, usuario_id, tiendaId = null) {
+async function resolverPlanFulfillment(items, t, usuario_id, tiendaId = null, productosPorId = new Map()) {
   // Las ubicaciones de otra tienda de la cuenta no cuentan para el plan: no
   // son un origen posible de este pedido (ver whereUbicacionesDespachables).
   // Los Centros Gesicomm se siguen mirando siempre, como antes: acá solo se
@@ -304,6 +304,8 @@ async function resolverPlanFulfillment(items, t, usuario_id, tiendaId = null) {
   for (const item of items || []) {
     const receta = await resolverReceta(item, t);
     for (const { producto_id, variante_id, cantidad } of receta) {
+      const prod = productosPorId.get(Number(producto_id));
+      if (prod && Number(prod.creado_por) !== Number(usuario_id)) continue;
       const clave = `${producto_id}:${variante_id || ''}`;
       const actual = totalPorClave.get(clave) || { producto_id, variante_id, cantidad: 0 };
       actual.cantidad += cantidad;
@@ -416,30 +418,34 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
     if (!prod) throw Object.assign(new Error(`Producto #${id} no encontrado.`), { status: 404 });
     productosPorId.set(id, prod);
   }
-  await resolverPlanFulfillment(items, t, usuario_id, tiendaIdPedido);
+  await resolverPlanFulfillment(items, t, usuario_id, tiendaIdPedido, productosPorId);
 
   for (const { producto_id, variante_id, cantidad: cantidadTotal } of totalPorClave.values()) {
     const clave = `${producto_id}:${variante_id || ''}`;
+    const prod = productosPorId.get(producto_id);
+    const esPropioDelComercio = Number(prod?.creado_por) === Number(usuario_id);
 
     if (variante_id) {
       const variante = await ProductoVariante.findByPk(variante_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
       if (!variante || variante.producto_id !== producto_id || !variante.activo) {
         throw Object.assign(new Error('La variante no pertenece al producto o esta inactiva.'), { status: 400 });
       }
+      if (!esPropioDelComercio) continue;
       if (variante.stock < cantidadTotal) throw Object.assign(new Error('Stock insuficiente para la variante.'), { status: 400 });
 
       const salonActual = parseInt(variante.stock_salon) || 0;
       const depositoActual = parseInt(variante.stock_deposito) || 0;
-      if (!origenPreferidoId) {
+      if (!origenPreferidoId && esPropioDelComercio) {
         await exigirStockEnLaTienda(
           { producto_id, variante_id, cantidad: cantidadTotal, nombre: `${productosPorId.get(producto_id)?.nombre || 'El producto'} (${variante.nombre})` },
           t, usuario_id, tiendaIdPedido, permiteGesicomm,
         );
       }
-      const origenUbicacion = origenPreferidoId
-        ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId, tiendaIdPedido)
+      const origenForzadoParaItem = esPropioDelComercio ? origenPreferidoId : null;
+      const origenUbicacion = origenForzadoParaItem
+        ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenForzadoParaItem, tiendaIdPedido)
         : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id, null, tiendaIdPedido);
-      const { desdeSalon, desdeDeposito } = origenPreferidoId
+      const { desdeSalon, desdeDeposito } = origenForzadoParaItem
         ? {
           desdeSalon: origenUbicacion?.tipo_ubicacion === 'SALON' ? cantidadTotal : 0,
           desdeDeposito: origenUbicacion?.tipo_ubicacion === 'SALON' ? 0 : cantidadTotal,
@@ -473,13 +479,14 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
       continue;
     }
 
-    const prod = productosPorId.get(producto_id);
     if (!prod) {
       const err = new Error(`Producto #${producto_id} no encontrado.`);
       err.status = 404;
       throw err;
     }
     productosPorId.set(producto_id, prod);
+
+    if (!esPropioDelComercio) continue;
 
     const stockActual = parseInt(prod.cantidad_disponible) || 0;
     if (stockActual < cantidadTotal) {
@@ -497,16 +504,17 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
     // para decidir cuándo reponer.
     const salonActual = parseInt(prod.stock_salon) || 0;
     const depositoActual = parseInt(prod.stock_deposito) || 0;
-    if (!origenPreferidoId) {
+    if (!origenPreferidoId && esPropioDelComercio) {
       await exigirStockEnLaTienda(
         { producto_id, variante_id, cantidad: cantidadTotal, nombre: prod.nombre },
         t, usuario_id, tiendaIdPedido, permiteGesicomm,
       );
     }
-    const origenUbicacion = origenPreferidoId
-      ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId, tiendaIdPedido)
+    const origenForzadoParaItem = esPropioDelComercio ? origenPreferidoId : null;
+    const origenUbicacion = origenForzadoParaItem
+      ? await reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenForzadoParaItem, tiendaIdPedido)
       : await reservarDesdeUbicacionTracked(producto_id, variante_id, repartoSalonDeposito(salonActual, depositoActual, cantidadTotal).desdeDeposito, t, permiteGesicomm, usuario_id, null, tiendaIdPedido);
-    const { desdeSalon, desdeDeposito } = origenPreferidoId
+    const { desdeSalon, desdeDeposito } = origenForzadoParaItem
       ? {
         desdeSalon: origenUbicacion?.tipo_ubicacion === 'SALON' ? cantidadTotal : 0,
         desdeDeposito: origenUbicacion?.tipo_ubicacion === 'SALON' ? 0 : cantidadTotal,

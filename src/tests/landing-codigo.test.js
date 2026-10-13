@@ -332,13 +332,71 @@ describe('LandingCodigoService.limpiarVenta', () => {
   });
   it('conserva la presentación comercial por ID entero y limita los textos', () => {
     const venta = LandingCodigoService.limpiarVenta({ presentacion_productos: {
-      'producto:1370': { titulo_comercial: 'Cacerola práctica', mensaje_comercial: 'x'.repeat(200), insignia_principal: 'Oferta', insignia_secundaria: 'Exclusivo online', etiqueta: 'No comercial' },
+      'producto:1370': { titulo_comercial: 'Cacerola práctica', mensaje_comercial: 'x'.repeat(700), insignia_principal: 'Oferta', insignia_secundaria: 'Exclusivo online', etiqueta: 'No comercial' },
       'combo:15': { titulo_comercial: 'Kit de cocina' },
       'producto:abc': { titulo_comercial: 'Inválido' },
       'producto:0': { titulo_comercial: 'Inválido' },
     } });
     expect(Object.keys(venta.presentacion_productos)).toEqual(['producto:1370', 'combo:15']);
-    expect(venta.presentacion_productos['producto:1370']).toEqual({ titulo_comercial: 'Cacerola práctica', mensaje_comercial: 'x'.repeat(160), insignia_principal: 'Oferta', insignia_secundaria: 'Exclusivo online' });
+    expect(venta.presentacion_productos['producto:1370']).toEqual({ titulo_comercial: 'Cacerola práctica', mensaje_comercial: 'x'.repeat(600), insignia_principal: 'Oferta', insignia_secundaria: 'Exclusivo online' });
+  });
+  it('guarda todo lo que se edita en los bloques de la ficha, no solo los cuatro textos de siempre', () => {
+    const venta = LandingCodigoService.limpiarVenta({ presentacion_productos: { 'producto:7': {
+      v: 2,
+      cta_texto: 'La quiero', cta_descuento_pct: '12,5', urgencia_titulo: 'Solo hoy', urgencia_horas: 0, urgencia_minutos: '75',
+      resenas_texto: '', resenas_calificacion: '4.26', opiniones_titulo: 'x'.repeat(200), propuesta_valor: 'Frase propia',
+      ficha_bloques: { oferta: false, galeria: true, '<script>': true, precio: 'no' },
+      ficha_orden_mobile: ['precio', 'galeria', 'precio', '<x>'],
+      beneficios: [{ titulo: 'Liviano', texto: '' }, { titulo: '', texto: '' }, 'suelto'],
+      confianza: [],
+      botones_pago: [{ label: 'Pagar con tarjeta', tipo: 'checkout', valor: '', descuento_pct: '150' }, { label: '', tipo: 'url' }, { label: 'Raro', tipo: 'javascript' }],
+      botones_contacto: [{ label: 'Escribinos', tipo: 'whatsapp', valor: 'Hola' }],
+      metodos_pago: [{ texto: 'Giros Tigo' }, { label: 'Zimple' }, {}],
+      incluye_pedido: [{ texto: '1 unidad' }, { titulo: 'Manual' }],
+      opiniones: [{ nombre: 'Ana', comentario: 'Muy bueno', calificacion: 9, foto: 'javascript:alert(1)' }, { nombre: '', comentario: '' }],
+      preguntas: [{ pregunta: '¿Envían?', respuesta: 'Sí' }, {}],
+      inventado: 'no entra',
+    } } });
+    expect(venta.presentacion_productos['producto:7']).toEqual({
+      v: 2,
+      propuesta_valor: 'Frase propia',
+      cta_texto: 'La quiero', resenas_texto: '', urgencia_titulo: 'Solo hoy', opiniones_titulo: 'x'.repeat(90),
+      cta_descuento_pct: '12.5', resenas_calificacion: '4.3', urgencia_horas: '0', urgencia_minutos: '59',
+      ficha_bloques: { oferta: false, galeria: true },
+      ficha_orden_mobile: ['precio', 'galeria'],
+      beneficios: [{ titulo: 'Liviano', texto: '' }],
+      confianza: [],
+      botones_pago: [{ label: 'Pagar con tarjeta', tipo: 'checkout', valor: '', descuento_pct: '95' }, { label: 'Raro', tipo: 'whatsapp', valor: '' }],
+      botones_contacto: [{ label: 'Escribinos', tipo: 'whatsapp', valor: 'Hola' }],
+      metodos_pago: [{ texto: 'Giros Tigo' }, { texto: 'Zimple' }],
+      incluye_pedido: [{ texto: '1 unidad' }, { texto: 'Manual' }],
+      opiniones: [{ nombre: 'Ana', comentario: 'Muy bueno', detalle: '', calificacion: 5, foto: '' }],
+      preguntas: [{ pregunta: '¿Envían?', respuesta: 'Sí' }],
+    });
+  });
+  it('en una ficha v2 un texto ausente queda ausente: no se confunde "sin tocar" con "vaciado"', () => {
+    const { presentacion_productos: p } = LandingCodigoService.limpiarVenta({ presentacion_productos: {
+      'producto:1': { v: 2, urgencia_kicker: '' },
+      'producto:2': { urgencia_kicker: '' },
+    } });
+    expect(p['producto:1']).toEqual({ v: 2, urgencia_kicker: '' });
+    expect(p['producto:2']).toEqual({ urgencia_kicker: '', titulo_comercial: '', mensaje_comercial: '', insignia_principal: '', insignia_secundaria: '' });
+  });
+  it('guarda los textos de recomendados, cuáles se muestran, los del checkout y los de la oferta del inicio', () => {
+    const v = LandingCodigoService.limpiarVenta({
+      recomendados: { titulo: 'Seguí mirando', kicker: 'Te puede gustar', subtitulo: 'Complementos', cta_texto: 'Sumar', mostrar: { kicker: false, titulo: true, cta: 'x', otro: true } },
+      checkout_recomendados: { activo: true, items: ['air-fryer', '<script>'], max: 30, titulo: 'Antes de irte', kicker: 'Sumá', subtitulo: '', cta_texto: 'Agregar', precio_antes: { 'air-fryer': '150000', otro: 5, '<script>': 9 } },
+      urgencia: { activo: true, fin_at: '2030-01-01T00:00:00.000Z', productos: ['air-fryer', 'air-fryer', '<x>'], titulo: 'Ofertas', texto: 'Se terminan', cta_texto: 'Ver todos', estado: 'confirmado' },
+    });
+    expect(v.recomendados).toEqual({
+      activo: true, modo: 'auto', items: [], max: 4,
+      titulo: 'Seguí mirando', kicker: 'Te puede gustar', subtitulo: 'Complementos', cta_texto: 'Sumar',
+      mostrar: { kicker: false, titulo: true, subtitulo: true, cta: true },
+    });
+    expect(v.checkout_recomendados).toEqual({
+      activo: true, items: ['air-fryer'], max: 4, titulo: 'Antes de irte', kicker: 'Sumá', subtitulo: '', cta_texto: 'Agregar', precio_antes: { 'air-fryer': 150000 },
+    });
+    expect(v.urgencia).toEqual({ activo: true, fin_at: '2030-01-01T00:00:00.000Z', producto_id: null, productos: ['air-fryer'], titulo: 'Ofertas', texto: 'Se terminan', cta_texto: 'Ver todos', estado: 'demo' });
   });
   it('arma la configuración campo por campo y descarta lo que no está en la lista blanca', () => {
     const v = LandingCodigoService.limpiarVenta({
@@ -364,7 +422,7 @@ describe('LandingCodigoService.limpiarVenta', () => {
       urgencia: null,
       prueba_social: null,
       cross_sell: { activo: true, ofertas: [3, 4] },
-      recomendados: { activo: true, modo: 'manual', items: ['air-fryer'], max: 4, titulo: 'x'.repeat(80) },
+      recomendados: { activo: true, modo: 'manual', items: ['air-fryer'], max: 4, titulo: 'x'.repeat(80), kicker: '', subtitulo: '', cta_texto: '' },
       pago_logos: { tarjetas: true, bocas: true, billetera: true },
     });
   });

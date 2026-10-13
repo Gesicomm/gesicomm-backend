@@ -453,6 +453,13 @@ async function crearCheckout(req, res) {
       direccion: limpiarTexto(body.direccion, 255),
       referencia: limpiarTexto(body.referencia, MAX_TEXTO_LARGO),
       payment_method: limpiarTexto(body.payment_method, 50),
+      // Correo del comprador (obligatorio en el formulario con pago
+      // anticipado: ahí llega el comprobante), si aceptó recibir
+      // promociones y lo que escribió en "Notas para la tienda". Sin
+      // esta lista los tres llegaban en el body y se descartaban acá.
+      email: limpiarTexto(body.email, 160),
+      acepta_promociones: body.acepta_promociones === true || body.acepta_promociones === 'true',
+      notas: limpiarTexto(body.notas, 500),
       // El cupon se re-valida contra la BD en LandingService.crearCheckout; aca solo se sanea.
       cupon_codigo: limpiarTexto(body.cupon_codigo, 40),
       // Atribución: el carrito los manda desde la primera visita (ver

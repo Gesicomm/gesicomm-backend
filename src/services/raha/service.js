@@ -1,6 +1,9 @@
 'use strict';
 const { z } = require('zod');
-const { sequelize, RahaSolicitud, RahaDocumento, Tienda, Usuario } = require('../../models');
+const { sequelize, RahaSolicitud, RahaDocumento, RahaPortalUsuario, Tienda, Usuario } = require('../../models');
+const { Op } = require('sequelize');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const storage = require('./storage');
 const { idsDeAdministradores, notificarEnApp } = require('../notificaciones/pedidosNotificaciones.service');
 const { logger } = require('../../utils/logger');
@@ -11,7 +14,7 @@ const schema = z.object({
   actividad_economica: text(300), tipo_productos: text(600), operaciones_mensuales: text(10),
   banco: text(100), titular_cuenta: text(180), numero_cuenta: text(80), moneda: z.enum(['PYG', 'USD']).default('PYG'),
 }).strict();
-const TIPOS = ['ruc', 'cedula', 'cuenta_bancaria', 'productos', 'adicional'];
+const TIPOS = ['ruc', 'cedula'];
 const EDITABLE = ['borrador', 'observada'];
 function fail(message, status = 400) { throw Object.assign(new Error(message), { status }); }
 function parse(input) {
@@ -62,15 +65,18 @@ async function save(actor, input) {
 }
 async function upload(actor, tipo, version, file) {
   if (!TIPOS.includes(tipo)) fail('Tipo de documento invalido.');
-  let uploaded;
+  let uploaded, reemplazados = [];
   try {
     const solicitud = await sequelize.transaction(async t => {
       const row = await owned(actor, t); editable(row, Number(version));
-      if (await RahaDocumento.count({ where: { solicitud_id: row.id }, transaction: t }) >= 12) fail('Maximo 12 adjuntos por solicitud.');
       uploaded = await storage.put(file);
+      // Un archivo por tipo: el nuevo reemplaza al anterior.
+      reemplazados = await RahaDocumento.findAll({ where: { solicitud_id: row.id, tipo }, transaction: t });
+      for (const doc of reemplazados) await doc.destroy({ transaction: t });
       await RahaDocumento.create({ ...uploaded, solicitud_id: row.id, tipo }, { transaction: t });
       return row.update({ version: row.version + 1 }, { transaction: t });
     });
+    for (const doc of reemplazados) await storage.remove(doc).catch(() => logger.error({ mensaje: 'Raha: limpiar adjunto reemplazado pendiente', key: doc.storage_key }));
     return serialize(solicitud);
   } catch (error) {
     if (uploaded) await storage.remove(uploaded).catch(() => logger.error({ mensaje: 'Raha: limpiar adjunto huerfano pendiente', key: uploaded.storage_key }));
@@ -95,7 +101,7 @@ async function notify(row, actor, submitted) {
     tipo: `${submitted ? 'RAHA_SOLICITUD' : 'RAHA_REVISION'}_${row.version}`,
     entidad_tipo: submitted ? 'raha_solicitud_admin' : 'raha_solicitud', entidad_id: row.id,
     titulo: submitted ? 'Solicitud de conexion Raha' : 'Actualizacion de tu solicitud Raha',
-    mensaje: `Solicitud #${row.id}: ${row.estado}.`,
+    mensaje: `Solicitud #${row.id}: ${{ enviada_raha: 'enviada a Raha', en_revision: 'en revision', observada: 'Raha pidio correcciones', aprobada: 'aprobada por Raha', rechazada: 'rechazada por Raha' }[row.estado] || row.estado}.`,
   });
 }
 function append(row, actor, estado, extra = {}) {
@@ -111,12 +117,13 @@ async function submit(actor, input) {
   const row = await sequelize.transaction(async t => {
     const solicitud = await owned(actor, t);
     // Repeating the same submission after a lost HTTP response is harmless.
-    if (solicitud.estado === 'en_revision' && input.version === solicitud.version - 1 && require('node:util').isDeepStrictEqual(datos, solicitud.datos)) return solicitud;
+    if (solicitud.estado === 'enviada_raha' && input.version === solicitud.version - 1 && require('node:util').isDeepStrictEqual(datos, solicitud.datos)) return solicitud;
     editable(solicitud, input.version);
     const docs = await RahaDocumento.findAll({ where: { solicitud_id: solicitud.id }, transaction: t });
     for (const tipo of ['ruc', 'cedula']) if (!docs.some(d => d.tipo === tipo)) fail(`Adjunta el documento ${tipo === 'ruc' ? 'constancia de RUC' : 'cedula del representante legal'}.`);
-    return solicitud.update({ datos, estado: 'en_revision', enviado_at: new Date(), version: solicitud.version + 1,
-      historial: append(solicitud, actor, 'en_revision', { consentimiento: true, datos, documentos: docs.map(d => ({ id: d.id, tipo: d.tipo, nombre: d.nombre, sha256: d.sha256 })) }) }, { transaction: t });
+    // Al enviar, la solicitud queda visible directamente en el portal de Raha.
+    return solicitud.update({ datos, estado: 'enviada_raha', enviado_at: new Date(), version: solicitud.version + 1,
+      historial: append(solicitud, actor, 'enviada_raha', { consentimiento: true, datos, documentos: docs.map(d => ({ id: d.id, tipo: d.tipo, nombre: d.nombre, sha256: d.sha256 })) }) }, { transaction: t });
   });
   await notify(row, actor, true).catch(() => logger.error({ mensaje: 'Raha: notificacion pendiente', solicitudId: row.id }));
   return serialize(row);
@@ -170,4 +177,129 @@ async function dossier(actor, id) {
     return { snapshot, archivos };
   });
 }
-module.exports = { status, save, upload, remove, submit, list, review, document, detail, dossier, parse };
+// ─────────────────────────────────────────────────────────────
+// Portal externo de Raha (/raha/login)
+// Raha ve todas las solicitudes ya enviadas (no los borradores) y registra
+// la aceptacion, el rechazo o el pedido de correcciones.
+// ─────────────────────────────────────────────────────────────
+const PENDIENTES = ['en_revision', 'enviada_raha'];
+const FILTROS_PORTAL = { pendiente: PENDIENTES, observada: ['observada'], aprobada: ['aprobada'], rechazada: ['rechazada'] };
+function portalJwtSecret() {
+  const secret = process.env.RAHA_PORTAL_JWT_SECRET || process.env.JWT_SECRET;
+  if (!secret) fail('Portal Raha no configurado.', 503);
+  return secret;
+}
+function portalUsuarioPublico(u) { return { id: u.id, nombre: u.nombre, email: u.email, activo: u.activo, ultimo_acceso: u.ultimo_acceso, created_at: u.created_at }; }
+let hashFalso;
+async function portalLogin(input = {}) {
+  const email = String(input.email || '').trim().toLowerCase();
+  const password = String(input.password || '');
+  if (!email || !password) fail('Email y contrasena son obligatorios.');
+  const usuario = await RahaPortalUsuario.findOne({ where: { email } });
+  // Comparar siempre para no revelar por tiempo si el email existe.
+  if (!hashFalso) hashFalso = await bcrypt.hash('cuenta-inexistente', 10);
+  const ok = await bcrypt.compare(password, usuario?.password_hash || hashFalso);
+  if (!usuario || !usuario.activo || !ok) fail('Credenciales invalidas.', 401);
+  await usuario.update({ ultimo_acceso: new Date() });
+  const token = jwt.sign({ tipo: 'raha_portal', uid: usuario.id }, portalJwtSecret(), { expiresIn: '12h' });
+  return { token, usuario: portalUsuarioPublico(usuario) };
+}
+async function portalVerify(token) {
+  let payload;
+  try { payload = jwt.verify(token, portalJwtSecret()); } catch { fail('Sesion invalida o vencida.', 401); }
+  if (payload?.tipo !== 'raha_portal' || !Number.isSafeInteger(payload.uid)) fail('Sesion invalida o vencida.', 401);
+  const usuario = await RahaPortalUsuario.findByPk(payload.uid);
+  if (!usuario?.activo) fail('Acceso desactivado.', 401);
+  return portalUsuarioPublico(usuario);
+}
+async function portalFind(id, transaction) {
+  const solicitud = await RahaSolicitud.findOne({ where: { id, estado: { [Op.ne]: 'borrador' } }, transaction, ...(transaction ? { lock: transaction.LOCK.UPDATE } : {}) });
+  if (!solicitud) fail('Solicitud no encontrada.', 404);
+  return solicitud;
+}
+async function portalList(input = {}) {
+  const { estado = '', buscar = '', offset = 0 } = input;
+  if (estado && !FILTROS_PORTAL[estado]) fail('Estado invalido.');
+  if (!/^\d+$/.test(String(offset)) || Number(offset) > 100000) fail('Pagina invalida.');
+  const where = { estado: estado ? { [Op.in]: FILTROS_PORTAL[estado] } : { [Op.ne]: 'borrador' } };
+  const q = String(buscar || '').trim().slice(0, 100).replace(/[\\%_]/g, c => `\\${c}`);
+  if (q) where[Op.or] = [
+    { '$tienda.nombre$': { [Op.iLike]: `%${q}%` } },
+    sequelize.where(sequelize.literal(`"RahaSolicitud"."datos"->>'razon_social'`), { [Op.iLike]: `%${q}%` }),
+    sequelize.where(sequelize.literal(`"RahaSolicitud"."datos"->>'ruc'`), { [Op.iLike]: `%${q}%` }),
+  ];
+  const { count, rows } = await RahaSolicitud.findAndCountAll({
+    where, attributes: ['id', 'estado', 'datos', 'enviado_at', 'updated_at'],
+    include: [{ model: Tienda, as: 'tienda', attributes: ['nombre'] }],
+    order: [['enviado_at', 'DESC'], ['id', 'DESC']], limit: 30, offset: Number(offset), subQuery: false,
+  });
+  const conteo = await RahaSolicitud.findAll({ where: { estado: { [Op.ne]: 'borrador' } }, attributes: ['estado', [sequelize.fn('COUNT', sequelize.col('id')), 'total']], group: ['estado'], raw: true });
+  const resumen = { pendiente: 0, observada: 0, aprobada: 0, rechazada: 0 };
+  for (const c of conteo) resumen[PENDIENTES.includes(c.estado) ? 'pendiente' : c.estado] = (resumen[PENDIENTES.includes(c.estado) ? 'pendiente' : c.estado] || 0) + Number(c.total);
+  return { total: count, resumen, solicitudes: rows.map(r => ({ id: r.id, estado: r.estado, enviado_at: r.enviado_at, updated_at: r.updated_at,
+    tienda: r.tienda?.nombre || '', razon_social: r.datos?.razon_social || '', ruc: r.datos?.ruc || '' })) };
+}
+async function portalDetail(id) {
+  const row = await portalFind(id);
+  const tienda = await Tienda.findByPk(row.tienda_id, { attributes: ['nombre'] });
+  return { ...(await serialize(row)), tienda: tienda ? { nombre: tienda.nombre } : null };
+}
+async function portalDocument(id, docId) {
+  await portalFind(id);
+  const doc = await RahaDocumento.findOne({ where: { id: docId, solicitud_id: id } });
+  if (!doc) fail('Documento no encontrado.', 404);
+  return { doc, buffer: await storage.read(doc) };
+}
+async function portalDossier(id) {
+  return sequelize.transaction(async t => {
+    const row = await portalFind(id, t);
+    const snapshot = await serialize(row, t);
+    const docs = await RahaDocumento.findAll({ where: { solicitud_id: row.id }, order: [['id', 'ASC']], transaction: t });
+    const archivos = await Promise.all(docs.map(async doc => ({ nombre: `${doc.tipo}/${doc.id}-${doc.nombre}`, buffer: await storage.read(doc) })));
+    return { snapshot, archivos };
+  });
+}
+async function portalResolve(portalUsuario, id, input) {
+  const result = z.object({ estado: z.enum(['aprobada', 'rechazada', 'observada']), nota: z.string().trim().max(1000).default(''),
+    version: z.number().int().nonnegative() }).strict().safeParse(input);
+  if (!result.success) fail('Datos invalidos.');
+  const data = result.data;
+  if (data.estado !== 'aprobada' && data.nota.length < 5) fail('Indica el motivo (minimo 5 caracteres) para que el comercio sepa que corregir.');
+  const row = await sequelize.transaction(async t => {
+    const solicitud = await portalFind(id, t);
+    if (solicitud.version !== data.version) fail('La solicitud cambio. Actualiza antes de continuar.', 409);
+    if (!PENDIENTES.includes(solicitud.estado)) fail('Esta solicitud ya fue resuelta.', 409);
+    return solicitud.update({ estado: data.estado, version: solicitud.version + 1,
+      historial: append(solicitud, { id: null }, data.estado, { nota: data.nota, raha_portal_usuario_id: portalUsuario.id, autor: `Raha - ${portalUsuario.nombre}` }) }, { transaction: t });
+  });
+  await notify(row, null, false).catch(() => logger.error({ mensaje: 'Raha: notificacion pendiente', solicitudId: row.id }));
+  return portalDetail(row.id);
+}
+// Gestion de cuentas del portal (solo administradores de Gesicom).
+const cuentaSchema = z.object({ nombre: z.string().trim().min(2).max(150), email: z.string().trim().toLowerCase().email().max(150), password: z.string().min(10).max(100) }).strict();
+async function listPortalUsers(actor) {
+  admin(actor);
+  return (await RahaPortalUsuario.findAll({ order: [['id', 'ASC']] })).map(portalUsuarioPublico);
+}
+async function createPortalUser(actor, input) {
+  admin(actor);
+  const result = cuentaSchema.safeParse(input);
+  if (!result.success) fail('Completa nombre, email valido y una contrasena de al menos 10 caracteres.');
+  const { nombre, email, password } = result.data;
+  if (await RahaPortalUsuario.findOne({ where: { email } })) fail('Ya existe una cuenta con ese email.', 409);
+  const usuario = await RahaPortalUsuario.create({ nombre, email, password_hash: await bcrypt.hash(password, 10), activo: true });
+  return portalUsuarioPublico(usuario);
+}
+async function updatePortalUser(actor, id, input) {
+  admin(actor);
+  const result = z.object({ activo: z.boolean().optional(), password: z.string().min(10).max(100).optional(), nombre: z.string().trim().min(2).max(150).optional() }).strict().safeParse(input);
+  if (!result.success) fail('Datos invalidos. La contrasena debe tener al menos 10 caracteres.');
+  const usuario = await RahaPortalUsuario.findByPk(id);
+  if (!usuario) fail('Cuenta no encontrada.', 404);
+  const { password, ...resto } = result.data;
+  await usuario.update({ ...resto, ...(password ? { password_hash: await bcrypt.hash(password, 10) } : {}) });
+  return portalUsuarioPublico(usuario);
+}
+module.exports = { status, save, upload, remove, submit, list, review, document, detail, dossier, parse,
+  portalLogin, portalVerify, portalList, portalDetail, portalDocument, portalDossier, portalResolve,
+  listPortalUsers, createPortalUser, updatePortalUser };

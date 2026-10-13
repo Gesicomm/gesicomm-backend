@@ -11,6 +11,7 @@ module.exports = sequelize.define('SpeedboxTienda', {
   enabled_at: { type: DataTypes.DATE, allowNull: true },
   since_at: { type: DataTypes.STRING(50), allowNull: true },
   spec_verified_at: { type: DataTypes.DATE, allowNull: true },
+  order_verified_at: { type: DataTypes.DATE, allowNull: true },
   updates_verified_at: { type: DataTypes.DATE, allowNull: true },
   webhook_verified_at: { type: DataTypes.DATE, allowNull: true },
 }, { tableName: 'speedbox_tiendas', timestamps: true, createdAt: 'created_at', updatedAt: 'updated_at',

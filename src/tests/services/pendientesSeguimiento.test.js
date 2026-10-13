@@ -23,7 +23,7 @@ jest.mock('../../models', () => ({
   Envio: { findOne: jest.fn(), findAll: jest.fn(), count: jest.fn() },
   EnvioItem: { findAll: jest.fn() },
   EnvioHistorial: { findAll: jest.fn() },
-  WhatsappFlujo: { findAll: jest.fn(), create: jest.fn(), count: jest.fn() },
+  WhatsappFlujo: { findAll: jest.fn(), create: jest.fn(), update: jest.fn(), count: jest.fn() },
   WhatsappFlujoFase: { findOne: jest.fn(), create: jest.fn() },
   EnvioEtiqueta: { findOne: jest.fn(), create: jest.fn() },
   SeguimientoContacto: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), count: jest.fn() },
@@ -442,6 +442,42 @@ describe('los cuatro flujos base', () => {
     expect(WhatsappFlujo.create).not.toHaveBeenCalled();
   });
 
+  test('si quedó el flujo viejo Contacto inicial, crea Confirmación de pedido web como predeterminado sin borrarlo', async () => {
+    WhatsappFlujo.findAll.mockResolvedValue([
+      { id: 99, tipo: 'CONFIRMACION_PEDIDO_WEB', nombre: 'Contacto inicial', predeterminado: true, activo: true },
+      ...TODOS_LOS_FLUJOS.slice(1).map((f) => ({ id: f.id, tipo: f.tipo, nombre: f.nombre, predeterminado: true, activo: true })),
+    ]);
+    WhatsappFlujo.create.mockImplementation(async (datos) => ({ id: 501, ...datos }));
+    WhatsappFlujoFase.create.mockResolvedValue({});
+
+    const creados = await flujoService.asegurarFlujosBase({ usuarioId: 7 });
+
+    expect(creados).toBe(1);
+    expect(WhatsappFlujo.update).toHaveBeenCalledWith(
+      { predeterminado: false },
+      expect.objectContaining({
+        where: expect.objectContaining({ tipo: 'CONFIRMACION_PEDIDO_WEB', predeterminado: true }),
+        transaction: 'TX',
+      }),
+    );
+    expect(WhatsappFlujo.update).toHaveBeenCalledWith(
+      { activo: false, predeterminado: false },
+      expect.objectContaining({
+        where: expect.objectContaining({ usuario_id: 7, id: expect.any(Object) }),
+        transaction: 'TX',
+      }),
+    );
+    expect(WhatsappFlujo.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        usuario_id: 7,
+        tipo: 'CONFIRMACION_PEDIDO_WEB',
+        nombre: 'Confirmación de pedido web',
+        predeterminado: true,
+      }),
+      { transaction: 'TX' },
+    );
+  });
+
   test('si dos pedidos intentan crear el mismo a la vez, el segundo no rompe', async () => {
     WhatsappFlujo.findAll.mockResolvedValue(TODOS_LOS_FLUJOS.slice(0, 3).map((f) => ({ tipo: f.tipo })));
     WhatsappFlujo.create.mockRejectedValue(Object.assign(new Error('duplicado'), { name: 'SequelizeUniqueConstraintError' }));
@@ -666,14 +702,16 @@ describe('seguimiento de los pedidos de la bandeja', () => {
     expect(mapa.has(3)).toBe(false);
   });
 
-  test('una cuenta sin flujo para esa etapa no trae seguimiento, y no se le crea ninguno', async () => {
-    WhatsappFlujo.findAll.mockResolvedValue([FLUJO]);
+  test('si falta el flujo de la etapa, lo asegura antes de calcular la bandeja', async () => {
+    WhatsappFlujo.findAll
+      .mockResolvedValueOnce([FLUJO])
+      .mockResolvedValueOnce(TODOS_LOS_FLUJOS);
 
     const mapa = await calcular([pedido(1), pedido(2, { estado: 'Confirmado' })]);
 
     expect(mapa.has(1)).toBe(true);
-    expect(mapa.has(2)).toBe(false);
-    expect(WhatsappFlujo.create).not.toHaveBeenCalled();
+    expect(mapa.has(2)).toBe(true);
+    expect(WhatsappFlujo.create).toHaveBeenCalled();
   });
 
   test('sin pedidos con etapa no consulta nada', async () => {

@@ -4,7 +4,7 @@ const { buildOrder } = require('../../services/speedbox/payload');
 function order(overrides = {}) {
   return { id: 31, usuario_id: 7, numero_pedido: 4, created_at: '2026-10-02T12:00:00Z', monto: 85000, costo_envio: 15000,
     cliente: 'Cliente prueba', telefono: '0981000000', direccion: 'Direccion 123', ciudad: 'Asuncion', departamento: 'Central',
-    items: [{ cantidad: 1, subtotal: 85000, componentes_vendidos: [{ producto_id: 9, cantidad: 1, producto: { nombre: 'Producto', sku: 'SKU-001' } }] }], ...overrides };
+    items: [{ cantidad: 1, subtotal: 85000, componentes_vendidos: [{ producto_id: 9, cantidad: 1, producto: { nombre: 'Producto', sku: 'SKU-001', creado_por: 7 } }] }], ...overrides };
 }
 const store = { nombre: 'Tienda prueba' };
 const connection = { environment: 'sandbox', tienda_id: '54' };
@@ -25,6 +25,14 @@ describe('Speedbox client and payload', () => {
     expect(url.searchParams.get('since_at')).toBe('2026-10-02T11:26:32-03:00');
     expect(options.headers).toMatchObject({ Authorization: 'Bearer test-api-key', 'X-API-Secret': 'test-api-secret' });
     expect(options.redirect).toBe('error');
+  });
+  it('can use temporary sandbox credentials without server-side keys', async () => {
+    delete process.env.SPEEDBOX_API_KEY;
+    delete process.env.SPEEDBOX_API_SECRET;
+    fetch.mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) });
+    await client.request('spec', { credentials: { environment: 'sandbox', apiKey: 'sbx_public', secret: 'private_secret' } });
+    const [, options] = fetch.mock.calls[0];
+    expect(options.headers).toMatchObject({ Authorization: 'Bearer sbx_public', 'X-API-Secret': 'private_secret' });
   });
   it('preserves an HTTP 500 response without leaking credentials', async () => {
     fetch.mockResolvedValue({ ok: false, status: 500, text: async () => JSON.stringify({ error: 'test-api-secret', token: 'private' }) });
@@ -67,6 +75,15 @@ describe('Speedbox client and payload', () => {
   it('rejects a missing variant SKU instead of submitting the parent product', () => {
     const value = order(); value.items[0].componentes_vendidos[0].variante_id = 3;
     expect(() => buildOrder(value, store, connection)).toThrow('SKU Speedbox');
+  });
+  it('sends only external catalog products for Raha-origin orders', () => {
+    const value = order({ items: [{ subtotal: 90000, componentes_vendidos: [
+      { id: 1, cantidad: 1, producto: { nombre: 'Propio', sku: 'OWN-001', creado_por: 7 } },
+      { id: 2, cantidad: 2, producto: { nombre: 'Raha', sku: 'RAHA-001', creado_por: 1 } },
+    ] }] });
+    const result = buildOrder(value, store, connection, new Map(), { onlyExternalProducts: true, usuarioId: 7 });
+    expect(result.items).toEqual([{ sku: 'RAHA-001', title: 'Raha', quantity: 2, price: 30000 }]);
+    expect(result.total_price).toBe(60000);
   });
   it('rejects incomplete customer data and negative amounts', () => {
     expect(() => buildOrder(order({ telefono: '', monto: -100000 }), store, connection)).toThrow('datos del pedido');

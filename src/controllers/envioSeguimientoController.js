@@ -87,6 +87,7 @@ async function cargarEnvioODevolver404(req, res, { conItems = false } = {}) {
 exports.flujosDelPedido = async (req, res) => {
   const envio = await cargarEnvioODevolver404(req, res, { conItems: true });
   if (!envio) return;
+  await flujoService.asegurarFlujosBase({ usuarioId: req.usuario.id });
   const flujos = await flujoService.estadoFlujosDelPedido(envio.id, {
     usuarioId: req.usuario.id,
     esAdmin: esAdministrador(req),

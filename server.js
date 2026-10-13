@@ -281,6 +281,7 @@ app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/brevo', brevoRoutes);
 app.use('/api/integraciones/speedbox', require('./src/routes/speedbox'));
 app.use('/api/integraciones/raha', require('./src/routes/raha'));
+app.use('/api/raha-portal', require('./src/routes/rahaPortal'));
 // El mount de /v1 (API Key, socios externos) va ANTES que el de
 // /productos (sesión, panel propio): Express matchea por prefijo de ruta,
 // así que si el admin fuera primero, /v1/* entraría a su router y
@@ -385,6 +386,7 @@ sequelize.authenticate().then(async () => {
   }
   try {
     await require('./migrations/20261003010000-raha-solicitudes').up(sequelize.getQueryInterface(), require('sequelize'));
+    await require('./migrations/20261013100000-raha-portal-usuarios').up(sequelize.getQueryInterface(), require('sequelize'));
   } catch (error) {
     logger.error('No se puede iniciar sin las tablas de solicitudes Raha:', error);
     process.exit(1);

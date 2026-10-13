@@ -18,7 +18,7 @@
 
 jest.mock('../../models', () => ({
   sequelize: { transaction: (cb) => cb('TX') },
-  WhatsappFlujo: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), destroy: jest.fn(), count: jest.fn(async () => 2) },
+  WhatsappFlujo: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), update: jest.fn(), destroy: jest.fn(), count: jest.fn(async () => 2) },
   WhatsappFlujoFase: { findAll: jest.fn(), create: jest.fn(), update: jest.fn() },
   SeguimientoEtiqueta: { findAll: jest.fn() },
   SeguimientoContacto: { findAll: jest.fn() },

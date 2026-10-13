@@ -37,6 +37,9 @@ test('el circuito sigue en orden: confirmar, preparar, despachar, resultado, ren
   const tipo = (estado, extra = {}) => accionSiguientePedido({ estado, ...extra }).tipo;
 
   expect(tipo('Pendiente')).toBe('confirmar');
+  // Ya se le escribió por WhatsApp, pero sigue sin confirmar.
+  expect(tipo('EnSeguimiento')).toBe('confirmar');
+  expect(accionSiguientePedido({ estado: 'EnSeguimiento' }).siguiente_estado).toBe('Confirmado');
   expect(tipo('Confirmado')).toBe('preparar');
   expect(tipo('Preparado')).toBe('despachar');
   expect(tipo('Despachado')).toBe('resultado_entrega');

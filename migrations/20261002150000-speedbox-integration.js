@@ -18,6 +18,7 @@ async function up(qi, S) {
         tienda_id: { type: S.STRING(100), allowNull: true }, courier_id: { type: S.INTEGER, allowNull: true, references: { model: 'couriers', key: 'id' } },
         activo: { type: S.BOOLEAN, allowNull: false, defaultValue: false }, enabled_at: { type: S.DATE, allowNull: true },
         since_at: { type: S.STRING(50), allowNull: true }, spec_verified_at: { type: S.DATE, allowNull: true },
+        order_verified_at: { type: S.DATE, allowNull: true },
         updates_verified_at: { type: S.DATE, allowNull: true }, webhook_verified_at: { type: S.DATE, allowNull: true },
       },
       speedbox_pedidos: { ...common,
@@ -38,6 +39,10 @@ async function up(qi, S) {
     };
     for (const [name, columns] of Object.entries(definitions)) {
       if (!tables.includes(name)) await qi.createTable(name, columns, { transaction });
+    }
+    if (tables.includes('speedbox_tiendas')) {
+      const columns = await qi.describeTable('speedbox_tiendas', { transaction });
+      if (!columns.order_verified_at) await qi.addColumn('speedbox_tiendas', 'order_verified_at', { type: S.DATE, allowNull: true }, { transaction });
     }
     for (const [table, fields, unique] of [
       ['speedbox_tiendas', ['usuario_id', 'environment'], true], ['speedbox_tiendas', ['environment', 'tienda_id'], true],

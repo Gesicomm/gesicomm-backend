@@ -1,7 +1,7 @@
 jest.mock('../../models', () => ({
   sequelize: { transaction: jest.fn(), query: jest.fn() },
   Tienda: { findOne: jest.fn() }, Courier: { findOne: jest.fn() }, Envio: { findOne: jest.fn() },
-  EnvioItem: { findAll: jest.fn() }, EnvioItemComponente: {}, Producto: {}, ProductoVariante: { findAll: jest.fn() },
+  EnvioItem: { findAll: jest.fn() }, EnvioItemComponente: { findAll: jest.fn() }, Producto: {}, ProductoVariante: { findAll: jest.fn() },
   SpeedboxTienda: { findOne: jest.fn(), findOrCreate: jest.fn() }, SpeedboxPedido: { findOrCreate: jest.fn(), findOne: jest.fn() }, SpeedboxEvento: {},
 }));
 jest.mock('../../services/speedbox/client', () => ({ configuration: jest.fn(() => ({ environment: 'sandbox' })), request: jest.fn(), remoteId: value => String(value), redact: value => value }));
@@ -24,8 +24,10 @@ beforeEach(() => {
   envio = instance({ id: 31, usuario_id: 7, courier_id: 2, estado: 'Confirmado', stock_descontado: true });
   mapping = instance({ external_order_id: 'GESICOMM-sandbox-7-31', estado: 'pendiente', intentos: 0 });
   models.SpeedboxTienda.findOne.mockResolvedValue(connection);
+  models.SpeedboxTienda.findOrCreate.mockResolvedValue([connection, false]);
   models.Envio.findOne.mockResolvedValue(envio);
   models.SpeedboxPedido.findOrCreate.mockResolvedValue([mapping, true]);
+  models.EnvioItemComponente.findAll.mockResolvedValue([]);
   models.EnvioItem.findAll.mockResolvedValue([{ componentes_vendidos: [] }]);
   models.Tienda.findOne.mockResolvedValue({ nombre: 'Mi tienda' });
   payload.buildOrder.mockReturnValue({ external_order_id: mapping.external_order_id, total_price: 85000 });
@@ -55,6 +57,19 @@ it('rejects an order assigned to another courier', async () => {
   envio.courier_id = 3;
   await expect(service.sendOrder(7, 31)).rejects.toMatchObject({ status: 409 });
   expect(client.request).not.toHaveBeenCalled();
+});
+it('sends a Raha catalog order even when the local courier is different', async () => {
+  envio.courier_id = 3;
+  models.EnvioItemComponente.findAll.mockResolvedValue([{ producto: { id: 9, creado_por: 1 } }]);
+  await service.sendOrder(7, 31);
+  expect(payload.buildOrder).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.anything(),
+    expect.anything(),
+    expect.any(Map),
+    { onlyExternalProducts: true, usuarioId: 7 },
+  );
+  expect(client.request).toHaveBeenCalledTimes(1);
 });
 it('stores a timeout as uncertain and requires explicit reconciliation', async () => {
   client.request.mockRejectedValueOnce(Object.assign(new Error('Timeout'), { uncertain: true }));
@@ -91,6 +106,31 @@ it('allows payment edits and the same courier on a remote order', async () => {
   await expect(service.assertCanChange(envio, { monto: 85000 }, {})).resolves.toBeUndefined();
 });
 
+it('verifies the sandbox spec with pasted credentials without persisting them', async () => {
+  await expect(service.verifySpec(7, { public_key: ' sbx_public ', private_key: ' private_secret ' })).resolves.toEqual({ ok: true });
+  expect(client.request).toHaveBeenCalledWith('spec', { credentials: { environment: 'sandbox', apiKey: 'sbx_public', secret: 'private_secret' } });
+  expect(models.SpeedboxTienda.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+    where: { usuario_id: 7, environment: 'sandbox' },
+  }));
+  expect(connection.update).toHaveBeenCalledWith({ spec_verified_at: expect.any(Date) });
+});
+
+it('sends a sandbox validation order using pasted credentials', async () => {
+  client.request.mockImplementationOnce(async (_action, options) => ({
+    ok: true,
+    order: { external_order_id: options.body.external_order_id, order_id: '900000000123456', status: 'recibido' },
+  }));
+  await expect(service.verifyOrder(7, { public_key: 'sbx_public', private_key: 'private_secret' })).resolves.toMatchObject({
+    ok: true, order_id: '900000000123456', status: 'recibido',
+  });
+  const [, call] = client.request.mock.calls[0];
+  expect(client.request.mock.calls[0][0]).toBe('order');
+  expect(call.credentials).toEqual({ environment: 'sandbox', apiKey: 'sbx_public', secret: 'private_secret' });
+  expect(call.body).toMatchObject({ tienda_id: '54', items: [{ sku: 'GESICOM-TEST-001', quantity: 1 }] });
+  expect(call.body.external_order_id).toMatch(/^GESICOMM-TEST-sandbox-7-/);
+  expect(connection.update).toHaveBeenCalledWith({ order_verified_at: expect.any(Date) });
+});
+
 it('queues confirmation even when procurement payment is pending, without sending before commit', async () => {
   process.env.SPEEDBOX_ENABLED = 'true';
   envio.abastecimiento_estado = 'pendiente_pago';
@@ -119,6 +159,16 @@ it('does not queue a different courier or an unlinked store', async () => {
   envio.courier_id = 2; connection.tienda_id = null;
   expect(await service.queueConfirmedOrder(envio, {})).toBeNull();
   expect(models.SpeedboxPedido.findOrCreate).not.toHaveBeenCalled();
+});
+
+it('queues Raha catalog products even when the selected courier is not Speedbox', async () => {
+  process.env.SPEEDBOX_ENABLED = 'true';
+  envio.courier_id = 3;
+  models.EnvioItemComponente.findAll.mockResolvedValue([{ producto: { id: 9, creado_por: 1 } }]);
+  const transaction = { afterCommit: jest.fn() };
+  await service.queueConfirmedOrder(envio, transaction);
+  expect(models.SpeedboxPedido.findOrCreate).toHaveBeenCalled();
+  expect(transaction.afterCommit).toHaveBeenCalledTimes(1);
 });
 
 it('does not schedule another submission for a linked or uncertain order', async () => {

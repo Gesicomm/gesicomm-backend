@@ -3,7 +3,7 @@
 const { IngresoInventarioService, ESTADOS } = require('../services/ingresoInventario.service');
 const ProveedorLogisticoService = require('../services/proveedorLogistico.service');
 const { Op } = require('sequelize');
-const { IngresoInventario, IngresoInventarioItem, InventarioUbicacion, Deposito, Producto, ProductoVariante, HistorialIngresoInventario, Usuario } = require('../models');
+const { IngresoInventario, IngresoInventarioItem, InventarioUbicacion, Deposito, Producto, ProductoVariante, Oferta, OfertaComponente, HistorialIngresoInventario, Usuario } = require('../models');
 const { idsDeAdministradores } = require('../services/notificaciones/pedidosNotificaciones.service');
 
 // Función de ayuda para validar rol de admin
@@ -16,6 +16,29 @@ const esAdmin = (req) => {
 const claveStock = ({ usuario_id, deposito_id, producto_id, variante_id }) => (
   `${usuario_id}:${deposito_id}:${producto_id}:${variante_id || 'SIN_VARIANTE'}`
 );
+
+const claveComponente = ({ producto_id, variante_id }) => `${producto_id}:${variante_id || 'SIN_VARIANTE'}`;
+
+async function recetaItemPedido(item) {
+  const cantidadItem = Number(item?.cantidad ?? 1);
+  if (!Number.isSafeInteger(cantidadItem) || cantidadItem <= 0) return [];
+
+  if (item.oferta_id) {
+    const oferta = await Oferta.findByPk(item.oferta_id, {
+      include: [{ model: OfertaComponente, as: 'componentes' }],
+    });
+    if (oferta?.componentes?.length) {
+      return oferta.componentes.map((c) => ({
+        producto_id: c.producto_id,
+        variante_id: (c.permite_elegir_variante ? item.componente_variante_id : null) || c.variante_id || null,
+        cantidad: cantidadItem * c.cantidad,
+      }));
+    }
+  }
+
+  if (!item.producto_id) return [];
+  return [{ producto_id: item.producto_id, variante_id: item.variante_id || null, cantidad: cantidadItem }];
+}
 
 /**
  * Endpoint: GET /api/inventario/centros-destino
@@ -381,5 +404,125 @@ exports.listarStockUbicacion = async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });
+  }
+};
+
+/**
+ * POST /api/inventario/stock/pedido-origenes
+ * Diagnóstico liviano para el modal de pedidos: dado un set de ítems,
+ * responde qué depósitos propios pueden despachar el pedido completo y qué
+ * producto falta en el depósito elegido. No reserva ni descuenta stock.
+ */
+exports.diagnosticarStockPedido = async (req, res) => {
+  try {
+    const { items = [], origen_preferido_id = null } = req.body || {};
+    const usuarioId = req.usuario.id;
+    const tiendaId = req.usuario.tiendaId || null;
+    const depositoWhere = { usuario_id: usuarioId, activo: true };
+    if (tiendaId) depositoWhere.tienda_id = tiendaId;
+
+    const depositos = await Deposito.findAll({
+      where: depositoWhere,
+      attributes: ['id', 'nombre', 'ciudad', 'departamento'],
+      order: [['nombre', 'ASC']],
+    });
+
+    const requeridos = new Map();
+    for (const item of items || []) {
+      const receta = await recetaItemPedido(item);
+      for (const componente of receta) {
+        const key = claveComponente(componente);
+        const actual = requeridos.get(key) || {
+          producto_id: Number(componente.producto_id),
+          variante_id: componente.variante_id == null ? null : Number(componente.variante_id),
+          cantidad: 0,
+        };
+        actual.cantidad += Number(componente.cantidad) || 0;
+        requeridos.set(key, actual);
+      }
+    }
+
+    if (depositos.length === 0 || requeridos.size === 0) {
+      return res.json({ depositos: [], origen: null, alternativas: [], faltantes: [] });
+    }
+
+    let componentes = [...requeridos.values()];
+    const productoIdsTodos = [...new Set(componentes.map((c) => c.producto_id).filter(Boolean))];
+    const depositoIds = depositos.map((d) => d.id);
+
+    const productos = await Producto.findAll({
+      where: { id: { [Op.in]: productoIdsTodos } },
+      attributes: ['id', 'nombre', 'sku', 'creado_por'],
+    });
+    const productosPorId = new Map(productos.map((p) => [Number(p.id), p]));
+    componentes = componentes.filter((c) => Number(productosPorId.get(Number(c.producto_id))?.creado_por) === Number(usuarioId));
+
+    if (componentes.length === 0) {
+      return res.json({ depositos: [], origen: null, alternativas: [], faltantes: [] });
+    }
+
+    const productoIds = [...new Set(componentes.map((c) => c.producto_id).filter(Boolean))];
+    const varianteIds = [...new Set(componentes.map((c) => c.variante_id).filter(Boolean))];
+
+    const [variantes, stocks] = await Promise.all([
+      varianteIds.length
+        ? ProductoVariante.findAll({ where: { id: { [Op.in]: varianteIds } }, attributes: ['id', 'producto_id', 'nombre', 'sku_variante'] })
+        : [],
+      InventarioUbicacion.findAll({
+        where: {
+          usuario_id: usuarioId,
+          deposito_id: { [Op.in]: depositoIds },
+          producto_id: { [Op.in]: productoIds },
+        },
+        attributes: ['deposito_id', 'producto_id', 'variante_id', 'cantidad_disponible'],
+      }),
+    ]);
+
+    const variantesPorId = new Map(variantes.map((v) => [Number(v.id), v]));
+    const stockPorDepositoYComponente = new Map();
+    for (const s of stocks) {
+      stockPorDepositoYComponente.set(
+        `${s.deposito_id}:${claveComponente(s)}`,
+        Number(s.cantidad_disponible) || 0,
+      );
+    }
+
+    const evaluarDeposito = (deposito) => {
+      const faltantes = componentes.map((c) => {
+        const producto = productosPorId.get(Number(c.producto_id));
+        const variante = c.variante_id ? variantesPorId.get(Number(c.variante_id)) : null;
+        const disponible = stockPorDepositoYComponente.get(`${deposito.id}:${claveComponente(c)}`) || 0;
+        return {
+          producto_id: c.producto_id,
+          variante_id: c.variante_id,
+          nombre: [producto?.nombre || `Producto ${c.producto_id}`, variante?.nombre].filter(Boolean).join(' - '),
+          necesario: c.cantidad,
+          disponible,
+          faltante: Math.max(0, c.cantidad - disponible),
+        };
+      }).filter((f) => f.faltante > 0);
+
+      return {
+        id: deposito.id,
+        nombre: deposito.nombre,
+        ciudad: deposito.ciudad,
+        departamento: deposito.departamento,
+        ok: faltantes.length === 0,
+        faltantes,
+      };
+    };
+
+    const diagnosticos = depositos.map(evaluarDeposito);
+    const origenId = origen_preferido_id ? Number(origen_preferido_id) : null;
+    const origen = origenId ? diagnosticos.find((d) => Number(d.id) === origenId) || null : null;
+
+    return res.json({
+      depositos: diagnosticos,
+      origen,
+      alternativas: diagnosticos.filter((d) => d.ok),
+      faltantes: origen?.faltantes || [],
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'No se pudo diagnosticar el stock del pedido.' });
   }
 };

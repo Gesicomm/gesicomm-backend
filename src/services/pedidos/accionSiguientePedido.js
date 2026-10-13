@@ -13,7 +13,9 @@
 function accionSiguientePedido(envioLike) {
   const envio = typeof envioLike.toJSON === 'function' ? envioLike.toJSON() : envioLike;
 
-  if (envio.estado === 'Pendiente') {
+  // "En seguimiento" es un pendiente al que ya se le escribió: sigue estando
+  // por confirmar, y la bandeja tiene que seguir ofreciendo confirmarlo.
+  if (envio.estado === 'Pendiente' || envio.estado === 'EnSeguimiento') {
     return {
       tipo: 'confirmar',
       titulo: 'Confirmar pedido',

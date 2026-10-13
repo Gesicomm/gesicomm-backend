@@ -634,7 +634,185 @@ function limpiarUrgencia(urgencia) {
     activo: urgencia.activo === true,
     fin_at: fechaValidaISO(urgencia.fin_at),
     producto_id: contentId(urgencia.producto_id || urgencia.content_id),
+    // Varios productos en oferta y los textos del bloque del Inicio: el panel
+    // los manda desde siempre y se descartaban al guardar.
+    productos: listaDe(urgencia.productos, 12, contentId),
+    titulo: textoCorto(urgencia.titulo, 80),
+    texto: textoCorto(urgencia.texto, 180),
+    cta_texto: textoCorto(urgencia.cta_texto, 40),
     estado: 'demo',
+  };
+}
+
+// ─── Ficha por producto ("Vista producto" del panel) ────────────────────────
+// Lo que el comercio edita bloque por bloque para UN producto en ESTA landing.
+// Durante meses solo se conservaban cuatro textos (nombre comercial, mensaje y
+// las dos insignias): el resto —visibilidad de bloques, botones, beneficios,
+// opiniones, preguntas, textos de la oferta— llegaba en el PUT, se descartaba
+// acá sin error y al recargar el editor había vuelto todo a como estaba.
+// [campo, largo máximo]
+const TEXTOS_FICHA = [
+  ['titulo_comercial', 100], ['mensaje_comercial', 600], ['propuesta_valor', 220],
+  ['insignia_principal', 40], ['insignia_secundaria', 40],
+  ['cta_texto', 42], ['agregar_carrito_texto', 42], ['resenas_texto', 80],
+  ['beneficios_kicker', 60], ['beneficios_titulo', 90], ['beneficios_subtitulo', 180],
+  ['urgencia_kicker', 60], ['urgencia_titulo', 90], ['urgencia_texto', 180],
+  ['opiniones_kicker', 60], ['opiniones_titulo', 90], ['opiniones_subtitulo', 180],
+  ['preguntas_kicker', 60], ['preguntas_titulo', 90], ['preguntas_subtitulo', 180],
+];
+// [campo, mínimo, máximo]. Se guardan como texto: un 0 numérico se leería
+// como "sin dato" en el runtime (urgencia_horas = 0 es una duración válida).
+const NUMEROS_FICHA = [
+  ['cta_descuento_pct', 0, 95], ['resenas_calificacion', 1, 5],
+  ['urgencia_horas', 0, 99], ['urgencia_minutos', 0, 59], ['urgencia_segundos', 0, 59],
+];
+const TIPOS_BOTON_FICHA = ['whatsapp', 'checkout', 'contacto', 'url'];
+const CLAVE_BLOQUE = /^[a-z_]{1,40}$/;
+
+function numeroFicha(valor, min, max) {
+  if (valor === '' || valor === null || valor === undefined) return '';
+  const n = Number(String(valor).replace(',', '.'));
+  if (!Number.isFinite(n)) return '';
+  return String(Math.min(max, Math.max(min, Math.round(n * 10) / 10)));
+}
+
+// Lista de objetos: a diferencia de listaDe, no deduplica (dos opiniones o
+// dos botones pueden coincidir) y descarta los que quedan sin contenido.
+function listaFicha(valor, max, mapear) {
+  return (Array.isArray(valor) ? valor : [])
+    .map(v => (v && typeof v === 'object' && !Array.isArray(v) ? mapear(v) : null))
+    .filter(Boolean)
+    .slice(0, max);
+}
+
+const urlImagenFicha = url => (typeof url === 'string' && url.length <= 2048
+  && (/^https?:\/\/[^\s]+$/i.test(url) || /^\/(?!\/)[^\s]+$/.test(url)) ? url : '');
+
+function botonFicha(b) {
+  const label = textoCorto(b.label, 42);
+  if (!label) return null;
+  const descuento = numeroFicha(b.descuento_pct, 0, 95);
+  return {
+    label,
+    tipo: TIPOS_BOTON_FICHA.includes(b.tipo) ? b.tipo : 'whatsapp',
+    valor: textoCorto(b.valor, 500),
+    ...(Number(descuento) > 0 ? { descuento_pct: descuento } : {}),
+  };
+}
+
+function limpiarPresentacionProducto(value) {
+  const propio = campo => Object.prototype.hasOwnProperty.call(value, campo) && value[campo] !== null && value[campo] !== undefined;
+  // v: 2 = el panel manda SOLO los textos que el comercio tocó, y uno vacío
+  // significa "lo borré, no lo muestres". Sin la marca (guardados anteriores,
+  // que escribían '' en todos) vacío sigue siendo "sin tocar".
+  const v2 = value.v === 2;
+  const salida = v2 ? { v: 2 } : {};
+  for (const [campo, max] of TEXTOS_FICHA) {
+    if (propio(campo) && typeof value[campo] === 'string') salida[campo] = textoCorto(value[campo], max);
+  }
+  for (const [campo, min, max] of NUMEROS_FICHA) {
+    if (propio(campo)) salida[campo] = numeroFicha(value[campo], min, max);
+  }
+  if (!v2) {
+    // Los cuatro de siempre se escribían aunque no vinieran.
+    for (const campo of ['titulo_comercial', 'mensaje_comercial', 'insignia_principal', 'insignia_secundaria']) {
+      if (salida[campo] === undefined) salida[campo] = '';
+    }
+  }
+  if (value.ficha_bloques && typeof value.ficha_bloques === 'object' && !Array.isArray(value.ficha_bloques)) {
+    salida.ficha_bloques = Object.fromEntries(Object.entries(value.ficha_bloques)
+      .filter(([clave, visible]) => CLAVE_BLOQUE.test(clave) && typeof visible === 'boolean')
+      .slice(0, 60));
+  }
+  if (Array.isArray(value.ficha_orden_mobile)) {
+    salida.ficha_orden_mobile = listaDe(value.ficha_orden_mobile, 40, clave => (typeof clave === 'string' && CLAVE_BLOQUE.test(clave) ? clave : null));
+  }
+  if (Array.isArray(value.imagenes_landing)) {
+    salida.imagenes_landing = [...new Set(value.imagenes_landing.map(urlImagenFicha).filter(Boolean).slice(0, 10))];
+  }
+  // Una lista presente aunque quede vacía es una decisión del comercio ("saqué
+  // todos los beneficios"); ausente = valen los del producto.
+  if (Array.isArray(value.beneficios)) {
+    salida.beneficios = listaFicha(value.beneficios, 8, b => {
+      const titulo = textoCorto(b.titulo, 120);
+      const texto = textoCorto(b.texto, 200);
+      return titulo || texto ? { titulo, texto, ...(textoCorto(b.icono, 40) ? { icono: textoCorto(b.icono, 40) } : {}) } : null;
+    });
+  }
+  if (Array.isArray(value.confianza)) {
+    salida.confianza = listaFicha(value.confianza, 6, c => {
+      const item = { icono: textoCorto(c.icono, 40), titulo: textoCorto(c.titulo, 80), texto: textoCorto(c.texto, 200) };
+      return item.icono || item.titulo || item.texto ? item : null;
+    });
+  }
+  if (Array.isArray(value.botones_pago)) salida.botones_pago = listaFicha(value.botones_pago, 4, botonFicha);
+  if (Array.isArray(value.botones_contacto)) salida.botones_contacto = listaFicha(value.botones_contacto, 4, botonFicha);
+  if (Array.isArray(value.metodos_pago)) {
+    salida.metodos_pago = listaFicha(value.metodos_pago, 8, m => {
+      const texto = textoCorto(m.texto || m.label, 40);
+      return texto ? { texto } : null;
+    });
+  }
+  if (Array.isArray(value.incluye_pedido)) {
+    salida.incluye_pedido = listaFicha(value.incluye_pedido, 8, i => {
+      const texto = textoCorto(i.texto || i.titulo, 120);
+      return texto ? { texto } : null;
+    });
+  }
+  if (Array.isArray(value.opiniones)) {
+    salida.opiniones = listaFicha(value.opiniones, 6, o => {
+      const comentario = textoCorto(o.comentario, 220);
+      const nombre = textoCorto(o.nombre, 60);
+      if (!comentario && !nombre) return null;
+      return {
+        nombre,
+        comentario,
+        detalle: textoCorto(o.detalle, 80),
+        calificacion: Number(numeroFicha(o.calificacion, 1, 5)) || 5,
+        foto: urlImagenFicha(o.foto),
+      };
+    });
+  }
+  if (Array.isArray(value.preguntas)) {
+    salida.preguntas = listaFicha(value.preguntas, 10, p => {
+      const pregunta = textoCorto(p.pregunta, 200);
+      const respuesta = textoCorto(p.respuesta, 1000);
+      return pregunta || respuesta ? { pregunta, respuesta } : null;
+    });
+  }
+  return salida;
+}
+
+// Los cuatro textos de una sección de recomendados y cuáles se muestran.
+// `mostrar` solo viaja desde que cada texto se puede ocultar: su presencia es
+// también la señal de que un texto vacío es "no lo muestres" y no "usá el de
+// fábrica" (ver textosRecomendados en el frontend).
+function textosSeccionRecomendados(reco) {
+  const mostrar = reco.mostrar && typeof reco.mostrar === 'object' && !Array.isArray(reco.mostrar) ? reco.mostrar : null;
+  return {
+    titulo: textoCorto(reco.titulo, 80),
+    kicker: textoCorto(reco.kicker, 50),
+    subtitulo: textoCorto(reco.subtitulo, 180),
+    cta_texto: textoCorto(reco.cta_texto, 40),
+    ...(mostrar ? {
+      mostrar: Object.fromEntries(['kicker', 'titulo', 'subtitulo', 'cta'].map(clave => [clave, mostrar[clave] !== false])),
+    } : {}),
+  };
+}
+
+function limpiarCheckoutRecomendados(reco) {
+  if (!reco || typeof reco !== 'object' || Array.isArray(reco)) return null;
+  const max = Number(reco.max);
+  const items = listaDe(reco.items, 50, contentId);
+  const precios = reco.precio_antes && typeof reco.precio_antes === 'object' && !Array.isArray(reco.precio_antes) ? reco.precio_antes : {};
+  return {
+    activo: reco.activo !== false,
+    items,
+    max: Number.isInteger(max) && max >= 1 && max <= 12 ? max : 4,
+    ...textosSeccionRecomendados(reco),
+    precio_antes: Object.fromEntries(Object.entries(precios)
+      .filter(([id, valor]) => items.includes(id) && enteroPositivo(valor))
+      .map(([id, valor]) => [id, enteroPositivo(valor)])),
   };
 }
 
@@ -997,15 +1175,7 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
     ...(venta.presentacion_productos && typeof venta.presentacion_productos === 'object' ? {
       presentacion_productos: Object.fromEntries(Object.entries(venta.presentacion_productos)
         .filter(([key, value]) => /^(producto|combo):[1-9]\d*$/.test(key) && value && typeof value === 'object')
-        .slice(0, 500).map(([key, value]) => [key, {
-          titulo_comercial: textoCorto(value.titulo_comercial, 100),
-          mensaje_comercial: textoCorto(value.mensaje_comercial, 160),
-          insignia_principal: textoCorto(value.insignia_principal, 40),
-          insignia_secundaria: textoCorto(value.insignia_secundaria, 40),
-          ...(Array.isArray(value.imagenes_landing) ? { imagenes_landing: [...new Set(value.imagenes_landing
-            .filter(url => typeof url === 'string' && url.length <= 2048 && (/^https?:\/\/[^\s]+$/i.test(url) || /^\/(?!\/)[^\s]+$/.test(url)))
-            .slice(0, 10))] } : {}),
-        }])),
+        .slice(0, 500).map(([key, value]) => [key, limpiarPresentacionProducto(value)])),
     } : {}),
     ...(venta.catalogo_filtros && typeof venta.catalogo_filtros === 'object' ? {
       catalogo_filtros: Object.fromEntries(['buscador', 'categoria', 'marca', 'etiqueta', 'precio', 'disponibilidad', 'orden']
@@ -1021,8 +1191,13 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
       modo: MODOS_RECOMENDADOS.includes(reco.modo) ? reco.modo : 'auto',
       items: listaDe(reco.items, 50, contentId),
       max: Number.isInteger(max) && max >= 1 && max <= 8 ? max : 4,
-      titulo: textoCorto(reco.titulo, 80),
+      ...textosSeccionRecomendados(reco),
     },
+    // Recomendados del checkout: el panel los configura aparte de los de la
+    // ficha y hasta ahora no se guardaba nada de ellos.
+    ...(limpiarCheckoutRecomendados(venta.checkout_recomendados)
+      ? { checkout_recomendados: limpiarCheckoutRecomendados(venta.checkout_recomendados) }
+      : {}),
     urgencia: limpiarUrgencia(venta.urgencia),
     prueba_social: limpiarPruebaSocial(venta.prueba_social),
     // Logos de medios de pago en la ficha (Tarjetas / Bocas de cobranza /
