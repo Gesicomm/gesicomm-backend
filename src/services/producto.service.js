@@ -96,6 +96,14 @@ class ProductoService {
       con_variantes, ordenar_por, page = 1, limit = 10,
       creado_por
     } = filtros;
+    const soloCatalogoRaha = Boolean(
+      filtros.catalogo_raha
+      || filtros.catalogoRaha
+      || filtros.solo_catalogo_raha
+      || filtros.soloCatalogoRaha
+    );
+    const paginaNormalizada = Math.max(1, parseInt(page, 10) || 1);
+    const limiteNormalizado = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
 
     const where = { inquilino_id };
     if (activo !== undefined) where.activo = activo;
@@ -119,7 +127,25 @@ class ProductoService {
       ];
     }
     if (!esAdmin && usuarioId != null) {
-      if (creado_por !== undefined || filtros.mios_solamente || filtros.solamenteMios) {
+      if (soloCatalogoRaha) {
+        const administradoresIds = await this.obtenerIdsAdministradores(inquilino_id);
+        const creadoresVisibles = [...new Set([usuarioId, ...administradoresIds].filter(id => id != null))];
+        where[Op.and] = [
+          ...(where[Op.and] || []),
+          {
+            [Op.or]: [
+              { creado_por: null },
+              { creado_por: { [Op.in]: creadoresVisibles } },
+            ],
+          },
+          {
+            [Op.or]: [
+              { creado_por: null },
+              { creado_por: { [Op.ne]: usuarioId } },
+            ],
+          },
+        ];
+      } else if (creado_por !== undefined || filtros.mios_solamente || filtros.solamenteMios) {
         where.creado_por = usuarioId;
       } else {
         const administradoresIds = await this.obtenerIdsAdministradores(inquilino_id);
@@ -169,7 +195,7 @@ class ProductoService {
       where.id = { [Op.in]: idsFiltrados.length ? idsFiltrados : [-1] };
     }
 
-    const offset = (page - 1) * limit;
+    const offset = (paginaNormalizada - 1) * limiteNormalizado;
     const ordenes = {
       recientes: [['created_at', 'DESC']],
       nombre: [['nombre', 'ASC']],
@@ -195,7 +221,7 @@ class ProductoService {
     };
 
     if (!filtros.sin_limite && !filtros.sinLimite) {
-      queryParams.limit = parseInt(limit);
+      queryParams.limit = limiteNormalizado;
       queryParams.offset = offset;
     }
 
@@ -268,8 +294,8 @@ class ProductoService {
 
     return {
       total: count,
-      pagina: parseInt(page),
-      total_paginas: Math.ceil(count / limit),
+      pagina: paginaNormalizada,
+      total_paginas: Math.ceil(count / limiteNormalizado),
       productos: productosSerializados,
     };
   }

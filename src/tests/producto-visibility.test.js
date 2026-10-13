@@ -57,6 +57,35 @@ describe('ProductoService visibility', () => {
     expect(where[Op.and]).toBeUndefined();
   });
 
+  test('el catalogo RAHA se filtra antes de paginar y excluye productos propios', async () => {
+    await ProductoService.buscar({ catalogo_raha: true, page: 2, limit: 20 }, 1, false, 42, 5);
+
+    const [{ where, limit, offset }] = Producto.findAndCountAll.mock.calls[0];
+    expect(limit).toBe(20);
+    expect(offset).toBe(20);
+    expect(where[Op.and]).toEqual(expect.arrayContaining([
+      {
+        [Op.or]: [
+          { creado_por: null },
+          { creado_por: { [Op.in]: [42, 1] } },
+        ],
+      },
+      {
+        [Op.or]: [
+          { creado_por: null },
+          { creado_por: { [Op.ne]: 42 } },
+        ],
+      },
+      {
+        [Op.or]: [
+          { creado_por: null },
+          { creado_por: { [Op.ne]: 42 } },
+          { creado_por: 42, tienda_id: 5 },
+        ],
+      },
+    ]));
+  });
+
   test('detalle de usuario normal queda limitado a global/admin o propio', async () => {
     Producto.findOne.mockResolvedValueOnce(null);
 
