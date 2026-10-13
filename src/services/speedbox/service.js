@@ -81,7 +81,7 @@ function productionRequestUrl() {
   return 'https://speedboxpy.com/speedbox_api_cliente.php';
 }
 
-function webhookUrl({ publicBaseUrl = null } = {}) {
+function webhookUrl({ publicBaseUrl = null, targetEnvironment = environment() } = {}) {
   const token = process.env.SPEEDBOX_WEBHOOK_TOKEN;
   const rawBase = process.env.SPEEDBOX_WEBHOOK_PUBLIC_BASE_URL || process.env.API_PUBLIC_URL ||
     process.env.BACKEND_PUBLIC_URL || process.env.PUBLIC_API_URL || publicBaseUrl || process.env.FRONTEND_URL;
@@ -89,7 +89,7 @@ function webhookUrl({ publicBaseUrl = null } = {}) {
   try {
     const url = new URL('/api/webhooks/speedbox', rawBase);
     if (url.protocol !== 'https:' && process.env.NODE_ENV === 'production') return null;
-    url.searchParams.set('environment', environment());
+    url.searchParams.set('environment', targetEnvironment || environment());
     if (token && token.length >= 32) url.searchParams.set('token', token);
     return url.href;
   } catch { return null; }
@@ -154,12 +154,16 @@ async function status(usuarioId, options = {}) {
       AND e.stock_descontado = TRUE AND e.stock_liberado = FALSE
     ORDER BY e.id DESC LIMIT 50`, { replacements: { usuario: usuarioId, environment: environment() } });
   const credentials = credentialsConfigured(connection);
+  const sandboxWebhook = webhookUrl({ ...options, targetEnvironment: 'sandbox' });
+  const productionWebhook = webhookUrl({ ...options, targetEnvironment: 'production' });
   const webhook = webhookUrl(options);
   return { environment: environment(), credentials_configured: credentials,
     sandbox_endpoint: 'https://speedboxpy.com/api/speedbox_sandbox.php',
     registration_url: registrationUrl(),
     production_request_url: productionRequestUrl(),
-    webhook_url: webhook,
+    webhook_url: productionWebhook || webhook,
+    production_webhook_url: productionWebhook,
+    sandbox_webhook_url: sandboxWebhook,
     automatic_enabled: process.env.SPEEDBOX_ENABLED === 'true',
     webhook_configured: Boolean(webhook),
     public_key: connection?.public_key || '',

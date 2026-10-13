@@ -14,7 +14,7 @@ function canonical(value) {
   return value;
 }
 
-function normalize(input, source) {
+function normalize(input, source, targetEnvironment = environment()) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('Evento Speedbox invalido.');
   const type = input.event || input.type;
   if (typeof type !== 'string' || type.length > 100 || !type.trim()) fail('Falta el tipo de evento.');
@@ -33,7 +33,7 @@ function normalize(input, source) {
   if (eventId != null && (typeof eventId !== 'string' || !eventId.trim() || eventId.length > 150)) fail('event_id invalido.');
   // Updates may omit IDs. Hash the full observation; do not infer a wallet balance.
   const eventKey = eventId ? `id:${eventId}` : `hash:${crypto.createHash('sha256').update(JSON.stringify(canonical(input))).digest('hex')}`;
-  return { environment: environment(), event_key: eventKey, tipo: type, order_id: orderId, tienda_id: storeId,
+  return { environment: targetEnvironment, event_key: eventKey, tipo: type, order_id: orderId, tienda_id: storeId,
     occurred_at: occurred ? new Date(occurred) : null, source, payload: client.redact(input), data, hasId: Boolean(eventId) };
 }
 
@@ -43,7 +43,7 @@ function credentialsForConnection(connection) {
 }
 
 async function apply(event, transaction) {
-  const normalized = normalize(event.payload, event.source);
+  const normalized = normalize(event.payload, event.source, event.environment);
   const { data } = normalized;
   if (event.tipo === 'wallet.transaction') {
     const connection = await SpeedboxTienda.findOne({ where: { environment: event.environment, tienda_id: event.tienda_id }, transaction });
@@ -107,8 +107,10 @@ async function apply(event, transaction) {
   return event;
 }
 
-async function ingest(input, source) {
-  const normalized = normalize(input, source);
+async function ingest(input, source, options = {}) {
+  const targetEnvironment = options.environment || environment();
+  if (!['sandbox', 'production'].includes(targetEnvironment)) fail('Ambiente Speedbox invalido.', 400);
+  const normalized = normalize(input, source, targetEnvironment);
   return sequelize.transaction(async transaction => {
     const key = crypto.createHash('sha256').update(`${normalized.environment}:${normalized.event_key}`).digest().readInt32BE(0);
     await sequelize.query('SELECT pg_advisory_xact_lock(84271005, :key)', { replacements: { key }, transaction });
