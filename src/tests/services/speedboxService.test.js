@@ -171,6 +171,19 @@ it('queues Raha catalog products even when the selected courier is not Speedbox'
   expect(transaction.afterCommit).toHaveBeenCalledTimes(1);
 });
 
+it('queues Raha catalog products even when the order has no local courier', async () => {
+  process.env.SPEEDBOX_ENABLED = 'true';
+  envio.courier_id = null;
+  models.EnvioItemComponente.findAll.mockResolvedValue([{ producto: { id: 9, creado_por: 1 } }]);
+  const transaction = { afterCommit: jest.fn() };
+  await service.queueConfirmedOrder(envio, transaction);
+  expect(models.SpeedboxPedido.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+    where: { environment: 'sandbox', envio_id: 31 },
+    defaults: expect.objectContaining({ usuario_id: 7 }),
+  }));
+  expect(transaction.afterCommit).toHaveBeenCalledTimes(1);
+});
+
 it('does not schedule another submission for a linked or uncertain order', async () => {
   process.env.SPEEDBOX_ENABLED = 'true';
   const transaction = { afterCommit: jest.fn() };
