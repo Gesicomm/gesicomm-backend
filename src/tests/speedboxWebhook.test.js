@@ -16,6 +16,11 @@ it('accepts the portal URL token and returns HTTP 200', async () => {
   const response = await request(app).post(`/api/webhooks/speedbox?environment=sandbox&token=${token}`).set('X-Speedbox-Event', payload.event).send(payload).expect(200);
   expect(response.body).toEqual({ ok: true, status: 'en_camino' });
 });
+it('accepts the public RAHA webhook when no private token is configured', async () => {
+  delete process.env.SPEEDBOX_WEBHOOK_TOKEN;
+  const response = await request(app).post('/api/webhooks/speedbox?environment=sandbox').set('X-Speedbox-Event', payload.event).send(payload).expect(200);
+  expect(response.body).toEqual({ ok: true, status: 'en_camino' });
+});
 it('rejects events from a different environment', async () => {
   await request(app).post(`/api/webhooks/speedbox?environment=production&token=${token}`).send(payload).expect(409);
 });

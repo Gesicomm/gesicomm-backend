@@ -1,7 +1,7 @@
 'use strict';
 const { Op } = require('sequelize');
 const { z } = require('zod');
-const { sequelize, Tienda, Courier, Envio, EnvioItem, EnvioItemComponente, Producto, ProductoVariante,
+const { sequelize, Tienda, Envio, EnvioItem, EnvioItemComponente, Producto, ProductoVariante,
   SpeedboxTienda, SpeedboxPedido, SpeedboxEvento, SolicitudAbastecimiento } = require('../../models');
 const client = require('./client');
 const { buildOrder } = require('./payload');
@@ -81,17 +81,16 @@ function productionRequestUrl() {
   return 'https://speedboxpy.com/speedbox_api_cliente.php';
 }
 
-function webhookUrl() {
+function webhookUrl({ publicBaseUrl = null } = {}) {
   const token = process.env.SPEEDBOX_WEBHOOK_TOKEN;
-  if (!token || token.length < 32) return null;
   const rawBase = process.env.SPEEDBOX_WEBHOOK_PUBLIC_BASE_URL || process.env.API_PUBLIC_URL ||
-    process.env.BACKEND_PUBLIC_URL || process.env.PUBLIC_API_URL || process.env.FRONTEND_URL;
+    process.env.BACKEND_PUBLIC_URL || process.env.PUBLIC_API_URL || publicBaseUrl || process.env.FRONTEND_URL;
   if (!rawBase) return null;
   try {
     const url = new URL('/api/webhooks/speedbox', rawBase);
     if (url.protocol !== 'https:' && process.env.NODE_ENV === 'production') return null;
     url.searchParams.set('environment', environment());
-    url.searchParams.set('token', token);
+    if (token && token.length >= 32) url.searchParams.set('token', token);
     return url.href;
   } catch { return null; }
 }
@@ -112,7 +111,7 @@ async function queueConfirmedOrder(envio, transaction) {
   const connection = await SpeedboxTienda.findOne({ where: { usuario_id: envio.usuario_id, environment: environment(), activo: true }, transaction });
   if (!connection?.tienda_id) return null;
   const pedidoRaha = await envioTieneProductosExternos(envio.id, envio.usuario_id, transaction);
-  if (!pedidoRaha && connection.courier_id !== envio.courier_id) return null;
+  if (!pedidoRaha) return null;
   const [mapping] = await SpeedboxPedido.findOrCreate({ where: { environment: environment(), envio_id: envio.id },
     defaults: { usuario_id: envio.usuario_id, external_order_id: `GESICOMM-${environment()}-${envio.usuario_id}-${envio.id}` }, transaction });
   if (mapping.estado === 'pendiente') {
@@ -129,7 +128,7 @@ async function connectionFor(usuarioId, options = {}) {
   return connection;
 }
 
-async function status(usuarioId) {
+async function status(usuarioId, options = {}) {
   const connection = await SpeedboxTienda.findOne({ where: { usuario_id: usuarioId, environment: environment() } });
   const orders = await SpeedboxPedido.findAll({ where: { usuario_id: usuarioId, environment: environment() },
     attributes: ['id', 'envio_id', 'external_order_id', 'order_id', 'estado', 'status', 'intentos', 'error', 'updated_at'],
@@ -144,24 +143,25 @@ async function status(usuarioId) {
     SELECT e.id, e.numero_pedido, e.cliente FROM envios e
     LEFT JOIN speedbox_pedidos p ON p.envio_id = e.id AND p.environment = :environment
     WHERE e.usuario_id = :usuario
-      AND (e.courier_id = :courier OR EXISTS (
+      AND EXISTS (
         SELECT 1 FROM envio_items i
         JOIN envio_item_componentes c ON c.envio_item_id = i.id
         JOIN productos pr ON pr.id = c.producto_id
         WHERE i.envio_id = e.id AND pr.creado_por IS DISTINCT FROM e.usuario_id
-      ))
+      )
       AND p.id IS NULL
       AND e.estado IN ('Confirmado', 'Preparado', 'Despachado', 'Reprogramado')
       AND e.stock_descontado = TRUE AND e.stock_liberado = FALSE
-    ORDER BY e.id DESC LIMIT 50`, { replacements: { usuario: usuarioId, courier: connection?.courier_id || null, environment: environment() } });
+    ORDER BY e.id DESC LIMIT 50`, { replacements: { usuario: usuarioId, environment: environment() } });
   const credentials = credentialsConfigured(connection);
+  const webhook = webhookUrl(options);
   return { environment: environment(), credentials_configured: credentials,
     sandbox_endpoint: 'https://speedboxpy.com/api/speedbox_sandbox.php',
     registration_url: registrationUrl(),
     production_request_url: productionRequestUrl(),
-    webhook_url: webhookUrl(),
+    webhook_url: webhook,
     automatic_enabled: process.env.SPEEDBOX_ENABLED === 'true',
-    webhook_configured: Boolean(process.env.SPEEDBOX_WEBHOOK_TOKEN?.length >= 32),
+    webhook_configured: Boolean(webhook),
     public_key: connection?.public_key || '',
     has_private_key: Boolean(connection?.private_key),
     connection: serializeConnection(connection),
@@ -172,7 +172,7 @@ async function status(usuarioId) {
 }
 
 const configSchema = z.object({
-  courier_id: z.number().int().positive().nullable(),
+  courier_id: z.number().int().positive().nullable().optional(),
   activo: z.boolean(),
   public_key: z.string().trim().max(255).nullable().optional(),
   private_key: z.string().trim().max(512).nullable().optional(),
@@ -184,13 +184,7 @@ const configSchema = z.object({
 async function configure(usuarioId, input) {
   const parsed = configSchema.safeParse(input);
   if (!parsed.success) fail('Configuración RAHA inválida.');
-  const { courier_id: courierId, activo } = parsed.data;
-  if (courierId) {
-    const courier = await Courier.findOne({ where: { id: courierId, activo: true, [Op.or]: [{ usuario_id: usuarioId }, { alcance: 'GESICOMM' }] } });
-    if (!courier) fail('Courier no disponible para esta tienda.');
-  }
-  if (activo && !courierId) fail('Seleccioná el courier RAHA.');
-  if (activo && (!process.env.SPEEDBOX_WEBHOOK_TOKEN || process.env.SPEEDBOX_WEBHOOK_TOKEN.length < 32)) fail('Configura el token privado del webhook en el servidor.', 409);
+  const { activo } = parsed.data;
   return sequelize.transaction(async transaction => {
     const [connection] = await SpeedboxTienda.findOrCreate({
       where: { usuario_id: usuarioId, environment: environment() },
@@ -203,7 +197,7 @@ async function configure(usuarioId, input) {
       fail('Guardá la public key y la private key de RAHA antes de activar la integración.', 409);
     }
     if (activo && !connection.tienda_id) fail('Vinculá primero tu tienda RAHA.', 409);
-    return connection.update({ courier_id: courierId, activo, ...credentialState.updates,
+    return connection.update({ courier_id: null, activo, ...credentialState.updates,
       enabled_at: activo && !connection.activo ? new Date() : connection.enabled_at,
       since_at: connection.since_at || new Date().toISOString() }, { transaction });
   });
@@ -317,7 +311,7 @@ async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncerta
     if (mapping.estado !== 'pendiente' && !retry) fail('El pedido requiere un reintento manual.', 409);
     if (['enviando', 'incierto'].includes(mapping.estado) && !acknowledgeUncertain) fail('Verificá en RAHA si el pedido ya existe antes de autorizar el reintento.', 409);
     if (!['Confirmado', 'Preparado', 'Despachado', 'Reprogramado'].includes(envio.estado) || !envio.stock_descontado || envio.stock_liberado) fail('El pedido debe estar confirmado y con stock reservado.', 409);
-    if (!pedidoRaha && envio.courier_id !== connection.courier_id) fail('El pedido debe estar asignado al courier RAHA.', 409);
+    if (!pedidoRaha) fail('Este pedido no contiene productos RAHA para enviar a RAHA.', 409);
     // An uncertain submission always retains its original payload and external ID.
     let payload = mapping.request_payload;
     if (!payload || mapping.estado === 'error') {
@@ -368,12 +362,12 @@ async function runCycle() {
     JOIN speedbox_tiendas s ON s.usuario_id = e.usuario_id AND s.environment = :environment
     LEFT JOIN speedbox_pedidos p ON p.envio_id = e.id AND p.environment = s.environment
     WHERE s.activo = TRUE AND s.tienda_id IS NOT NULL
-      AND (e.courier_id = s.courier_id OR EXISTS (
+      AND EXISTS (
         SELECT 1 FROM envio_items i
         JOIN envio_item_componentes c ON c.envio_item_id = i.id
         JOIN productos pr ON pr.id = c.producto_id
         WHERE i.envio_id = e.id AND pr.creado_por IS DISTINCT FROM e.usuario_id
-      ))
+      )
       AND (e.created_at >= s.enabled_at OR p.estado = 'pendiente')
       AND e.estado IN ('Confirmado', 'Preparado', 'Despachado', 'Reprogramado')
       AND e.stock_descontado = TRUE AND e.stock_liberado = FALSE

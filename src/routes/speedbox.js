@@ -21,7 +21,13 @@ const handle = handler => async (req, res, next) => {
     next(error);
   }
 };
-router.get('/', handle(req => service.status(req.usuario.id)));
+function publicBaseFromRequest(req) {
+  const proto = String(req.get('x-forwarded-proto') || req.protocol || '').split(',')[0].trim();
+  const host = String(req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
+  if (!proto || !host) return null;
+  return `${proto}://${host}`;
+}
+router.get('/', handle(req => service.status(req.usuario.id, { publicBaseUrl: publicBaseFromRequest(req) })));
 router.put('/', handle(req => service.configure(req.usuario.id, req.body)));
 router.post('/store', handle(req => service.registerStore(req.usuario.id, req.body)));
 router.post('/spec', handle(req => service.verifySpec(req.usuario.id, req.body)));

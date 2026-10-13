@@ -29,7 +29,7 @@ beforeEach(() => {
   models.SpeedboxTienda.findOrCreate.mockResolvedValue([connection, false]);
   models.Envio.findOne.mockResolvedValue(envio);
   models.SpeedboxPedido.findOrCreate.mockResolvedValue([mapping, true]);
-  models.EnvioItemComponente.findAll.mockResolvedValue([]);
+  models.EnvioItemComponente.findAll.mockResolvedValue([{ producto: { id: 9, creado_por: 1 } }]);
   models.EnvioItem.findAll.mockResolvedValue([{ componentes_vendidos: [] }]);
   models.Tienda.findOne.mockResolvedValue({ nombre: 'Mi tienda' });
   models.Courier.findOne.mockResolvedValue({ id: 2, activo: true });
@@ -61,8 +61,8 @@ it('rejects orders belonging to another user without an HTTP call', async () => 
   await expect(service.sendOrder(7, 32)).rejects.toMatchObject({ status: 404 });
   expect(client.request).not.toHaveBeenCalled();
 });
-it('rejects an order assigned to another courier', async () => {
-  envio.courier_id = 3;
+it('rejects local-only orders because RAHA manages its own catalog logistics', async () => {
+  models.EnvioItemComponente.findAll.mockResolvedValue([]);
   await expect(service.sendOrder(7, 31)).rejects.toMatchObject({ status: 409 });
   expect(client.request).not.toHaveBeenCalled();
 });
@@ -129,7 +129,7 @@ it('verifies the sandbox spec with pasted credentials and stores them for automa
 
 it('saves RAHA credentials without requiring a linked store yet', async () => {
   connection.tienda_id = null;
-  await service.configure(7, { courier_id: null, activo: false, public_key: 'new_public', private_key: 'new_secret' });
+  await service.configure(7, { activo: false, public_key: 'new_public', private_key: 'new_secret' });
   expect(models.SpeedboxTienda.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
     where: { usuario_id: 7, environment: 'sandbox' },
   }));
@@ -144,7 +144,7 @@ it('requires stored RAHA credentials before activation', async () => {
   connection.public_key = null;
   connection.private_key = null;
   process.env.SPEEDBOX_WEBHOOK_TOKEN = '12345678901234567890123456789012';
-  await expect(service.configure(7, { courier_id: 2, activo: true })).rejects.toMatchObject({ status: 409 });
+  await expect(service.configure(7, { activo: true })).rejects.toMatchObject({ status: 409 });
   expect(connection.update).not.toHaveBeenCalled();
 });
 
@@ -186,10 +186,11 @@ it('does not queue when automation is disabled', async () => {
   expect(models.SpeedboxPedido.findOrCreate).not.toHaveBeenCalled();
 });
 
-it('does not queue a different courier or an unlinked store', async () => {
-  process.env.SPEEDBOX_ENABLED = 'true'; envio.courier_id = 3;
+it('does not queue local-only orders or an unlinked store', async () => {
+  process.env.SPEEDBOX_ENABLED = 'true'; models.EnvioItemComponente.findAll.mockResolvedValue([]);
   expect(await service.queueConfirmedOrder(envio, {})).toBeNull();
-  envio.courier_id = 2; connection.tienda_id = null;
+  models.EnvioItemComponente.findAll.mockResolvedValue([{ producto: { id: 9, creado_por: 1 } }]);
+  connection.tienda_id = null;
   expect(await service.queueConfirmedOrder(envio, {})).toBeNull();
   expect(models.SpeedboxPedido.findOrCreate).not.toHaveBeenCalled();
 });
@@ -255,6 +256,12 @@ it('publishes only a configured HTTPS registration link without credentials', ()
   expect(service.registrationUrl()).toBeNull();
   process.env.SPEEDBOX_REGISTRATION_URL = 'https://registration.example.test/register';
   expect(service.registrationUrl()).toBe('https://registration.example.test/register');
+});
+
+it('builds a copyable webhook URL from the request host when no public base env exists', () => {
+  process.env.SPEEDBOX_WEBHOOK_TOKEN = '12345678901234567890123456789012';
+  expect(service.webhookUrl({ publicBaseUrl: 'https://api.example.test' }))
+    .toBe('https://api.example.test/api/webhooks/speedbox?environment=sandbox&token=12345678901234567890123456789012');
 });
 
 it.each(['javascript:alert(1)', 'http://example.test/register', 'https://user:password@example.test/register', 'https://example.test/register?api_key=private', 'not-a-url'])('does not publish unsafe registration URL %s', url => {
