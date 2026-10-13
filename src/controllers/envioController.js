@@ -1,4 +1,4 @@
-const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, ProveedorLogistico, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Deposito, Rol, SeguimientoRecordatorio, InventarioUbicacion, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, ProveedorLogistico, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Deposito, Rol, SeguimientoRecordatorio, InventarioUbicacion, SpeedboxPedido, SpeedboxEvento, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
@@ -1153,6 +1153,94 @@ function decorarEnvio(envio) {
   };
 }
 
+function speedboxEnvironmentActual() {
+  return require('../services/speedbox/service').environment();
+}
+
+function aplicarFiltroLogisticaRaha(where, { logistica_raha, excluir_logistica_raha }) {
+  const condiciones = [...(where[Op.and] || [])];
+  const environment = String(speedboxEnvironmentActual()).replace(/'/g, "''");
+  if (logistica_raha) {
+    condiciones.push(Sequelize.literal(`EXISTS (
+      SELECT 1
+      FROM speedbox_pedidos sp_raha
+      WHERE sp_raha.envio_id = "Envio"."id"
+        AND sp_raha.environment = '${environment}'
+        AND sp_raha.order_id IS NOT NULL
+        AND sp_raha.estado IN ('enviado', 'enviando', 'incierto')
+    )`));
+  } else if (excluir_logistica_raha) {
+    condiciones.push(Sequelize.literal(`NOT EXISTS (
+      SELECT 1
+      FROM speedbox_pedidos sp_raha
+      WHERE sp_raha.envio_id = "Envio"."id"
+        AND sp_raha.environment = '${environment}'
+        AND sp_raha.order_id IS NOT NULL
+        AND sp_raha.estado IN ('enviado', 'enviando', 'incierto')
+    )`));
+  }
+  if (condiciones.length) where[Op.and] = condiciones;
+}
+
+function statusRahaDesdePayload(payload) {
+  return payload?.data?.status || payload?.payload?.status || payload?.status || null;
+}
+
+async function adjuntarLogisticaRaha(envios) {
+  if (!envios.length) return envios;
+  const ids = envios.map((envio) => envio.id).filter(Boolean);
+  const environment = speedboxEnvironmentActual();
+  const pedidos = await SpeedboxPedido.findAll({
+    where: { envio_id: { [Op.in]: ids }, environment },
+    attributes: ['envio_id', 'external_order_id', 'order_id', 'estado', 'status', 'status_at', 'error', 'updated_at'],
+    raw: true,
+  });
+  if (!pedidos.length) return envios;
+  const porEnvio = new Map(pedidos.map((pedido) => [Number(pedido.envio_id), pedido]));
+  const orderIds = pedidos.map((pedido) => pedido.order_id).filter(Boolean);
+  const eventos = orderIds.length
+    ? await SpeedboxEvento.findAll({
+      where: { order_id: { [Op.in]: orderIds }, environment },
+      attributes: ['id', 'tipo', 'order_id', 'occurred_at', 'source', 'estado', 'detalle', 'payload'],
+      order: [['occurred_at', 'ASC'], ['id', 'ASC']],
+      raw: true,
+    })
+    : [];
+  const eventosPorOrderId = new Map();
+  for (const evento of eventos) {
+    const key = String(evento.order_id);
+    const lista = eventosPorOrderId.get(key) || [];
+    lista.push({
+      id: evento.id,
+      tipo: evento.tipo,
+      status: statusRahaDesdePayload(evento.payload),
+      occurred_at: evento.occurred_at,
+      source: evento.source,
+      estado: evento.estado,
+      detalle: evento.detalle,
+    });
+    eventosPorOrderId.set(key, lista);
+  }
+  return envios.map((envio) => {
+    const pedido = porEnvio.get(Number(envio.id));
+    if (!pedido) return envio;
+    return {
+      ...envio,
+      raha_logistica: {
+        gestionado: Boolean(pedido.order_id),
+        external_order_id: pedido.external_order_id,
+        order_id: pedido.order_id,
+        estado_envio: pedido.estado,
+        status: pedido.status,
+        status_at: pedido.status_at,
+        error: pedido.error,
+        updated_at: pedido.updated_at,
+        eventos: pedido.order_id ? (eventosPorOrderId.get(String(pedido.order_id)) || []) : [],
+      },
+    };
+  });
+}
+
 function resumenAccionesSiguientes(envios) {
   const porTipo = new Map();
   for (const envio of envios) {
@@ -1239,6 +1327,8 @@ exports.listEnviosPaginados = async (req, res) => {
       solo_abastecimiento,
       abastecimiento_estado,
       abastecimiento_estado_exacto,
+      logistica_raha,
+      excluir_logistica_raha,
       // --- Filtros de seguimiento WhatsApp (BE-10) ---
       etiqueta_id,             // pedidos con esa etiqueta activa
       flujo_id,                // pedidos donde se abrió al menos una fase de ese flujo
@@ -1316,6 +1406,7 @@ exports.listEnviosPaginados = async (req, res) => {
       where.canal_venta_id = canal_venta_id;
     }
     aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado, abastecimiento_estado_exacto });
+    aplicarFiltroLogisticaRaha(where, { logistica_raha, excluir_logistica_raha });
     if (producto_busqueda && producto_busqueda.trim()) {
       const term = producto_busqueda.trim().replace(/'/g, "''");
       where[Op.and] = [
@@ -1433,7 +1524,8 @@ exports.listEnviosPaginados = async (req, res) => {
       distinct: true, // necesario con includes para que count sea correcto
     });
 
-    const data = rows.map(decorarEnvio);
+    let data = rows.map(decorarEnvio);
+    data = await adjuntarLogisticaRaha(data);
     if (incluir_seguimiento) {
       // Dato accesorio: si falla, la bandeja se muestra igual, sin esa columna.
       try {
@@ -2587,7 +2679,25 @@ exports.pendientesSeguimiento = async (req, res) => {
 exports.conteoPorEstado = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
-    const { pedido_id, envio_id, fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, producto_busqueda, metodo_pago_id, solo_abastecimiento, abastecimiento_estado } = req.body;
+    const {
+      pedido_id,
+      envio_id,
+      fecha_desde,
+      fecha_hasta,
+      cliente,
+      ciudad,
+      courier_id,
+      confirmador,
+      origen,
+      producto,
+      producto_busqueda,
+      metodo_pago_id,
+      solo_abastecimiento,
+      abastecimiento_estado,
+      logistica_raha,
+      excluir_logistica_raha,
+      separar_logistica_raha,
+    } = req.body;
 
     const where = whereEnviosDeUsuario(req);
     aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id });
@@ -2605,11 +2715,17 @@ exports.conteoPorEstado = async (req, res) => {
     if (origen && origen !== 'TODOS') where.origen = origen;
     if (metodo_pago_id && metodo_pago_id !== 'TODOS') where.metodo_pago_id = Number(metodo_pago_id);
     aplicarFiltroAbastecimiento(where, { solo_abastecimiento, abastecimiento_estado });
+    const whereBaseParaRaha = {
+      ...where,
+      ...(where[Op.and] ? { [Op.and]: [...where[Op.and]] } : {}),
+    };
+    aplicarFiltroLogisticaRaha(where, {
+      logistica_raha,
+      excluir_logistica_raha: excluir_logistica_raha || separar_logistica_raha,
+    });
     if (producto_busqueda && producto_busqueda.trim()) {
       const term = producto_busqueda.trim().replace(/'/g, "''");
-      where[Op.and] = [
-        ...(where[Op.and] || []),
-        Sequelize.literal(`EXISTS (
+      const filtroProductoBusqueda = Sequelize.literal(`EXISTS (
           SELECT 1
           FROM envio_items conteo_producto_item
           WHERE conteo_producto_item.envio_id = "Envio"."id"
@@ -2617,7 +2733,14 @@ exports.conteoPorEstado = async (req, res) => {
               conteo_producto_item.nombre_producto ILIKE '%${term}%'
               OR conteo_producto_item.oferta_nombre ILIKE '%${term}%'
             )
-        )`),
+        )`);
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        filtroProductoBusqueda,
+      ];
+      whereBaseParaRaha[Op.and] = [
+        ...(whereBaseParaRaha[Op.and] || []),
+        filtroProductoBusqueda,
       ];
     }
 
@@ -2644,6 +2767,23 @@ exports.conteoPorEstado = async (req, res) => {
     for (const e of ESTADOS_OPERATIVOS) conteos[e] = 0;
     for (const fila of filas) {
       conteos[fila.estado] = parseInt(fila.cantidad, 10) || 0;
+    }
+
+    try {
+      const whereRaha = {
+        ...whereBaseParaRaha,
+        ...(whereBaseParaRaha[Op.and] ? { [Op.and]: [...whereBaseParaRaha[Op.and]] } : {}),
+      };
+      aplicarFiltroLogisticaRaha(whereRaha, { logistica_raha: true });
+      conteos.logistica_raha = await Envio.count({
+        where: whereRaha,
+        include,
+        distinct: true,
+        col: 'id',
+      });
+    } catch (errRaha) {
+      console.error('Error calculando logistica_raha en conteoPorEstado:', errRaha);
+      conteos.logistica_raha = 0;
     }
 
     try {

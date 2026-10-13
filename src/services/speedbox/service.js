@@ -391,10 +391,19 @@ async function runCycle() {
 }
 
 async function assertCanChange(envio, changes, transaction) {
-  if (changes.estado !== 'Cancelado' && changes.courier_id === undefined && !changes.delete) return;
+  const quiereCambiarEstado = changes.estado !== undefined
+    && changes.estado !== null
+    && String(changes.estado) !== String(envio.estado);
+  const quiereCambiarCourier = changes.courier_id !== undefined
+    && String(changes.courier_id) !== String(envio.courier_id);
+  if (!quiereCambiarEstado && !quiereCambiarCourier && !changes.delete) return;
   const mapping = await SpeedboxPedido.findOne({ where: { environment: environment(), envio_id: envio.id,
     estado: { [Op.in]: ['enviando', 'enviado', 'incierto'] } }, transaction });
-  if (mapping && (changes.estado === 'Cancelado' || changes.delete || String(changes.courier_id) !== String(envio.courier_id))) {
+  if (!mapping) return;
+  if (quiereCambiarEstado) {
+    fail('Este pedido ya se envió a RAHA. Su estado logístico se actualiza únicamente desde RAHA.', 409);
+  }
+  if (changes.delete || quiereCambiarCourier) {
     fail('Este pedido ya se envió a RAHA. Conciliá su cancelación con el proveedor antes de liberar stock o cambiar el courier.', 409);
   }
 }

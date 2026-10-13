@@ -108,6 +108,10 @@ it('does not free stock for a locally cancelled remote submission', async () => 
   models.SpeedboxPedido.findOne.mockResolvedValue(mapping);
   await expect(service.assertCanChange(envio, { estado: 'Cancelado' }, {})).rejects.toMatchObject({ status: 409 });
 });
+it('does not allow manual logistics state changes on a remote order', async () => {
+  models.SpeedboxPedido.findOne.mockResolvedValue(mapping);
+  await expect(service.assertCanChange(envio, { estado: 'Preparado' }, {})).rejects.toMatchObject({ status: 409 });
+});
 it('allows payment edits and the same courier on a remote order', async () => {
   models.SpeedboxPedido.findOne.mockResolvedValue(mapping);
   await expect(service.assertCanChange(envio, { courier_id: 2 }, {})).resolves.toBeUndefined();
