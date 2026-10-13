@@ -19,7 +19,7 @@ function instance(value) { return { ...value, update: jest.fn(async function upd
 function webhook(status, id = 'evt-1', at = '2026-10-02T12:00:00Z') {
   return { event: 'shipment.status_changed', event_id: id, occurred_at: at, data: { order_id: '900000000123456', tienda_id: 54, status } };
 }
-let envio, mapping, rows;
+let envio, mapping, rows, connection;
 beforeEach(() => {
   jest.clearAllMocks(); rows = new Map();
   models.sequelize.transaction.mockImplementation(callback => callback({ LOCK: { UPDATE: 'UPDATE' } }));
@@ -34,7 +34,8 @@ beforeEach(() => {
   models.Envio.findOne.mockResolvedValue(envio);
   models.EnvioItem.findAll.mockResolvedValue([{ id: 1 }]);
   models.SpeedboxTienda.findOne.mockResolvedValue(instance({ usuario_id: 7, tienda_id: '54' }));
-  models.SpeedboxTienda.findAll.mockResolvedValue([instance({ id: 1, activo: true, since_at: '2026-10-01T00:00:00Z' })]);
+  connection = instance({ id: 1, environment: 'sandbox', activo: true, since_at: '2026-10-01T00:00:00Z', public_key: 'stored_public', private_key: 'stored_secret' });
+  models.SpeedboxTienda.findAll.mockResolvedValue([connection]);
 });
 
 it('does not move stock twice when a webhook is retried', async () => {
@@ -103,10 +104,13 @@ it('rejects unsupported shipment states', () => {
 it('does not advance the polling cursor when an event fails', async () => {
   client.request.mockResolvedValue({ events: [webhook('invalid')], next_since_at: '2026-10-02T13:00:00Z' });
   await expect(events.pollUpdates()).rejects.toThrow('Estado');
-  expect(models.SpeedboxTienda.update).not.toHaveBeenCalled();
+  expect(connection.update).not.toHaveBeenCalled();
 });
 it('persists next_since_at after processing the full page', async () => {
   client.request.mockResolvedValue({ events: [webhook('cargado')], next_since_at: '2026-10-02T13:00:00Z' });
   expect(await events.pollUpdates()).toMatchObject({ events: 1 });
-  expect(models.SpeedboxTienda.update).toHaveBeenCalledWith(expect.objectContaining({ since_at: '2026-10-02T13:00:00Z' }), expect.anything());
+  expect(client.request).toHaveBeenCalledWith('updates', expect.objectContaining({
+    credentials: { environment: 'sandbox', apiKey: 'stored_public', secret: 'stored_secret' },
+  }));
+  expect(connection.update).toHaveBeenCalledWith(expect.objectContaining({ since_at: '2026-10-02T13:00:00Z' }), expect.anything());
 });

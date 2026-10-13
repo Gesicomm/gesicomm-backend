@@ -8,12 +8,47 @@ const { buildOrder } = require('./payload');
 
 function environment() { return process.env.SPEEDBOX_ENVIRONMENT || 'sandbox'; }
 function fail(message, status = 400) { throw Object.assign(new Error(message), { status }); }
-function temporaryCredentials(input = {}) {
-  const apiKey = String(input.api_key || input.public_key || input.apiKey || '').trim();
-  const secret = String(input.api_secret || input.private_key || input.secret || '').trim();
-  if (!apiKey || !secret) fail('Pegá la public key y la private key de RAHA para ejecutar esta prueba.', 400);
+function extractCredentialInput(input = {}) {
+  const rawApiKey = input.api_key ?? input.public_key ?? input.apiKey;
+  const rawSecret = input.api_secret ?? input.private_key ?? input.secret;
+  return {
+    provided: rawApiKey !== undefined || rawSecret !== undefined,
+    apiKey: rawApiKey === undefined || rawApiKey === null ? '' : String(rawApiKey).trim(),
+    secret: rawSecret === undefined || rawSecret === null ? '' : String(rawSecret).trim(),
+  };
+}
+function credentialsConfigured(connection) {
+  return Boolean(connection?.public_key && connection?.private_key);
+}
+function credentialsFor(connection, input = {}, { fallbackEnvironment = environment(), allowInput = true } = {}) {
+  const candidate = extractCredentialInput(input);
+  const apiKey = allowInput && candidate.apiKey ? candidate.apiKey : String(connection?.public_key || '').trim();
+  const secret = allowInput && candidate.secret ? candidate.secret : String(connection?.private_key || '').trim();
+  if (!apiKey || !secret) fail('Cargá y guardá la public key y la private key de RAHA para usar esta integración.', 400);
   if (apiKey.length > 255 || secret.length > 512) fail('Las credenciales RAHA tienen un formato inválido.', 400);
-  return { environment: 'sandbox', apiKey, secret };
+  return { environment: connection?.environment || fallbackEnvironment, apiKey, secret };
+}
+function credentialUpdates(input = {}, connection = null) {
+  const candidate = extractCredentialInput(input);
+  const updates = {};
+  if (input.api_key !== undefined || input.public_key !== undefined || input.apiKey !== undefined) {
+    if (candidate.apiKey.length > 255) fail('La public key de RAHA es demasiado larga.');
+    updates.public_key = candidate.apiKey || null;
+  }
+  if (input.api_secret !== undefined || input.private_key !== undefined || input.secret !== undefined) {
+    if (candidate.secret.length > 512) fail('La private key de RAHA es demasiado larga.');
+    if (candidate.secret) updates.private_key = candidate.secret;
+  }
+  const finalPublic = updates.public_key !== undefined ? updates.public_key : connection?.public_key;
+  const finalPrivate = updates.private_key !== undefined ? updates.private_key : connection?.private_key;
+  return { updates, finalPublic: String(finalPublic || '').trim(), finalPrivate: String(finalPrivate || '').trim() };
+}
+function serializeConnection(connection) {
+  if (!connection) return null;
+  const plain = typeof connection.toJSON === 'function' ? connection.toJSON() : { ...connection };
+  delete plain.private_key;
+  plain.has_private_key = credentialsConfigured(connection);
+  return plain;
 }
 function esProductoExterno(producto, usuarioId) {
   return usuarioId != null && Number(producto?.creado_por) !== Number(usuarioId);
@@ -119,8 +154,7 @@ async function status(usuarioId) {
       AND e.estado IN ('Confirmado', 'Preparado', 'Despachado', 'Reprogramado')
       AND e.stock_descontado = TRUE AND e.stock_liberado = FALSE
     ORDER BY e.id DESC LIMIT 50`, { replacements: { usuario: usuarioId, courier: connection?.courier_id || null, environment: environment() } });
-  let credentials = false;
-  try { client.configuration(); credentials = true; } catch { /* Configuration is private and may be incomplete. */ }
+  const credentials = credentialsConfigured(connection);
   return { environment: environment(), credentials_configured: credentials,
     sandbox_endpoint: 'https://speedboxpy.com/api/speedbox_sandbox.php',
     registration_url: registrationUrl(),
@@ -128,13 +162,25 @@ async function status(usuarioId) {
     webhook_url: webhookUrl(),
     automatic_enabled: process.env.SPEEDBOX_ENABLED === 'true',
     webhook_configured: Boolean(process.env.SPEEDBOX_WEBHOOK_TOKEN?.length >= 32),
-    connection, orders: orders.map(order => ({ ...order.toJSON(), finanzas: order.envio ? require('./finanzas').desglose(order.envio) : null })),
+    public_key: connection?.public_key || '',
+    has_private_key: Boolean(connection?.private_key),
+    connection: serializeConnection(connection),
+    orders: orders.map(order => ({ ...order.toJSON(), finanzas: order.envio ? require('./finanzas').desglose(order.envio) : null })),
     events, solicitudes_abastecimiento: solicitudes, available_orders: availableOrders,
     checks: { spec: Boolean(connection?.spec_verified_at), order: Boolean(connection?.order_verified_at) || orderVerified > 0,
       updates: Boolean(connection?.updates_verified_at), webhook: Boolean(connection?.webhook_verified_at) } };
 }
 
-const configSchema = z.object({ courier_id: z.number().int().positive().nullable(), activo: z.boolean() }).strict();
+const configSchema = z.object({
+  courier_id: z.number().int().positive().nullable(),
+  activo: z.boolean(),
+  public_key: z.string().trim().max(255).nullable().optional(),
+  private_key: z.string().trim().max(512).nullable().optional(),
+  api_key: z.string().trim().max(255).nullable().optional(),
+  api_secret: z.string().trim().max(512).nullable().optional(),
+  apiKey: z.string().trim().max(255).nullable().optional(),
+  secret: z.string().trim().max(512).nullable().optional(),
+}).strict();
 async function configure(usuarioId, input) {
   const parsed = configSchema.safeParse(input);
   if (!parsed.success) fail('Configuración RAHA inválida.');
@@ -144,27 +190,36 @@ async function configure(usuarioId, input) {
     if (!courier) fail('Courier no disponible para esta tienda.');
   }
   if (activo && !courierId) fail('Seleccioná el courier RAHA.');
-  if (activo) {
-    client.configuration();
-    if (!process.env.SPEEDBOX_WEBHOOK_TOKEN || process.env.SPEEDBOX_WEBHOOK_TOKEN.length < 32) fail('Configura el token privado del webhook en el servidor.', 409);
-  }
+  if (activo && (!process.env.SPEEDBOX_WEBHOOK_TOKEN || process.env.SPEEDBOX_WEBHOOK_TOKEN.length < 32)) fail('Configura el token privado del webhook en el servidor.', 409);
   return sequelize.transaction(async transaction => {
-    const connection = await connectionFor(usuarioId, { transaction, lock: transaction.LOCK.UPDATE });
+    const [connection] = await SpeedboxTienda.findOrCreate({
+      where: { usuario_id: usuarioId, environment: environment() },
+      defaults: { since_at: new Date().toISOString() },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    const credentialState = credentialUpdates(parsed.data, connection);
+    if (activo && (!credentialState.finalPublic || !credentialState.finalPrivate)) {
+      fail('Guardá la public key y la private key de RAHA antes de activar la integración.', 409);
+    }
     if (activo && !connection.tienda_id) fail('Vinculá primero tu tienda RAHA.', 409);
-    return connection.update({ courier_id: courierId, activo,
+    return connection.update({ courier_id: courierId, activo, ...credentialState.updates,
       enabled_at: activo && !connection.activo ? new Date() : connection.enabled_at,
       since_at: connection.since_at || new Date().toISOString() }, { transaction });
   });
 }
 
 async function registerStore(usuarioId, input = {}) {
-  const credentials = Object.keys(input || {}).length ? temporaryCredentials(input) : null;
-  const { environment: env } = client.configuration(credentials || undefined);
+  const credentialInput = extractCredentialInput(input);
+  const env = credentialInput.provided ? 'sandbox' : environment();
   const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
   if (!tienda) fail('Primero configura tu tienda.', 404);
   return sequelize.transaction(async transaction => {
     await sequelize.query('SELECT pg_advisory_xact_lock(84271004, :usuario)', { replacements: { usuario: Number(usuarioId) }, transaction });
     const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: env }, defaults: { since_at: new Date().toISOString() }, transaction });
+    const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
+    const updates = credentialUpdates(input, connection).updates;
+    if (Object.keys(updates).length) await connection.update(updates, { transaction });
     if (connection.tienda_id) return connection;
     const response = await client.request('store', { method: 'POST', credentials, body: {
       external_store_id: `GESICOMM-${env}-${usuarioId}`, store_name: tienda.nombre,
@@ -180,20 +235,25 @@ async function registerStore(usuarioId, input = {}) {
 }
 
 async function verifySpec(usuarioId, input = {}) {
-  const credentials = Object.keys(input || {}).length ? temporaryCredentials(input) : null;
   const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
   if (!tienda) fail('Primero configura tu tienda.', 404);
+  const credentialInput = extractCredentialInput(input);
+  const env = credentialInput.provided ? 'sandbox' : environment();
+  const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: env }, defaults: { since_at: new Date().toISOString() } });
+  const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
   await client.request('spec', { credentials });
-  const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: credentials?.environment || environment() }, defaults: { since_at: new Date().toISOString() } });
-  await connection.update({ spec_verified_at: new Date() });
+  const updates = { spec_verified_at: new Date(), ...credentialUpdates(input, connection).updates };
+  await connection.update(updates);
   return { ok: true };
 }
 
 async function verifyOrder(usuarioId, input = {}) {
-  const credentials = temporaryCredentials(input);
+  const credentialInput = extractCredentialInput(input);
+  const env = credentialInput.provided ? 'sandbox' : environment();
   const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
   if (!tienda) fail('Primero configura tu tienda.', 404);
-  const connection = await connectionFor(usuarioId, { environment: credentials.environment });
+  const connection = await connectionFor(usuarioId, { environment: env });
+  const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
   if (!connection.tienda_id) fail('Primero vinculá la tienda sandbox de RAHA.', 409);
   const now = new Date();
   const externalId = `GESICOMM-TEST-${credentials.environment}-${usuarioId}-${now.getTime()}`;
@@ -222,13 +282,15 @@ async function verifyOrder(usuarioId, input = {}) {
   const response = await client.request('order', { method: 'POST', credentials, body: payload });
   const orderId = client.remoteId(response.order?.order_id);
   if (response.order?.external_order_id !== externalId) fail('RAHA respondió un pedido distinto al enviado.', 502);
-  await connection.update({ order_verified_at: new Date() });
+  await connection.update({ order_verified_at: new Date(), ...credentialUpdates(input, connection).updates });
   return { ok: true, order_id: orderId, status: response.order?.status || null };
 }
 
 async function verifyUpdates(usuarioId, input = {}) {
-  const credentials = temporaryCredentials(input);
-  const connection = await connectionFor(usuarioId, { environment: credentials.environment });
+  const credentialInput = extractCredentialInput(input);
+  const env = credentialInput.provided ? 'sandbox' : environment();
+  const connection = await connectionFor(usuarioId, { environment: env });
+  const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
   if (!connection.tienda_id) fail('Primero vinculá la tienda sandbox de RAHA.', 409);
   const sinceAt = connection.since_at || new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const response = await client.request('updates', { credentials, sinceAt });
@@ -236,12 +298,11 @@ async function verifyUpdates(usuarioId, input = {}) {
     fail('RAHA devolvió una respuesta de updates inválida.', 502);
   }
   for (const inputEvent of response.events) await require('./events').ingest(inputEvent, 'updates');
-  await connection.update({ since_at: response.next_since_at, updates_verified_at: new Date() });
+  await connection.update({ since_at: response.next_since_at, updates_verified_at: new Date(), ...credentialUpdates(input, connection).updates });
   return { ok: true, events: response.events.length, next_since_at: response.next_since_at };
 }
 
 async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncertain = false } = {}) {
-  client.configuration();
   const claimed = await sequelize.transaction(async transaction => {
     const connection = await connectionFor(usuarioId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!connection.activo || !connection.tienda_id) fail('RAHA no está activo para esta tienda.', 409);
@@ -251,6 +312,7 @@ async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncerta
     const [mapping] = await SpeedboxPedido.findOrCreate({ where: { environment: environment(), envio_id: envio.id },
       defaults: { usuario_id: usuarioId, external_order_id: `GESICOMM-${environment()}-${usuarioId}-${envio.id}` }, transaction });
     if (mapping.order_id) return { mapping, sent: true };
+    const credentials = credentialsFor(connection, {}, { allowInput: false });
     if (mapping.estado === 'enviando' && Date.now() - new Date(mapping.updated_at).getTime() < 120000) fail('El envio sigue en curso. Espera antes de conciliar o reintentar.', 409);
     if (mapping.estado !== 'pendiente' && !retry) fail('El pedido requiere un reintento manual.', 409);
     if (['enviando', 'incierto'].includes(mapping.estado) && !acknowledgeUncertain) fail('Verificá en RAHA si el pedido ya existe antes de autorizar el reintento.', 409);
@@ -278,14 +340,14 @@ async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncerta
       }
     }
     await mapping.update({ estado: 'enviando', request_payload: payload, error: null, intentos: mapping.intentos + 1 }, { transaction });
-    return { mapping };
+    return { mapping, credentials };
   });
   if (claimed.validationError) throw claimed.validationError;
   if (claimed.sent) return claimed.mapping;
   const mapping = claimed.mapping;
   let response;
   try {
-    response = await client.request('order', { method: 'POST', body: mapping.request_payload });
+    response = await client.request('order', { method: 'POST', credentials: claimed.credentials, body: mapping.request_payload });
     const order = response.order;
     const orderId = client.remoteId(order?.order_id);
     if (order?.external_order_id !== mapping.external_order_id) throw Object.assign(new Error('La respuesta no corresponde al pedido enviado.'), { uncertain: true });
@@ -301,7 +363,6 @@ async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncerta
 
 async function runCycle() {
   if (process.env.SPEEDBOX_ENABLED !== 'true') return;
-  client.configuration();
   const [candidates] = await sequelize.query(`
     SELECT e.id, e.usuario_id FROM envios e
     JOIN speedbox_tiendas s ON s.usuario_id = e.usuario_id AND s.environment = :environment

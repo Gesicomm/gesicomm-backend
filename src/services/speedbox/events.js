@@ -1,6 +1,5 @@
 'use strict';
 const crypto = require('crypto');
-const { Op } = require('sequelize');
 const { sequelize, Envio, EnvioItem, SpeedboxPedido, SpeedboxTienda, SpeedboxEvento, EnvioHistorial } = require('../../models');
 const client = require('./client');
 const { environment } = require('./service');
@@ -36,6 +35,11 @@ function normalize(input, source) {
   const eventKey = eventId ? `id:${eventId}` : `hash:${crypto.createHash('sha256').update(JSON.stringify(canonical(input))).digest('hex')}`;
   return { environment: environment(), event_key: eventKey, tipo: type, order_id: orderId, tienda_id: storeId,
     occurred_at: occurred ? new Date(occurred) : null, source, payload: client.redact(input), data, hasId: Boolean(eventId) };
+}
+
+function credentialsForConnection(connection) {
+  if (!connection?.public_key || !connection?.private_key) return null;
+  return { environment: connection.environment || environment(), apiKey: connection.public_key, secret: connection.private_key };
 }
 
 async function apply(event, transaction) {
@@ -136,21 +140,27 @@ async function retryPending() {
 }
 
 async function pollUpdates() {
-  client.configuration();
   return sequelize.transaction(async transaction => {
     const [[lock]] = await sequelize.query('SELECT pg_try_advisory_xact_lock(84271006) AS acquired', { transaction });
     if (!lock.acquired) return { ok: true, skipped: true };
     const connections = await SpeedboxTienda.findAll({ where: { environment: environment(), activo: true }, transaction });
     if (!connections.length) return { ok: true, events: 0 };
-    const cursors = connections.map(connection => connection.since_at).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b));
-    const response = await client.request('updates', { sinceAt: cursors[0] || new Date().toISOString() });
-    if (!Array.isArray(response.events) || typeof response.next_since_at !== 'string' || !Number.isFinite(Date.parse(response.next_since_at)) ||
-        (cursors[0] && Date.parse(response.next_since_at) < Date.parse(cursors[0]))) fail('Respuesta updates invalida.', 502);
-    // Events commit before the cursor. Failure causes the page to be replayed safely.
-    for (const input of response.events) await ingest(input, 'updates');
-    await SpeedboxTienda.update({ since_at: response.next_since_at, updates_verified_at: new Date() },
-      { where: { id: { [Op.in]: connections.map(connection => connection.id) } }, transaction });
-    return { ok: true, events: response.events.length, next_since_at: response.next_since_at };
+    let totalEvents = 0;
+    let lastCursor = null;
+    for (const connection of connections) {
+      const credentials = credentialsForConnection(connection);
+      if (!credentials) continue;
+      const sinceAt = connection.since_at || new Date().toISOString();
+      const response = await client.request('updates', { credentials, sinceAt });
+      if (!Array.isArray(response.events) || typeof response.next_since_at !== 'string' || !Number.isFinite(Date.parse(response.next_since_at)) ||
+          (connection.since_at && Date.parse(response.next_since_at) < Date.parse(connection.since_at))) fail('Respuesta updates invalida.', 502);
+      // Events commit before the cursor. Failure causes the page to be replayed safely.
+      for (const input of response.events) await ingest(input, 'updates');
+      await connection.update({ since_at: response.next_since_at, updates_verified_at: new Date() }, { transaction });
+      totalEvents += response.events.length;
+      lastCursor = response.next_since_at;
+    }
+    return { ok: true, events: totalEvents, next_since_at: lastCursor };
   });
 }
 

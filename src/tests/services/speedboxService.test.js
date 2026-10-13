@@ -15,12 +15,14 @@ function instance(value) { return { ...value, update: jest.fn(async function upd
 let mapping, envio, connection;
 const originalEnabled = process.env.SPEEDBOX_ENABLED;
 const originalRegistration = process.env.SPEEDBOX_REGISTRATION_URL;
+const originalWebhookToken = process.env.SPEEDBOX_WEBHOOK_TOKEN;
 beforeEach(() => {
   jest.clearAllMocks(); process.env.SPEEDBOX_ENVIRONMENT = 'sandbox';
   process.env.SPEEDBOX_ENABLED = 'false';
   delete process.env.SPEEDBOX_REGISTRATION_URL;
+  delete process.env.SPEEDBOX_WEBHOOK_TOKEN;
   models.sequelize.transaction.mockImplementation(callback => callback({ LOCK: { UPDATE: 'UPDATE' } }));
-  connection = instance({ environment: 'sandbox', tienda_id: '54', courier_id: 2, activo: true });
+  connection = instance({ environment: 'sandbox', tienda_id: '54', courier_id: 2, activo: true, public_key: 'stored_public', private_key: 'stored_secret' });
   envio = instance({ id: 31, usuario_id: 7, courier_id: 2, estado: 'Confirmado', stock_descontado: true });
   mapping = instance({ external_order_id: 'GESICOMM-sandbox-7-31', estado: 'pendiente', intentos: 0 });
   models.SpeedboxTienda.findOne.mockResolvedValue(connection);
@@ -30,6 +32,7 @@ beforeEach(() => {
   models.EnvioItemComponente.findAll.mockResolvedValue([]);
   models.EnvioItem.findAll.mockResolvedValue([{ componentes_vendidos: [] }]);
   models.Tienda.findOne.mockResolvedValue({ nombre: 'Mi tienda' });
+  models.Courier.findOne.mockResolvedValue({ id: 2, activo: true });
   payload.buildOrder.mockReturnValue({ external_order_id: mapping.external_order_id, total_price: 85000 });
   client.request.mockResolvedValue({ ok: true, order: { external_order_id: mapping.external_order_id, order_id: '900000000123456', status: 'pendiente_confirmacion' } });
 });
@@ -38,10 +41,15 @@ afterEach(() => {
   else process.env.SPEEDBOX_ENABLED = originalEnabled;
   if (originalRegistration === undefined) delete process.env.SPEEDBOX_REGISTRATION_URL;
   else process.env.SPEEDBOX_REGISTRATION_URL = originalRegistration;
+  if (originalWebhookToken === undefined) delete process.env.SPEEDBOX_WEBHOOK_TOKEN;
+  else process.env.SPEEDBOX_WEBHOOK_TOKEN = originalWebhookToken;
 });
 it('keeps the remote ID and records a successful order', async () => {
   expect(await service.sendOrder(7, 31)).toMatchObject({ estado: 'enviado', order_id: '900000000123456' });
   expect(models.Envio.findOne).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 31, usuario_id: 7 } }));
+  expect(client.request).toHaveBeenCalledWith('order', expect.objectContaining({
+    credentials: { environment: 'sandbox', apiKey: 'stored_public', secret: 'stored_secret' },
+  }));
 });
 it('does not submit an already linked order again', async () => {
   mapping.order_id = 'remote-1'; mapping.estado = 'enviado';
@@ -106,13 +114,34 @@ it('allows payment edits and the same courier on a remote order', async () => {
   await expect(service.assertCanChange(envio, { monto: 85000 }, {})).resolves.toBeUndefined();
 });
 
-it('verifies the sandbox spec with pasted credentials without persisting them', async () => {
+it('verifies the sandbox spec with pasted credentials and stores them for automation', async () => {
   await expect(service.verifySpec(7, { public_key: ' sbx_public ', private_key: ' private_secret ' })).resolves.toEqual({ ok: true });
   expect(client.request).toHaveBeenCalledWith('spec', { credentials: { environment: 'sandbox', apiKey: 'sbx_public', secret: 'private_secret' } });
   expect(models.SpeedboxTienda.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
     where: { usuario_id: 7, environment: 'sandbox' },
   }));
-  expect(connection.update).toHaveBeenCalledWith({ spec_verified_at: expect.any(Date) });
+  expect(connection.update).toHaveBeenCalledWith({ spec_verified_at: expect.any(Date), public_key: 'sbx_public', private_key: 'private_secret' });
+});
+
+it('saves RAHA credentials without requiring a linked store yet', async () => {
+  connection.tienda_id = null;
+  await service.configure(7, { courier_id: null, activo: false, public_key: 'new_public', private_key: 'new_secret' });
+  expect(models.SpeedboxTienda.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+    where: { usuario_id: 7, environment: 'sandbox' },
+  }));
+  expect(connection.update).toHaveBeenCalledWith(expect.objectContaining({
+    public_key: 'new_public',
+    private_key: 'new_secret',
+    activo: false,
+  }), expect.anything());
+});
+
+it('requires stored RAHA credentials before activation', async () => {
+  connection.public_key = null;
+  connection.private_key = null;
+  process.env.SPEEDBOX_WEBHOOK_TOKEN = '12345678901234567890123456789012';
+  await expect(service.configure(7, { courier_id: 2, activo: true })).rejects.toMatchObject({ status: 409 });
+  expect(connection.update).not.toHaveBeenCalled();
 });
 
 it('sends a sandbox validation order using pasted credentials', async () => {
@@ -128,7 +157,7 @@ it('sends a sandbox validation order using pasted credentials', async () => {
   expect(call.credentials).toEqual({ environment: 'sandbox', apiKey: 'sbx_public', secret: 'private_secret' });
   expect(call.body).toMatchObject({ tienda_id: '54', items: [{ sku: 'GESICOM-TEST-001', quantity: 1 }] });
   expect(call.body.external_order_id).toMatch(/^GESICOMM-TEST-sandbox-7-/);
-  expect(connection.update).toHaveBeenCalledWith({ order_verified_at: expect.any(Date) });
+  expect(connection.update).toHaveBeenCalledWith({ order_verified_at: expect.any(Date), public_key: 'sbx_public', private_key: 'private_secret' });
 });
 
 it('queues confirmation even when procurement payment is pending, without sending before commit', async () => {
