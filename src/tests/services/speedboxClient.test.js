@@ -1,5 +1,5 @@
 const client = require('../../services/speedbox/client');
-const { buildOrder } = require('../../services/speedbox/payload');
+const { buildOrder, buildSupplyOrder } = require('../../services/speedbox/payload');
 
 function order(overrides = {}) {
   return { id: 31, usuario_id: 7, numero_pedido: 4, created_at: '2026-10-02T12:00:00Z', monto: 85000, costo_envio: 15000,
@@ -96,5 +96,18 @@ describe('Speedbox client and payload', () => {
   });
   it('rejects incomplete customer data and negative amounts', () => {
     expect(() => buildOrder(order({ telefono: '', monto: -100000 }), store, connection)).toThrow('datos del pedido');
+  });
+  it('uses the deposit-linked store data when an older deposit has no department', () => {
+    const result = buildSupplyOrder(
+      { id: 44, usuario_id: 7, producto_id: 9, cantidad: 1, costo_producto: 98556, created_at: '2026-10-13T12:00:00Z' },
+      { nombre: 'Tienda Luque', deposito_departamento: 'Central', deposito_ciudad: 'Luque', deposito_direccion: 'Av. Test 123', whatsapp: '0981000000' },
+      connection,
+      {
+        producto: { id: 9, sku: 'RAHA-9', nombre: 'Producto RAHA' },
+        deposito: { id: 6, nombre: 'Depósito Test', direccion: 'Av. Test 123', ciudad: 'Luque', departamento: null },
+      },
+    );
+    expect(result.shipping_address).toMatchObject({ address: 'Av. Test 123', city: 'Luque', department: 'Central' });
+    expect(result.external_order_id).toBe('GESICOMM-ABAST-sandbox-7-44');
   });
 });

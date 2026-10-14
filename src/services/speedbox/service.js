@@ -459,14 +459,17 @@ async function sendSupplyRequest(usuarioId, solicitudId, { retry = false, acknow
     if (['enviando', 'incierto'].includes(mapping.estado) && !acknowledgeUncertain) fail('Verificá en RAHA si el pedido ya existe antes de autorizar el reintento.', 409);
     let payload = mapping.request_payload;
     if (!payload || mapping.estado === 'error') {
-      const [tienda, producto, deposito] = await Promise.all([
-        Tienda.findOne({ where: { usuario_id: usuarioId }, transaction }),
+      const [producto, deposito] = await Promise.all([
         Producto.findByPk(solicitud.producto_id, { transaction }),
         Deposito.findOne({ where: { id: solicitud.deposito_destino_id, usuario_id: usuarioId }, transaction }),
       ]);
-      if (!tienda) fail('Tienda no encontrada.', 404);
       if (!producto) fail('Producto no encontrado.', 404);
       if (!deposito) fail('Depósito de destino no encontrado.', 404);
+      const tienda = await Tienda.findOne({
+        where: deposito.tienda_id ? { id: deposito.tienda_id, usuario_id: usuarioId } : { usuario_id: usuarioId },
+        transaction,
+      });
+      if (!tienda) fail('Tienda no encontrada.', 404);
       const variante = solicitud.variante_id
         ? await ProductoVariante.findOne({ where: { id: solicitud.variante_id, producto_id: solicitud.producto_id }, transaction })
         : null;

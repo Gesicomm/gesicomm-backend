@@ -59,6 +59,14 @@ function plain(row) {
   return row?.toJSON ? row.toJSON() : (row || {});
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    const text = value === undefined || value === null ? '' : String(value).trim();
+    if (text) return text;
+  }
+  return '';
+}
+
 function buildSupplyOrder(solicitud, tienda, connection, { producto, variante = null, deposito }) {
   const pedido = plain(solicitud);
   const product = plain(producto);
@@ -66,8 +74,11 @@ function buildSupplyOrder(solicitud, tienda, connection, { producto, variante = 
   const destination = plain(deposito);
   const sku = variant?.sku_variante || product.sku;
   if (!sku?.trim()) throw Object.assign(new Error(`Falta SKU Speedbox para ${product.nombre || `producto #${pedido.producto_id}`}.`), { status: 422 });
-  if (!destination?.direccion || !destination?.ciudad) {
-    throw Object.assign(new Error('El deposito de destino necesita direccion y ciudad para enviar el pedido a RAHA.'), { status: 422 });
+  const address = firstText(destination?.direccion, tienda.deposito_direccion, tienda.direccion_publica);
+  const city = firstText(destination?.ciudad, tienda.deposito_ciudad, tienda.ciudad_publica);
+  const department = firstText(destination?.departamento, tienda.deposito_departamento, tienda.departamento_publica);
+  if (!address || !city || !department) {
+    throw Object.assign(new Error('El deposito de destino necesita direccion, ciudad y departamento para enviar el pedido a RAHA.'), { status: 422 });
   }
   const quantity = Number(pedido.cantidad);
   const unitPrice = quantity > 0 ? Math.round((Number(pedido.costo_producto) || 0) / quantity) : 0;
@@ -82,15 +93,15 @@ function buildSupplyOrder(solicitud, tienda, connection, { producto, variante = 
     payment_method: 'abastecimiento_deposito',
     store_name: tienda.nombre,
     customer: {
-      name: destination.persona_contacto || tienda.nombre || 'Deposito',
-      phone: destination.telefono_contacto || tienda.whatsapp || '0981000000',
+      name: firstText(destination.persona_contacto, tienda.nombre, 'Deposito'),
+      phone: firstText(destination.telefono_contacto, tienda.deposito_telefono, tienda.whatsapp, '0981000000'),
     },
     shipping_address: {
-      address: destination.direccion,
-      reference: destination.referencia || destination.nombre || '',
-      city: destination.ciudad,
-      department: destination.departamento || '',
-      google_maps_url: destination.link_maps || '',
+      address,
+      reference: firstText(destination.referencia, tienda.deposito_referencia, destination.nombre),
+      city,
+      department,
+      google_maps_url: firstText(destination.google_maps_url, destination.link_maps),
     },
     items: [{
       sku: sku.trim(),
