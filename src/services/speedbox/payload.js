@@ -5,6 +5,10 @@ function esProductoExterno(product, usuarioId) {
   return usuarioId != null && Number(product?.creado_por) !== Number(usuarioId);
 }
 
+function saleDeStockLocal(component) {
+  return Boolean(component?.origen_centro_id && (parseInt(component.cantidad_desde_centro, 10) || 0) > 0);
+}
+
 function buildOrder(envio, tienda, connection, variants = new Map(), options = {}) {
   const items = [];
   for (const item of envio.items || []) {
@@ -12,7 +16,7 @@ function buildOrder(envio, tienda, connection, variants = new Map(), options = {
     if (!components.length) throw Object.assign(new Error('El pedido no tiene componentes de stock confirmados.'), { status: 422 });
     const units = components.reduce((sum, component) => sum + Number(component.cantidad), 0);
     const included = new Set(components
-      .filter(component => !options.onlyExternalProducts || esProductoExterno(component.producto, options.usuarioId))
+      .filter(component => !options.onlyExternalProducts || (esProductoExterno(component.producto, options.usuarioId) && !saleDeStockLocal(component)))
       .map(component => component.id ?? component));
     let remaining = Number(item.subtotal);
     for (let index = 0; index < components.length; index++) {

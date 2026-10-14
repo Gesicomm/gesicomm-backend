@@ -54,16 +54,20 @@ function esProductoExterno(producto, usuarioId) {
   return usuarioId != null && Number(producto?.creado_por) !== Number(usuarioId);
 }
 
+function componenteSaleDeStockLocal(component) {
+  return Boolean(component?.origen_centro_id && (parseInt(component.cantidad_desde_centro, 10) || 0) > 0);
+}
+
 async function envioTieneProductosExternos(envioId, usuarioId, transaction) {
   const componentes = await EnvioItemComponente.findAll({
-    attributes: ['id'],
+    attributes: ['id', 'origen_centro_id', 'cantidad_desde_centro'],
     include: [
       { model: EnvioItem, where: { envio_id: envioId }, attributes: [], required: true },
       { model: Producto, as: 'producto', attributes: ['id', 'creado_por'], required: true },
     ],
     transaction,
   });
-  return componentes.some(component => esProductoExterno(component.producto, usuarioId));
+  return componentes.some(component => esProductoExterno(component.producto, usuarioId) && !componenteSaleDeStockLocal(component));
 }
 
 function registrationUrl() {

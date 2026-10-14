@@ -208,6 +208,17 @@ it('does not queue local-only orders or an unlinked store', async () => {
   expect(models.SpeedboxPedido.findOrCreate).not.toHaveBeenCalled();
 });
 
+it('does not queue a RAHA product when it was reserved from a local deposit', async () => {
+  process.env.SPEEDBOX_ENABLED = 'true';
+  models.EnvioItemComponente.findAll.mockResolvedValue([{
+    producto: { id: 9, creado_por: 1 },
+    origen_centro_id: 22,
+    cantidad_desde_centro: 1,
+  }]);
+  expect(await service.queueConfirmedOrder(envio, { afterCommit: jest.fn() })).toBeNull();
+  expect(models.SpeedboxPedido.findOrCreate).not.toHaveBeenCalled();
+});
+
 it('queues Raha catalog products even when the selected courier is not Speedbox', async () => {
   process.env.SPEEDBOX_ENABLED = 'true';
   envio.courier_id = 3;

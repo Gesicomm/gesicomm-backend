@@ -85,6 +85,15 @@ describe('Speedbox client and payload', () => {
     expect(result.items).toEqual([{ sku: 'RAHA-001', title: 'Raha', quantity: 2, price: 30000 }]);
     expect(result.total_price).toBe(60000);
   });
+  it('does not send RAHA catalog products already reserved from a local deposit', () => {
+    const value = order({ items: [{ subtotal: 90000, componentes_vendidos: [
+      { id: 1, cantidad: 1, producto: { nombre: 'Raha local', sku: 'RAHA-LOCAL', creado_por: 1 }, origen_centro_id: 22, cantidad_desde_centro: 1 },
+      { id: 2, cantidad: 2, producto: { nombre: 'Raha remoto', sku: 'RAHA-REMOTE', creado_por: 1 } },
+    ] }] });
+    const result = buildOrder(value, store, connection, new Map(), { onlyExternalProducts: true, usuarioId: 7 });
+    expect(result.items).toEqual([{ sku: 'RAHA-REMOTE', title: 'Raha remoto', quantity: 2, price: 30000 }]);
+    expect(result.total_price).toBe(60000);
+  });
   it('rejects incomplete customer data and negative amounts', () => {
     expect(() => buildOrder(order({ telefono: '', monto: -100000 }), store, connection)).toThrow('datos del pedido');
   });

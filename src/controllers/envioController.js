@@ -217,7 +217,7 @@ async function exigirStockEnLaTienda({ producto_id, variante_id, cantidad, nombr
   }
 }
 
-async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadNecesaria, t, permiteGesicomm, usuario_id, origenPreferidoId = null, tiendaId = null) {
+async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadNecesaria, t, permiteGesicomm, usuario_id, origenPreferidoId = null, tiendaId = null, opciones = {}) {
   if (cantidadNecesaria <= 0) return null;
 
   // Un deposito propio trackeado (llego por Abastecimiento a "mi deposito")
@@ -253,6 +253,8 @@ async function reservarDesdeUbicacionTracked(producto_id, variante_id, cantidadN
     });
     const disponibleTrackeado = ubicacionesTrackeadas
       .reduce((acc, fila) => acc + (parseInt(fila.cantidad_disponible, 10) || 0), 0);
+
+    if (opciones.tolerarFaltaUbicacion && !origenPreferidoId) return null;
 
     if (origenPreferidoId || disponibleTrackeado > 0) {
       const err = new Error(origenPreferidoId
@@ -430,7 +432,29 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
       if (!variante || variante.producto_id !== producto_id || !variante.activo) {
         throw Object.assign(new Error('La variante no pertenece al producto o esta inactiva.'), { status: 400 });
       }
-      if (!esPropioDelComercio) continue;
+      if (!esPropioDelComercio) {
+        const origenUbicacion = await reservarDesdeUbicacionTracked(
+          producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId, tiendaIdPedido,
+          { tolerarFaltaUbicacion: true },
+        );
+        if (origenUbicacion) {
+          origenUbicacionPorClave.set(clave, origenUbicacion);
+          const bucket = origenUbicacion.tipo_ubicacion === 'SALON' ? 'stock_salon' : 'stock_deposito';
+          const actualBucket = parseInt(variante[bucket], 10) || 0;
+          await variante.update({
+            [bucket]: Math.max(0, actualBucket - cantidadTotal),
+            stock: Math.max(0, (parseInt(variante.stock, 10) || 0) - cantidadTotal),
+          }, { transaction: t });
+          const prod = productosPorId.get(producto_id);
+          if (prod) {
+            await prod.update({
+              cantidad_reservada: (parseInt(prod.cantidad_reservada, 10) || 0) + cantidadTotal,
+            }, { transaction: t });
+          }
+          productosConDescuentoDeVariante.add(producto_id);
+        }
+        continue;
+      }
       if (variante.stock < cantidadTotal) throw Object.assign(new Error('Stock insuficiente para la variante.'), { status: 400 });
 
       const salonActual = parseInt(variante.stock_salon) || 0;
@@ -486,7 +510,23 @@ async function descontarStockYSnapshot(items, t, usuario_id, opciones = {}) {
     }
     productosPorId.set(producto_id, prod);
 
-    if (!esPropioDelComercio) continue;
+    if (!esPropioDelComercio) {
+      const origenUbicacion = await reservarDesdeUbicacionTracked(
+        producto_id, variante_id, cantidadTotal, t, permiteGesicomm, usuario_id, origenPreferidoId, tiendaIdPedido,
+        { tolerarFaltaUbicacion: true },
+      );
+      if (origenUbicacion) {
+        origenUbicacionPorClave.set(clave, origenUbicacion);
+        const bucket = origenUbicacion.tipo_ubicacion === 'SALON' ? 'stock_salon' : 'stock_deposito';
+        const actualBucket = parseInt(prod[bucket], 10) || 0;
+        await prod.update({
+          [bucket]: Math.max(0, actualBucket - cantidadTotal),
+          cantidad_disponible: Math.max(0, (parseInt(prod.cantidad_disponible, 10) || 0) - cantidadTotal),
+          cantidad_reservada: (parseInt(prod.cantidad_reservada, 10) || 0) + cantidadTotal,
+        }, { transaction: t });
+      }
+      continue;
+    }
 
     const stockActual = parseInt(prod.cantidad_disponible) || 0;
     if (stockActual < cantidadTotal) {
