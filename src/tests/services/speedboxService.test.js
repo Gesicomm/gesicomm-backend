@@ -292,6 +292,30 @@ it('queues a deposito supply request and sends it to RAHA with stored credential
   }));
 });
 
+it('allows manual deposito supply requests when automatic RAHA shipping is paused', async () => {
+  connection.activo = false;
+  const solicitud = instance({
+    id: 44,
+    usuario_id: 7,
+    tipo_logistica: 'PROPIA',
+    deposito_destino_id: 6,
+  });
+  const transaction = { afterCommit: jest.fn() };
+  await service.queueSupplyRequest(solicitud, transaction);
+  expect(models.SpeedboxPedido.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+    where: { environment: 'sandbox', solicitud_abastecimiento_id: 44 },
+  }));
+  expect(transaction.afterCommit).toHaveBeenCalledTimes(1);
+
+  mapping = instance({ external_order_id: 'GESICOMM-ABAST-sandbox-7-44', estado: 'pendiente', intentos: 0 });
+  models.SpeedboxPedido.findOrCreate.mockResolvedValueOnce([mapping, false]);
+  client.request.mockResolvedValueOnce({ ok: true, order: { external_order_id: 'GESICOMM-ABAST-sandbox-7-44', order_id: '900000000123999', status: 'pendiente_confirmacion' } });
+  await expect(service.sendSupplyRequest(7, 44)).resolves.toMatchObject({ estado: 'enviado', order_id: '900000000123999' });
+  expect(client.request).toHaveBeenCalledWith('order', expect.objectContaining({
+    credentials: { environment: 'sandbox', apiKey: 'stored_public', secret: 'stored_secret' },
+  }));
+});
+
 it('contains provider failure after confirmation and retains the uncertain result', async () => {
   process.env.SPEEDBOX_ENABLED = 'true';
   models.SpeedboxPedido.findOne.mockResolvedValue(mapping);

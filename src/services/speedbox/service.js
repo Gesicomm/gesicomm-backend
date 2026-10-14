@@ -137,8 +137,8 @@ async function queueConfirmedOrder(envio, transaction) {
 
 async function queueSupplyRequest(solicitud, transaction) {
   if (solicitud.tipo_logistica !== 'PROPIA') return null;
-  const connection = await SpeedboxTienda.findOne({ where: { usuario_id: solicitud.usuario_id, environment: environment(), activo: true }, transaction });
-  if (!connection?.tienda_id) fail('RAHA no está activo o vinculado para esta tienda.', 409);
+  const connection = await SpeedboxTienda.findOne({ where: { usuario_id: solicitud.usuario_id, environment: environment() }, transaction });
+  if (!connection?.tienda_id) fail('RAHA no está vinculado para esta tienda.', 409);
   credentialsFor(connection, {}, { allowInput: false });
   const [mapping] = await SpeedboxPedido.findOrCreate({
     where: { environment: environment(), solicitud_abastecimiento_id: solicitud.id },
@@ -396,7 +396,7 @@ async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncerta
 async function sendSupplyRequest(usuarioId, solicitudId, { retry = false, acknowledgeUncertain = false } = {}) {
   const claimed = await sequelize.transaction(async transaction => {
     const connection = await connectionFor(usuarioId, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!connection.activo || !connection.tienda_id) fail('RAHA no está activo para esta tienda.', 409);
+    if (!connection.tienda_id) fail('RAHA no está vinculado para esta tienda.', 409);
     const solicitud = await SolicitudAbastecimiento.findOne({ where: { id: solicitudId, usuario_id: usuarioId }, transaction, lock: transaction.LOCK.UPDATE });
     if (!solicitud) fail('Solicitud de abastecimiento no encontrada.', 404);
     if (solicitud.tipo_logistica !== 'PROPIA' || !solicitud.deposito_destino_id) {
