@@ -210,6 +210,28 @@ it('saves RAHA credentials without requiring a linked store yet', async () => {
   expect(result).not.toHaveProperty('private_key');
 });
 
+it('adopts a legacy RAHA connection when the old user/environment unique index still exists', async () => {
+  const legacy = instance({ environment: 'sandbox', gesicom_tienda_id: null, tienda_id: null, activo: false });
+  models.SpeedboxTienda.findOrCreate.mockRejectedValueOnce(Object.assign(new Error('Validation error'), { name: 'SequelizeUniqueConstraintError' }));
+  models.SpeedboxTienda.findOne.mockResolvedValueOnce(legacy);
+
+  await expect(service.configure(7, { activo: false, public_key: 'new_public', private_key: 'new_secret' }, { tiendaId: 22 }))
+    .resolves.toMatchObject({ gesicom_tienda_id: 22, public_key: 'new_public', has_private_key: true });
+
+  expect(models.SpeedboxTienda.findOne).toHaveBeenCalledWith(expect.objectContaining({
+    where: expect.objectContaining({
+      usuario_id: 7,
+      environment: 'sandbox',
+    }),
+  }));
+  expect(legacy.update).toHaveBeenNthCalledWith(1, { gesicom_tienda_id: 22 }, expect.anything());
+  expect(legacy.update).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    public_key: 'new_public',
+    private_key: 'new_secret',
+    activo: false,
+  }), expect.anything());
+});
+
 it('requires stored RAHA credentials before activation', async () => {
   connection.public_key = null;
   connection.private_key = null;

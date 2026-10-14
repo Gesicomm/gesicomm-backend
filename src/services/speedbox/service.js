@@ -50,6 +50,30 @@ function connectionWhere(usuarioId, { environment: targetEnvironment = null, tie
   if (requireActive) where.activo = true;
   return where;
 }
+async function findOrCreateConnection(usuarioId, options = {}) {
+  const { environment: targetEnvironment = environment(), tiendaId = null, defaults = {}, ...queryOptions } = options;
+  const scopedDefaults = { ...defaults, ...(tiendaId ? { gesicom_tienda_id: tiendaId } : {}) };
+  try {
+    return await SpeedboxTienda.findOrCreate({
+      where: connectionWhere(usuarioId, { environment: targetEnvironment, tiendaId }),
+      defaults: scopedDefaults,
+      ...queryOptions,
+    });
+  } catch (error) {
+    if (error.name !== 'SequelizeUniqueConstraintError' || !tiendaId) throw error;
+    const connection = await SpeedboxTienda.findOne({
+      where: {
+        usuario_id: usuarioId,
+        environment: targetEnvironment,
+        [Op.or]: [{ gesicom_tienda_id: tiendaId }, { gesicom_tienda_id: null }],
+      },
+      ...queryOptions,
+    });
+    if (!connection) throw error;
+    if (!connection.gesicom_tienda_id) await connection.update({ gesicom_tienda_id: tiendaId }, { transaction: queryOptions.transaction });
+    return [connection, false];
+  }
+}
 async function operationalConnection(usuarioId, options = {}) {
   const { transaction, lock, requireActive = false, tiendaId = null } = options;
   const where = connectionWhere(usuarioId, { tiendaId, requireActive });
@@ -304,9 +328,10 @@ async function configure(usuarioId, input, options = {}) {
   const { activo } = parsed.data;
   const targetEnvironment = environmentFromInput(parsed.data, environment());
   const connection = await sequelize.transaction(async transaction => {
-    const [connection] = await SpeedboxTienda.findOrCreate({
-      where: connectionWhere(usuarioId, { environment: targetEnvironment, tiendaId: options.tiendaId }),
-      defaults: { gesicom_tienda_id: options.tiendaId || null, since_at: new Date().toISOString() },
+    const [connection] = await findOrCreateConnection(usuarioId, {
+      environment: targetEnvironment,
+      tiendaId: options.tiendaId,
+      defaults: { since_at: new Date().toISOString() },
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
@@ -329,9 +354,10 @@ async function registerStore(usuarioId, input = {}, options = {}) {
   if (!tienda) fail('Primero configura tu tienda.', 404);
   const connection = await sequelize.transaction(async transaction => {
     await sequelize.query('SELECT pg_advisory_xact_lock(84271004, :usuario)', { replacements: { usuario: Number(usuarioId) }, transaction });
-    const [connection] = await SpeedboxTienda.findOrCreate({
-      where: connectionWhere(usuarioId, { environment: env, tiendaId: options.tiendaId }),
-      defaults: { gesicom_tienda_id: options.tiendaId || null, since_at: new Date().toISOString() },
+    const [connection] = await findOrCreateConnection(usuarioId, {
+      environment: env,
+      tiendaId: options.tiendaId,
+      defaults: { since_at: new Date().toISOString() },
       transaction,
     });
     const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
@@ -359,9 +385,10 @@ async function verifySpec(usuarioId, input = {}, options = {}) {
   if (!tienda) fail('Primero configura tu tienda.', 404);
   const credentialInput = extractCredentialInput(input);
   const env = environmentFromInput(input, credentialInput.provided ? 'sandbox' : environment());
-  const [connection] = await SpeedboxTienda.findOrCreate({
-    where: connectionWhere(usuarioId, { environment: env, tiendaId: options.tiendaId }),
-    defaults: { gesicom_tienda_id: options.tiendaId || null, since_at: new Date().toISOString() },
+  const [connection] = await findOrCreateConnection(usuarioId, {
+    environment: env,
+    tiendaId: options.tiendaId,
+    defaults: { since_at: new Date().toISOString() },
   });
   const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
   await client.request('spec', { credentials });
