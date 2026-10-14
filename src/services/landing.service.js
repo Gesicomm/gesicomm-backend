@@ -2073,17 +2073,14 @@ class LandingService {
     const landing = await Landing.findOne({
       where,
       include: [
-        { model: LandingItem, as: 'items' },
+        // Los hasMany van separados: content puede pesar cientos de KB y
+        // un JOIN lo repetiría por cada producto y sección de la landing.
+        { model: LandingItem, as: 'items', separate: true, order: [['orden', 'ASC']] },
         // producto_id: null por el mismo motivo que en obtener() — el
         // diseño propio de un producto lo resuelve obtenerProductoPublico()
         // aparte, nunca se mezcla con las secciones de la landing.
-        { model: LandingSeccion, as: 'secciones', required: false, where: { producto_id: null } },
+        { model: LandingSeccion, as: 'secciones', separate: true, where: { producto_id: null }, order: [['orden', 'ASC']] },
         { model: LandingTemplate, as: 'template', required: false },
-      ],
-      // Ver nota en obtener(): el orden va acá, no dentro del include.
-      order: [
-        [{ model: LandingItem, as: 'items' }, 'orden', 'ASC'],
-        [{ model: LandingSeccion, as: 'secciones' }, 'orden', 'ASC'],
       ],
     });
     if (!landing) return null;
@@ -2102,8 +2099,10 @@ class LandingService {
     const esRigida = landing.template?.kind === 'rigido';
     const esFunnel = landing.template?.kind === 'funnel';
     const esCodigo = landing.template?.kind === 'codigo';
-    const typography = await TypographyService.resolver(tienda, landing);
-    const paymentLogos = esCodigo ? await PaymentLogoService.resolverParaLanding(landing, tienda) : [];
+    const [typography, paymentLogos] = await Promise.all([
+      TypographyService.resolver(tienda, landing),
+      esCodigo ? PaymentLogoService.resolverParaLanding(landing, tienda) : [],
+    ]);
 
     // Lienzo en blanco sin productos curados: los define la regla de
     // "Configurar venta" (todo el catálogo / por categoría, con o sin
@@ -3142,13 +3141,9 @@ class LandingService {
     const landing = await Landing.findOne({
       where,
       include: [
-        { model: LandingItem, as: 'items' },
+        { model: LandingItem, as: 'items', separate: true, order: [['orden', 'ASC']] },
         { model: LandingTemplate, as: 'template', required: false },
-        { model: LandingSeccion, as: 'secciones', required: false, where: { producto_id: null } },
-      ],
-      order: [
-        [{ model: LandingItem, as: 'items' }, 'orden', 'ASC'],
-        [{ model: LandingSeccion, as: 'secciones' }, 'orden', 'ASC'],
+        { model: LandingSeccion, as: 'secciones', separate: true, where: { producto_id: null }, order: [['orden', 'ASC']] },
       ],
     });
     if (!landing) return null;
@@ -3161,8 +3156,7 @@ class LandingService {
     if (landing.tipo_pagina !== 'inicio') {
       const inicio = await Landing.findOne({
         where: { tienda_id: tienda.id, tipo_pagina: 'inicio' },
-        include: [{ model: LandingSeccion, as: 'secciones', required: false, where: { producto_id: null } }],
-        order: [[{ model: LandingSeccion, as: 'secciones' }, 'orden', 'ASC']],
+        include: [{ model: LandingSeccion, as: 'secciones', separate: true, where: { producto_id: null }, order: [['orden', 'ASC']] }],
       });
       seccionesInicio = inicio?.secciones || [];
     }
