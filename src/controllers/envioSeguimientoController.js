@@ -14,7 +14,7 @@ const {
   SeguimientoContacto, SeguimientoRecordatorio, SeguimientoConfiguracion,
 } = require('../models');
 const flujoService = require('../services/seguimiento/flujo.service');
-const { estadoActivadorDeFase, faseDisponibleParaPedido } = require('../services/seguimiento/faseActivacion');
+const { estadoActivadorDeFase, faseDisponibleParaPedido, faseSuperadaPorLogistica } = require('../services/seguimiento/faseActivacion');
 const { ESTADOS_ABIERTOS, elegirRecordatorioVigente } = require('../services/seguimiento/seguimientoRecordatorio.service');
 const { FASE_COMPLETADA } = require('../services/seguimiento/pendientesSeguimiento.service');
 const { registrarHistorial } = require('../utils/historial');
@@ -102,6 +102,7 @@ exports.flujosDelPedido = async (req, res) => {
     for (const fase of flujo.fases || []) {
       fase.mensaje_resuelto = resolverMensaje(fase.mensaje, envio);
       fase.disponible = faseDisponibleParaPedido(fase, envio, flujo.tipo);
+      fase.superada = faseSuperadaPorLogistica(fase, envio, flujo.tipo);
       fase.estado_requerido = estadoActivadorDeFase(fase, flujo.tipo) || (flujo.tipo === 'RECUPERACION_CLIENTES' ? 'Devuelto o Perdido' : 'Preparado');
     }
   }

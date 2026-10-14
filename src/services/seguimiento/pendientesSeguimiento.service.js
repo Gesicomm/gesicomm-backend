@@ -239,7 +239,7 @@ function armarPendientes({
         cuando = 'ahora';
         motivo = 'nuevo';
       }
-    } else if (estadoActivadorDeFase(fase)) {
+    } else if (estadoActivadorDeFase(fase, etapa)) {
       cuando = 'ahora';
       motivo = 'estado_logistico';
     } else {
@@ -273,7 +273,7 @@ function armarPendientes({
       fase_abierta_en: abiertaSinCompletar?.ultimo || null,
       cuando,
       motivo,
-      estado_requerido: esperandoEstado ? (estadoActivadorDeFase(fase) || 'Preparado') : null,
+      estado_requerido: esperandoEstado ? (estadoActivadorDeFase(fase, etapa) || 'Preparado') : null,
       toca_en: tocaEn,
       recordatorio: recordatorio ? {
         id: recordatorio.id,

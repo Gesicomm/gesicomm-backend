@@ -52,6 +52,16 @@ beforeEach(() => {
 const CTX = { usuarioId: 7, esAdmin: false };
 
 describe('estadoFlujosDelPedido', () => {
+  test('el panel recibe activadores para los avisos antiguos aunque las filas todavía no estén reparadas', async () => {
+    WhatsappFlujo.findAll.mockResolvedValue([fila({
+      id: 30, tipo: 'SEGUIMIENTO_ENVIO', fases: [
+        { id: 301, nombre: 'Pedido confirmado', orden: 1 },
+        { id: 302, nombre: 'Pedido despachado', orden: 2 },
+      ],
+    })]);
+    const [flujo] = await flujoService.estadoFlujosDelPedido(4321, CTX);
+    expect(flujo.fases.map(f => f.estado_activador)).toEqual(['Preparado', 'Despachado']);
+  });
   const flujoConTresFases = () => fila({
     id: 10,
     nombre: 'Confirmación de pedido',

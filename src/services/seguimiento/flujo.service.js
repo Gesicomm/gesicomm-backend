@@ -622,7 +622,7 @@ async function estadoFlujosDelPedido(envioId, { usuarioId, esAdmin }) {
       const stats = porFase.get(fase.id);
       return {
         ...fase,
-        estado_activador: estadoActivadorDeFase(fase),
+        estado_activador: estadoActivadorDeFase(fase, plano.tipo),
         accion_operativa: null,
         transicion_estado_desde: null,
         transicion_estado_hasta: null,

@@ -167,15 +167,12 @@ describe('las etapas: el pedido cambia solo según su estado', () => {
     expect(item).toMatchObject({ flujo_id: 50, fase_id: 501, cuando: 'ahora', motivo: 'nuevo', recordatorio: null });
   });
 
-  // 2026-10-14: el estado logístico ya no bloquea el segundo aviso — se
-  // ofrece como "toca ahora" apenas se completó el anterior, sea cual sea
-  // el estado del pedido (Preparado o Despachado).
-  test('Preparado habilita el primer aviso, y el segundo se ofrece apenas se completa el primero', () => {
+  test('Preparado habilita el primer aviso y Despachado habilita el segundo', () => {
     const primero = (estado) => armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [pedido(1, { estado })] })[0];
     expect(primero('Confirmado')).toBeUndefined();
     expect(primero('Preparado')).toMatchObject({ fase_id: 301, cuando: 'ahora' });
     const siguiente = (estado) => armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [pedido(1, { estado })], contactos: [completada(1, 301, 1, 30)] })[0];
-    expect(siguiente('Preparado')).toMatchObject({ fase_id: 302, cuando: 'ahora', motivo: 'estado_logistico', estado_requerido: null });
+    expect(siguiente('Preparado')).toMatchObject({ fase_id: 302, motivo: 'esperando_estado', estado_requerido: 'Despachado' });
     expect(siguiente('Despachado')).toMatchObject({ fase_id: 302, cuando: 'ahora', motivo: 'estado_logistico' });
   });
 
@@ -185,6 +182,16 @@ describe('las etapas: el pedido cambia solo según su estado', () => {
       recordatorios: [{ id: 900, envio_id: 1, flujo_id: 30, fase_id: 301, estado: 'VENCIDO', ejecutar_en: enHoras(-1) }],
     });
     expect(item).toMatchObject({ fase_id: 302, cuando: 'ahora', motivo: 'nuevo', recordatorio: null });
+  });
+
+  test.each(['Despachado', 'Reprogramado'])('un flujo antiguo sin activadores ofrece despacho en %s aunque haya una apertura y recordatorio de confirmación', (estado) => {
+    const flujoAntiguo = { ...FLUJO_ENVIO, fases: FLUJO_ENVIO.fases.map(f => ({ ...f, estado_activador: null })) };
+    const [item] = armar({
+      etapa: 'SEGUIMIENTO_ENVIO', pedidos: [pedido(1, { estado })], flujos: [flujoAntiguo],
+      contactos: [abierta(1, 301, 2, 30)],
+      recordatorios: [{ id: 900, envio_id: 1, flujo_id: 30, fase_id: 301, estado: 'VENCIDO', ejecutar_en: enHoras(-1) }],
+    });
+    expect(item).toMatchObject({ fase_id: 302, fase_nombre: 'Pedido despachado', cuando: 'ahora', recordatorio: null });
   });
   test('cada estado cae en su etapa', () => {
     expect(etapaDelPedido({ estado: 'Pendiente', origen: 'landing' })).toBe('CONFIRMACION_PEDIDO_WEB');
@@ -673,9 +680,7 @@ describe('marcar una fase como completada', () => {
     expect(res.cuerpo.pedido_paso_a_en_seguimiento).toBe(true);
   });
 
-  // 2026-10-14: el operador elige y envía cualquier fase de Seguimiento de
-  // envío cuando quiere, sin esperar a que logística marque Preparado/Despachado.
-  test('un pedido Confirmado también puede completar el aviso de preparación sin esperar que logística lo prepare', async () => {
+  test('un pedido Confirmado no permite completar el aviso antes de que logística lo prepare', async () => {
     envio.estado = 'Confirmado';
     WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce(FASE_PEDIDO_CONFIRMADO).mockResolvedValueOnce(null);
     const apertura = fila({ id: 1, estado: 'ABIERTO_EN_WHATSAPP' });
@@ -684,10 +689,10 @@ describe('marcar una fase como completada', () => {
 
     await controller.completarFase(peticion({}, { faseId: '301' }), res, jest.fn());
 
-    expect(res.codigo).toBe(200);
-    expect(apertura.estado).toBe('CONFIRMADO_POR_OPERADOR');
+    expect(res.codigo).toBe(422);
+    expect(apertura.estado).toBe('ABIERTO_EN_WHATSAPP');
     expect(envio.estado).toBe('Confirmado');
-    expect(res.cuerpo.siguiente_fase).toBeNull();
+    expect(envio.update).not.toHaveBeenCalled();
   });
 
   test('completar preparación conserva el estado y espera el despacho para el siguiente aviso', async () => {
@@ -702,11 +707,39 @@ describe('marcar una fase como completada', () => {
     expect(res.cuerpo.siguiente_fase).toMatchObject({ id: 302 });
   });
 
-  test('un Confirmado tampoco permite abrir el mensaje de seguimiento por API', async () => {
+  test('un Confirmado no permite abrir el mensaje de seguimiento por API', async () => {
     envio.estado = 'Confirmado';
     WhatsappFlujoFase.findOne.mockReset().mockResolvedValue(FASE_PEDIDO_CONFIRMADO);
+    SeguimientoContacto.create.mockImplementation(async (datos) => fila({ id: 2, ...datos }));
     const res = respuesta();
     await controller.registrarContacto(peticion({ fase_id: 301 }), res, jest.fn());
+    expect(res.codigo).toBe(422);
+    expect(SeguimientoContacto.create).not.toHaveBeenCalled();
+    expect(envio.update).not.toHaveBeenCalled();
+  });
+
+  test('el enlace de WhatsApp de un despachado usa el aviso de despacho y los datos del courier', async () => {
+    Object.assign(envio, { estado: 'Despachado', nombre_cliente: 'María', Courier: { nombre: 'Express', telefono: '0982 333 444' } });
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValue({
+      id: 302, flujo_id: 30, orden: 2, nombre: 'Pedido despachado',
+      mensaje: 'Hola {cliente_nombre}, tu pedido ya ha sido despachado. Atento a tu courier: {courier_nombre}, teléfono {courier_telefono}.',
+      flujo: { tipo: 'SEGUIMIENTO_ENVIO', nombre: 'Seguimiento de envío' },
+    });
+    SeguimientoContacto.create.mockImplementation(async datos => fila({ id: 2, ...datos }));
+    const res = respuesta();
+    await controller.registrarContacto(peticion({ fase_id: 302 }), res, jest.fn());
+    expect(res.codigo).toBe(201);
+    expect(new URL(res.cuerpo.whatsapp_url).searchParams.get('text')).toBe('Hola María, tu pedido ya ha sido despachado. Atento a tu courier: Express, teléfono 0982 333 444.');
+    expect(envio.update).not.toHaveBeenCalled();
+  });
+
+  test.each(['registrarContacto', 'completarFase'])('un despachado rechaza el aviso antiguo de preparación al %s', async operacion => {
+    envio.estado = 'Despachado';
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValue({
+      ...FASE_PEDIDO_CONFIRMADO, nombre: 'Pedido confirmado', estado_activador: null,
+    });
+    const res = respuesta();
+    await controller[operacion](peticion({ fase_id: 301 }, { faseId: '301' }), res, jest.fn());
     expect(res.codigo).toBe(422);
     expect(SeguimientoContacto.create).not.toHaveBeenCalled();
     expect(envio.update).not.toHaveBeenCalled();

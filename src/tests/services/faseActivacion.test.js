@@ -1,15 +1,28 @@
 'use strict';
 
-const { faseDisponibleParaPedido } = require('../../services/seguimiento/faseActivacion');
+const { faseDisponibleParaPedido, estadoActivadorDeFase } = require('../../services/seguimiento/faseActivacion');
 const { resolverMensaje, listarVariablesDisponibles } = require('../../services/seguimiento/plantillaResolver.service');
 
-// 2026-10-14: en Seguimiento de envío el operador elige y envía cualquier
-// fase cuando quiere; el estado logístico ya no bloquea nada acá.
 test.each([
-  'Confirmado', 'Preparado', 'Despachado', 'Reprogramado', 'Devuelto', 'Perdido', 'Pendiente', 'Cancelado', 'Entregado',
-])('seguimiento de envío siempre está disponible, sea cual sea el estado del pedido (%s)', (estado) => {
-  expect(faseDisponibleParaPedido({ estado_activador: 'Preparado' }, { estado }, 'SEGUIMIENTO_ENVIO')).toBe(true);
-  expect(faseDisponibleParaPedido({ estado_activador: 'Despachado' }, { estado }, 'SEGUIMIENTO_ENVIO')).toBe(true);
+  ['Confirmado', 'Preparado', false],
+  ['Preparado', 'Preparado', true],
+  ['Preparado', 'Despachado', false],
+  ['Despachado', 'Despachado', true],
+  ['Despachado', 'Preparado', false],
+  ['Reprogramado', 'Despachado', true],
+  ['Devuelto', 'Despachado', false],
+  ['Perdido', 'Preparado', false],
+])('pedido %s con aviso de %s: disponible=%s', (estado, requerido, disponible) => {
+  expect(faseDisponibleParaPedido({ estado_activador: requerido }, { estado }, 'SEGUIMIENTO_ENVIO')).toBe(disponible);
+});
+
+test('los avisos base antiguos recuperan su activador y respetan el estado actual', () => {
+  expect(estadoActivadorDeFase({ nombre: 'Pedido confirmado' }, 'SEGUIMIENTO_ENVIO')).toBe('Preparado');
+  expect(estadoActivadorDeFase({ nombre: 'Pedido despachado' }, 'SEGUIMIENTO_ENVIO')).toBe('Despachado');
+  expect(faseDisponibleParaPedido({ nombre: 'Pedido confirmado' }, { estado: 'Despachado' }, 'SEGUIMIENTO_ENVIO')).toBe(false);
+  expect(faseDisponibleParaPedido({ nombre: 'Pedido despachado' }, { estado: 'Despachado' }, 'SEGUIMIENTO_ENVIO')).toBe(true);
+  expect(estadoActivadorDeFase({ nombre: 'Pedido confirmado' }, 'CONFIRMACION_PEDIDO_WEB')).toBeNull();
+  expect(estadoActivadorDeFase({ nombre: 'Pedido confirmado', estado_activador: 'Reprogramado' }, 'SEGUIMIENTO_ENVIO')).toBe('Reprogramado');
 });
 
 test.each(['Devuelto', 'Perdido'])('la recuperación sigue disponible en %s', (estado) => {
