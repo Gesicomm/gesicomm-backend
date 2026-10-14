@@ -265,6 +265,7 @@ async function status(usuarioId, options = {}) {
   const webhook = webhookUrl(options);
   return { environment: environment(), operation_environment: operationConnection?.environment || environment(), credentials_configured: credentials,
     sandbox_endpoint: 'https://speedboxpy.com/api/speedbox_sandbox.php',
+    create_store_endpoint: '/api/integraciones/speedbox/store',
     registration_url: registrationUrl(),
     production_request_url: productionRequestUrl(),
     webhook_url: productionWebhook || webhook,
@@ -281,7 +282,8 @@ async function status(usuarioId, options = {}) {
       return { ...row, finanzas: order.envio ? require('./finanzas').desglose(order.envio) : null };
     }),
     events, solicitudes_abastecimiento: solicitudes, available_orders: availableOrders,
-    checks: { spec: Boolean(connection?.spec_verified_at), order: Boolean(connection?.order_verified_at) || orderVerified > 0,
+    checks: { spec: Boolean(connection?.spec_verified_at), store: Boolean(connection?.tienda_id),
+      order: Boolean(connection?.order_verified_at) || orderVerified > 0,
       updates: Boolean(connection?.updates_verified_at), webhook: Boolean(connection?.webhook_verified_at) } };
 }
 
