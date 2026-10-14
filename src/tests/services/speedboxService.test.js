@@ -94,6 +94,20 @@ it('sends a Raha catalog order even when the local courier is different', async 
   );
   expect(client.request).toHaveBeenCalledTimes(1);
 });
+it('uses the Gesicom store assigned to the order when building the RAHA payload', async () => {
+  envio.tienda_id = 22;
+  await service.sendOrder(7, 31);
+  expect(models.Tienda.findOne).toHaveBeenCalledWith(expect.objectContaining({
+    where: { id: 22, usuario_id: 7 },
+  }));
+  expect(payload.buildOrder).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ nombre: 'Mi tienda' }),
+    expect.anything(),
+    expect.any(Map),
+    { onlyExternalProducts: true, usuarioId: 7 },
+  );
+});
 it('stores a timeout as uncertain and requires explicit reconciliation', async () => {
   client.request.mockRejectedValueOnce(Object.assign(new Error('Timeout'), { uncertain: true }));
   await expect(service.sendOrder(7, 31)).rejects.toThrow('Timeout');

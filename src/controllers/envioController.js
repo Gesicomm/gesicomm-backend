@@ -1236,7 +1236,8 @@ async function adjuntarLogisticaRaha(envios) {
   const environment = speedboxEnvironmentActual();
   const pedidos = await SpeedboxPedido.findAll({
     where: { envio_id: { [Op.in]: ids }, environment },
-    attributes: ['envio_id', 'external_order_id', 'order_id', 'estado', 'status', 'status_at', 'error', 'updated_at'],
+    attributes: ['envio_id', 'external_order_id', 'order_id', 'environment', 'estado', 'status', 'status_at',
+      'error', 'remote_http_status', 'request_payload', 'updated_at'],
     raw: true,
   });
   if (!pedidos.length) return envios;
@@ -1274,10 +1275,14 @@ async function adjuntarLogisticaRaha(envios) {
         gestionado: Boolean(pedido.order_id),
         external_order_id: pedido.external_order_id,
         order_id: pedido.order_id,
+        environment: pedido.environment,
+        tienda_id: pedido.request_payload?.tienda_id || null,
+        store_name: pedido.request_payload?.store_name || null,
         estado_envio: pedido.estado,
         status: pedido.status,
         status_at: pedido.status_at,
         error: pedido.error,
+        remote_http_status: pedido.remote_http_status,
         updated_at: pedido.updated_at,
         eventos: pedido.order_id ? (eventosPorOrderId.get(String(pedido.order_id)) || []) : [],
       },

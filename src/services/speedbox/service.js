@@ -191,6 +191,24 @@ async function connectionFor(usuarioId, options = {}) {
   return connection;
 }
 
+async function tiendaDelEnvio(envio, usuarioId, options = {}) {
+  if (envio?.tienda_id) {
+    const tienda = await Tienda.findOne({ where: { id: envio.tienda_id, usuario_id: usuarioId }, ...options });
+    if (tienda) return tienda;
+  }
+  return Tienda.findOne({ where: { usuario_id: usuarioId }, ...options });
+}
+
+function trazaPedidoRaha(order) {
+  const row = order.toJSON ? order.toJSON() : order;
+  const request = row.request_payload || {};
+  return {
+    ...row,
+    raha_tienda_id: request.tienda_id || null,
+    raha_store_name: request.store_name || null,
+  };
+}
+
 async function status(usuarioId, options = {}) {
   const connections = ordenarConexiones(await SpeedboxTienda.findAll({ where: { usuario_id: usuarioId } }));
   const connection = connections.find(row => row.environment === environment()) || connections[0] || null;
@@ -198,7 +216,8 @@ async function status(usuarioId, options = {}) {
     || connections.find(row => conexionLista(row) && credentialsConfigured(row))
     || connection;
   const orders = await SpeedboxPedido.findAll({ where: { usuario_id: usuarioId },
-    attributes: ['id', 'envio_id', 'external_order_id', 'order_id', 'estado', 'status', 'intentos', 'error', 'updated_at'],
+    attributes: ['id', 'envio_id', 'external_order_id', 'order_id', 'environment', 'estado', 'status', 'intentos',
+      'error', 'remote_http_status', 'request_payload', 'updated_at'],
     include: [{ model: Envio, as: 'envio', attributes: ['numero_pedido', 'monto', 'costo_envio', 'costo_fulfillment',
       'delivery_a_cargo', 'pago_anticipado', 'abastecimiento_estado', 'abastecimiento_costo', 'abastecimiento_pagado_at', 'estado_financiero'] }], order: [['updated_at', 'DESC']], limit: 50 });
   const events = await SpeedboxEvento.findAll({ where: { usuario_id: usuarioId },
@@ -237,7 +256,10 @@ async function status(usuarioId, options = {}) {
     has_private_key: Boolean(connection?.private_key),
     connection: serializeConnection(connection),
     connections: connections.map(serializeConnection),
-    orders: orders.map(order => ({ ...order.toJSON(), finanzas: order.envio ? require('./finanzas').desglose(order.envio) : null })),
+    orders: orders.map(order => {
+      const row = trazaPedidoRaha(order);
+      return { ...row, finanzas: order.envio ? require('./finanzas').desglose(order.envio) : null };
+    }),
     events, solicitudes_abastecimiento: solicitudes, available_orders: availableOrders,
     checks: { spec: Boolean(connection?.spec_verified_at), order: Boolean(connection?.order_verified_at) || orderVerified > 0,
       updates: Boolean(connection?.updates_verified_at), webhook: Boolean(connection?.webhook_verified_at) } };
@@ -399,7 +421,7 @@ async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncerta
     // An uncertain submission always retains its original payload and external ID.
     let payload = mapping.request_payload;
     if (!payload || mapping.estado === 'error') {
-      const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId }, transaction });
+      const tienda = await tiendaDelEnvio(envio, usuarioId, { transaction });
       if (!tienda) fail('Tienda no encontrada.', 404);
       envio.items = await EnvioItem.findAll({ where: { envio_id: envio.id }, transaction, order: [['id', 'ASC']], include: [
         { model: EnvioItemComponente, as: 'componentes_vendidos', include: [{ model: Producto, as: 'producto', attributes: ['id', 'sku', 'nombre', 'creado_por'] }] },
