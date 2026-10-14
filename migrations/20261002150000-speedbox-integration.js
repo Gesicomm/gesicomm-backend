@@ -15,6 +15,7 @@ async function up(qi, S) {
     const definitions = {
       speedbox_tiendas: { ...common,
         usuario_id: { type: S.INTEGER, allowNull: false, references: { model: 'usuarios', key: 'id' } },
+        gesicom_tienda_id: { type: S.INTEGER, allowNull: true, references: { model: 'tiendas', key: 'id' } },
         tienda_id: { type: S.STRING(100), allowNull: true }, courier_id: { type: S.INTEGER, allowNull: true, references: { model: 'couriers', key: 'id' } },
         public_key: { type: S.STRING(255), allowNull: true }, private_key: { type: S.TEXT, allowNull: true },
         activo: { type: S.BOOLEAN, allowNull: false, defaultValue: false }, enabled_at: { type: S.DATE, allowNull: true },
@@ -44,6 +45,7 @@ async function up(qi, S) {
     }
     if (tables.includes('speedbox_tiendas')) {
       const columns = await qi.describeTable('speedbox_tiendas', { transaction });
+      if (!columns.gesicom_tienda_id) await qi.addColumn('speedbox_tiendas', 'gesicom_tienda_id', { type: S.INTEGER, allowNull: true, references: { model: 'tiendas', key: 'id' } }, { transaction });
       if (!columns.public_key) await qi.addColumn('speedbox_tiendas', 'public_key', { type: S.STRING(255), allowNull: true }, { transaction });
       if (!columns.private_key) await qi.addColumn('speedbox_tiendas', 'private_key', { type: S.TEXT, allowNull: true }, { transaction });
       if (!columns.order_verified_at) await qi.addColumn('speedbox_tiendas', 'order_verified_at', { type: S.DATE, allowNull: true }, { transaction });
@@ -58,7 +60,7 @@ async function up(qi, S) {
       }, { transaction });
     }
     for (const [table, fields, unique] of [
-      ['speedbox_tiendas', ['usuario_id', 'environment'], true], ['speedbox_tiendas', ['environment', 'tienda_id'], true],
+      ['speedbox_tiendas', ['usuario_id', 'gesicom_tienda_id', 'environment'], true], ['speedbox_tiendas', ['environment', 'tienda_id'], true],
       ['speedbox_pedidos', ['environment', 'envio_id'], true], ['speedbox_pedidos', ['environment', 'solicitud_abastecimiento_id'], true],
       ['speedbox_pedidos', ['environment', 'order_id'], true],
       ['speedbox_eventos', ['environment', 'event_key'], true], ['speedbox_eventos', ['usuario_id', 'tipo'], false],

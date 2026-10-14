@@ -43,10 +43,16 @@ function activeConnectionFields(connection) {
     enabled_at: connection?.enabled_at || new Date(),
   };
 }
-async function operationalConnection(usuarioId, options = {}) {
-  const { transaction, lock, requireActive = false } = options;
+function connectionWhere(usuarioId, { environment: targetEnvironment = null, tiendaId = null, requireActive = false } = {}) {
   const where = { usuario_id: usuarioId };
+  if (targetEnvironment) where.environment = targetEnvironment;
+  if (tiendaId) where.gesicom_tienda_id = tiendaId;
   if (requireActive) where.activo = true;
+  return where;
+}
+async function operationalConnection(usuarioId, options = {}) {
+  const { transaction, lock, requireActive = false, tiendaId = null } = options;
+  const where = connectionWhere(usuarioId, { tiendaId, requireActive });
   const connections = await SpeedboxTienda.findAll({ where, transaction, lock });
   return ordenarConexiones(connections).find(connection => conexionLista(connection, { requireActive })) || null;
 }
@@ -151,7 +157,7 @@ async function dispatchSupplyRequest(usuarioId, solicitudId) {
 
 async function queueConfirmedOrder(envio, transaction) {
   if (envio.estado !== 'Confirmado' || !envio.stock_descontado || envio.stock_liberado) return null;
-  const connection = await operationalConnection(envio.usuario_id, { transaction });
+  const connection = await operationalConnection(envio.usuario_id, { tiendaId: envio.tienda_id, transaction });
   if (!connection?.tienda_id || !credentialsConfigured(connection)) return null;
   const pedidoRaha = await envioTieneProductosExternos(envio.id, envio.usuario_id, transaction);
   if (!pedidoRaha) return null;
@@ -166,7 +172,10 @@ async function queueConfirmedOrder(envio, transaction) {
 
 async function queueSupplyRequest(solicitud, transaction) {
   if (solicitud.tipo_logistica !== 'PROPIA') return null;
-  const connection = await operationalConnection(solicitud.usuario_id, { transaction });
+  const deposito = solicitud.deposito_destino_id
+    ? await Deposito.findOne({ where: { id: solicitud.deposito_destino_id, usuario_id: solicitud.usuario_id }, attributes: ['id', 'tienda_id'], transaction })
+    : null;
+  const connection = await operationalConnection(solicitud.usuario_id, { tiendaId: deposito?.tienda_id, transaction });
   if (!connection?.tienda_id) fail('RAHA no está vinculado para esta tienda.', 409);
   credentialsFor(connection, {}, { allowInput: false });
   const [mapping] = await SpeedboxPedido.findOrCreate({
@@ -185,8 +194,8 @@ async function queueSupplyRequest(solicitud, transaction) {
 }
 
 async function connectionFor(usuarioId, options = {}) {
-  const { environment: targetEnvironment = environment(), ...queryOptions } = options;
-  const connection = await SpeedboxTienda.findOne({ where: { usuario_id: usuarioId, environment: targetEnvironment }, ...queryOptions });
+  const { environment: targetEnvironment = environment(), tiendaId = null, ...queryOptions } = options;
+  const connection = await SpeedboxTienda.findOne({ where: connectionWhere(usuarioId, { environment: targetEnvironment, tiendaId }), ...queryOptions });
   if (!connection) fail('Vinculá primero tu tienda con RAHA.', 409);
   return connection;
 }
@@ -220,7 +229,7 @@ function trazaPedidoRaha(order) {
 }
 
 async function status(usuarioId, options = {}) {
-  const connections = ordenarConexiones(await SpeedboxTienda.findAll({ where: { usuario_id: usuarioId } }));
+  const connections = ordenarConexiones(await SpeedboxTienda.findAll({ where: connectionWhere(usuarioId, { tiendaId: options.tiendaId }) }));
   const connection = connections.find(row => row.environment === environment()) || connections[0] || null;
   const operationConnection = connections.find(row => conexionLista(row, { requireActive: true }) && credentialsConfigured(row))
     || connections.find(row => conexionLista(row) && credentialsConfigured(row))
@@ -239,6 +248,7 @@ async function status(usuarioId, options = {}) {
     SELECT e.id, e.numero_pedido, e.cliente FROM envios e
     LEFT JOIN speedbox_pedidos p ON p.envio_id = e.id
     WHERE e.usuario_id = :usuario
+      AND (:tiendaId::INTEGER IS NULL OR e.tienda_id = :tiendaId)
       AND EXISTS (
         SELECT 1 FROM envio_items i
         JOIN envio_item_componentes c ON c.envio_item_id = i.id
@@ -248,7 +258,7 @@ async function status(usuarioId, options = {}) {
       AND p.id IS NULL
       AND e.estado IN ('Confirmado', 'Preparado', 'Despachado', 'Reprogramado')
       AND e.stock_descontado = TRUE AND e.stock_liberado = FALSE
-    ORDER BY e.id DESC LIMIT 50`, { replacements: { usuario: usuarioId } });
+    ORDER BY e.id DESC LIMIT 50`, { replacements: { usuario: usuarioId, tiendaId: options.tiendaId || null } });
   const credentials = credentialsConfigured(connection);
   const sandboxWebhook = webhookUrl({ ...options, targetEnvironment: 'sandbox' });
   const productionWebhook = webhookUrl({ ...options, targetEnvironment: 'production' });
@@ -286,15 +296,15 @@ const configSchema = z.object({
   apiKey: z.string().trim().max(255).nullable().optional(),
   secret: z.string().trim().max(512).nullable().optional(),
 }).strict();
-async function configure(usuarioId, input) {
+async function configure(usuarioId, input, options = {}) {
   const parsed = configSchema.safeParse(input);
   if (!parsed.success) fail('Configuración RAHA inválida.');
   const { activo } = parsed.data;
   const targetEnvironment = environmentFromInput(parsed.data, environment());
   const connection = await sequelize.transaction(async transaction => {
     const [connection] = await SpeedboxTienda.findOrCreate({
-      where: { usuario_id: usuarioId, environment: targetEnvironment },
-      defaults: { since_at: new Date().toISOString() },
+      where: connectionWhere(usuarioId, { environment: targetEnvironment, tiendaId: options.tiendaId }),
+      defaults: { gesicom_tienda_id: options.tiendaId || null, since_at: new Date().toISOString() },
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
@@ -317,7 +327,11 @@ async function registerStore(usuarioId, input = {}, options = {}) {
   if (!tienda) fail('Primero configura tu tienda.', 404);
   const connection = await sequelize.transaction(async transaction => {
     await sequelize.query('SELECT pg_advisory_xact_lock(84271004, :usuario)', { replacements: { usuario: Number(usuarioId) }, transaction });
-    const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: env }, defaults: { since_at: new Date().toISOString() }, transaction });
+    const [connection] = await SpeedboxTienda.findOrCreate({
+      where: connectionWhere(usuarioId, { environment: env, tiendaId: options.tiendaId }),
+      defaults: { gesicom_tienda_id: options.tiendaId || null, since_at: new Date().toISOString() },
+      transaction,
+    });
     const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
     const updates = credentialUpdates(input, connection).updates;
     if (Object.keys(updates).length) await connection.update(updates, { transaction });
@@ -325,7 +339,7 @@ async function registerStore(usuarioId, input = {}, options = {}) {
       return connection.activo ? connection : connection.update(activeConnectionFields(connection), { transaction });
     }
     const response = await client.request('store', { method: 'POST', credentials, body: {
-      external_store_id: `GESICOMM-${env}-${usuarioId}`, store_name: tienda.nombre,
+      external_store_id: `GESICOMM-${env}-${usuarioId}-${tienda.id}`, store_name: tienda.nombre,
       domain: tienda.dominio_propio_verificado && tienda.dominio_propio_habilitado && tienda.dominio_propio
         ? tienda.dominio_propio : `${tienda.subdominio}.${process.env.TIENDA_DOMINIO_BASE || 'gesicomm.com'}`,
       currency: 'PYG', country: 'PY', timezone: 'America/Asuncion',
@@ -343,7 +357,10 @@ async function verifySpec(usuarioId, input = {}, options = {}) {
   if (!tienda) fail('Primero configura tu tienda.', 404);
   const credentialInput = extractCredentialInput(input);
   const env = environmentFromInput(input, credentialInput.provided ? 'sandbox' : environment());
-  const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: env }, defaults: { since_at: new Date().toISOString() } });
+  const [connection] = await SpeedboxTienda.findOrCreate({
+    where: connectionWhere(usuarioId, { environment: env, tiendaId: options.tiendaId }),
+    defaults: { gesicom_tienda_id: options.tiendaId || null, since_at: new Date().toISOString() },
+  });
   const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
   await client.request('spec', { credentials });
   const updates = { spec_verified_at: new Date(), ...credentialUpdates(input, connection).updates,
@@ -357,7 +374,7 @@ async function verifyOrder(usuarioId, input = {}, options = {}) {
   const env = environmentFromInput(input, credentialInput.provided ? 'sandbox' : environment());
   const tienda = await tiendaDelUsuario(usuarioId, { tiendaId: options.tiendaId });
   if (!tienda) fail('Primero configura tu tienda.', 404);
-  const connection = await connectionFor(usuarioId, { environment: env });
+  const connection = await connectionFor(usuarioId, { environment: env, tiendaId: options.tiendaId });
   const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
   if (!connection.tienda_id) fail('Primero vinculá la tienda sandbox de RAHA.', 409);
   const now = new Date();
@@ -392,10 +409,10 @@ async function verifyOrder(usuarioId, input = {}, options = {}) {
   return { ok: true, order_id: orderId, status: response.order?.status || null };
 }
 
-async function verifyUpdates(usuarioId, input = {}) {
+async function verifyUpdates(usuarioId, input = {}, options = {}) {
   const credentialInput = extractCredentialInput(input);
   const env = environmentFromInput(input, credentialInput.provided ? 'sandbox' : environment());
-  const connection = await connectionFor(usuarioId, { environment: env });
+  const connection = await connectionFor(usuarioId, { environment: env, tiendaId: options.tiendaId });
   const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
   if (!connection.tienda_id) fail('Primero vinculá la tienda sandbox de RAHA.', 409);
   const sinceAt = connection.since_at || new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -416,8 +433,8 @@ async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncerta
     const pedidoRaha = await envioTieneProductosExternos(envio.id, usuarioId, transaction);
     let mapping = await SpeedboxPedido.findOne({ where: { envio_id: envio.id, usuario_id: usuarioId }, transaction, lock: transaction.LOCK.UPDATE });
     let connection = mapping
-      ? await connectionFor(usuarioId, { environment: mapping.environment, transaction, lock: transaction.LOCK.UPDATE })
-      : await operationalConnection(usuarioId, { transaction, lock: transaction.LOCK.UPDATE });
+      ? await connectionFor(usuarioId, { environment: mapping.environment, tiendaId: envio.tienda_id, transaction, lock: transaction.LOCK.UPDATE })
+      : await operationalConnection(usuarioId, { tiendaId: envio.tienda_id, transaction, lock: transaction.LOCK.UPDATE });
     if (!connection?.tienda_id) fail('RAHA no está vinculado para esta tienda.', 409);
     if (!mapping) {
       [mapping] = await SpeedboxPedido.findOrCreate({ where: { environment: connection.environment, envio_id: envio.id },
@@ -480,10 +497,15 @@ async function sendSupplyRequest(usuarioId, solicitudId, { retry = false, acknow
     if (solicitud.tipo_logistica !== 'PROPIA' || !solicitud.deposito_destino_id) {
       fail('El pedido RAHA de abastecimiento necesita un depósito propio de destino.', 409);
     }
+    const depositoDestino = await Deposito.findOne({
+      where: { id: solicitud.deposito_destino_id, usuario_id: usuarioId },
+      transaction,
+    });
+    if (!depositoDestino) fail('Depósito de destino no encontrado.', 404);
     let mapping = await SpeedboxPedido.findOne({ where: { usuario_id: usuarioId, solicitud_abastecimiento_id: solicitud.id }, transaction, lock: transaction.LOCK.UPDATE });
     let connection = mapping
-      ? await connectionFor(usuarioId, { environment: mapping.environment, transaction, lock: transaction.LOCK.UPDATE })
-      : await operationalConnection(usuarioId, { transaction, lock: transaction.LOCK.UPDATE });
+      ? await connectionFor(usuarioId, { environment: mapping.environment, tiendaId: depositoDestino.tienda_id, transaction, lock: transaction.LOCK.UPDATE })
+      : await operationalConnection(usuarioId, { tiendaId: depositoDestino.tienda_id, transaction, lock: transaction.LOCK.UPDATE });
     if (!connection?.tienda_id) fail('RAHA no está vinculado para esta tienda.', 409);
     if (!mapping) {
       [mapping] = await SpeedboxPedido.findOrCreate({
@@ -503,22 +525,20 @@ async function sendSupplyRequest(usuarioId, solicitudId, { retry = false, acknow
     if (['enviando', 'incierto'].includes(mapping.estado) && !acknowledgeUncertain) fail('Verificá en RAHA si el pedido ya existe antes de autorizar el reintento.', 409);
     let payload = mapping.request_payload;
     if (!payload || mapping.estado === 'error') {
-      const [producto, deposito] = await Promise.all([
+      const [producto, variante] = await Promise.all([
         Producto.findByPk(solicitud.producto_id, { transaction }),
-        Deposito.findOne({ where: { id: solicitud.deposito_destino_id, usuario_id: usuarioId }, transaction }),
+        solicitud.variante_id
+          ? ProductoVariante.findOne({ where: { id: solicitud.variante_id, producto_id: solicitud.producto_id }, transaction })
+          : null,
       ]);
       if (!producto) fail('Producto no encontrado.', 404);
-      if (!deposito) fail('Depósito de destino no encontrado.', 404);
       const tienda = await Tienda.findOne({
-        where: deposito.tienda_id ? { id: deposito.tienda_id, usuario_id: usuarioId } : { usuario_id: usuarioId },
+        where: depositoDestino.tienda_id ? { id: depositoDestino.tienda_id, usuario_id: usuarioId } : { usuario_id: usuarioId },
         transaction,
       });
       if (!tienda) fail('Tienda no encontrada.', 404);
-      const variante = solicitud.variante_id
-        ? await ProductoVariante.findOne({ where: { id: solicitud.variante_id, producto_id: solicitud.producto_id }, transaction })
-        : null;
       try {
-        payload = buildSupplyOrder(solicitud, tienda, connection, { producto, variante, deposito });
+        payload = buildSupplyOrder(solicitud, tienda, connection, { producto, variante, deposito: depositoDestino });
       } catch (error) {
         await mapping.update({ estado: 'error', error: error.message }, { transaction });
         return { mapping, validationError: error };
@@ -553,6 +573,7 @@ async function runCycle() {
     WHERE EXISTS (
         SELECT 1 FROM speedbox_tiendas s
         WHERE s.usuario_id = e.usuario_id
+          AND s.gesicom_tienda_id = e.tienda_id
           AND s.activo = TRUE
           AND s.tienda_id IS NOT NULL
       )
@@ -566,7 +587,10 @@ async function runCycle() {
         e.created_at >= (
           SELECT MIN(COALESCE(s.enabled_at, '1970-01-01'::timestamptz))
           FROM speedbox_tiendas s
-          WHERE s.usuario_id = e.usuario_id AND s.activo = TRUE AND s.tienda_id IS NOT NULL
+          WHERE s.usuario_id = e.usuario_id
+            AND s.gesicom_tienda_id = e.tienda_id
+            AND s.activo = TRUE
+            AND s.tienda_id IS NOT NULL
         )
         OR EXISTS (SELECT 1 FROM speedbox_pedidos p WHERE p.envio_id = e.id AND p.estado = 'pendiente')
       )
@@ -582,11 +606,14 @@ async function runCycle() {
   const [supplyCandidates] = await sequelize.query(`
     SELECT sa.id, sa.usuario_id
     FROM solicitudes_abastecimiento sa
+    JOIN depositos d ON d.id = sa.deposito_destino_id
     WHERE sa.tipo_logistica = 'PROPIA'
       AND sa.deposito_destino_id IS NOT NULL
+      AND d.usuario_id = sa.usuario_id
       AND EXISTS (
         SELECT 1 FROM speedbox_tiendas s
         WHERE s.usuario_id = sa.usuario_id
+          AND s.gesicom_tienda_id = d.tienda_id
           AND s.tienda_id IS NOT NULL
       )
       AND NOT EXISTS (

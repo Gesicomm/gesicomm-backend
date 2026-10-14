@@ -5,6 +5,7 @@ const { encrypt, decrypt } = require('../utils/encryption');
 module.exports = sequelize.define('SpeedboxTienda', {
   id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
   usuario_id: { type: DataTypes.INTEGER, allowNull: false },
+  gesicom_tienda_id: { type: DataTypes.INTEGER, allowNull: true },
   environment: { type: DataTypes.STRING(20), allowNull: false },
   tienda_id: { type: DataTypes.STRING(100), allowNull: true },
   public_key: { type: DataTypes.STRING(255), allowNull: true },
@@ -34,4 +35,4 @@ module.exports = sequelize.define('SpeedboxTienda', {
   updates_verified_at: { type: DataTypes.DATE, allowNull: true },
   webhook_verified_at: { type: DataTypes.DATE, allowNull: true },
 }, { tableName: 'speedbox_tiendas', timestamps: true, createdAt: 'created_at', updatedAt: 'updated_at',
-  indexes: [{ unique: true, fields: ['usuario_id', 'environment'] }, { unique: true, fields: ['environment', 'tienda_id'] }] });
+  indexes: [{ unique: true, fields: ['usuario_id', 'gesicom_tienda_id', 'environment'] }, { unique: true, fields: ['environment', 'tienda_id'] }] });

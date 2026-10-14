@@ -24,8 +24,8 @@ beforeEach(() => {
   delete process.env.SPEEDBOX_REGISTRATION_URL;
   delete process.env.SPEEDBOX_WEBHOOK_TOKEN;
   models.sequelize.transaction.mockImplementation(callback => callback({ LOCK: { UPDATE: 'UPDATE' } }));
-  connection = instance({ environment: 'sandbox', tienda_id: '54', courier_id: 2, activo: true, public_key: 'stored_public', private_key: 'stored_secret' });
-  envio = instance({ id: 31, usuario_id: 7, courier_id: 2, estado: 'Confirmado', stock_descontado: true });
+  connection = instance({ environment: 'sandbox', gesicom_tienda_id: 22, tienda_id: '54', courier_id: 2, activo: true, public_key: 'stored_public', private_key: 'stored_secret' });
+  envio = instance({ id: 31, usuario_id: 7, tienda_id: 22, courier_id: 2, estado: 'Confirmado', stock_descontado: true });
   mapping = instance({ external_order_id: 'GESICOMM-sandbox-7-31', estado: 'pendiente', intentos: 0 });
   models.SpeedboxTienda.findOne.mockResolvedValue(connection);
   models.SpeedboxTienda.findAll.mockResolvedValue([connection]);
@@ -39,7 +39,7 @@ beforeEach(() => {
   }));
   models.Producto.findByPk.mockResolvedValue({ id: 9, sku: 'RAHA-9', nombre: 'Producto RAHA', creado_por: 1 });
   models.ProductoVariante.findOne.mockResolvedValue(null);
-  models.Deposito.findOne.mockResolvedValue({ id: 6, nombre: 'Depósito Luque', direccion: 'Av. Test 123', ciudad: 'Luque', departamento: 'Central', persona_contacto: 'Martin', telefono_contacto: '0981000000' });
+  models.Deposito.findOne.mockResolvedValue({ id: 6, tienda_id: 22, nombre: 'Depósito Luque', direccion: 'Av. Test 123', ciudad: 'Luque', departamento: 'Central', persona_contacto: 'Martin', telefono_contacto: '0981000000' });
   models.EnvioItemComponente.findAll.mockResolvedValue([{ producto: { id: 9, creado_por: 1 } }]);
   models.EnvioItem.findAll.mockResolvedValue([{ componentes_vendidos: [] }]);
   models.Tienda.findOne.mockResolvedValue({ nombre: 'Mi tienda' });
@@ -147,11 +147,12 @@ it('allows payment edits and the same courier on a remote order', async () => {
   await expect(service.assertCanChange(envio, { monto: 85000 }, {})).resolves.toBeUndefined();
 });
 
-it('verifies the sandbox spec with pasted credentials and stores them for automation', async () => {
-  await expect(service.verifySpec(7, { public_key: ' sbx_public ', private_key: ' private_secret ' })).resolves.toEqual({ ok: true });
+it('verifies the sandbox spec with pasted credentials and stores them for the active Gesicom store', async () => {
+  await expect(service.verifySpec(7, { public_key: ' sbx_public ', private_key: ' private_secret ' }, { tiendaId: 22 })).resolves.toEqual({ ok: true });
   expect(client.request).toHaveBeenCalledWith('spec', { credentials: { environment: 'sandbox', apiKey: 'sbx_public', secret: 'private_secret' } });
   expect(models.SpeedboxTienda.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
-    where: { usuario_id: 7, environment: 'sandbox' },
+    where: { usuario_id: 7, gesicom_tienda_id: 22, environment: 'sandbox' },
+    defaults: expect.objectContaining({ gesicom_tienda_id: 22 }),
   }));
   expect(connection.update).toHaveBeenCalledWith(expect.objectContaining({
     spec_verified_at: expect.any(Date),
@@ -180,10 +181,14 @@ it('links RAHA using the active Gesicom store from the session', async () => {
   expect(models.Tienda.findOne).toHaveBeenCalledWith(expect.objectContaining({
     where: { id: 22, usuario_id: 7 },
   }));
+  expect(models.SpeedboxTienda.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+    where: { usuario_id: 7, environment: 'sandbox', gesicom_tienda_id: 22 },
+    defaults: expect.objectContaining({ gesicom_tienda_id: 22 }),
+  }));
   expect(client.request).toHaveBeenCalledWith('store', expect.objectContaining({
     method: 'POST',
     body: expect.objectContaining({
-      external_store_id: 'GESICOMM-sandbox-7',
+      external_store_id: 'GESICOMM-sandbox-7-22',
       store_name: 'sommix',
       domain: expect.stringContaining('sommix.'),
     }),
