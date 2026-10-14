@@ -68,14 +68,14 @@ const EVENTOS_NOTIFICABLES = {
   store_order_payment_paid: {
     titulo: 'Pedido pagado online',
     mensaje: ({ nombre, email, metadata }) => {
-      const pedido = metadata?.numero_pedido || metadata?.envio_id || 'un pedido';
+      const pedido = metadata?.numero_pedido_visible || metadata?.numero_pedido || metadata?.envio_id || 'un pedido';
       return `${nombre || email || 'Un comercio'} recibió pago online del pedido #${pedido}.`;
     },
   },
   stock_payment_paid: {
     titulo: 'Abastecimiento pagado',
     mensaje: ({ nombre, email, metadata }) => {
-      const pedido = metadata?.numero_pedido || metadata?.envio_id || 'un pedido';
+      const pedido = metadata?.numero_pedido_visible || metadata?.numero_pedido || metadata?.envio_id || 'un pedido';
       return `${nombre || email || 'Un comercio'} pagó el abastecimiento del pedido #${pedido}.`;
     },
   },

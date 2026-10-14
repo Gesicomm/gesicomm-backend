@@ -60,7 +60,7 @@ const res = () => ({ status: jest.fn().mockReturnThis(), json: jest.fn() });
 beforeEach(() => {
   jest.clearAllMocks();
   PaymentTransaction.findOne.mockResolvedValue({ envio_id: 99, status: 'PENDING', save: jest.fn() });
-  Envio.findByPk.mockResolvedValue({ id: 99, usuario_id: 3, monto: 40000, estado: 'Pendiente', items: [] });
+  Envio.findByPk.mockResolvedValue({ id: 99, usuario_id: 3, tienda_id: 1, numero_pedido: 4, numero_pedido_tienda: 2, monto: 40000, estado: 'Pendiente', items: [] });
   PaymentGateway.findOne.mockResolvedValue({ private_key: 'priv', public_key: 'pub' });
   PagoParService.consultarEstadoPedido.mockResolvedValue({ pagado: true, datos: CRUDO_DE_PAGOPAR });
 });

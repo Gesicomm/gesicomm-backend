@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { referenciaPedido } = require('../pedidoIdentificador.service');
 const axios = require('axios');
 
 class PagoParService {
@@ -277,7 +278,7 @@ class PagoParService {
     // autoincremental único): antes se prefijaba "GES-" y solo agregaba
     // ruido. Lo que autentica el callback es la firma, no el formato del id.
     const orderId = String(envio.id);
-    const orderLabel = String(envio.numero_pedido || envio.id);
+    const orderLabel = await referenciaPedido(envio);
     
     // Se cobra el `monto` y nada más: el delivery no se le carga al
     // comprador. El checkout público le muestra ese mismo número (subtotal −

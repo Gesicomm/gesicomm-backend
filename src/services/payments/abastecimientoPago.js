@@ -1,4 +1,5 @@
 const { sequelize, Envio, Usuario } = require('../../models');
+const { referenciaPedido } = require('../pedidoIdentificador.service');
 const PedidosNotificaciones = require('../notificaciones/pedidosNotificaciones.service');
 const { registrarHistorial } = require('../../utils/historial');
 const AuthTracking = require('../authTracking.service');
@@ -90,6 +91,7 @@ async function acreditarPagoAbastecimiento(envio, transaction, {
         detalle,
         envio_id: envio.id,
         numero_pedido: envio.numero_pedido || envio.id,
+        numero_pedido_visible: await referenciaPedido(envio),
         payment_transaction_id: transaction?.id || null,
         payment_hash: transaction?.payment_hash || null,
         monto: montoAbastecimiento(envio),

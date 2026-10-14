@@ -3,6 +3,7 @@ const { sequelize, Envio, EnvioItem, MetodoPago } = require('../models');
 const envioController = require('./envioController');
 const { registrarHistorial } = require('../utils/historial');
 const { envolverControlador } = require('../utils/asyncHandler');
+const { adjuntarIdentificadores } = require('../services/pedidoIdentificador.service');
 
 const DEFAULT_METODOS = [
   { nombre: 'Efectivo contra entrega', comision_porcentaje: 0, es_anticipado: false, custodia_cobro: 'courier', orden: 1 },
@@ -91,7 +92,7 @@ exports.listPedidos = async (req, res) => {
     limit: 200,
   });
 
-  res.json(pedidos.map(serializarEnvio));
+  res.json(await adjuntarIdentificadores(pedidos.map(serializarEnvio)));
 };
 
 exports.listMetodosPago = async (req, res) => {
@@ -182,7 +183,8 @@ exports.marcarNoEntregado = async (req, res) => {
       metadata: { courier_id: req.courier.courierId },
     });
     await t.commit();
-    return res.json(serializarEnvio(envio));
+    const [pedido] = await adjuntarIdentificadores([serializarEnvio(envio)]);
+    return res.json(pedido);
   } catch (error) {
     await t.rollback();
     throw error;

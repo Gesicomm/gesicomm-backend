@@ -6,6 +6,8 @@
  * Las variables disponibles deben coincidir con los nombres que muestra
  * SeguimientoConfig.jsx al usuario.
  */
+const { numeroPedidoVisible } = require('../../utils/pedidoNumero');
+
 function formatGs(valor) {
   const n = Math.max(0, Math.round(Number(valor) || 0));
   return `Gs. ${n.toLocaleString('es-PY')}`;
@@ -22,15 +24,15 @@ const VARIABLES = {
   cliente_nombre: (envio) => [envio.nombre_cliente, envio.apellido_cliente].filter(Boolean).join(' ') || envio.cliente || 'Cliente',
   telefono:       (envio) => envio.telefono || '',
   productos:      (envio) => nombreProductos(envio),
-  pedido_id:      (envio) => String(envio.numero_pedido ?? envio.id),
+  pedido_id:      numeroPedidoVisible,
   total_gs:       (envio) => formatGs(envio.monto),
   direccion_entrega: (envio) => envio.direccion || '',
   courier_nombre: (envio) => envio.courier_nombre || envio.courier || '',
   // Aliases por compatibilidad con plantillas antiguas
   nombre:         (envio) => [envio.nombre_cliente, envio.apellido_cliente].filter(Boolean).join(' ') || envio.cliente || 'Cliente',
   producto:       (envio) => nombreProductos(envio),
-  numero_pedido:  (envio) => String(envio.numero_pedido ?? envio.id),
-  pedido:         (envio) => String(envio.numero_pedido ?? envio.id),
+  numero_pedido:  numeroPedidoVisible,
+  pedido:         numeroPedidoVisible,
   total:          (envio) => formatGs(envio.monto),
   direccion:      (envio) => envio.direccion || '',
   courier:        (envio) => envio.courier_nombre || envio.courier || '',
@@ -58,7 +60,7 @@ function listarVariablesDisponibles() {
   return [
     { key: 'cliente_nombre',    grupo: 'Cliente', desc: 'Nombre del cliente',          ejemplo: 'María González' },
     { key: 'telefono',          grupo: 'Cliente', desc: 'Teléfono del cliente',        ejemplo: '0981 234 567' },
-    { key: 'pedido_id',         grupo: 'Pedido',  desc: 'Número del pedido',           ejemplo: '1842' },
+    { key: 'pedido_id',         grupo: 'Pedido',  desc: 'Número del pedido',           ejemplo: 'Mi tienda-1001' },
     { key: 'productos',         grupo: 'Pedido',  desc: 'Lista de productos del pedido', ejemplo: 'Zapatilla Urban Black, Remera Oversize' },
     { key: 'total_gs',          grupo: 'Pedido',  desc: 'Monto total en guaraníes',    ejemplo: formatGs(249000) },
     { key: 'direccion_entrega', grupo: 'Envío',  desc: 'Dirección de entrega',        ejemplo: 'Av. Mariscal López 1234, Asunción' },

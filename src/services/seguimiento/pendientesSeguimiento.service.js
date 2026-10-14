@@ -1,4 +1,6 @@
 'use strict';
+const { numeroPedidoVisible } = require('../../utils/pedidoNumero');
+const { adjuntarIdentificadores } = require('../pedidoIdentificador.service');
 
 /**
  * En qué mensaje del flujo está cada pedido, y cuándo toca. Alimenta el
@@ -235,7 +237,8 @@ function armarPendientes({
 
     items.push({
       envio_id: pedido.id,
-      numero_pedido: pedido.numero_pedido || pedido.id,
+      numero_pedido: numeroPedidoVisible(pedido),
+      numero_pedido_visible: numeroPedidoVisible(pedido),
       estado: pedido.estado,
       etapa,
       cliente: nombreCliente(pedido),
@@ -294,7 +297,7 @@ function coincideBusqueda(item, busqueda) {
   const sinNumeral = texto.replace(/^#/, '');
   const soloDigitos = texto.replace(/\D/g, '');
   return item.cliente.toLowerCase().includes(texto)
-    || String(item.numero_pedido) === sinNumeral
+    || String(item.numero_pedido_visible || item.numero_pedido).toLowerCase().includes(sinNumeral)
     || (soloDigitos.length >= 4 && String(item.telefono || '').replace(/\D/g, '').includes(soloDigitos));
 }
 
@@ -419,7 +422,7 @@ async function cargarPendientes({ whereBase, usuarioId, esAdmin, etapa, ahora = 
   const filas = await Envio.findAll({
     where: { ...whereBase, [Op.and]: [...(whereBase[Op.and] || []), ...whereDeEtapa(etapa, ahora)] },
     attributes: [
-      'id', 'numero_pedido', 'usuario_id', 'estado', 'origen', 'monto',
+      'id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id', 'estado', 'origen', 'monto',
       'nombre_cliente', 'apellido_cliente', 'cliente', 'telefono', 'ciudad', 'created_at', 'updated_at',
     ],
     order: [['id', 'DESC']],
@@ -429,6 +432,7 @@ async function cargarPendientes({ whereBase, usuarioId, esAdmin, etapa, ahora = 
 
   const truncado = filas.length > LIMITE_PEDIDOS;
   let pedidos = truncado ? filas.slice(0, LIMITE_PEDIDOS) : filas;
+  pedidos = await adjuntarIdentificadores(pedidos);
 
   const flujos = (await flujoService.listarFlujos({ usuarioId, esAdmin, soloActivos: true }))
     .map((f) => (typeof f.toJSON === 'function' ? f.toJSON() : f))

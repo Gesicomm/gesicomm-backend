@@ -18,6 +18,7 @@ const { ESTADOS_ABIERTOS, elegirRecordatorioVigente } = require('../services/seg
 const { FASE_COMPLETADA } = require('../services/seguimiento/pendientesSeguimiento.service');
 const { registrarHistorial } = require('../utils/historial');
 const { resolverMensaje } = require('../services/seguimiento/plantillaResolver.service');
+const { referenciaPedido } = require('../services/pedidoIdentificador.service');
 const { encolarRecordatorio } = require('../services/queue/seguimientoQueue');
 const { logger } = require('../utils/logger');
 const { envolverControlador } = require('../utils/asyncHandler');
@@ -75,6 +76,7 @@ async function cargarEnvioODevolver404(req, res, { conItems = false } = {}) {
     res.status(404).json({ error: 'Pedido no encontrado' });
     return null;
   }
+  envio.numero_pedido_visible = await referenciaPedido(envio);
   return envio;
 }
 

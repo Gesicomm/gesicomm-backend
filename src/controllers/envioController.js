@@ -9,6 +9,7 @@ const { accionSiguientePedido } = require('../services/pedidos/accionSiguientePe
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const { envolverControlador } = require('../utils/asyncHandler');
 const PedidoNumeracion = require('../services/pedidoNumeracion.service');
+const { adjuntarIdentificadores, filtroNumeroPedidoVisible } = require('../services/pedidoIdentificador.service');
 const ProductoService = require('../services/producto.service');
 const StockPorTienda = require('../services/stockPorTienda.service');
 const path = require('path');
@@ -1075,10 +1076,7 @@ function agregarBusquedaClienteONumero(where, cliente) {
     { cliente: { [Op.iLike]: term } },
     { telefono: { [Op.iLike]: term } },
   ];
-  const idPedido = Number(texto.replace(/^#/, ''));
-  if (Number.isInteger(idPedido) && idPedido > 0) {
-    condiciones.push({ numero_pedido: idPedido });
-  }
+  condiciones.push(filtroNumeroPedidoVisible(texto));
   where[Op.or] = condiciones;
 }
 
@@ -1088,9 +1086,8 @@ function numeroFiltro(valor) {
 }
 
 function aplicarFiltrosNumeroPedido(where, req, { pedido_id, envio_id } = {}) {
-  const numeroPedido = numeroFiltro(pedido_id);
-  if (numeroPedido) {
-    where.numero_pedido = numeroPedido;
+  if (String(pedido_id || '').trim()) {
+    where[Op.and] = [...(where[Op.and] || []), filtroNumeroPedidoVisible(pedido_id)];
   }
 
   const envioId = numeroFiltro(envio_id);
@@ -1191,6 +1188,11 @@ function decorarEnvio(envio) {
     recordatorio_vencido: Boolean(estaVencido),
     accion_siguiente: accionSiguientePedido(plano),
   };
+}
+
+async function decorarEnvioConIdentificador(envio) {
+  const [resultado] = await adjuntarIdentificadores([decorarEnvio(envio)]);
+  return resultado;
 }
 
 function speedboxEnvironmentActual() {
@@ -1371,7 +1373,7 @@ exports.listEnvios = async (req, res) => {
       order: [['id', 'DESC']]
     });
 
-    res.json(envios.map(decorarEnvio));
+    res.json(await adjuntarIdentificadores(envios.map(decorarEnvio)));
   } catch (error) {
     console.error('Error listing envios:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -1441,8 +1443,6 @@ exports.listEnviosPaginados = async (req, res) => {
     // Búsqueda flexible e insensible a mayúsculas/minúsculas de cliente (nombre, teléfono, ruc, dirección o ID)
     if (cliente && cliente.trim()) {
       const term = `%${cliente.trim()}%`;
-      const cleanNum = cliente.replace(/#/g, '').trim();
-      const numericId = parseInt(cleanNum, 10);
 
       const orList = [
         { nombre_cliente: { [Op.iLike]: term } },
@@ -1457,9 +1457,7 @@ exports.listEnviosPaginados = async (req, res) => {
         ),
       ];
 
-      if (!isNaN(numericId) && numericId > 0 && String(numericId) === cleanNum) {
-        orList.push({ numero_pedido: numericId });
-      }
+      orList.push(filtroNumeroPedidoVisible(cliente));
 
       where[Op.or] = orList;
     }
@@ -1601,7 +1599,7 @@ exports.listEnviosPaginados = async (req, res) => {
       distinct: true, // necesario con includes para que count sea correcto
     });
 
-    let data = rows.map(decorarEnvio);
+    let data = await adjuntarIdentificadores(rows.map(decorarEnvio));
     data = await adjuntarLogisticaRaha(data);
     if (incluir_seguimiento) {
       // Dato accesorio: si falla, la bandeja se muestra igual, sin esa columna.
@@ -1706,6 +1704,7 @@ exports.createEnvio = async (req, res) => {
       : new Map();
 
     const numeroPedido = await PedidoNumeracion.reservarNumeroPedido(usuario_id, t);
+    const numeroPedidoTienda = await PedidoNumeracion.reservarNumeroPedidoTienda(req.usuario.tiendaId, t);
 
     for (const item of items || []) {
       if (!Number.isSafeInteger(Number(item.cantidad ?? 1)) || Number(item.cantidad ?? 1) <= 0) {
@@ -1722,6 +1721,7 @@ exports.createEnvio = async (req, res) => {
         usuario_id,
         tienda_id: req.usuario.tiendaId || null,
         numero_pedido: numeroPedido,
+        numero_pedido_tienda: numeroPedidoTienda,
         courier_id: courier_id || null,
         cliente: fullCliente,
         fecha: hoy,
@@ -1811,7 +1811,7 @@ exports.createEnvio = async (req, res) => {
       ]
     });
 
-    res.status(201).json(decorarEnvio(result));
+    res.status(201).json(await decorarEnvioConIdentificador(result));
   } catch (error) {
     if (t) await t.rollback();
     console.error('Error creating envio:', error);
@@ -2161,7 +2161,7 @@ exports.updateEstado = async (req, res) => {
       ]
     });
 
-    res.json(decorarEnvio(result));
+    res.json(await decorarEnvioConIdentificador(result));
   } catch (error) {
     if (!t.finished) await t.rollback();
     console.error('Error updating estado:', error);
@@ -2230,7 +2230,7 @@ exports.actualizarPrecioItem = async (req, res) => {
         where: { id: bloqueo.id },
         include: [{ model: EnvioItem, as: 'items' }, { model: Courier }],
       });
-      return res.json(decorarEnvio(sinCambios));
+      return res.json(await decorarEnvioConIdentificador(sinCambios));
     }
 
     const subtotalAnterior = Number(item.subtotal) || 0;
@@ -2252,7 +2252,7 @@ exports.actualizarPrecioItem = async (req, res) => {
       where: { id: bloqueo.id },
       include: [{ model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] }, { model: EnvioItem, as: 'items' }],
     });
-    res.json(decorarEnvio(result));
+    res.json(await decorarEnvioConIdentificador(result));
   } catch (error) {
     if (!t.finished) await t.rollback();
     console.error('Error actualizando precio de item:', error);
@@ -2379,7 +2379,7 @@ exports.definirLogisticaAbastecimiento = async (req, res) => {
     }
 
     await envio.update(datosLogistica);
-    res.json(decorarEnvio(envio));
+    res.json(await decorarEnvioConIdentificador(envio));
   } catch (error) {
     console.error('Error definiendo logistica de abastecimiento:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -2401,7 +2401,7 @@ async function envioAbastecimientoDecorado(envioId) {
       { model: EnvioItem, as: 'items' },
     ],
   });
-  return decorarEnvio(result);
+  return decorarEnvioConIdentificador(result);
 }
 
 function manejarErrorAbastecimiento(res, error, contexto) {
@@ -3469,7 +3469,7 @@ exports.listarPedidosParaPrepararGesicomm = async (req, res) => {
       order: [['created_at', 'ASC']],
     });
 
-    return res.json(envios);
+    return res.json(await adjuntarIdentificadores(envios.map(decorarEnvio)));
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

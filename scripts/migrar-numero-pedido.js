@@ -1,4 +1,5 @@
 const { sequelize } = require('../src/models');
+const { migrarNumeroPedidoTienda } = require('./migrar-numero-pedido-tienda');
 
 async function migrarNumeroPedido() {
   await sequelize.query(`
@@ -60,6 +61,7 @@ async function migrarNumeroPedido() {
     CREATE INDEX IF NOT EXISTS "idx_envios_numero_pedido"
     ON "envios" ("numero_pedido")
   `);
+  await migrarNumeroPedidoTienda(sequelize);
 }
 
 module.exports = { migrarNumeroPedido };

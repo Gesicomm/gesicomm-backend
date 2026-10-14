@@ -1,4 +1,5 @@
 const { sequelize, PaymentTransaction, Envio, Usuario } = require('../../models');
+const { referenciaPedido } = require('../pedidoIdentificador.service');
 const envioController = require('../../controllers/envioController');
 const { registrarHistorial } = require('../../utils/historial');
 const AuthTracking = require('../authTracking.service');
@@ -154,6 +155,7 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
         origen,
         envio_id: envio.id,
         numero_pedido: envio.numero_pedido || envio.id,
+        numero_pedido_visible: await referenciaPedido(envio),
         payment_transaction_id: transaction.id,
         payment_hash: transaction.payment_hash,
         monto: Number(transaction.amount || envio.monto || 0),

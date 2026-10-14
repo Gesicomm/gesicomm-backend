@@ -21,6 +21,7 @@ const { Op } = require('sequelize');
 jest.mock('../../models', () => ({
   sequelize: { transaction: (cb) => cb('TX') },
   Envio: { findOne: jest.fn(), findAll: jest.fn(), count: jest.fn() },
+  Tienda: { findAll: jest.fn(async () => [{ id: 9, usuario_id: 7, nombre: 'Alibaguay' }]) },
   EnvioItem: { findAll: jest.fn() },
   EnvioHistorial: { findAll: jest.fn() },
   WhatsappFlujo: { findAll: jest.fn(), create: jest.fn(), update: jest.fn(), count: jest.fn() },
@@ -58,7 +59,7 @@ const FLUJO_WHATSAPP = {
 };
 
 const pedido = (id, extra = {}) => ({
-  id, numero_pedido: id + 1000, usuario_id: 7, estado: 'Pendiente', origen: 'landing', monto: 150000,
+  id, numero_pedido: id + 1000, numero_pedido_tienda: id, tienda_id: 9, tienda_nombre: 'Alibaguay', usuario_id: 7, estado: 'Pendiente', origen: 'landing', monto: 150000,
   nombre_cliente: 'María', apellido_cliente: 'González', telefono: '0981 111 222', ciudad: 'Luque',
   created_at: enHoras(-30), ...extra,
 });
@@ -96,7 +97,7 @@ describe('en qué fase está el pedido', () => {
 
     expect(item).toMatchObject({
       fase_id: 101, fase_orden: 1, cuando: 'ahora', motivo: 'nuevo', fase_abierta_en: null,
-      cliente: 'María González', numero_pedido: 1001,
+      cliente: 'María González', numero_pedido: 'ALI-1001',
     });
   });
 

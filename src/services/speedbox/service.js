@@ -1,4 +1,5 @@
 'use strict';
+const { adjuntarIdentificadores } = require('../pedidoIdentificador.service');
 const { Op } = require('sequelize');
 const { z } = require('zod');
 const { sequelize, Tienda, Envio, EnvioItem, EnvioItemComponente, Producto, ProductoVariante,
@@ -261,7 +262,7 @@ async function status(usuarioId, options = {}) {
   const orders = await SpeedboxPedido.findAll({ where: { usuario_id: usuarioId },
     attributes: ['id', 'envio_id', 'external_order_id', 'order_id', 'environment', 'estado', 'status', 'intentos',
       'error', 'remote_http_status', 'request_payload', 'updated_at'],
-    include: [{ model: Envio, as: 'envio', attributes: ['numero_pedido', 'monto', 'costo_envio', 'costo_fulfillment',
+    include: [{ model: Envio, as: 'envio', attributes: ['id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id', 'monto', 'costo_envio', 'costo_fulfillment',
       'delivery_a_cargo', 'pago_anticipado', 'abastecimiento_estado', 'abastecimiento_costo', 'abastecimiento_pagado_at', 'estado_financiero'] }], order: [['updated_at', 'DESC']], limit: 50 });
   const events = await SpeedboxEvento.findAll({ where: { usuario_id: usuarioId },
     attributes: ['id', 'event_key', 'tipo', 'order_id', 'occurred_at', 'estado', 'detalle', 'payload', 'source', 'conciliacion'], order: [['id', 'DESC']], limit: 50 });
@@ -269,7 +270,7 @@ async function status(usuarioId, options = {}) {
   const solicitudes = await SolicitudAbastecimiento.findAll({ where: { usuario_id: usuarioId },
     attributes: ['id', 'costo_producto', 'costo_logistico', 'estado'], order: [['id', 'DESC']], limit: 100 });
   const [availableOrders] = await sequelize.query(`
-    SELECT e.id, e.numero_pedido, e.cliente FROM envios e
+    SELECT e.id, e.numero_pedido, e.numero_pedido_tienda, e.tienda_id, e.usuario_id, e.cliente FROM envios e
     LEFT JOIN speedbox_pedidos p ON p.envio_id = e.id
     WHERE e.usuario_id = :usuario
       AND (:tiendaId::INTEGER IS NULL OR e.tienda_id = :tiendaId)
@@ -284,6 +285,20 @@ async function status(usuarioId, options = {}) {
       AND e.stock_descontado = TRUE AND e.stock_liberado = FALSE
     ORDER BY e.id DESC LIMIT 50`, { replacements: { usuario: usuarioId, tiendaId: options.tiendaId || null } });
   const credentials = credentialsConfigured(connection);
+  const pedidosVisibles = await adjuntarIdentificadores(orders.map(order => order.envio).filter(Boolean));
+  const porId = new Map(pedidosVisibles.map(pedido => [pedido.id, pedido]));
+  const disponiblesVisibles = await adjuntarIdentificadores(availableOrders);
+  const eventosPlanos = events.map(event => typeof event.toJSON === 'function' ? event.toJSON() : event);
+  const idsConciliados = [...new Set(eventosPlanos.map(event => event.conciliacion?.envio_id).filter(Boolean))];
+  const enviosConciliados = idsConciliados.length ? await Envio.findAll({
+    where: { usuario_id: usuarioId, id: { [Op.in]: idsConciliados } },
+    attributes: ['id', 'usuario_id', 'tienda_id', 'numero_pedido', 'numero_pedido_tienda'],
+  }) : [];
+  const referenciasConciliadas = new Map((await adjuntarIdentificadores(enviosConciliados))
+    .map(pedido => [pedido.id, pedido.numero_pedido_visible]));
+  const eventosVisibles = eventosPlanos.map(event => ({ ...event, conciliacion: event.conciliacion ? {
+    ...event.conciliacion, numero_pedido_visible: referenciasConciliadas.get(event.conciliacion.envio_id),
+  } : event.conciliacion }));
   const sandboxWebhook = webhookUrl({ ...options, targetEnvironment: 'sandbox' });
   const productionWebhook = webhookUrl({ ...options, targetEnvironment: 'production' });
   const webhook = webhookUrl(options);
@@ -303,9 +318,9 @@ async function status(usuarioId, options = {}) {
     connections: connections.map(serializeConnection),
     orders: orders.map(order => {
       const row = trazaPedidoRaha(order);
-      return { ...row, finanzas: order.envio ? require('./finanzas').desglose(order.envio) : null };
+      return { ...row, envio: porId.get(order.envio?.id) || row.envio, finanzas: order.envio ? require('./finanzas').desglose(order.envio) : null };
     }),
-    events, solicitudes_abastecimiento: solicitudes, available_orders: availableOrders,
+    events: eventosVisibles, solicitudes_abastecimiento: solicitudes, available_orders: disponiblesVisibles,
     checks: { spec: Boolean(connection?.spec_verified_at), store: Boolean(connection?.tienda_id),
       order: Boolean(connection?.order_verified_at) || orderVerified > 0,
       updates: Boolean(connection?.updates_verified_at), webhook: Boolean(connection?.webhook_verified_at) } };

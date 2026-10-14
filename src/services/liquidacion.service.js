@@ -1,4 +1,6 @@
 'use strict';
+const { numeroPedidoVisible } = require('../utils/pedidoNumero');
+const { adjuntarIdentificadores } = require('./pedidoIdentificador.service');
 
 const { Envio, EnvioItem, MetodoPago, Liquidacion, LiquidacionEnvio, Courier, sequelize } = require('../models');
 const { Op } = require('sequelize');
@@ -73,6 +75,7 @@ function calcularDesglose(envios, ajuste_manual = 0) {
 
     return {
       envio_id: e.id,
+      numero_pedido_visible: numeroPedidoVisible(e),
       cliente: e.cliente,
       fecha: e.dispatchedAt,
       estado: e.estado,
@@ -116,7 +119,7 @@ function calcularDesglose(envios, ajuste_manual = 0) {
 /** Previsualización — no persiste nada. */
 async function previsualizar({ courier_id, fecha_desde, fecha_hasta, usuario_id, ajuste_manual = 0 }) {
   const envios = await buscarEnviosElegibles(courier_id, fecha_desde, fecha_hasta, usuario_id, null);
-  return calcularDesglose(envios, ajuste_manual);
+  return calcularDesglose(await adjuntarIdentificadores(envios), ajuste_manual);
 }
 
 /**

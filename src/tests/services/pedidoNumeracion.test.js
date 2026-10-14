@@ -34,4 +34,20 @@ describe('PedidoNumeracion', () => {
     await expect(PedidoNumeracion.reservarNumeroPedido(null)).rejects.toThrow('Usuario inválido');
     expect(sequelize.query).not.toHaveBeenCalled();
   });
+
+  it('reserva un correlativo independiente por tienda en la transacción del pedido', async () => {
+    const transaction = { id: 'tx-tienda' };
+    sequelize.query.mockResolvedValueOnce([[{ ultimo_numero_pedido: 1 }], undefined]);
+    expect(await PedidoNumeracion.reservarNumeroPedidoTienda(5, transaction)).toBe(1);
+    expect(sequelize.query).toHaveBeenCalledWith(expect.stringContaining('ON CONFLICT (tienda_id) DO UPDATE'), {
+      replacements: { tienda_id: 5 }, transaction,
+    });
+  });
+
+  it('no numera pedidos sin tienda y rechaza tiendas o transacciones inválidas', async () => {
+    expect(await PedidoNumeracion.reservarNumeroPedidoTienda(null)).toBeNull();
+    await expect(PedidoNumeracion.reservarNumeroPedidoTienda(0, {})).rejects.toThrow('Tienda inválida');
+    await expect(PedidoNumeracion.reservarNumeroPedidoTienda(5)).rejects.toThrow('transacción');
+    expect(sequelize.query).not.toHaveBeenCalled();
+  });
 });

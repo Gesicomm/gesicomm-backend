@@ -21,7 +21,12 @@ const Envio = sequelize.define('Envio', {
   numero_pedido: {
     type: DataTypes.INTEGER,
     allowNull: false,
-    comment: 'Número visible y correlativo por usuario/tienda. El id global queda como identificador técnico interno.',
+    comment: 'Correlativo interno por usuario, conservado para integraciones existentes.',
+  },
+  numero_pedido_tienda: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'Correlativo público por tienda: el valor 1 se muestra como ALI-1001.',
   },
   courier_id: {
     type: DataTypes.INTEGER,
@@ -448,6 +453,11 @@ const Envio = sequelize.define('Envio', {
       name: 'uq_envios_usuario_numero_pedido',
       unique: true,
       fields: ['usuario_id', 'numero_pedido']
+    },
+    {
+      name: 'uq_envios_tienda_numero_pedido',
+      unique: true,
+      fields: ['tienda_id', 'numero_pedido_tienda']
     }
   ]
 });

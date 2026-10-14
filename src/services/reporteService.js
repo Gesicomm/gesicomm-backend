@@ -2,6 +2,7 @@ const { Op, fn, col, literal } = require('sequelize');
 const { Envio, EnvioItem, EnvioItemComponente, Producto, Oferta, Usuario, ProductoVariante, MetodoPago, Courier } = require('../models');
 const { ESTADOS_ANALITICA } = require('../utils/analyticsConstants');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
+const { adjuntarIdentificadores, filtroNumeroPedidoVisible, sqlReferenciaPedido } = require('./pedidoIdentificador.service');
 
 class ReporteService {
   static _filasQuery(resultado) {
@@ -30,7 +31,7 @@ class ReporteService {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
         Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
-        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.numero_pedido'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        filtroNumeroPedidoVisible(buscador),
         { telefono: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
@@ -77,7 +78,8 @@ class ReporteService {
         e.cliente ILIKE :buscador
         OR e.telefono ILIKE :buscador
         OR CAST(e.id AS TEXT) LIKE :buscador
-        OR CAST(e.numero_pedido AS TEXT) LIKE :buscador
+        OR (${sqlReferenciaPedido('e').referenciaSql}) ILIKE :buscador
+        OR CAST((${sqlReferenciaPedido('e').numeroSql}) AS TEXT) LIKE :buscador
       )`);
       replacements.buscador = `%${filtros.buscador}%`;
     }
@@ -368,7 +370,7 @@ class ReporteService {
       total: count,
       paginas: Math.ceil(count / limite),
       actual: pagina,
-      pedidos: rows
+      pedidos: await adjuntarIdentificadores(rows)
     };
   }
 
@@ -390,7 +392,7 @@ class ReporteService {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
         Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
-        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.numero_pedido'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        filtroNumeroPedidoVisible(buscador),
         { telefono: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
@@ -402,7 +404,7 @@ class ReporteService {
         {
           model: Envio,
           where: whereEnvio,
-          attributes: ['id', 'numero_pedido', 'cliente', 'fecha', 'hora', 'monto', 'metodo_pago', 'quiere_factura']
+          attributes: ['id', 'numero_pedido', 'numero_pedido_tienda', 'usuario_id', 'tienda_id', 'cliente', 'fecha', 'hora', 'monto', 'metodo_pago', 'quiere_factura']
         },
         {
           model: Oferta,
@@ -421,11 +423,14 @@ class ReporteService {
       order: [['id', 'DESC']]
     });
 
+    const items = rows.map(row => typeof row.toJSON === 'function' ? row.toJSON() : row);
+    const pedidos = await adjuntarIdentificadores(items.map(item => item.Envio).filter(Boolean));
+    const porId = new Map(pedidos.map(pedido => [pedido.id, pedido]));
     return {
       total: count,
       paginas: Math.ceil(count / limite),
       actual: pagina,
-      items: rows
+      items: items.map(item => ({ ...item, Envio: porId.get(item.Envio?.id) || item.Envio }))
     };
   }
 
@@ -449,7 +454,7 @@ class ReporteService {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
         Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
-        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.numero_pedido'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        filtroNumeroPedidoVisible(buscador),
         { telefono: { [Op.iLike]: `%${buscador}%` } }
       ];
     }
@@ -459,7 +464,7 @@ class ReporteService {
 
     const { count, rows } = await Envio.findAndCountAll({
       where: whereEnvio,
-      attributes: ['id', 'fecha', 'hora', 'confirmador', 'metodo_pago', 'comision_pct_aplicada', 'monto', 'estado'],
+      attributes: ['id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id', 'fecha', 'hora', 'confirmador', 'metodo_pago', 'comision_pct_aplicada', 'monto', 'estado'],
       limit: limite,
       offset: offset,
       order: [['id', 'DESC']]
@@ -504,7 +509,7 @@ class ReporteService {
       total: count,
       paginas: Math.ceil(count / limite),
       actual: pagina,
-      data: dataTransformada,
+      data: await adjuntarIdentificadores(dataTransformada),
       kpis: {
         total_facturado: totalFacturado,
         total_comisiones: totalComisiones,
@@ -535,7 +540,7 @@ class ReporteService {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
         Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.id'), 'varchar'), { [Op.like]: `%${buscador}%` }),
-        Envio.sequelize.where(Envio.sequelize.cast(Envio.sequelize.col('Envio.numero_pedido'), 'varchar'), { [Op.like]: `%${buscador}%` }),
+        filtroNumeroPedidoVisible(buscador),
         { telefono: { [Op.iLike]: `%${buscador}%` } },
         { ruc: { [Op.iLike]: `%${buscador}%` } },
         { razon_social: { [Op.iLike]: `%${buscador}%` } }
@@ -547,7 +552,7 @@ class ReporteService {
 
     const { count, rows } = await Envio.findAndCountAll({
       where: whereEnvio,
-      attributes: ['id', 'fecha', 'confirmador', 'ruc', 'razon_social', 'monto', 'estado'],
+      attributes: ['id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id', 'fecha', 'confirmador', 'ruc', 'razon_social', 'monto', 'estado'],
       limit: limite,
       offset: offset,
       order: [['id', 'DESC']]
@@ -580,7 +585,7 @@ class ReporteService {
       total: count,
       paginas: Math.ceil(count / limite),
       actual: pagina,
-      data: dataTransformada,
+      data: await adjuntarIdentificadores(dataTransformada),
       kpis: {
         total_sujeto_iva: totalSujeto,
         total_iva: totalIva

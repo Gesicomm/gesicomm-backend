@@ -2,7 +2,7 @@ const client = require('../../services/speedbox/client');
 const { buildOrder, buildSupplyOrder } = require('../../services/speedbox/payload');
 
 function order(overrides = {}) {
-  return { id: 31, usuario_id: 7, numero_pedido: 4, created_at: '2026-10-02T12:00:00Z', monto: 85000, costo_envio: 15000,
+  return { id: 31, usuario_id: 7, tienda_id: 9, numero_pedido: 4, numero_pedido_tienda: 1, created_at: '2026-10-02T12:00:00Z', monto: 85000, costo_envio: 15000,
     cliente: 'Cliente prueba', telefono: '0981000000', direccion: 'Direccion 123', ciudad: 'Asuncion', departamento: 'Central',
     items: [{ cantidad: 1, subtotal: 85000, componentes_vendidos: [{ producto_id: 9, cantidad: 1, producto: { nombre: 'Producto', sku: 'SKU-001', creado_por: 7 } }] }], ...overrides };
 }
@@ -58,7 +58,7 @@ describe('Speedbox client and payload', () => {
   });
   it('maps a confirmed order with a stable external ID and customer-paid delivery', () => {
     expect(buildOrder(order(), store, connection)).toMatchObject({ external_order_id: 'GESICOMM-sandbox-7-31',
-      order_name: '#4', tienda_id: '54', total_price: 100000, payment_method: 'contra_entrega',
+      order_name: 'TIE-1001', tienda_id: '54', total_price: 100000, payment_method: 'contra_entrega',
       items: [{ sku: 'SKU-001', title: 'Producto', quantity: 1, price: 85000 }] });
   });
   it('excludes merchant-paid delivery and distinguishes prepaid orders', () => {

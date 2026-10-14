@@ -35,6 +35,7 @@ const { logger } = require('../utils/logger');
 const CanalVentaService = require('./canalVenta.service');
 const CuponService = require('./cupon.service');
 const PedidoNumeracion = require('./pedidoNumeracion.service');
+const { numeroPedidoVisible } = require('../utils/pedidoNumero');
 const MetaCapiService = require('./metaCapi.service');
 const ImagenService = require('./imagen.service');
 const PrecioUsuarioService = require('./precioUsuario.service');
@@ -4206,10 +4207,12 @@ class LandingService {
 
     const nuevoEnvio = await sequelize.transaction(async (t) => {
       const numeroPedido = await PedidoNumeracion.reservarNumeroPedido(tienda.usuario_id, t);
+      const numeroPedidoTienda = await PedidoNumeracion.reservarNumeroPedidoTienda(tienda.id, t);
       const envioCreado = await Envio.create({
         usuario_id: tienda.usuario_id,
         tienda_id: tienda.id,
         numero_pedido: numeroPedido,
+        numero_pedido_tienda: numeroPedidoTienda,
         cliente: nombre_cliente.trim(),
         nombre_cliente: nombre_cliente.trim(),
         apellido_cliente: null,
@@ -4344,6 +4347,10 @@ class LandingService {
     return {
       pedido_id: nuevoEnvio.id,
       numero_pedido: nuevoEnvio.numero_pedido,
+      numero_pedido_tienda: nuevoEnvio.numero_pedido_tienda,
+      numero_pedido_visible: numeroPedidoVisible(nuevoEnvio, tienda.nombre),
+      tienda_id: tienda.id,
+      tienda_nombre: tienda.nombre,
       // Mismo event_id que acaba de ir por CAPI: el navegador lo usa para su
       // fbq('track', 'Purchase') y Meta cuenta una sola compra.
       purchase_event_id: purchaseEventId,

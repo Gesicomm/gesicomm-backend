@@ -1,4 +1,5 @@
 'use strict';
+const { referenciaPedido } = require('../pedidoIdentificador.service');
 
 const { sequelize, SeguimientoRecordatorio, Notificacion, Envio } = require('../../models');
 const { Transaction, UniqueConstraintError } = require('sequelize');
@@ -59,7 +60,7 @@ async function procesarRecordatorioVencido(recordatorioId, versionEsperada) {
         entidad_id: recordatorio.id,
         envio_id: envio.id,
         titulo: 'Seguimiento pendiente',
-        mensaje: `El pedido #${envio.numero_pedido || envio.id} requiere un nuevo contacto.`,
+        mensaje: `El pedido #${await referenciaPedido(envio, { transaction: t })} requiere un nuevo contacto.`,
       }, { transaction: t });
     } catch (error) {
       if (!(error instanceof UniqueConstraintError)) throw error;

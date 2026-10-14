@@ -21,7 +21,7 @@ jest.mock('../services/payments/paymentService', () => ({
 }));
 jest.mock('../services/canalVenta.service', () => ({ idPorSlug: jest.fn().mockResolvedValue(1) }));
 jest.mock('../services/cupon.service', () => ({ validar: jest.fn(), registrarUso: jest.fn() }));
-jest.mock('../services/pedidoNumeracion.service', () => ({ reservarNumeroPedido: jest.fn().mockResolvedValue(77) }));
+jest.mock('../services/pedidoNumeracion.service', () => ({ reservarNumeroPedido: jest.fn().mockResolvedValue(77), reservarNumeroPedidoTienda: jest.fn().mockResolvedValue(1) }));
 jest.mock('../services/metaCapi.service', () => ({
   enviarCompra: jest.fn(),
   eventIdCompra: envio => `purchase-${envio.id}`,
@@ -30,7 +30,7 @@ jest.mock('../services/metaCapi.service', () => ({
 const LandingService = require('../services/landing.service');
 const MetaCapiService = require('../services/metaCapi.service');
 
-const tienda = { id: 5, usuario_id: 3 };
+const tienda = { id: 5, usuario_id: 3, nombre: 'Alibaguay' };
 const contexto = {
   client_ip: '181.120.1.2',
   client_user_agent: 'Mozilla/5.0',
@@ -61,6 +61,8 @@ beforeEach(() => {
 describe('LandingService.crearCheckout — tracking de Meta', () => {
   it('con PagoPar guarda el navegador y los productos para el Purchase diferido', async () => {
     const r = await LandingService.crearCheckout(tienda, 'tienda', datos({ payment_method: 'pagopar' }), contexto);
+    expect(r.numero_pedido_tienda).toBe(1);
+    expect(r.numero_pedido_visible).toBe(`${tienda.nombre.toUpperCase().slice(0, 3)}-1001`);
 
     expect(mockEnvioCreate.mock.calls[0][0].tracking_contexto).toEqual({
       ...contexto,

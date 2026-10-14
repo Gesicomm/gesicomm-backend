@@ -1,5 +1,6 @@
 'use strict';
 const { orderSchema } = require('./client');
+const { numeroPedidoVisible } = require('../../utils/pedidoNumero');
 
 function esProductoExterno(product, usuarioId) {
   return usuarioId != null && Number(product?.creado_por) !== Number(usuarioId);
@@ -36,7 +37,7 @@ function buildOrder(envio, tienda, connection, variants = new Map(), options = {
   if (!items.length) throw Object.assign(new Error('El pedido no tiene productos RAHA para enviar a Speedbox.'), { status: 422 });
   const payload = {
     external_order_id: `GESICOMM-${connection.environment}-${envio.usuario_id}-${envio.id}`,
-    order_name: `#${envio.numero_pedido}`, tienda_id: String(connection.tienda_id),
+    order_name: numeroPedidoVisible(envio, tienda.nombre), tienda_id: String(connection.tienda_id),
     created_at: new Date(envio.created_at).toISOString(), currency: 'PYG',
     total_price: options.onlyExternalProducts
       ? items.reduce((sum, item) => sum + (Number(item.price) * Number(item.quantity)), 0)

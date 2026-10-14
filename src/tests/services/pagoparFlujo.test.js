@@ -13,6 +13,7 @@ jest.mock('../../controllers/envioController', () => ({ descontarStockYSnapshot:
 jest.mock('../../utils/historial', () => ({ registrarHistorial: jest.fn() }));
 jest.mock('../../models', () => ({
   Envio: { findByPk: jest.fn() },
+  Tienda: { findAll: jest.fn(async () => [{ id: 9, usuario_id: 7, nombre: 'Alibaguay' }]) },
   EnvioItem: {},
   PaymentGateway: { findOne: jest.fn() },
   PaymentTransaction: { findOne: jest.fn(), create: jest.fn(), findByPk: jest.fn() },
@@ -42,6 +43,9 @@ function envioMock(extra) {
   return Object.assign({
     id: 1234,
     usuario_id: 7,
+    tienda_id: 9,
+    numero_pedido: 3,
+    numero_pedido_tienda: 1,
     monto: 150000,
     costo_envio: 25000,
     estado: 'Pendiente',
@@ -100,6 +104,7 @@ describe('Paso 1 — contrato del payload de iniciar-transaccion', () => {
     expect(body).not.toHaveProperty('compras_articulos');
 
     const item = body.compras_items[0];
+    expect(body.descripcion_resumen).toBe('Pago de pedido ALI-1001');
     // Los tres obligatorios segun la doc.
     expect(item.nombre).toBe('Chomba');
     expect(item.id_producto).toBe(42);

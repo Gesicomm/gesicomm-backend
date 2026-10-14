@@ -1,4 +1,6 @@
 'use strict';
+const { numeroPedidoVisible } = require('../../utils/pedidoNumero');
+const { referenciaPedido } = require('../pedidoIdentificador.service');
 
 const { Envio, EnvioItem, Usuario, Tienda, Notificacion, Rol } = require('../../models');
 const { UniqueConstraintError } = require('sequelize');
@@ -87,7 +89,7 @@ async function notificarAbastecimientoPagado(envioId) {
     : await Tienda.findOne({ where: { usuario_id: envio.usuario_id }, attributes: ['nombre'] });
   const costo = formatGs(envio.abastecimiento_costo);
   const pedidoUrl = urlPedidos();
-  const numeroPedido = envio.numero_pedido || envio.id;
+  const numeroPedido = numeroPedidoVisible(envio, tienda?.nombre);
   const cliente = [envio.nombre_cliente, envio.apellido_cliente].filter(Boolean).join(' ') || envio.cliente || 'Cliente';
   const tiendaNombre = tienda?.nombre || 'Tu tienda';
   const usuarioPedido = envio.Usuario?.nombre || envio.Usuario?.correo_electronico || `Usuario #${envio.usuario_id}`;
@@ -187,7 +189,7 @@ async function notificarComprobanteAbastecimientoSubido(envioId, historialId = n
   const tienda = envio.tienda_id
     ? await Tienda.findByPk(envio.tienda_id, { attributes: ['nombre'] })
     : await Tienda.findOne({ where: { usuario_id: envio.usuario_id }, attributes: ['nombre'] });
-  const numeroPedido = envio.numero_pedido || envio.id;
+  const numeroPedido = numeroPedidoVisible(envio, tienda?.nombre);
   const tiendaNombre = tienda?.nombre || 'Tu tienda';
   const pedidoUrl = urlPedidos();
 
@@ -276,7 +278,7 @@ async function notificarPagoAbastecimientoRechazado(envioId, motivo, historialId
       entidad_id: historialId || envio.id,
       envio_id: envio.id,
       titulo: 'Comprobante de pago rechazado',
-      mensaje: `El pedido #${envio.numero_pedido || envio.id}: ${motivo}`,
+      mensaje: `El pedido #${await referenciaPedido(envio)}: ${motivo}`,
     });
   } catch (error) {
     if (!(error instanceof UniqueConstraintError)) throw error;
