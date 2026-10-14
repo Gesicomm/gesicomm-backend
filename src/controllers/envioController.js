@@ -1199,7 +1199,6 @@ function speedboxEnvironmentActual() {
 
 function aplicarFiltroLogisticaRaha(where, { logistica_raha, excluir_logistica_raha }) {
   const condiciones = [...(where[Op.and] || [])];
-  const environment = String(speedboxEnvironmentActual()).replace(/'/g, "''");
   const estadosPostConfirmacionLista = ['Confirmado', 'Preparado', 'Despachado', 'Reprogramado', 'Entregado', 'Devuelto', 'Perdido'];
   const estadosPostConfirmacionSql = estadosPostConfirmacionLista.map(estado => `'${estado}'`).join(', ');
   if (logistica_raha) {
@@ -1208,7 +1207,6 @@ function aplicarFiltroLogisticaRaha(where, { logistica_raha, excluir_logistica_r
       SELECT 1
       FROM speedbox_pedidos sp_raha
       WHERE sp_raha.envio_id = "Envio"."id"
-        AND sp_raha.environment = '${environment}'
         AND sp_raha.order_id IS NOT NULL
         AND sp_raha.estado IN ('enviado', 'enviando', 'incierto')
     )`));
@@ -1217,7 +1215,6 @@ function aplicarFiltroLogisticaRaha(where, { logistica_raha, excluir_logistica_r
       SELECT 1
       FROM speedbox_pedidos sp_raha
       WHERE sp_raha.envio_id = "Envio"."id"
-        AND sp_raha.environment = '${environment}'
         AND sp_raha.order_id IS NOT NULL
         AND sp_raha.estado IN ('enviado', 'enviando', 'incierto')
         AND "Envio"."estado" IN (${estadosPostConfirmacionSql})
@@ -1230,12 +1227,32 @@ function statusRahaDesdePayload(payload) {
   return payload?.data?.status || payload?.payload?.status || payload?.status || null;
 }
 
+function datosRahaDesdePayload(payload) {
+  return payload?.data || payload?.payload || payload || {};
+}
+
+function primerTextoRaha(...valores) {
+  for (const valor of valores) {
+    const texto = String(valor || '').trim();
+    if (texto) return texto;
+  }
+  return null;
+}
+
+function contextoEventoRaha(payload) {
+  const data = datosRahaDesdePayload(payload);
+  return {
+    courier_name: primerTextoRaha(data.courier_name, data.courier, data.courierName, data.transportista, data.mensajero),
+    tracking_code: primerTextoRaha(data.tracking_code, data.tracking, data.codigo_rastreo, data.codigo_seguimiento, data.guia, data.guia_rastreo, data.spb_code),
+    return_reason: primerTextoRaha(data.return_reason, data.motivo_devolucion, data.reason, data.motivo, data.detalle),
+  };
+}
+
 async function adjuntarLogisticaRaha(envios) {
   if (!envios.length) return envios;
   const ids = envios.map((envio) => envio.id).filter(Boolean);
-  const environment = speedboxEnvironmentActual();
   const pedidos = await SpeedboxPedido.findAll({
-    where: { envio_id: { [Op.in]: ids }, environment },
+    where: { envio_id: { [Op.in]: ids } },
     attributes: ['envio_id', 'external_order_id', 'order_id', 'environment', 'estado', 'status', 'status_at',
       'error', 'remote_http_status', 'request_payload', 'updated_at'],
     raw: true,
@@ -1250,16 +1267,17 @@ async function adjuntarLogisticaRaha(envios) {
   const orderIds = pedidos.map((pedido) => pedido.order_id).filter(Boolean);
   const eventos = orderIds.length
     ? await SpeedboxEvento.findAll({
-      where: { order_id: { [Op.in]: orderIds }, environment },
-      attributes: ['id', 'tipo', 'order_id', 'occurred_at', 'source', 'estado', 'detalle', 'payload'],
+      where: { [Op.or]: pedidos.filter(pedido => pedido.order_id).map(pedido => ({ order_id: pedido.order_id, environment: pedido.environment })) },
+      attributes: ['id', 'tipo', 'order_id', 'environment', 'occurred_at', 'source', 'estado', 'detalle', 'payload'],
       order: [['occurred_at', 'ASC'], ['id', 'ASC']],
       raw: true,
     })
     : [];
   const eventosPorOrderId = new Map();
   for (const evento of eventos) {
-    const key = String(evento.order_id);
+    const key = `${evento.environment}:${evento.order_id}`;
     const lista = eventosPorOrderId.get(key) || [];
+    const contexto = contextoEventoRaha(evento.payload);
     lista.push({
       id: evento.id,
       tipo: evento.tipo,
@@ -1268,6 +1286,7 @@ async function adjuntarLogisticaRaha(envios) {
       source: evento.source,
       estado: evento.estado,
       detalle: evento.detalle,
+      ...contexto,
     });
     eventosPorOrderId.set(key, lista);
   }
@@ -1293,7 +1312,7 @@ async function adjuntarLogisticaRaha(envios) {
         error: pedido.error,
         remote_http_status: pedido.remote_http_status,
         updated_at: pedido.updated_at,
-        eventos: pedido.order_id ? (eventosPorOrderId.get(String(pedido.order_id)) || []) : [],
+        eventos: pedido.order_id ? (eventosPorOrderId.get(`${pedido.environment}:${pedido.order_id}`) || []) : [],
       },
     };
   });

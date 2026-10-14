@@ -51,6 +51,35 @@ class ProveedorLogisticoService {
     });
   }
 
+  static normalizarNombreProveedor(nombre) {
+    return String(nombre || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+  }
+
+  static esProveedorRaha(proveedor) {
+    const nombre = this.normalizarNombreProveedor(proveedor?.nombre);
+    const compacto = nombre.replace(/[^a-z0-9]/g, '');
+    return compacto.includes('raha') || compacto.includes('raja');
+  }
+
+  /**
+   * La modalidad comercial se vende como Gesicom-RAHA. Si RAHA/Rajá está
+   * cargado como proveedor, esa es la cobertura que debe ver y usar el
+   * comercio; otros proveedores siguen administrables desde Fulfillment, pero
+   * no amplían la promesa comercial de RAHA.
+   */
+  static async proveedoresComercialesGesicomm() {
+    const proveedores = await ProveedorLogistico.findAll({
+      where: { activo: true },
+      order: [['nombre', 'ASC']],
+    });
+    const raha = proveedores.filter((p) => this.esProveedorRaha(p));
+    return raha.length > 0 ? raha : proveedores;
+  }
+
   static async porId(id) {
     const proveedor = await ProveedorLogistico.findByPk(id);
     if (!proveedor) throw errorHttp('Proveedor logístico no encontrado.', 404);

@@ -24,7 +24,7 @@ jest.mock('../../models', () => ({
   EnvioItem: { findAll: jest.fn() },
   EnvioHistorial: { findAll: jest.fn() },
   WhatsappFlujo: { findAll: jest.fn(), create: jest.fn(), update: jest.fn(), count: jest.fn() },
-  WhatsappFlujoFase: { findOne: jest.fn(), create: jest.fn() },
+  WhatsappFlujoFase: { findOne: jest.fn(), findAll: jest.fn(async () => []), create: jest.fn() },
   EnvioEtiqueta: { findOne: jest.fn(), create: jest.fn() },
   SeguimientoContacto: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), count: jest.fn() },
   SeguimientoRecordatorio: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), update: jest.fn() },
@@ -72,8 +72,8 @@ const completada = (envio_id, fase_id, haceHoras, flujo_id = 10) => ({
 const FLUJO_ENVIO = {
   id: 30, usuario_id: 7, nombre: 'Seguimiento de envío', tipo: 'SEGUIMIENTO_ENVIO', predeterminado: true,
   fases: [
-    { id: 301, orden: 1, nombre: 'Pedido confirmado', espera_sugerida_minutos: 0, activo: true },
-    { id: 302, orden: 2, nombre: 'Pedido despachado', espera_sugerida_minutos: 0, activo: true },
+    { id: 301, orden: 1, nombre: 'Pedido confirmado', accion_operativa: 'PREPARAR_PEDIDO', espera_sugerida_minutos: 0, activo: true },
+    { id: 302, orden: 2, nombre: 'Pedido despachado', accion_operativa: 'DESPACHAR_PEDIDO', espera_sugerida_minutos: 0, activo: true },
   ],
 };
 const TRES_DIAS = 3 * 24 * 60;
@@ -433,6 +433,9 @@ describe('los cuatro flujos base', () => {
     // El primer mensaje de recompra nace con 3 días desde la entrega.
     const primeraDeRecompra = WhatsappFlujoFase.create.mock.calls.map(([d]) => d).filter((d) => d.orden === 1).pop();
     expect(primeraDeRecompra.espera_sugerida_minutos).toBe(3 * 24 * 60);
+    const primeraDeEnvio = WhatsappFlujoFase.create.mock.calls.map(([d]) => d)
+      .find((d) => d.nombre === 'Pedido confirmado');
+    expect(primeraDeEnvio.accion_operativa).toBe('PREPARAR_PEDIDO');
   });
 
   test('con los cuatro tipos ya presentes no crea nada', async () => {
@@ -523,6 +526,11 @@ describe('marcar una fase como completada', () => {
     flujo: { nombre: 'Confirmación de pedido' },
   };
   const FASE_3 = { id: 103, flujo_id: 10, orden: 3, nombre: 'Último intento', espera_sugerida_minutos: 1440 };
+  const FASE_PEDIDO_CONFIRMADO = {
+    id: 301, flujo_id: 30, orden: 9, nombre: 'Aviso operativo editado', mensaje: 'Preparando', etiqueta_id: null,
+    accion_operativa: 'PREPARAR_PEDIDO',
+    flujo: { nombre: 'Seguimiento de envío', tipo: 'SEGUIMIENTO_ENVIO' },
+  };
 
   let envio;
   beforeEach(() => {
@@ -607,6 +615,42 @@ describe('marcar una fase como completada', () => {
 
     expect(envio.estado).toBe('EnSeguimiento');
     expect(res.cuerpo.pedido_paso_a_en_seguimiento).toBe(true);
+  });
+
+  test('un pedido Confirmado pasa a Preparado al completar la fase logística de preparación', async () => {
+    envio.estado = 'Confirmado';
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce(FASE_PEDIDO_CONFIRMADO).mockResolvedValueOnce(null);
+    SeguimientoContacto.findOne.mockResolvedValueOnce(fila({ id: 1, estado: 'ABIERTO_EN_WHATSAPP' }));
+    const res = respuesta();
+
+    await controller.completarFase(peticion({}, { faseId: '301' }), res, jest.fn());
+
+    expect(envio.estado).toBe('Preparado');
+    expect(envio.estado_logistico).toBe('Preparado');
+    expect(res.cuerpo.pedido_paso_a_preparado).toBe(true);
+    expect(res.cuerpo.estado_logistico_actualizado).toBe('Preparado');
+  });
+
+  test('una fase sin acción operativa no cambia estado aunque tenga nombre u orden parecido', async () => {
+    envio.estado = 'Confirmado';
+    const faseSinAccion = {
+      ...FASE_PEDIDO_CONFIRMADO,
+      orden: 1,
+      nombre: 'Pedido confirmado',
+      accion_operativa: null,
+    };
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce(faseSinAccion).mockResolvedValueOnce(null);
+    SeguimientoContacto.findOne.mockResolvedValueOnce(fila({ id: 1, estado: 'ABIERTO_EN_WHATSAPP' }));
+    const res = respuesta();
+
+    await controller.completarFase(peticion({}, { faseId: '301' }), res, jest.fn());
+
+    expect(envio.estado).toBe('Confirmado');
+    expect(envio.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ estado: 'Preparado' }),
+      expect.anything(),
+    );
+    expect(res.cuerpo.pedido_paso_a_preparado).toBe(false);
   });
 
   test('abrir WhatsApp ya no cumple recordatorios ni avanza nada', async () => {

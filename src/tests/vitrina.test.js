@@ -10,6 +10,7 @@ jest.mock('../models', () => ({
   },
   Categoria: {
     findOne: jest.fn(),
+    findAll: jest.fn(),
   },
   Producto: {
     findAll: jest.fn(),
@@ -102,6 +103,26 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     expect(resultado.items).toHaveLength(1);
     expect(resultado.items[0].nombre).toBe('Mi Producto');
     expect(resultado.items[0].creado_por).toBe(42);
+  });
+
+  test('reutiliza el precio y la categoría del JOIN sin consultar precios de la página otra vez', async () => {
+    sequelize.query.mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([{ id: 10, tipo: 'producto', precio_usuario: '140000', categoria_personalizada_id: 8 }])
+      .mockResolvedValue([]);
+    Producto.findAll.mockResolvedValueOnce([{ id: 10, nombre: 'Producto', precio_base: '100000', precio_minimo: null, creado_por: 42 }]);
+    Categoria.findAll.mockResolvedValueOnce([{ id: 8, nombre: 'Personalizada' }]);
+    ProductoImagen.findAll.mockResolvedValueOnce([]);
+    const data = await PrecioUsuarioService.listarCatalogoPaginado(42, 1);
+    expect(data.items[0]).toMatchObject({ precio_usuario: 140000, precio_efectivo: 140000, categoria: 'Personalizada', categoria_id: 8 });
+    expect(PrecioUsuario.findAll).not.toHaveBeenCalled();
+  });
+
+  test('acota la paginación y desempata productos con nombres repetidos', async () => {
+    sequelize.query.mockResolvedValueOnce([{ total: 0 }]).mockResolvedValue([]);
+    const data = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { page: -2, limit: 20000 });
+    expect(data.page).toBe(1);
+    expect(sequelize.query.mock.calls[1][1].replacements).toMatchObject({ limit: 10000, offset: 0 });
+    expect(sequelize.query.mock.calls[1][0]).toContain('ORDER BY nombre ASC, tipo ASC, id ASC');
   });
 
   test('en modo usuario, todos incluye solo productos globales/admin y propios', async () => {

@@ -402,7 +402,9 @@ class PrecioUsuarioService {
       page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', filtroMarca = '', filtroStock = '', orden = 'nombre', tipo = 'todos',
       solamenteMios = false, mios_solamente = false, origenCatalogo = null
     } = filtros;
-    const offset = (page - 1) * limit;
+    const pagina = Math.max(1, parseInt(page, 10) || 1);
+    const limite = Math.min(10000, Math.max(1, parseInt(limit, 10) || 10));
+    const offset = (pagina - 1) * limite;
 
     const replacements = { usuario_id, inquilino_id };
     if (tiendaId != null) replacements.tienda_id = tiendaId;
@@ -414,18 +416,9 @@ class PrecioUsuarioService {
       return { items: [], total: 0, page: parseInt(page), totalPages: 1, categorias: [], proveedores: [], marcas: [] };
     }
     // Un combo propio puede tener como principal un producto del administrador.
-    const administradoresIds = !esAdmin ? await this.obtenerIdsAdministradores(inquilino_id) : [];
     const creadorFilter = this.visibilidadCatalogoSql(esAdmin, miosOnly)
       + (gesicomOnly ? ' AND p.creado_por IS DISTINCT FROM :usuario_id' : '');
     const tiendaFilter = !esAdmin ? this.visibilidadTiendaProductoSql(tiendaId) : '';
-    const visibilidadProductoPaginado = this.combinarVisibilidadProducto(
-      this.visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly, administradoresIds),
-      !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {},
-    );
-    const visibilidadProductoPadre = this.combinarVisibilidadProducto(
-      this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
-      !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {},
-    );
     // Filtro de categoría
     let catFilter = '';
     if (filtroCategoria) {
@@ -502,7 +495,8 @@ class PrecioUsuarioService {
       : '';
 
     const productosSql = `
-      SELECT p.id, 'producto' as tipo, p.nombre, p.descripcion_corta as descripcion, p.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, p.creado_por,
+      SELECT p.id, 'producto' as tipo, p.nombre, p.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, p.creado_por,
+        pu.precio as precio_usuario, pu.categoria_id as categoria_personalizada_id,
         COALESCE(pu.precio, p.precio_base) as precio_efectivo
       FROM productos p
       LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
@@ -519,7 +513,8 @@ class PrecioUsuarioService {
 
     const combosSql = `
       /* p.categoria_id, c.creado_por */
-      SELECT c.id, 'combo' as tipo, c.nombre, c.descripcion, c.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, c.creado_por,
+      SELECT c.id, 'combo' as tipo, c.nombre, c.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, c.creado_por,
+        pu.precio as precio_usuario, pu.categoria_id as categoria_personalizada_id,
         COALESCE(pu.precio, c.precio_total) as precio_efectivo
       FROM producto_combos c
       INNER JOIN productos p ON c.producto_id = p.id AND p.inquilino_id = :inquilino_id AND p.activo = true
@@ -547,15 +542,30 @@ class PrecioUsuarioService {
     }
 
     const countQuery = `SELECT COUNT(*) as total FROM (${finalQuery}) as t`;
-    const dataQuery = `${finalQuery} ${orderSql} LIMIT :limit OFFSET :offset`;
+    const dataQuery = `${finalQuery} ${orderSql}, tipo ASC, id ASC LIMIT :limit OFFSET :offset`;
     
-    replacements.limit = parseInt(limit);
+    replacements.limit = limite;
     replacements.offset = parseInt(offset);
 
-    const [countResult, paginatedItems] = await Promise.all([
+    const [countResult, paginatedItems, administradoresIds] = await Promise.all([
       sequelize.query(countQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
-      sequelize.query(dataQuery, { replacements, type: sequelize.QueryTypes.SELECT })
+      sequelize.query(dataQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
+      !esAdmin ? this.obtenerIdsAdministradores(inquilino_id) : [],
     ]);
+
+    const visibilidadProductoPaginado = this.combinarVisibilidadProducto(
+      this.visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly, administradoresIds),
+      !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {},
+    );
+    const visibilidadProductoPadre = this.combinarVisibilidadProducto(
+      this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds),
+      !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {},
+    );
+    // El JOIN de la página ya trae los precios y categorías personalizados.
+    // No volver a consultar precios_usuario dos veces para las mismas filas.
+    const precios = paginatedItems.filter(i => i.precio_usuario != null || i.categoria_personalizada_id != null).map(i => ({
+      tipo: i.tipo, referencia_id: i.id, precio: i.precio_usuario, categoria_id: i.categoria_personalizada_id,
+    }));
 
     const total = parseInt(countResult[0]?.total || 0);
     
@@ -564,7 +574,7 @@ class PrecioUsuarioService {
 
     const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca, Proveedor } = require('../models');
 
-    const [productos, combos, precios, categoriasUnicasData, proveedoresUnicasData, marcasUnicasData] = await Promise.all([
+    const [productos, combos, categoriasUnicasData, proveedoresUnicasData, marcasUnicasData] = await Promise.all([
       idsProductos.length ? Producto.findAll({
         where: {
           id: { [require('sequelize').Op.in]: idsProductos },
@@ -620,9 +630,6 @@ class PrecioUsuarioService {
           },
         ]
       }) : [],
-      PrecioUsuario.findAll({ where: { usuario_id, tipo: 'producto', referencia_id: { [require('sequelize').Op.in]: idsProductos } } }).then(p1 => 
-        PrecioUsuario.findAll({ where: { usuario_id, tipo: 'combo', referencia_id: { [require('sequelize').Op.in]: idsCombos } } }).then(p2 => [...p1, ...p2])
-      ),
       sequelize.query(`
         SELECT DISTINCT c.nombre 
         FROM productos p
@@ -667,10 +674,6 @@ class PrecioUsuarioService {
 
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
     const categoriaIdsPersonalizadas = [...new Set(precios.map(p => p.categoria_id).filter(Boolean))];
-    const categoriasPersonalizadas = categoriaIdsPersonalizadas.length
-      ? await Categoria.findAll({ where: { id: { [Op.in]: categoriaIdsPersonalizadas }, inquilino_id }, attributes: ['id', 'nombre', 'parent_id'] })
-      : [];
-    const mapaCategoriasPersonalizadas = new Map(categoriasPersonalizadas.map(c => [Number(c.id), c]));
     const idsProductosEnCombos = [
       ...new Set([
         ...combos.map(c => c.producto_padre?.id).filter(Boolean),
@@ -678,16 +681,6 @@ class PrecioUsuarioService {
       ]),
     ];
     const idsProductosEnCombosSinPrecio = idsProductosEnCombos.filter(id => !mapaPrecios.has(`producto:${id}`));
-    if (idsProductosEnCombosSinPrecio.length > 0) {
-      const preciosComponentes = await PrecioUsuario.findAll({
-        where: {
-          usuario_id,
-          tipo: 'producto',
-          referencia_id: { [require('sequelize').Op.in]: idsProductosEnCombosSinPrecio },
-        },
-      });
-      preciosComponentes.forEach(p => mapaPrecios.set(`producto:${p.referencia_id}`, parseFloat(p.precio)));
-    }
     const precioVentaProducto = (prod) => {
       if (!prod) return null;
       const precioUsuario = mapaPrecios.has(`producto:${prod.id}`) ? mapaPrecios.get(`producto:${prod.id}`) : null;
@@ -730,12 +723,25 @@ class PrecioUsuarioService {
     // producto y, si TODAS están atadas a una variante, se usan igual —
     // mejor mostrar algo que una galería vacía.
     const galeriaMap = new Map();
-    if (idsParaImagen.length > 0) {
-      const imagenes = await ProductoImagen.findAll({
-        where: { producto_id: { [require('sequelize').Op.in]: idsParaImagen } },
+    const [imagenes, categoriasPersonalizadas, preciosComponentes, idsConOpciones] = await Promise.all([
+      idsParaImagen.length ? ProductoImagen.findAll({
+        where: { producto_id: { [Op.in]: [...new Set(idsParaImagen)] } },
         attributes: ['producto_id', 'url', 'variante_id'],
         order: [['es_principal', 'DESC'], ['orden', 'ASC']],
-      });
+      }) : [],
+      categoriaIdsPersonalizadas.length ? Categoria.findAll({
+        where: { id: { [Op.in]: categoriaIdsPersonalizadas }, inquilino_id }, attributes: ['id', 'nombre', 'parent_id'],
+      }) : [],
+      idsProductosEnCombosSinPrecio.length ? PrecioUsuario.findAll({
+        where: { usuario_id, tipo: 'producto', referencia_id: { [Op.in]: idsProductosEnCombosSinPrecio } },
+        attributes: ['referencia_id', 'precio'],
+      }) : [],
+      this.idsConOpciones(productos, inquilino_id),
+    ]);
+    const mapaCategoriasPersonalizadas = new Map(categoriasPersonalizadas.map(c => [Number(c.id), c]));
+    preciosComponentes.forEach(p => mapaPrecios.set(`producto:${p.referencia_id}`, parseFloat(p.precio)));
+    const mapaRegistrosPrecio = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, p]));
+    if (idsParaImagen.length > 0) {
       const porProducto = new Map();
       imagenes.forEach(img => {
         if (!porProducto.has(img.producto_id)) porProducto.set(img.producto_id, []);
@@ -748,10 +754,9 @@ class PrecioUsuarioService {
     }
     const imgMap = new Map([...galeriaMap].map(([id, urls]) => [id, urls[0]]));
 
-    const idsConOpciones = await this.idsConOpciones(productos, inquilino_id);
     const mapaProductosDto = new Map(productos.map(p => {
       const precioUsuario = mapaPrecios.has(`producto:${p.id}`) ? mapaPrecios.get(`producto:${p.id}`) : null;
-      const precioRegistro = precios.find(pr => pr.tipo === 'producto' && Number(pr.referencia_id) === Number(p.id));
+      const precioRegistro = mapaRegistrosPrecio.get(`producto:${p.id}`);
       const categoriaPersonalizada = precioRegistro?.categoria_id ? mapaCategoriasPersonalizadas.get(Number(precioRegistro.categoria_id)) : null;
       const esProductoPropio = (p.creado_por != null && Number(p.creado_por) === Number(usuario_id));
       const precioCosto = p.precio_costo != null ? parseFloat(p.precio_costo) : null;
@@ -790,7 +795,7 @@ class PrecioUsuarioService {
 
     const mapaCombosDto = new Map(combos.map(c => {
       const precioUsuario = mapaPrecios.has(`combo:${c.id}`) ? mapaPrecios.get(`combo:${c.id}`) : null;
-      const precioRegistro = precios.find(pr => pr.tipo === 'combo' && Number(pr.referencia_id) === Number(c.id));
+      const precioRegistro = mapaRegistrosPrecio.get(`combo:${c.id}`);
       const categoriaPersonalizada = precioRegistro?.categoria_id ? mapaCategoriasPersonalizadas.get(Number(precioRegistro.categoria_id)) : null;
       const precioBase = parseFloat(c.precio_total);
       const padre = c.producto_padre;
@@ -846,8 +851,8 @@ class PrecioUsuarioService {
     return { 
       items, 
       total, 
-      page: parseInt(page), 
-      totalPages: Math.ceil(total / limit),
+      page: pagina,
+      totalPages: Math.ceil(total / limite),
       categorias: categoriasUnicas,
       proveedores: proveedoresUnicos,
       marcas: marcasUnicas

@@ -189,7 +189,7 @@ async function queueConfirmedOrder(envio, transaction) {
     defaults: { usuario_id: envio.usuario_id, external_order_id: `GESICOMM-${connection.environment}-${envio.usuario_id}-${envio.id}` }, transaction });
   if (mapping.estado === 'pendiente') {
     // Commit the outbox with confirmation; never send an uncommitted order.
-    transaction.afterCommit(() => { setImmediate(() => { void dispatchConfirmedOrder(envio.usuario_id, envio.id); }); });
+    transaction.afterCommit(() => dispatchConfirmedOrder(envio.usuario_id, envio.id));
   }
   return mapping;
 }
@@ -350,6 +350,7 @@ async function configure(usuarioId, input, options = {}) {
 async function registerStore(usuarioId, input = {}, options = {}) {
   const credentialInput = extractCredentialInput(input);
   const env = environmentFromInput(input, credentialInput.provided ? 'sandbox' : environment());
+  const forceRemoteStore = input.force_recreate === true || input.force === true;
   const tienda = await tiendaDelUsuario(usuarioId, { tiendaId: options.tiendaId });
   if (!tienda) fail('Primero configura tu tienda.', 404);
   const connection = await sequelize.transaction(async transaction => {
@@ -363,7 +364,7 @@ async function registerStore(usuarioId, input = {}, options = {}) {
     const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
     const updates = credentialUpdates(input, connection).updates;
     if (Object.keys(updates).length) await connection.update(updates, { transaction });
-    if (connection.tienda_id) {
+    if (connection.tienda_id && !forceRemoteStore) {
       return connection.activo ? connection : connection.update(activeConnectionFields(connection), { transaction });
     }
     const response = await client.request('store', { method: 'POST', credentials, body: {

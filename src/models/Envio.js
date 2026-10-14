@@ -230,6 +230,16 @@ const Envio = sequelize.define('Envio', {
     allowNull: true,
     comment: 'Cedula del comprador. La pide PagoPar para cobrar online, independientemente de si quiere factura.',
   },
+  email: {
+    type: DataTypes.STRING(160),
+    allowNull: true,
+    comment: 'Correo del comprador. Obligatorio en el checkout con pago anticipado (comprobante de la pasarela).',
+  },
+  acepta_promociones: {
+    type: DataTypes.BOOLEAN,
+    allowNull: true,
+    comment: 'El comprador tildó recibir promociones por correo. NULL = pedido anterior o sin correo: nunca se le preguntó.',
+  },
   ruc: {
     type: DataTypes.STRING(20),
     allowNull: true,
@@ -411,6 +421,14 @@ const Envio = sequelize.define('Envio', {
   destino_google_maps_url: {
     type: DataTypes.STRING(500),
     allowNull: true,
+  },
+  // Navegador que hizo el pedido, para el Purchase de Meta CAPI de un pago
+  // que se confirma después (PagoPar): el webhook no lo trae. Lo escribe
+  // LandingService.crearCheckout y lo lee confirmarPedidoPagado.
+  tracking_contexto: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    comment: 'Contexto del navegador al crear el pedido (ip, user agent, fbc, fbp, url, content_ids) para el Purchase de Meta CAPI de un pago confirmado después. NULL = pedido sin pago diferido o anterior a esta columna.',
   },
 }, {
   tableName: 'envios',

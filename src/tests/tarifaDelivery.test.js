@@ -143,3 +143,17 @@ describe('alcance de la expansión', () => {
     expect(o.every((x) => x.ciudad_id === null)).toBe(true);
   });
 });
+
+describe('fallback por encomienda', () => {
+  it('usa la fila genérica de encomienda cuando la ciudad no está cubierta', () => {
+    const opciones = [
+      { ciudad: 'Asunción', departamento: 'Asunción', costo: 30000 },
+      { ciudad: 'Otras ciudades por encomienda', departamento: 'Encomienda', costo: 35000 },
+    ];
+
+    expect(Tarifas.buscarOpcion(opciones, 'Pilar', 'Ñeembucú')).toMatchObject({
+      ciudad: 'Otras ciudades por encomienda',
+      costo: 35000,
+    });
+  });
+});

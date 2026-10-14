@@ -367,6 +367,8 @@ sequelize.authenticate().then(async () => {
     await migrarAuthTracking();
     await migrarNumeroPedido();
     await migrarComboImagenes();
+    // Correo del comprador y permiso de promociones en el pedido (idempotente).
+    await require('./migrations/20261013210000-add_email_promociones_envios').up(sequelize.getQueryInterface(), require('sequelize'));
     await require('./migrations/20261002150000-speedbox-integration').up(sequelize.getQueryInterface(), require('sequelize'));
     await CategoriaCostoGastoService.seedDefaults();
     await CanalVentaService.seedDefaults();

@@ -48,6 +48,9 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
   if (transaction.status === 'PAID') return 'ya_pagado';
 
   let resultado = 'pago_registrado';
+  // Navegador que hizo el pedido (guardado en crearCheckout): el webhook de
+  // PagoPar no lo trae, y sin él Meta no puede asociar la compra al anuncio.
+  let trackingContexto = null;
 
   await sequelize.transaction(async (t) => {
     // Relectura con bloqueo: dos avisos simultaneos se serializan aca.
@@ -72,6 +75,7 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
       lock: t.LOCK.UPDATE,
     });
     if (!envioFila) return;
+    trackingContexto = envioFila.tracking_contexto || null;
 
     // El pago ya ocurrió: esto queda registrado pase lo que pase con el
     // estado del pedido (antes quedaba sin marcar si el pedido no estaba
@@ -133,6 +137,8 @@ async function confirmarPedidoPagado(envio, transaction, { origen = 'PagoPar', r
   // No se espera: el webhook de PagoPar no puede tardar por la Graph API.
   if (resultado === 'confirmado' || resultado === 'pago_registrado') {
     MetaCapiService.enviarCompra(envio, {
+      contexto: trackingContexto || {},
+      contentIds: trackingContexto?.content_ids || null,
       numItems: (envio.items || []).reduce((s, i) => s + (Number(i.cantidad) || 0), 0) || null,
     });
   }

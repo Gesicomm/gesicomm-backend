@@ -278,7 +278,12 @@ class TarifaDeliveryService {
       if (porCiudad.length === 1) return porCiudad[0];
     }
 
-    return null;
+    return opciones.find(op => {
+      const destino = this.normalizarTexto(op.ciudad);
+      return destino === 'otras ciudades por encomienda'
+        || destino === 'resto del pais por encomienda';
+    }) || null;
+
   }
 }
 

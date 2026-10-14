@@ -53,6 +53,7 @@ jest.mock('../services/tarifaDelivery.service', () => ({
 
 jest.mock('../services/proveedorLogistico.service', () => ({
   centrosActivos: jest.fn(async () => []),
+  proveedoresComercialesGesicomm: jest.fn(async () => []),
 }));
 
 const Fulfillment = require('../services/fulfillment.service');
@@ -86,6 +87,7 @@ beforeEach(() => {
   TarifaDelivery.resolverOpcionesPorCouriers.mockResolvedValue([]);
   TarifaDelivery.resolverOpcionesDeRed.mockResolvedValue([]);
   ProveedorLogisticoService.centrosActivos.mockResolvedValue([{ id: 3, nombre: 'Centro Luque' }]);
+  ProveedorLogisticoService.proveedoresComercialesGesicomm.mockImplementation(async () => __almacen.proveedores);
 });
 
 const tienda = () => __almacen.tiendas[0];
@@ -219,12 +221,13 @@ describe('resolverOpcionesDeEntrega', () => {
   // Lo que ve el checkout. El riesgo grande acá no es cobrar de más, es
   // quedarse sin ninguna opción de envío: eso deja al comercio sin vender.
   it('con modalidad gesicomm cotiza con los centros de la red, no con couriers', async () => {
+    __almacen.proveedores = [{ id: 7, nombre: 'RAHA', activo: true }];
     tienda().modalidad_fulfillment = 'GESICOMM';
 
     await Fulfillment.resolverOpcionesDeEntrega(COMERCIO, { paymentMethod: 'efectivo' });
 
     expect(TarifaDelivery.resolverOpcionesDeRed).toHaveBeenCalledWith(
-      { centroIds: [3] },
+      { centroIds: [3], proveedorIds: [7] },
       expect.anything(),
     );
     expect(TarifaDelivery.resolverOpcionesPorCouriers).not.toHaveBeenCalled();

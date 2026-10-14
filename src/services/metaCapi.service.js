@@ -70,9 +70,27 @@ function userDataCliente(cliente) {
   if (normalizarTexto(nombre)) salida.fn = [sha256(normalizarTexto(nombre))];
   if (normalizarTexto(resto.join(''))) salida.ln = [sha256(normalizarTexto(resto.join('')))];
   if (normalizarTexto(cliente.ciudad)) salida.ct = [sha256(normalizarTexto(cliente.ciudad))];
+  const email = String(cliente.email || '').trim().toLowerCase();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) salida.em = [sha256(email)];
   salida.country = [sha256('py')];
   if (cliente.id_externo) salida.external_id = [sha256(String(cliente.id_externo))];
   return salida;
+}
+
+/**
+ * fbc armado con el fbclid de la URL, para cuando no llegó la cookie _fbc:
+ * la primera visita desde un anuncio (el Pixel todavía no cargó) o un
+ * navegador con bloqueador. Es el formato que pide Meta:
+ * fb.1.<milisegundos>.<fbclid>.
+ */
+function fbcDesdeUrl(url) {
+  if (typeof url !== 'string' || !url) return null;
+  try {
+    const fbclid = new URL(url).searchParams.get('fbclid');
+    return fbclid ? `fb.1.${Date.now()}.${fbclid.slice(0, 500)}` : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -120,7 +138,8 @@ async function enviarEvento(tienda, evento) {
     const userData = userDataCliente(evento.cliente);
     if (evento.client_ip) userData.client_ip_address = evento.client_ip;
     if (evento.client_user_agent) userData.client_user_agent = evento.client_user_agent;
-    if (evento.fbc) userData.fbc = evento.fbc;
+    const fbc = evento.fbc || fbcDesdeUrl(evento.event_source_url);
+    if (fbc) userData.fbc = fbc;
     if (evento.fbp) userData.fbp = evento.fbp;
 
     const body = {
@@ -179,9 +198,10 @@ function eventIdCompra(envio) {
  * @param {object} [opciones.tienda] - si no viene, se busca por envio.tienda_id (la tienda real
  *   del pedido — nunca por envio.usuario_id, que con 2+ tiendas de una cuenta es ambiguo).
  * @param {object} [opciones.contexto] - {client_ip, client_user_agent, fbc, fbp, event_source_url} del navegador, cuando lo hay.
+ * @param {string[]} [opciones.contentIds] - content_id de los productos, los mismos que manda el Pixel.
  * @param {number} [opciones.numItems]
  */
-async function enviarCompra(envio, { tienda = null, contexto = {}, numItems = null } = {}) {
+async function enviarCompra(envio, { tienda = null, contexto = {}, contentIds = null, numItems = null } = {}) {
   try {
     if (!envio?.landing_id) return { enviado: false, motivo: 'El pedido no viene de una landing.' };
     const tiendaFinal = tienda || (envio.tienda_id
@@ -194,6 +214,11 @@ async function enviarCompra(envio, { tienda = null, contexto = {}, numItems = nu
       order_id: String(envio.numero_pedido || envio.id),
     };
     if (numItems) custom_data.num_items = numItems;
+    const ids = Array.isArray(contentIds) ? contentIds.filter(id => typeof id === 'string' && id).slice(0, 40) : [];
+    if (ids.length) {
+      custom_data.content_ids = ids;
+      custom_data.content_type = 'product';
+    }
     return await enviarEvento(tiendaFinal, {
       landing_id: envio.landing_id,
       event_name: 'Purchase',
@@ -208,6 +233,7 @@ async function enviarCompra(envio, { tienda = null, contexto = {}, numItems = nu
         telefono: envio.telefono,
         nombre: envio.nombre_cliente || envio.cliente,
         ciudad: envio.ciudad,
+        email: envio.email,
         id_externo: envio.telefono ? normalizarTelefono(envio.telefono) : null,
       },
     });
@@ -217,4 +243,4 @@ async function enviarCompra(envio, { tienda = null, contexto = {}, numItems = nu
   }
 }
 
-module.exports = { enviarEvento, enviarCompra, eventIdCompra, userDataCliente, normalizarTelefono };
+module.exports = { enviarEvento, enviarCompra, eventIdCompra, userDataCliente, normalizarTelefono, fbcDesdeUrl };

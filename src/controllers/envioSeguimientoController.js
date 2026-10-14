@@ -275,6 +275,14 @@ async function cumplirRecordatoriosDeLaFase(envioId, fase, t) {
   return cumplidos.map((r) => r.id);
 }
 
+function fasePreparaPedido(fase) {
+  if (fase?.flujo?.tipo !== 'SEGUIMIENTO_ENVIO') return false;
+  const desde = fase?.transicion_estado_desde || null;
+  const hasta = fase?.transicion_estado_hasta || null;
+  if (desde || hasta) return desde === 'Confirmado' && hasta === 'Preparado';
+  return fase?.accion_operativa === 'PREPARAR_PEDIDO';
+}
+
 /**
  * POST /api/envios/:id/seguimiento/fases/:faseId/completar — el operador
  * confirma que mandó el mensaje de esta fase. Es lo ÚNICO que hace avanzar
@@ -324,10 +332,15 @@ exports.completarFase = async (req, res) => {
     }
 
     let transicionAutomatica = false;
+    let transicionLogistica = null;
     if (envio.estado === 'Pendiente') {
       await envio.update({ estado: 'EnSeguimiento' }, { transaction: t });
       await registrarHistorial(envio.id, usuario_id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
       transicionAutomatica = true;
+    } else if (envio.estado === 'Confirmado' && fasePreparaPedido(fase)) {
+      await envio.update({ estado: 'Preparado', estado_logistico: 'Preparado' }, { transaction: t });
+      await registrarHistorial(envio.id, usuario_id, 'Confirmado → Preparado (mensaje de preparación enviado)', t);
+      transicionLogistica = 'Preparado';
     }
 
     const recordatoriosCumplidos = await cumplirRecordatoriosDeLaFase(envio.id, fase, t);
@@ -364,7 +377,7 @@ exports.completarFase = async (req, res) => {
       }
     }
 
-    return { contacto, transicionAutomatica, recordatoriosCumplidos, siguiente, recordatorio };
+    return { contacto, transicionAutomatica, transicionLogistica, recordatoriosCumplidos, siguiente, recordatorio };
   });
 
   const { siguiente } = resultado;
@@ -373,6 +386,8 @@ exports.completarFase = async (req, res) => {
   res.json({
     contacto: resultado.contacto,
     pedido_paso_a_en_seguimiento: resultado.transicionAutomatica,
+    pedido_paso_a_preparado: resultado.transicionLogistica === 'Preparado',
+    estado_logistico_actualizado: resultado.transicionLogistica,
     recordatorios_cumplidos: resultado.recordatoriosCumplidos,
     // El recordatorio que quedó agendado para la fase siguiente, si hubo.
     recordatorio: resultado.recordatorio,

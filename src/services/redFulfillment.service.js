@@ -44,10 +44,16 @@ class RedFulfillmentService {
    * + tarifa activa), porque un MIN/MAX sobre la tabla entera mostraría
    * precios de proveedores apagados o de la logística propia de un comercio.
    */
-  static async coberturaDeRed({ paymentMethod = 'efectivo', centroIds = null } = {}) {
+  static async coberturaDeRed({ paymentMethod = 'efectivo', centroIds = null, proveedorIds = null } = {}) {
+    const proveedoresSolicitados = proveedorIds ? [...new Set(proveedorIds.map(Number).filter(Boolean))] : null;
+    if (proveedoresSolicitados && proveedoresSolicitados.length === 0) return [];
+
     const [centros, proveedores] = await Promise.all([
       centroIds ? Promise.resolve(centroIds.map((id) => ({ id }))) : this.centros(true),
-      this.proveedoresDeRed(true),
+      proveedoresSolicitados
+        ? ProveedorLogisticoService.listar({ soloActivos: true })
+          .then((lista) => lista.filter((p) => proveedoresSolicitados.includes(Number(p.id))))
+        : this.proveedoresDeRed(true),
     ]);
     if (centros.length === 0 || proveedores.length === 0) return [];
 
@@ -237,13 +243,18 @@ class RedFulfillmentService {
    * operativa de Gesicomm, no parte de lo que el comercio contrata.
    */
   static async coberturaComercial() {
+    const proveedores = await ProveedorLogisticoService.proveedoresComercialesGesicomm();
+    const proveedorIds = proveedores.map((p) => p.id);
+    if (proveedorIds.length === 0) return [];
+
     const [alRecibir, anticipado] = await Promise.all([
-      this.coberturaDeRed({ paymentMethod: 'efectivo' }),
-      this.coberturaDeRed({ paymentMethod: 'transferencia' }),
+      this.coberturaDeRed({ paymentMethod: 'efectivo', proveedorIds }),
+      this.coberturaDeRed({ paymentMethod: 'transferencia', proveedorIds }),
     ]);
 
     const porCiudad = new Map();
     const acumular = (opciones, metodo) => {
+      const tipoPago = metodo === 'AL_RECIBIR' ? 'Al Recibir' : 'Anticipado';
       for (const o of opciones) {
         const clave = o.ciudad_id ? `id:${o.ciudad_id}` : `txt:${TarifaDelivery.normalizarTexto(o.ciudad)}`;
         const actual = porCiudad.get(clave) || {
@@ -254,9 +265,29 @@ class RedFulfillmentService {
           tiempoMinHs: o.tiempo_entrega_min_hs ?? null,
           tiempoMaxHs: o.tiempo_entrega_max_hs ?? null,
           metodosPago: new Set(),
+          tramos: new Map(),
         };
-        actual.desde = Math.min(actual.desde, o.costo);
-        actual.hasta = Math.max(actual.hasta, o.costo);
+        const reglas = Array.isArray(o.reglas) ? o.reglas : [];
+        const tramos = reglas
+          .filter((r) => (r.tipo_pago || 'Ambos') === 'Ambos' || r.tipo_pago === tipoPago)
+          .map((r) => ({
+            rangoMin: Number(r.rango_min) || 0,
+            rangoMax: r.rango_max === null || r.rango_max === undefined ? null : Number(r.rango_max),
+            costo: Number(r.costo) || 0,
+            metodo,
+          }));
+
+        for (const tramo of tramos) {
+          const claveTramo = `${metodo}:${tramo.rangoMin}:${tramo.rangoMax ?? ''}`;
+          const existente = actual.tramos.get(claveTramo);
+          if (!existente || tramo.costo < existente.costo) actual.tramos.set(claveTramo, tramo);
+        }
+
+        const costos = [o.costo, ...tramos.map((t) => t.costo)].map(Number).filter((n) => n > 0);
+        if (costos.length > 0) {
+          actual.desde = Math.min(actual.desde, ...costos);
+          actual.hasta = Math.max(actual.hasta, ...costos);
+        }
         if (o.tiempo_entrega_min_hs != null) {
           actual.tiempoMinHs = actual.tiempoMinHs == null
             ? o.tiempo_entrega_min_hs : Math.min(actual.tiempoMinHs, o.tiempo_entrega_min_hs);
@@ -274,7 +305,15 @@ class RedFulfillmentService {
     acumular(anticipado, 'ANTICIPADO');
 
     return [...porCiudad.values()]
-      .map((c) => ({ ...c, metodosPago: [...c.metodosPago].sort() }))
+      .map((c) => ({
+        ...c,
+        metodosPago: [...c.metodosPago].sort(),
+        tramos: [...c.tramos.values()].sort((a, b) => (
+          a.rangoMin - b.rangoMin
+          || ((a.rangoMax ?? Infinity) - (b.rangoMax ?? Infinity))
+          || a.costo - b.costo
+        )),
+      }))
       .sort((a, b) => {
         const dep = String(a.departamento || '').localeCompare(String(b.departamento || ''), 'es');
         return dep || String(a.ciudad || '').localeCompare(String(b.ciudad || ''), 'es');

@@ -195,6 +195,33 @@ it('links RAHA using the active Gesicom store from the session', async () => {
   }));
 });
 
+it('can force recreating a RAHA store when a stale local tienda_id exists', async () => {
+  connection.tienda_id = '65';
+  models.Tienda.findOne.mockResolvedValueOnce({
+    id: 22,
+    nombre: 'sommix',
+    subdominio: 'sommix',
+    dominio_propio_verificado: false,
+    dominio_propio_habilitado: false,
+  });
+  client.request.mockResolvedValueOnce({ ok: true, tienda_id: '66' });
+
+  const result = await service.registerStore(7, { public_key: 'sbx_public', private_key: 'private_secret', force_recreate: true }, { tiendaId: 22 });
+
+  expect(client.request).toHaveBeenCalledWith('store', expect.objectContaining({
+    method: 'POST',
+    body: expect.objectContaining({
+      external_store_id: 'GESICOMM-sandbox-7-22',
+      store_name: 'sommix',
+    }),
+  }));
+  expect(connection.update).toHaveBeenCalledWith(expect.objectContaining({
+    tienda_id: '66',
+    activo: true,
+  }), expect.anything());
+  expect(result).toMatchObject({ tienda_id: '66' });
+});
+
 it('saves RAHA credentials without requiring a linked store yet', async () => {
   connection.tienda_id = null;
   const result = await service.configure(7, { activo: false, public_key: 'new_public', private_key: 'new_secret' });
@@ -271,6 +298,18 @@ it('queues confirmation even when procurement payment is pending, without sendin
     where: { environment: 'sandbox', envio_id: 31 }, defaults: expect.objectContaining({ usuario_id: 7 }) }));
   expect(transaction.afterCommit).toHaveBeenCalledTimes(1);
   expect(client.request).not.toHaveBeenCalled();
+});
+
+it('waits for the RAHA submission after confirmation commits', async () => {
+  const transaction = { afterCommit: jest.fn() };
+  models.SpeedboxPedido.findOne.mockResolvedValue(mapping);
+  await service.queueConfirmedOrder(envio, transaction);
+  expect(client.request).not.toHaveBeenCalled();
+  const dispatched = transaction.afterCommit.mock.calls[0][0]();
+  expect(dispatched).toBeInstanceOf(Promise);
+  await dispatched;
+  expect(mapping.estado).toBe('enviado');
+  expect(mapping.order_id).toBeTruthy();
 });
 
 it.each(['Pendiente', 'Cancelado', 'Preparado'])('does not queue a %s order as a confirmation', async estado => {

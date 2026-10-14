@@ -374,6 +374,12 @@ describe('LandingCodigoService.limpiarVenta', () => {
       preguntas: [{ pregunta: '¿Envían?', respuesta: 'Sí' }],
     });
   });
+  it('guarda qué textos de la ficha están ocultos, solo nombres conocidos', () => {
+    const { presentacion_productos: p } = LandingCodigoService.limpiarVenta({ presentacion_productos: {
+      'producto:1': { v: 2, textos_ocultos: ['preguntas_titulo', 'preguntas_titulo', 'inventado', '<x>', 'propuesta_valor'] },
+    } });
+    expect(p['producto:1'].textos_ocultos).toEqual(['preguntas_titulo', 'propuesta_valor']);
+  });
   it('en una ficha v2 un texto ausente queda ausente: no se confunde "sin tocar" con "vaciado"', () => {
     const { presentacion_productos: p } = LandingCodigoService.limpiarVenta({ presentacion_productos: {
       'producto:1': { v: 2, urgencia_kicker: '' },

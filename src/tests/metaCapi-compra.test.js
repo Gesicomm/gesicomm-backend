@@ -81,6 +81,63 @@ describe('MetaCapiService.enviarCompra', () => {
     global.fetch = jest.fn().mockRejectedValue(new Error('red caída'));
     await expect(MetaCapi.enviarCompra(envio, { tienda: tiendaConCapi })).resolves.toEqual(expect.objectContaining({ enviado: false }));
   });
+
+  it('manda los productos (mismos content_id que el Pixel) y el correo hasheado', async () => {
+    await MetaCapi.enviarCompra({ ...envio, email: '  Jose@Correo.com.py ' }, {
+      tienda: tiendaConCapi, contentIds: ['producto-7', 'combo-3', '', null], numItems: 3,
+    });
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    const ev = body.data[0];
+    expect(ev.custom_data).toEqual({
+      value: 145735, currency: 'PYG', order_id: '1201', num_items: 3,
+      content_ids: ['producto-7', 'combo-3'], content_type: 'product',
+    });
+    expect(ev.user_data.em).toEqual([sha('jose@correo.com.py')]);
+    expect(global.fetch.mock.calls[0][1].body).not.toMatch(/correo/i);
+  });
+
+  it('un correo inválido no viaja', async () => {
+    await MetaCapi.enviarCompra({ ...envio, email: 'sin-arroba' }, { tienda: tiendaConCapi });
+    const ev = JSON.parse(global.fetch.mock.calls[0][1].body).data[0];
+    expect(ev.user_data.em).toBeUndefined();
+  });
+
+  it('el Purchase de PagoPar usa el navegador guardado al crear el pedido', async () => {
+    const contexto = {
+      client_ip: '181.120.1.2', client_user_agent: 'Mozilla/5.0', fbc: 'fb.1.111.abc', fbp: 'fb.1.222.333',
+      event_source_url: 'https://tienda.gesicomm.com/checkout',
+    };
+    await MetaCapi.enviarCompra(envio, { tienda: tiendaConCapi, contexto });
+    const ev = JSON.parse(global.fetch.mock.calls[0][1].body).data[0];
+    expect(ev.event_source_url).toBe('https://tienda.gesicomm.com/checkout');
+    expect(ev.user_data).toEqual(expect.objectContaining({
+      client_ip_address: '181.120.1.2', client_user_agent: 'Mozilla/5.0', fbc: 'fb.1.111.abc', fbp: 'fb.1.222.333',
+    }));
+  });
+});
+
+describe('fbc desde el fbclid de la URL', () => {
+  it('sin cookie _fbc se arma con el fbclid de event_source_url', async () => {
+    await MetaCapi.enviarEvento(tiendaConCapi, {
+      landing_id: 9, event_name: 'PageView', event_id: 'pv-1',
+      event_source_url: 'https://tienda.gesicomm.com/?utm_source=fb&fbclid=IwAR123',
+    });
+    const ev = JSON.parse(global.fetch.mock.calls[0][1].body).data[0];
+    expect(ev.user_data.fbc).toMatch(/^fb\.1\.\d{13}\.IwAR123$/);
+  });
+
+  it('la cookie _fbc gana sobre la URL', async () => {
+    await MetaCapi.enviarEvento(tiendaConCapi, {
+      landing_id: 9, event_name: 'PageView', event_id: 'pv-2', fbc: 'fb.1.5.cookie',
+      event_source_url: 'https://tienda.gesicomm.com/?fbclid=otro',
+    });
+    const ev = JSON.parse(global.fetch.mock.calls[0][1].body).data[0];
+    expect(ev.user_data.fbc).toBe('fb.1.5.cookie');
+  });
+
+  it.each([null, '', 'no es una url', 'https://tienda.gesicomm.com/sin-clic'])('%p → sin fbc', (url) => {
+    expect(MetaCapi.fbcDesdeUrl(url)).toBeNull();
+  });
 });
 
 describe('normalizarTelefono', () => {

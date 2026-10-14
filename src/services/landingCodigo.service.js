@@ -724,6 +724,12 @@ function limpiarPresentacionProducto(value) {
       .filter(([clave, visible]) => CLAVE_BLOQUE.test(clave) && typeof visible === 'boolean')
       .slice(0, 60));
   }
+  // Textos con "Mostrar" destildado en el panel: no se dibujan, pero el texto
+  // se conserva. Solo nombres de textos de la ficha.
+  if (Array.isArray(value.textos_ocultos)) {
+    const conocidos = new Set(TEXTOS_FICHA.map(([campo]) => campo));
+    salida.textos_ocultos = listaDe(value.textos_ocultos, TEXTOS_FICHA.length, campo => (conocidos.has(campo) ? campo : null));
+  }
   if (Array.isArray(value.ficha_orden_mobile)) {
     salida.ficha_orden_mobile = listaDe(value.ficha_orden_mobile, 40, clave => (typeof clave === 'string' && CLAVE_BLOQUE.test(clave) ? clave : null));
   }

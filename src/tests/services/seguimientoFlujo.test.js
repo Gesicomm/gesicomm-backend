@@ -183,6 +183,41 @@ describe('validación de fases', () => {
 });
 
 describe('sacar una fase del flujo', () => {
+  test('una fase operativa protegida no se puede sacar del seguimiento de envío', async () => {
+    const preparar = fila({
+      id: 301,
+      flujo_id: 30,
+      nombre: 'Pedido confirmado',
+      orden: 1,
+      activo: true,
+      accion_operativa: 'PREPARAR_PEDIDO',
+    });
+    const despachar = fila({
+      id: 302,
+      flujo_id: 30,
+      nombre: 'Pedido despachado',
+      orden: 2,
+      activo: true,
+      accion_operativa: 'DESPACHAR_PEDIDO',
+    });
+
+    WhatsappFlujo.findOne.mockResolvedValue(fila({
+      id: 30,
+      nombre: 'Seguimiento de envío',
+      activo: true,
+      tipo: 'SEGUIMIENTO_ENVIO',
+    }));
+    WhatsappFlujoFase.findAll.mockResolvedValue([preparar, despachar]);
+
+    await expect(flujoService.actualizarFlujo(30, {
+      nombre: 'Seguimiento de envío',
+      fases: [{ id: 302, nombre: 'Pedido despachado', mensaje: 'b' }],
+    }, CTX)).rejects.toMatchObject({ status: 422 });
+
+    expect(preparar.destroy).not.toHaveBeenCalled();
+    expect(preparar.update).not.toHaveBeenCalledWith({ activo: false }, expect.anything());
+  });
+
   test('la fase que ya tiene envíos se desactiva, no se borra', async () => {
     const usada = fila({ id: 201, flujo_id: 10, nombre: 'Recordatorio', orden: 2, activo: true });
     const sinUsar = fila({ id: 202, flujo_id: 10, nombre: 'Último intento', orden: 3, activo: true });

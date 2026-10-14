@@ -368,6 +368,18 @@ function limpiarCustomData(custom_data, catalogo) {
   if (typeof custom_data.currency === 'string') {
     limpio.currency = custom_data.currency.slice(0, 10);
   }
+  // contents = cantidad por producto (Meta lo usa en anuncios de catálogo).
+  // Mismo filtro que content_ids: solo productos que existen en la landing.
+  if (Array.isArray(custom_data.contents)) {
+    const contents = custom_data.contents
+      .filter(c => c && catalogo.has(c.id))
+      .slice(0, MAX_CONTENT_IDS)
+      .map(c => ({
+        id: c.id,
+        quantity: Number.isFinite(c.quantity) ? Math.max(1, Math.min(999, Math.trunc(c.quantity))) : 1,
+      }));
+    if (contents.length) limpio.contents = contents;
+  }
   if (Number.isFinite(custom_data.num_items)) {
     limpio.num_items = Math.max(1, Math.min(999, Math.trunc(custom_data.num_items)));
   }

@@ -53,6 +53,21 @@ const WhatsappFlujoFase = sequelize.define('WhatsappFlujoFase', {
     allowNull: true,
     comment: 'Etiqueta que se aplica automáticamente al pedido cuando se abre esta fase (BE-05).',
   },
+  accion_operativa: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+    comment: 'Acción interna estable que se ejecuta al completar la fase. No depende del nombre ni del orden editable.',
+  },
+  transicion_estado_desde: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+    comment: 'Estado operativo requerido para aplicar el cambio al completar la fase.',
+  },
+  transicion_estado_hasta: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+    comment: 'Estado operativo destino aplicado al completar la fase.',
+  },
   activo: {
     type: DataTypes.BOOLEAN,
     allowNull: false,

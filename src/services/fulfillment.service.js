@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op } = require('sequelize');
-const { Tienda, Deposito, ProveedorLogistico } = require('../models');
+const { Tienda, Deposito } = require('../models');
 const DepositoCourierService = require('./depositoCourier.service');
 const ProveedorLogisticoService = require('./proveedorLogistico.service');
 const TarifaDelivery = require('./tarifaDelivery.service');
@@ -48,10 +48,7 @@ class FulfillmentService {
    * Fulfillment. La resolución es una sola para todos, no una por proveedor.
    */
   static async proveedoresDeGesicomm() {
-    const proveedores = await ProveedorLogistico.findAll({
-      where: { activo: true },
-      order: [['nombre', 'ASC']],
-    });
+    const proveedores = await ProveedorLogisticoService.proveedoresComercialesGesicomm();
     if (proveedores.length === 0) return [];
 
     const opciones = await TarifaDelivery.resolverOpcionesDeRed({
@@ -67,12 +64,21 @@ class FulfillmentService {
 
     return proveedores.map((p) => {
       const propias = porProveedor.get(p.id) || [];
+      const rangosIniciales = propias.flatMap((o) => {
+        const reglas = Array.isArray(o.reglas) ? o.reglas : [];
+        const minRango = reglas.length
+          ? Math.min(...reglas.map((r) => Number(r.rango_min) || 0))
+          : null;
+        return reglas.length > 0
+          ? reglas.filter((r) => (Number(r.rango_min) || 0) === minRango).map((r) => Number(r.costo) || 0)
+          : [Number(o.costo) || 0];
+      }).filter((n) => n > 0);
       return {
         id: p.id,
         nombre: p.nombre,
         tipo: p.tipo,
         ciudades: propias.length,
-        costo_desde: propias.length ? Math.min(...propias.map((o) => o.costo)) : null,
+        costo_desde: rangosIniciales.length ? Math.min(...rangosIniciales) : null,
       };
     });
   }
@@ -293,7 +299,7 @@ class FulfillmentService {
     const tienda = await this.tiendaDe(usuarioId, tiendaId);
 
     if (tienda.modalidad_fulfillment === 'GESICOMM') {
-      return ProveedorLogistico.findAll({ where: { activo: true }, order: [['nombre', 'ASC']] });
+      return ProveedorLogisticoService.proveedoresComercialesGesicomm();
     }
     if (!tienda.deposito_fulfillment_id) return [];
     return DepositoCourierService.couriersHabilitados(tienda.deposito_fulfillment_id);
@@ -323,9 +329,13 @@ class FulfillmentService {
     if (tienda.modalidad_fulfillment === 'GESICOMM') {
       // Sin acotar centros: hoy no existe una asignación comercio->centro, así
       // que la red se ofrece entera y gana el más barato por destino.
-      const centros = await ProveedorLogisticoService.centrosActivos();
+      const [centros, proveedores] = await Promise.all([
+        ProveedorLogisticoService.centrosActivos(),
+        ProveedorLogisticoService.proveedoresComercialesGesicomm(),
+      ]);
+      if (proveedores.length === 0) return [];
       return TarifaDelivery.resolverOpcionesDeRed(
-        { centroIds: centros.map((c) => c.id) },
+        { centroIds: centros.map((c) => c.id), proveedorIds: proveedores.map((p) => p.id) },
         { paymentMethod, items },
       );
     }

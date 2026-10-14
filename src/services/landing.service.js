@@ -4128,15 +4128,8 @@ class LandingService {
     }
     const aceptaPromociones = datosCliente?.acepta_promociones === true || datosCliente?.acepta_promociones === 'true';
     // Lo que el cliente escribió en "Notas para la tienda" se descartaba: el
-    // comercio nunca veía la referencia de entrega ni el horario pedido. Va a
-    // `observaciones`, junto con el correo y si aceptó recibir promociones
-    // (todavía no tienen columna propia en `envios`).
-    const notasCliente = String(datosCliente?.notas || '').trim().slice(0, 500);
-    const observacionesPedido = [
-      notasCliente,
-      emailLimpio ? `Correo: ${emailLimpio}` : '',
-      emailLimpio ? `Acepta recibir promociones por correo: ${aceptaPromociones ? 'sí' : 'no'}` : '',
-    ].filter(Boolean).join('\n') || null;
+    // comercio nunca veía la referencia de entrega ni el horario pedido.
+    const notasCliente = String(datosCliente?.notas || '').trim().slice(0, 500) || null;
 
     const { landing, itemsResueltos } = await this.resolverCarrito(tienda, slug, items, true);
 
@@ -4198,6 +4191,8 @@ class LandingService {
     const itemsParaEnvio = itemsResueltos.map(({ producto_id, variante_id, componente_variante_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, precio_normal, origen_venta, subtotal }) => ({
       producto_id, variante_id, componente_variante_id, oferta_id, oferta_codigo, oferta_nombre, nombre_producto, cantidad, precio_unitario, precio_normal, origen_venta, subtotal,
     }));
+    // Los mismos content_id que manda el Pixel del navegador en su Purchase.
+    const contentIdsCompra = [...new Set(itemsResueltos.map(i => i.content_id).filter(Boolean))];
 
     const nuevoEnvio = await sequelize.transaction(async (t) => {
       const numeroPedido = await PedidoNumeracion.reservarNumeroPedido(tienda.usuario_id, t);
@@ -4214,7 +4209,10 @@ class LandingService {
         documento: documento?.trim() || null,
         ruc: rucLimpio,
         razon_social: razonSocialLimpia,
-        observaciones: observacionesPedido,
+        observaciones: notasCliente,
+        email: emailLimpio || null,
+        // Sin correo no hay a dónde mandar promociones: queda sin dato.
+        acepta_promociones: emailLimpio ? aceptaPromociones : null,
         telefono: telefono.trim(),
         ciudad: ciudadEnvio,
         departamento: departamentoEnvio,
@@ -4262,6 +4260,17 @@ class LandingService {
         // sin importar qué fecha se elija (bug real: así se creó el #46).
         dispatchedAt: fechaPy,
         hora: horaPy,
+        // Con PagoPar el Purchase de Meta sale recién cuando se confirma el
+        // pago, sin el navegador a mano: se guarda acá lo que Meta necesita
+        // para asociar la compra al anuncio (ver confirmarPedidoPagado).
+        tracking_contexto: paymentMethod === 'pagopar' ? {
+          client_ip: contexto.client_ip || null,
+          client_user_agent: contexto.client_user_agent || null,
+          fbc: contexto.fbc || null,
+          fbp: contexto.fbp || null,
+          event_source_url: contexto.event_source_url || null,
+          content_ids: contentIdsCompra,
+        } : null,
         items: itemsParaEnvio,
       }, { include: [{ model: EnvioItem, as: 'items' }], transaction: t });
 
@@ -4281,10 +4290,6 @@ class LandingService {
     
     if (paymentMethod === 'pagopar') {
       try {
-        // El correo no se guarda en una columna del pedido: se le pasa a la
-        // pasarela por acá (PagoParService lee envio.email). Antes le llegaba
-        // siempre "cliente@sin-email.com".
-        if (emailLimpio) nuevoEnvio.email = emailLimpio;
         const trx = await PaymentService.createTransaction(nuevoEnvio, 'pagopar', null);
         paymentData = {
           payment_url: trx.payment_url,
@@ -4294,6 +4299,14 @@ class LandingService {
         // Al archivo de errores, no solo a la consola: es la única forma de
         // saber después por qué PagoPar no abrió el cobro de un pedido.
         logger.error(`[LandingService] Pedido ${nuevoEnvio.numero_pedido || nuevoEnvio.id}: no se pudo abrir el pago anticipado: ${error.message}`);
+        // Y al historial del pedido: el comercio lo ve desde el panel, sin tener
+        // que entrar al servidor a leer logs. Al cliente no se le muestra (suele
+        // ser un problema de la cuenta o de las claves de la pasarela).
+        await registrarHistorial(
+          nuevoEnvio.id,
+          null,
+          `No se pudo abrir el pago anticipado. Motivo: ${String(error.message || 'sin detalle').slice(0, 400)}`,
+        );
         // El pedido YA está creado, así que no se aborta: queda como pendiente
         // de pago manual y el comercio lo ve igual. Pero se marca el fallo de
         // forma explícita para que el frontend NO lo trate como un pedido
@@ -4313,6 +4326,7 @@ class LandingService {
       MetaCapiService.enviarCompra(nuevoEnvio, {
         tienda,
         contexto,
+        contentIds: contentIdsCompra,
         numItems: itemsParaEnvio.reduce((s, i) => s + (Number(i.cantidad) || 0), 0),
       });
     }

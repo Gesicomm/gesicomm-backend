@@ -61,6 +61,20 @@ const TIPOS_FLUJO = new Set([
 ]);
 
 const ACTIVACIONES_FLUJO = new Set(['AUTOMATICA', 'MANUAL']);
+const ESTADOS_PEDIDO = new Set([
+  'Pendiente',
+  'EnSeguimiento',
+  'Confirmado',
+  'Preparado',
+  'Despachado',
+  'Reprogramado',
+  'Entregado',
+  'Cancelado',
+  'Devuelto',
+  'Perdido',
+]);
+const ACCIONES_OPERATIVAS = new Set(['PREPARAR_PEDIDO', 'DESPACHAR_PEDIDO', 'AVISO_EN_CAMINO', 'CAMBIAR_ESTADO']);
+const ACCIONES_OPERATIVAS_PROTEGIDAS = new Set(['PREPARAR_PEDIDO', 'DESPACHAR_PEDIDO']);
 
 const NOMBRES_LEGACY_POR_TIPO = {
   CONFIRMACION_PEDIDO_WEB: new Set(['contacto inicial']),
@@ -72,6 +86,36 @@ function normalizarNombreBase(nombre) {
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .toLowerCase();
+}
+
+function accionOperativaBase(tipo, fase) {
+  if (tipo !== 'SEGUIMIENTO_ENVIO') return null;
+  const nombre = normalizarNombreBase(fase?.nombre);
+  if (/confirm|prepar/.test(nombre)) return 'PREPARAR_PEDIDO';
+  if (/despach/.test(nombre)) return 'DESPACHAR_PEDIDO';
+  if (/camino/.test(nombre)) return 'AVISO_EN_CAMINO';
+  return null;
+}
+
+function transicionPorAccion(accion) {
+  if (accion === 'PREPARAR_PEDIDO') return { desde: 'Confirmado', hasta: 'Preparado' };
+  if (accion === 'DESPACHAR_PEDIDO') return { desde: 'Preparado', hasta: 'Despachado' };
+  return { desde: null, hasta: null };
+}
+
+function accionPorTransicion(desde, hasta, accionOriginal = null) {
+  if (!desde && !hasta) {
+    return accionOriginal === 'AVISO_EN_CAMINO' ? 'AVISO_EN_CAMINO' : null;
+  }
+  if (desde === 'Confirmado' && hasta === 'Preparado') return 'PREPARAR_PEDIDO';
+  if (desde === 'Preparado' && hasta === 'Despachado') return 'DESPACHAR_PEDIDO';
+  return 'CAMBIAR_ESTADO';
+}
+
+function normalizarEstadoOperativo(valor) {
+  const limpio = valor === undefined || valor === null ? '' : String(valor).trim();
+  if (!limpio) return null;
+  return [...ESTADOS_PEDIDO].find((estado) => estado.toLowerCase() === limpio.toLowerCase()) || limpio;
 }
 
 /**
@@ -92,11 +136,38 @@ function normalizarFases(fases) {
     const espera = esperaCruda === '' || esperaCruda === null || esperaCruda === undefined
       ? 0
       : Number(esperaCruda);
+    const accionCruda = fase?.accion_operativa
+      ? String(fase.accion_operativa).trim().toUpperCase()
+      : null;
+    const accionOperativaCruda = ACCIONES_OPERATIVAS.has(accionCruda) ? accionCruda : accionCruda;
+    const transicionLegacy = transicionPorAccion(accionOperativaCruda);
+    const transicionDesde = normalizarEstadoOperativo(
+      fase?.transicion_estado_desde ?? transicionLegacy.desde,
+    );
+    const transicionHasta = normalizarEstadoOperativo(
+      fase?.transicion_estado_hasta ?? transicionLegacy.hasta,
+    );
+    const accionOperativa = accionPorTransicion(transicionDesde, transicionHasta, accionOperativaCruda);
 
     if (!nombre) errores.push(`Fase ${posicion}: falta el nombre`);
     if (!mensaje) errores.push(`Fase ${posicion}: el mensaje no puede estar vacío`);
     if (!Number.isInteger(espera) || espera < 0) {
       errores.push(`Fase ${posicion}: la espera sugerida debe ser un número de minutos (0 o más)`);
+    }
+    if (accionOperativaCruda && !ACCIONES_OPERATIVAS.has(accionOperativaCruda)) {
+      errores.push(`Fase ${posicion}: acción operativa inválida`);
+    }
+    if ((transicionDesde && !transicionHasta) || (!transicionDesde && transicionHasta)) {
+      errores.push(`Fase ${posicion}: para cambiar estado tenés que elegir estado desde y estado hasta`);
+    }
+    if (transicionDesde && !ESTADOS_PEDIDO.has(transicionDesde)) {
+      errores.push(`Fase ${posicion}: estado desde inválido`);
+    }
+    if (transicionHasta && !ESTADOS_PEDIDO.has(transicionHasta)) {
+      errores.push(`Fase ${posicion}: estado hasta inválido`);
+    }
+    if (transicionDesde && transicionHasta && transicionDesde === transicionHasta) {
+      errores.push(`Fase ${posicion}: el estado desde y hasta no pueden ser iguales`);
     }
 
     return {
@@ -106,6 +177,9 @@ function normalizarFases(fases) {
       orden: posicion,
       espera_sugerida_minutos: espera,
       etiqueta_id: fase?.etiqueta_id ? Number(fase.etiqueta_id) : null,
+      accion_operativa: accionOperativa,
+      transicion_estado_desde: transicionDesde,
+      transicion_estado_hasta: transicionHasta,
     };
   });
 
@@ -182,6 +256,9 @@ async function sincronizarFases(flujoId, fasesNormalizadas, t) {
         orden: fase.orden,
         espera_sugerida_minutos: fase.espera_sugerida_minutos,
         etiqueta_id: fase.etiqueta_id,
+        accion_operativa: fase.accion_operativa || null,
+        transicion_estado_desde: fase.transicion_estado_desde || null,
+        transicion_estado_hasta: fase.transicion_estado_hasta || null,
         activo: true,
       }, { transaction: t });
     } else {
@@ -194,6 +271,9 @@ async function sincronizarFases(flujoId, fasesNormalizadas, t) {
         orden: fase.orden,
         espera_sugerida_minutos: fase.espera_sugerida_minutos,
         etiqueta_id: fase.etiqueta_id,
+        accion_operativa: fase.accion_operativa || null,
+        transicion_estado_desde: fase.transicion_estado_desde || null,
+        transicion_estado_hasta: fase.transicion_estado_hasta || null,
         activo: true,
       }, { transaction: t });
     }
@@ -209,6 +289,53 @@ async function sincronizarFases(flujoId, fasesNormalizadas, t) {
     } else {
       await fase.destroy({ transaction: t });
     }
+  }
+}
+
+async function validarFasesOperativasConservadas(flujoId, fasesNormalizadas, t) {
+  if (!fasesNormalizadas) return;
+  const existentes = await WhatsappFlujoFase.findAll({
+    where: { flujo_id: flujoId, activo: true },
+    transaction: t,
+  });
+  const idsQueLlegan = new Set(fasesNormalizadas.filter((f) => f.id).map((f) => Number(f.id)));
+  const protegidasSacadas = existentes.filter((fase) => (
+    (ACCIONES_OPERATIVAS_PROTEGIDAS.has(fase.accion_operativa)
+      || (fase.transicion_estado_desde && fase.transicion_estado_hasta))
+    && !idsQueLlegan.has(Number(fase.id))
+  ));
+  if (protegidasSacadas.length === 0) return;
+
+  throw errorHttp(
+    'No se puede eliminar una fase operativa del seguimiento de envío.',
+    422,
+    protegidasSacadas.map((fase) => (
+      `"${fase.nombre}" cambia el estado del pedido; podés editar su texto, nombre u orden, pero no quitarla del flujo.`
+    )),
+  );
+}
+
+async function asegurarAccionesOperativasBase(usuarioId, t = null) {
+  const fases = await WhatsappFlujoFase.findAll({
+    where: { activo: true },
+    include: [{
+      model: WhatsappFlujo,
+      as: 'flujo',
+      required: true,
+      where: { usuario_id: usuarioId, tipo: 'SEGUIMIENTO_ENVIO' },
+    }],
+    transaction: t,
+  });
+
+  for (const fase of fases) {
+    const accion = accionOperativaBase(fase.flujo?.tipo, fase);
+    if (!accion) continue;
+    const transicion = transicionPorAccion(accion);
+    const cambios = {};
+    if (!fase.accion_operativa) cambios.accion_operativa = accion;
+    if (transicion.desde && !fase.transicion_estado_desde) cambios.transicion_estado_desde = transicion.desde;
+    if (transicion.hasta && !fase.transicion_estado_hasta) cambios.transicion_estado_hasta = transicion.hasta;
+    if (Object.keys(cambios).length > 0) await fase.update(cambios, { transaction: t });
   }
 }
 
@@ -302,6 +429,9 @@ async function asegurarFlujosBase({ usuarioId }) {
             orden: i + 1,
             espera_sugerida_minutos: fase.espera,
             etiqueta_id: null,
+            accion_operativa: fase.accion_operativa || null,
+            transicion_estado_desde: fase.transicion_estado_desde || null,
+            transicion_estado_hasta: fase.transicion_estado_hasta || null,
             activo: true,
           }, { transaction: t });
         }
@@ -313,6 +443,7 @@ async function asegurarFlujosBase({ usuarioId }) {
       if (error?.name !== 'SequelizeUniqueConstraintError') throw error;
     }
   }
+  await asegurarAccionesOperativasBase(usuarioId);
   return creados;
 }
 
@@ -396,7 +527,10 @@ async function actualizarFlujo(id, { nombre, descripcion, activo, fases, tipo, a
       activacion: activacionFinal,
       predeterminado: predeterminado !== undefined ? !!predeterminado : flujo.predeterminado,
     }, { transaction: t });
-    if (normalizadas) await sincronizarFases(flujo.id, normalizadas, t);
+    if (normalizadas) {
+      await validarFasesOperativasConservadas(flujo.id, normalizadas, t);
+      await sincronizarFases(flujo.id, normalizadas, t);
+    }
   });
 
   return obtenerFlujo(flujo.id, { usuarioId, esAdmin });

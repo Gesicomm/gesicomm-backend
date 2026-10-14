@@ -47,9 +47,9 @@ const ETAPAS = [
     descripcion: 'Pedidos ya confirmados: avisos al cliente mientras se prepara, se despacha y viaja.',
     estados: ['Confirmado', 'Preparado', 'Despachado', 'Reprogramado'],
     fases: [
-      { nombre: 'Pedido confirmado', espera: 0, mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ya está confirmado y lo estamos preparando.' },
-      { nombre: 'Pedido despachado', espera: 0, mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ya fue despachado. Lo vas a recibir en: {direccion_entrega}.' },
-      { nombre: 'Pedido en camino', espera: 0, mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} está en camino. Por favor tené el teléfono a mano para coordinar la entrega.' },
+      { nombre: 'Pedido confirmado', espera: 0, accion_operativa: 'PREPARAR_PEDIDO', transicion_estado_desde: 'Confirmado', transicion_estado_hasta: 'Preparado', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ya está confirmado y lo estamos preparando.' },
+      { nombre: 'Pedido despachado', espera: 0, accion_operativa: 'DESPACHAR_PEDIDO', transicion_estado_desde: 'Preparado', transicion_estado_hasta: 'Despachado', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ya fue despachado. Lo vas a recibir en: {direccion_entrega}.' },
+      { nombre: 'Pedido en camino', espera: 0, accion_operativa: 'AVISO_EN_CAMINO', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} está en camino. Por favor tené el teléfono a mano para coordinar la entrega.' },
     ],
   },
   {
