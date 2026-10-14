@@ -301,6 +301,12 @@ const Envio = sequelize.define('Envio', {
     type: DataTypes.STRING(255),
     allowNull: true,
   },
+  motivo_devolucion: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    validate: { isIn: [['justificada', 'injustificada']] },
+    comment: 'Clasificación cargada al registrar la devolución: "justificada" o "injustificada". Se cruza por teléfono para marcar la reputación del cliente (ver listEnviosPaginados).',
+  },
   stock_despachado: {
     type: DataTypes.BOOLEAN,
     allowNull: false,

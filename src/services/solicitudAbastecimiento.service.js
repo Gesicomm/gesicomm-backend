@@ -19,6 +19,7 @@ function cantidadValida(cantidad) {
   return value;
 }
 const { costoParaComerciante, esProductoCargadoPorAdmin } = require('../controllers/envioController');
+const RahaService = require('./raha/service');
 
 const TEXTOS = {
   pendiente_pago: 'Solicitud creada, pendiente de pago.',
@@ -81,6 +82,9 @@ class SolicitudAbastecimientoService {
     if (!prod) throw errorHttp('Producto no encontrado.', 404);
     if (!esProductoCargadoPorAdmin(prod)) {
       throw errorHttp('Este producto es propio del comercio: el abastecimiento es solo para productos del catálogo Gesicomm.');
+    }
+    if (!await RahaService.conexionAprobada(usuario_id)) {
+      throw errorHttp('Necesitás tu conexión con Raha aprobada para abastecerte del catálogo Gesicomm. Completá la solicitud en Mi Tienda > Raha.', 409);
     }
 
     const cant = cantidadValida(cantidad);

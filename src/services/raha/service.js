@@ -77,6 +77,11 @@ async function serialize(solicitud, transaction) {
   return { ...solicitud.toJSON(), documentos };
 }
 async function status(actor) { return serialize(await sequelize.transaction(t => owned(actor, t))); }
+/** Si el usuario tiene la conexion con Raha aprobada (puede proveerse de su catalogo). */
+async function conexionAprobada(usuario_id) {
+  const solicitud = await RahaSolicitud.findOne({ where: { usuario_id } });
+  return solicitud?.estado === 'aprobada';
+}
 async function save(actor, input) {
   const datos = parse(input.datos);
   const solicitud = await sequelize.transaction(async t => {
@@ -467,5 +472,6 @@ async function updatePortalUser(actor, id, input) {
   return portalUsuarioPublico(usuario);
 }
 module.exports = { status, save, upload, remove, submit, list, review, document, detail, dossier, parse,
+  conexionAprobada,
   portalLogin, portalVerify, portalList, portalDetail, portalDocument, portalDossier, portalResolve,
   listPortalUsers, createPortalUser, updatePortalUser };

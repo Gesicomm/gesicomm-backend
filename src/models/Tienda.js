@@ -153,6 +153,11 @@ const Tienda = sequelize.define('Tienda', {
     allowNull: true,
     comment: 'Plantilla de WhatsApp para consultas generales (inicio, categorías). Soporta {url}.',
   },
+  mensaje_confirmacion_pedido: {
+    type: DataTypes.STRING(300),
+    allowNull: true,
+    comment: 'Plantilla de WhatsApp para confirmar un pedido. Soporta {cliente}, {pedido}, {producto} y {total}.',
+  },
   nombre_contacto: {
     type: DataTypes.STRING(150),
     allowNull: true,

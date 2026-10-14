@@ -146,6 +146,9 @@ class TiendaService {
     if (payload.mensaje_consulta_general && String(payload.mensaje_consulta_general).length > 300) {
       errores.push('mensaje_consulta_general no puede superar los 300 caracteres.');
     }
+    if (payload.mensaje_confirmacion_pedido && String(payload.mensaje_confirmacion_pedido).length > 300) {
+      errores.push('mensaje_confirmacion_pedido no puede superar los 300 caracteres.');
+    }
     for (const [campo, max] of [['nombre_contacto', 100], ['direccion_publica', 255], ['ciudad_publica', 100], ['horario_atencion', 150]]) {
       if (payload[campo] && String(payload[campo]).length > max) errores.push(`${campo} no puede superar los ${max} caracteres.`);
     }
@@ -167,7 +170,7 @@ class TiendaService {
   static camposEditables(payload) {
     const campos = {};
     for (const campo of [
-      'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'mensaje_consulta_general', 'documento', 'ruc',
+      'nombre', 'whatsapp', 'telefono', 'mensaje_contacto', 'mensaje_consulta_general', 'mensaje_confirmacion_pedido', 'documento', 'ruc',
       'email', 'instagram', 'facebook', 'tiktok', 'youtube', 'twitter',
       'nombre_contacto', 'canal_contacto', 'direccion_publica', 'ciudad_publica', 'horario_atencion',
       'color_primario', 'color_secundario', 'color_fondo',

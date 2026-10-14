@@ -3,7 +3,7 @@
 const ExcelJS = require('exceljs');
 const slugify = require('slugify');
 const { Op } = require('sequelize');
-const { sequelize, Categoria, Producto, ProductoImagen, ProductoFaq } = require('../models');
+const { sequelize, Categoria, Producto, ProductoImagen, ProductoFaq, Proveedor } = require('../models');
 const ProductoService = require('./producto.service');
 const ProductoVarianteService = require('./productoVariante.service');
 
@@ -411,6 +411,15 @@ async function obtenerOCrearCategoria(nombre, inquilinoId, transaction) {
   }
 }
 
+/** Proveedor del comerciante que coincide con la columna "Vendor" de Shopify (se crea si no existe). */
+async function obtenerOCrearProveedor(nombre, usuarioId, transaction) {
+  if (!nombre) return null;
+  const existente = await Proveedor.findOne({ where: { usuario_id: usuarioId, nombre: { [Op.iLike]: nombre } }, transaction });
+  if (existente) return existente.id;
+  const creado = await Proveedor.create({ usuario_id: usuarioId, nombre }, { transaction });
+  return creado.id;
+}
+
 async function leerRegistrosDesdeArchivo(file) {
   const nombre = limpiarTexto(file.originalname).toLowerCase();
   if (nombre.endsWith('.xlsx') || nombre.endsWith('.xls')) {
@@ -474,10 +483,16 @@ async function importarShopify(file, contexto) {
     try {
       const contenido = estructurarContenidoShopify(principal);
       const categoriaId = await obtenerOCrearCategoria(nombreCategoria(principal), contexto.inquilinoId, t);
+      // El proveedor (columna "Vendor" de Shopify) se guarda como FK, no solo
+      // como texto dentro de ficha_datos.shopify.vendor: si no se resuelve
+      // acá, el filtro por Proveedor de Mi Catálogo nunca encuentra estos
+      // productos aunque Shopify sí traiga el dato.
+      const proveedorId = await obtenerOCrearProveedor(limpiarTexto(principal.Vendor), contexto.usuarioId, t);
       const producto = await ProductoService.crear({
         nombre,
         sku,
         categoria_id: categoriaId,
+        proveedor_id: proveedorId,
         tags: splitTags(principal.Tags),
         descripcion_corta: limitar(principal['SEO Description'] || contenido.descripcion, 500),
         descripcion_larga: contenido.descripcionLarga,

@@ -1251,6 +1251,36 @@ function contextoEventoRaha(payload) {
   };
 }
 
+// Reputación del cliente por teléfono: cuenta sus devoluciones clasificadas
+// (ver registrarDevolucion) en TODO su historial, no solo en el pedido que
+// se está mirando — así un cliente que ya devolvió injustificado en un
+// pedido viejo se identifica en cualquier pedido nuevo suyo (pedido del
+// usuario, 2026-10-14). Solo agrega sobre los teléfonos de la página
+// actual: una sola consulta agrupada, no una por fila.
+async function adjuntarReputacionCliente(envios, where) {
+  if (!envios.length) return envios;
+  const telefonos = [...new Set(envios.map((envio) => envio.telefono).filter(Boolean))];
+  if (!telefonos.length) return envios;
+  const filas = await Envio.findAll({
+    where: { ...where, telefono: { [Op.in]: telefonos }, motivo_devolucion: { [Op.not]: null } },
+    attributes: [
+      'telefono',
+      [Sequelize.literal(`COUNT(*) FILTER (WHERE motivo_devolucion = 'justificada')`), 'justificadas'],
+      [Sequelize.literal(`COUNT(*) FILTER (WHERE motivo_devolucion = 'injustificada')`), 'injustificadas'],
+    ],
+    group: ['telefono'],
+    raw: true,
+  });
+  const porTelefono = new Map(filas.map((f) => [f.telefono, {
+    justificadas: Number(f.justificadas) || 0,
+    injustificadas: Number(f.injustificadas) || 0,
+  }]));
+  for (const envio of envios) {
+    envio.reputacion_cliente = (envio.telefono && porTelefono.get(envio.telefono)) || null;
+  }
+  return envios;
+}
+
 async function adjuntarLogisticaRaha(envios) {
   if (!envios.length) return envios;
   const ids = envios.map((envio) => envio.id).filter(Boolean);
@@ -1602,6 +1632,12 @@ exports.listEnviosPaginados = async (req, res) => {
 
     let data = await adjuntarIdentificadores(rows.map(decorarEnvio));
     data = await adjuntarLogisticaRaha(data);
+    try {
+      data = await adjuntarReputacionCliente(data, whereEnviosDeUsuario(req));
+    } catch (errReputacion) {
+      // Dato accesorio: si falla, la bandeja se muestra igual, sin esa columna.
+      console.error('Error calculando la reputación de clientes:', errReputacion);
+    }
     if (incluir_seguimiento) {
       // Dato accesorio: si falla, la bandeja se muestra igual, sin esa columna.
       try {
@@ -2622,11 +2658,15 @@ exports.registrarDevolucion = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const { id } = req.params;
-    const { items, marcar_estado, costo_intento } = req.body;
+    const { items, marcar_estado, costo_intento, motivo_devolucion } = req.body;
 
     if (!Array.isArray(items) || items.length === 0) {
       await t.rollback();
       return res.status(400).json({ error: 'Se requiere al menos un ítem a devolver' });
+    }
+    if (motivo_devolucion !== undefined && motivo_devolucion !== null && !['justificada', 'injustificada'].includes(motivo_devolucion)) {
+      await t.rollback();
+      return res.status(400).json({ error: 'motivo_devolucion debe ser "justificada" o "injustificada"' });
     }
 
     // Bloqueo de fila: esta operacion mueve stock y dos pedidos simultaneos
@@ -2650,6 +2690,10 @@ exports.registrarDevolucion = async (req, res) => {
     await registrarHistorial(envio.id, usuario_id, `Devolución registrada: ${items.length} producto(s)`, t);
 
     const updateData = {};
+    if (motivo_devolucion) {
+      updateData.motivo_devolucion = motivo_devolucion;
+      await registrarHistorial(envio.id, usuario_id, `Devolución clasificada: ${motivo_devolucion}`, t);
+    }
     // Igual que en updateEstado: si el pedido venía de "Reprogramado", este
     // es el momento en que recién se sabe cuánto costó ese viaje en falso.
     if (envio.estado === 'Reprogramado') {
