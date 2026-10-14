@@ -173,8 +173,9 @@ it('links RAHA using the active Gesicom store from the session', async () => {
   });
   client.request.mockResolvedValueOnce({ ok: true, tienda_id: '65' });
 
-  await expect(service.registerStore(7, { public_key: 'sbx_public', private_key: 'private_secret' }, { tiendaId: 22 }))
-    .resolves.toMatchObject({ tienda_id: '65', activo: true });
+  const result = await service.registerStore(7, { public_key: 'sbx_public', private_key: 'private_secret' }, { tiendaId: 22 });
+  expect(result).toMatchObject({ tienda_id: '65', activo: true, has_private_key: true });
+  expect(result).not.toHaveProperty('private_key');
 
   expect(models.Tienda.findOne).toHaveBeenCalledWith(expect.objectContaining({
     where: { id: 22, usuario_id: 7 },
@@ -191,7 +192,7 @@ it('links RAHA using the active Gesicom store from the session', async () => {
 
 it('saves RAHA credentials without requiring a linked store yet', async () => {
   connection.tienda_id = null;
-  await service.configure(7, { activo: false, public_key: 'new_public', private_key: 'new_secret' });
+  const result = await service.configure(7, { activo: false, public_key: 'new_public', private_key: 'new_secret' });
   expect(models.SpeedboxTienda.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
     where: { usuario_id: 7, environment: 'sandbox' },
   }));
@@ -200,6 +201,8 @@ it('saves RAHA credentials without requiring a linked store yet', async () => {
     private_key: 'new_secret',
     activo: false,
   }), expect.anything());
+  expect(result).toMatchObject({ public_key: 'new_public', has_private_key: true, activo: false });
+  expect(result).not.toHaveProperty('private_key');
 });
 
 it('requires stored RAHA credentials before activation', async () => {

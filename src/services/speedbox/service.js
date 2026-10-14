@@ -291,7 +291,7 @@ async function configure(usuarioId, input) {
   if (!parsed.success) fail('Configuración RAHA inválida.');
   const { activo } = parsed.data;
   const targetEnvironment = environmentFromInput(parsed.data, environment());
-  return sequelize.transaction(async transaction => {
+  const connection = await sequelize.transaction(async transaction => {
     const [connection] = await SpeedboxTienda.findOrCreate({
       where: { usuario_id: usuarioId, environment: targetEnvironment },
       defaults: { since_at: new Date().toISOString() },
@@ -307,6 +307,7 @@ async function configure(usuarioId, input) {
       enabled_at: activo && !connection.activo ? new Date() : connection.enabled_at,
       since_at: connection.since_at || new Date().toISOString() }, { transaction });
   });
+  return serializeConnection(connection);
 }
 
 async function registerStore(usuarioId, input = {}, options = {}) {
@@ -314,7 +315,7 @@ async function registerStore(usuarioId, input = {}, options = {}) {
   const env = environmentFromInput(input, credentialInput.provided ? 'sandbox' : environment());
   const tienda = await tiendaDelUsuario(usuarioId, { tiendaId: options.tiendaId });
   if (!tienda) fail('Primero configura tu tienda.', 404);
-  return sequelize.transaction(async transaction => {
+  const connection = await sequelize.transaction(async transaction => {
     await sequelize.query('SELECT pg_advisory_xact_lock(84271004, :usuario)', { replacements: { usuario: Number(usuarioId) }, transaction });
     const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: env }, defaults: { since_at: new Date().toISOString() }, transaction });
     const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
@@ -334,6 +335,7 @@ async function registerStore(usuarioId, input = {}, options = {}) {
     catch (error) { error.remoteResponse = client.redact(response); throw error; }
     return connection.update({ tienda_id: tiendaId, ...activeConnectionFields(connection) }, { transaction });
   });
+  return serializeConnection(connection);
 }
 
 async function verifySpec(usuarioId, input = {}, options = {}) {
