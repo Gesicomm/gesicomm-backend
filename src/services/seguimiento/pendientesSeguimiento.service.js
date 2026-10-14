@@ -163,6 +163,7 @@ function armarPendientes({
 
   const items = [];
   for (const pedido of pedidos) {
+    if (etapa === 'SEGUIMIENTO_ENVIO' && !etapaPorTipo(etapa).estados.includes(pedido.estado)) continue;
     const flujosDeLaEtapa = flujosPorUsuario.get(Number(pedido.usuario_id)) || [];
     const flujoPorId = new Map(flujosDeLaEtapa.map((f) => [Number(f.id), f]));
     // Solo cuenta lo que pasó en flujos de ESTA etapa: los mensajes de

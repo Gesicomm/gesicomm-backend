@@ -10,7 +10,11 @@ function estadoActivadorDeFase(fase, tipo) {
 function faseDisponibleParaPedido(fase, pedido, tipo) {
   if (tipo === 'RECUPERACION_CLIENTES' && !['Devuelto', 'Perdido'].includes(pedido.estado)) return false;
   if (tipo === 'ESCALAMIENTO_VENTAS' && pedido.estado !== 'Entregado') return false;
-  if (tipo === 'SEGUIMIENTO_ENVIO' && !['Preparado', 'Despachado', 'Reprogramado'].includes(pedido.estado)) return false;
+  // Seguimiento de envío: el operador elige y envía cualquier fase cuando
+  // quiera (pedido explícito de Martín, 2026-10-14). El estado logístico
+  // (Preparado/Despachado) queda como dato informativo en estado_activador /
+  // estado_requerido, pero ya no bloquea el botón de enviar.
+  if (tipo === 'SEGUIMIENTO_ENVIO') return true;
   const requerido = estadoActivadorDeFase(fase, tipo);
   if (!requerido) return true;
   if (requerido === 'Preparado') return pedido.estado === 'Preparado';

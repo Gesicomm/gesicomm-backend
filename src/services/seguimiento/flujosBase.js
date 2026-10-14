@@ -9,7 +9,7 @@
  * A qué etapa pertenece un pedido lo decide su estado, no una persona:
  *   por confirmar            → Confirmación de pedido web, o Venta por
  *                              WhatsApp si el pedido entró por WhatsApp
- *   confirmado … en camino   → Seguimiento de envío
+ *   preparado … en camino    → Seguimiento de envío
  *   entregado                → Escalamiento de ventas (recompra)
  *   devuelto o perdido       → Recuperación de clientes
  * Cuando el pedido cambia de estado, cambia de etapa solo.
@@ -45,8 +45,8 @@ const ETAPAS = [
   {
     tipo: 'SEGUIMIENTO_ENVIO',
     nombre: 'Seguimiento de envío',
-    descripcion: 'Pedidos ya confirmados: avisos al cliente mientras se prepara, se despacha y viaja.',
-    estados: ['Confirmado', 'Preparado', 'Despachado', 'Reprogramado'],
+    descripcion: 'Pedidos preparados: avisos al cliente desde la preparación hasta el despacho y el viaje.',
+    estados: ['Preparado', 'Despachado', 'Reprogramado'],
     fases: [
       { nombre: 'Pedido confirmado', espera: 0, estado_activador: 'Preparado', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ha sido confirmado y ahora lo estamos preparando.' },
       { nombre: 'Pedido despachado', espera: 0, estado_activador: 'Despachado', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ha sido despachado. Por favor, mantenete atento a tu courier: {courier_nombre}, teléfono {courier_telefono}. Dirección de entrega: {direccion_entrega}.' },

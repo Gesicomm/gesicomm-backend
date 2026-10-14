@@ -336,7 +336,8 @@ exports.completarFase = async (req, res) => {
     }
 
     let transicionAutomatica = false;
-    let transicionLogistica = null;
+    // Los mensajes solo avanzan su fase. Las transiciones logísticas se
+    // realizan manualmente, incluso en flujos con acciones antiguas.
     if (envio.estado === 'Pendiente') {
       await envio.update({ estado: 'EnSeguimiento' }, { transaction: t });
       await registrarHistorial(envio.id, usuario_id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
@@ -377,7 +378,7 @@ exports.completarFase = async (req, res) => {
       }
     }
 
-    return { contacto, transicionAutomatica, transicionLogistica, recordatoriosCumplidos, siguiente, recordatorio };
+    return { contacto, transicionAutomatica, recordatoriosCumplidos, siguiente, recordatorio };
   });
 
   const { siguiente } = resultado;
@@ -386,8 +387,8 @@ exports.completarFase = async (req, res) => {
   res.json({
     contacto: resultado.contacto,
     pedido_paso_a_en_seguimiento: resultado.transicionAutomatica,
-    pedido_paso_a_preparado: resultado.transicionLogistica === 'Preparado',
-    estado_logistico_actualizado: resultado.transicionLogistica,
+    pedido_paso_a_preparado: false,
+    estado_logistico_actualizado: null,
     recordatorios_cumplidos: resultado.recordatoriosCumplidos,
     // El recordatorio que quedó agendado para la fase siguiente, si hubo.
     recordatorio: resultado.recordatorio,
