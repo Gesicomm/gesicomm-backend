@@ -1200,7 +1200,10 @@ function speedboxEnvironmentActual() {
 function aplicarFiltroLogisticaRaha(where, { logistica_raha, excluir_logistica_raha }) {
   const condiciones = [...(where[Op.and] || [])];
   const environment = String(speedboxEnvironmentActual()).replace(/'/g, "''");
+  const estadosPostConfirmacionLista = ['Confirmado', 'Preparado', 'Despachado', 'Reprogramado', 'Entregado', 'Devuelto', 'Perdido'];
+  const estadosPostConfirmacionSql = estadosPostConfirmacionLista.map(estado => `'${estado}'`).join(', ');
   if (logistica_raha) {
+    condiciones.push({ estado: { [Op.in]: estadosPostConfirmacionLista } });
     condiciones.push(Sequelize.literal(`EXISTS (
       SELECT 1
       FROM speedbox_pedidos sp_raha
@@ -1217,6 +1220,7 @@ function aplicarFiltroLogisticaRaha(where, { logistica_raha, excluir_logistica_r
         AND sp_raha.environment = '${environment}'
         AND sp_raha.order_id IS NOT NULL
         AND sp_raha.estado IN ('enviado', 'enviando', 'incierto')
+        AND "Envio"."estado" IN (${estadosPostConfirmacionSql})
     )`));
   }
   if (condiciones.length) where[Op.and] = condiciones;
