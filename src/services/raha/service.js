@@ -29,10 +29,32 @@ async function identity(actor) {
 }
 async function owned(actor, transaction) {
   const usuario = await identity(actor);
-  const tienda = await Tienda.findOne({ where: { usuario_id: actor.id, inquilino_id: usuario.inquilino_id }, transaction, ...(transaction ? { lock: transaction.LOCK.UPDATE } : {}) });
+  const whereTienda = { usuario_id: actor.id, inquilino_id: usuario.inquilino_id };
+  if (actor.tiendaId) whereTienda.id = actor.tiendaId;
+  let tienda = await Tienda.findOne({
+    where: whereTienda,
+    order: [['id', 'ASC']],
+    transaction,
+    ...(transaction ? { lock: transaction.LOCK.UPDATE } : {})
+  });
+  if (!tienda && actor.tiendaId) {
+    tienda = await Tienda.findOne({
+      where: { usuario_id: actor.id, inquilino_id: usuario.inquilino_id },
+      order: [['id', 'ASC']],
+      transaction,
+      ...(transaction ? { lock: transaction.LOCK.UPDATE } : {})
+    });
+  }
   if (!tienda) fail('Primero debes crear tu tienda.', 404);
-  const [solicitud] = await RahaSolicitud.findOrCreate({ where: { usuario_id: actor.id }, defaults: { tienda_id: tienda.id, inquilino_id: tienda.inquilino_id }, transaction });
+  const [solicitud] = await RahaSolicitud.findOrCreate({
+    where: { usuario_id: actor.id },
+    defaults: { tienda_id: tienda.id, inquilino_id: tienda.inquilino_id },
+    transaction
+  });
   if (solicitud.inquilino_id !== usuario.inquilino_id) fail('No autorizado.', 403);
+  if (solicitud.tienda_id !== tienda.id) {
+    await solicitud.update({ tienda_id: tienda.id }, { transaction });
+  }
   if (transaction) await solicitud.reload({ transaction, lock: transaction.LOCK.UPDATE });
   return solicitud;
 }

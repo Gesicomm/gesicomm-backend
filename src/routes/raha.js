@@ -3,9 +3,11 @@ const express = require('express');
 const multer = require('multer');
 const { enviarExpediente } = require('../services/raha/dossier');
 const { verificarToken } = require('../middleware/autenticacion');
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 const service = require('../services/raha/service');
 const router = express.Router();
 router.use(verificarToken);
+router.use(resolverTiendaActiva);
 router.use((req, res, next) => { res.set('Cache-Control', 'private, no-store'); next(); });
 router.use(require('express-rate-limit')({ windowMs: 15 * 60 * 1000, max: 120, message: { message: 'Demasiadas operaciones. Intenta mas tarde.' } }));
 router.param('id', (req, res, next) => {
