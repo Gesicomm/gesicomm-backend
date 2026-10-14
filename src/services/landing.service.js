@@ -1837,15 +1837,18 @@ class LandingService {
    * @param {string|null} opciones.asegurar - content_id que tiene que estar aunque quede fuera del límite (la ficha).
    */
   /**
-   * Las vistas del lienzo que viajan en la respuesta pública: la ficha
-   * general + la ficha propia SOLO del producto que se va a mostrar (el de
-   * la URL, o el principal si la landing abre directo en un producto).
+   * Vistas compartidas del lienzo y ficha general. De las fichas propias
+   * solo viaja la del producto que se va a mostrar (el de la URL, o el
+   * principal si la landing abre directo en un producto).
    */
   static vistasPublicas(content, contentIdPedido = null, contentIdPrincipal = null) {
     const vistas = content?.vistas || {};
     const venta = content?.venta || {};
     const propias = vistas.productos || {};
     const salida = {};
+    for (const vista of ['catalogo', 'categoria', 'checkout']) {
+      if (vistas[vista]) salida[vista] = vistas[vista];
+    }
     if (vistas.producto) salida.producto = vistas.producto;
     if (vistas.legales && typeof vistas.legales === 'object') salida.legales = vistas.legales;
     // El principal va primero en los items cuando la landing abre en él
@@ -1854,6 +1857,19 @@ class LandingService {
     const elegidas = buscado && propias[buscado] ? { [buscado]: propias[buscado] } : {};
     if (Object.keys(elegidas).length) salida.productos = elegidas;
     return salida;
+  }
+
+  // El catálogo paginado también monta una página completa del lienzo.
+  // Necesita el diseño y la configuración global para no caer en el header
+  // genérico (nombre visible y un único link a Inicio).
+  static contentCatalogoPublico(landing) {
+    if (landing.template?.kind !== 'codigo') return { ofertas_carrito: [] };
+    const content = landing.content || {};
+    return {
+      codigo: content.codigo || { html: '', css: '', js: '' },
+      vistas: this.vistasPublicas(content),
+      venta: content.venta || null,
+    };
   }
 
   /**
@@ -2896,7 +2912,7 @@ class LandingService {
         },
         // Ficha de producto propia y configuración de venta (formato,
         // ventas cruzadas elegidas, recomendados): las lee el runtime.
-        ...(landing.content?.vistas?.producto || landing.content?.vistas?.productos || landing.content?.vistas?.legales
+        ...(landing.content?.vistas
           ? { vistas: this.vistasPublicas(landing.content, opciones.asegurarContentId, itemsDto.find(i => i.tipo === 'producto')?.content_id) }
           : {}),
         ...(landing.content?.venta ? { venta: { ...landing.content.venta, payment_logos: paymentLogos } } : { venta: { payment_logos: paymentLogos } }),
@@ -3476,7 +3492,7 @@ class LandingService {
         incluir_precio: !!landing.whatsapp_incluir_precio,
         incluir_url: !!landing.whatsapp_incluir_url,
       },
-      content: { ofertas_carrito: [] },
+      content: this.contentCatalogoPublico(landing),
       checkout: { redirigir_whatsapp: !!landing.checkout_redirigir_whatsapp, pasarelas: pasarelasPublicas },
       banner: null,
       seo: {
