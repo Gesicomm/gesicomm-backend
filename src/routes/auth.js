@@ -756,14 +756,183 @@ router.post('/refresh', async (req, res) => {
 // ============================================================
 router.get('/me', verificarToken, asyncHandler(async (req, res) => {
   await AuthTracking.marcarActividad(req, req.usuario.id);
+  const usuarioDb = await Usuario.findByPk(req.usuario.id, {
+    attributes: ['id', 'nombre', 'correo_electronico', 'telefono'],
+  });
   return res.json({
     id: req.usuario.id,
-    nombre: req.usuario.nombre,
-    email: req.usuario.email,
+    nombre: usuarioDb?.nombre || req.usuario.nombre,
+    email: usuarioDb?.correo_electronico || req.usuario.email,
+    telefono: usuarioDb?.telefono || null,
     rol: req.usuario.rol,
     permisos: req.usuario.permisos,
     tenantId: req.usuario.tenantId,
     tiendaId: req.usuario.tiendaId,
+  });
+}));
+
+// ============================================================
+// GET /api/auth/perfil
+// ============================================================
+router.get('/perfil', verificarToken, asyncHandler(async (req, res) => {
+  const usuario = await Usuario.findByPk(req.usuario.id, {
+    attributes: ['id', 'nombre', 'correo_electronico', 'telefono'],
+  });
+  if (!usuario) {
+    return res.status(404).json({ message: 'Usuario no encontrado.' });
+  }
+  return res.json({
+    id: usuario.id,
+    nombre: usuario.nombre,
+    email: usuario.correo_electronico,
+    telefono: usuario.telefono || '',
+  });
+}));
+
+// ============================================================
+// POST /api/auth/perfil/solicitar-otp
+// Envía un código OTP de 6 dígitos al correo registrado del usuario.
+// ============================================================
+router.post('/perfil/solicitar-otp', verificarToken, limiteReenvio, asyncHandler(async (req, res) => {
+  const usuario = await Usuario.findByPk(req.usuario.id);
+  if (!usuario) {
+    return res.status(404).json({ message: 'Usuario no encontrado.' });
+  }
+
+  const otp = generarOTP();
+  const otpExpira = new Date(Date.now() + 15 * 60 * 1000);
+
+  await usuario.update({
+    codigo_verificacion: otp,
+    codigo_verificacion_expira: otpExpira,
+  });
+
+  EmailService.enviarCodigoActualizacionPerfil({
+    email: usuario.correo_electronico,
+    nombre: usuario.nombre,
+    codigo: otp,
+  }).catch((err) => console.error('[perfil/solicitar-otp] Error enviando email:', err.message));
+
+  auditoria('PERFIL_OTP_SOLICITADO', {
+    usuarioId: usuario.id,
+    email: usuario.correo_electronico,
+    ip: req.ip,
+  });
+
+  return res.json({
+    message: 'Código de verificación enviado a tu correo electrónico.',
+    email: usuario.correo_electronico,
+  });
+}));
+
+// ============================================================
+// POST /api/auth/perfil
+// Actualiza datos de perfil (nombre, teléfono) y/o contraseña tras
+// validar el código OTP. El correo electrónico NO puede modificarse.
+// ============================================================
+router.post('/perfil', verificarToken, asyncHandler(async (req, res) => {
+  const { codigo_otp, nombre, telefono, password } = req.body;
+
+  if (!codigo_otp || String(codigo_otp).trim().length !== 6) {
+    return res.status(400).json({ message: 'Ingresá el código OTP de 6 dígitos.' });
+  }
+
+  const usuario = await Usuario.findByPk(req.usuario.id);
+  if (!usuario) {
+    return res.status(404).json({ message: 'Usuario no encontrado.' });
+  }
+
+  // Validar expiración del código
+  if (!usuario.codigo_verificacion_expira || new Date() > new Date(usuario.codigo_verificacion_expira)) {
+    return res.status(410).json({
+      message: 'El código expiró. Solicitá uno nuevo.',
+      codigo_expirado: true,
+    });
+  }
+
+  // Validar código OTP
+  if (String(usuario.codigo_verificacion).trim() !== String(codigo_otp).trim()) {
+    return res.status(400).json({ message: 'Código de verificación incorrecto. Revisá el correo e intentá de nuevo.' });
+  }
+
+  const datosActualizar = {
+    codigo_verificacion: null,
+    codigo_verificacion_expira: null,
+  };
+
+  // Validar y actualizar nombre si fue enviado
+  if (nombre !== undefined) {
+    const nombreLimpio = String(nombre).trim();
+    if (nombreLimpio.length < 2) {
+      return res.status(400).json({ message: 'El nombre debe tener al menos 2 caracteres.' });
+    }
+    datosActualizar.nombre = nombreLimpio;
+  }
+
+  // Validar y actualizar teléfono si fue enviado
+  if (telefono !== undefined) {
+    const telLimpio = String(telefono).trim();
+    if (telLimpio.length > 0 && telLimpio.replace(/\D/g, '').length < 6) {
+      return res.status(400).json({ message: 'El teléfono debe tener al menos 6 dígitos numéricos.' });
+    }
+    if (telLimpio.length > 40) {
+      return res.status(400).json({ message: 'El teléfono no puede superar 40 caracteres.' });
+    }
+    datosActualizar.telefono = telLimpio.length > 0 ? telLimpio : null;
+  }
+
+  // Validar y actualizar contraseña si fue enviada
+  if (password && String(password).trim().length > 0) {
+    const pass = String(password).trim();
+    if (pass.length < 8) {
+      return res.status(400).json({ message: 'La contraseña debe tener al menos 8 caracteres.' });
+    }
+    if (!/[A-Z]/.test(pass)) {
+      return res.status(400).json({ message: 'La contraseña debe contener al menos una letra mayúscula.' });
+    }
+    if (!/[0-9]/.test(pass)) {
+      return res.status(400).json({ message: 'La contraseña debe contener al menos un número.' });
+    }
+    datosActualizar.contrasena_hash = await bcrypt.hash(pass, 12);
+  }
+
+  await usuario.update(datosActualizar);
+
+  // Actualizar access token con el nuevo nombre para que la sesión actual lo refleje inmediatamente
+  const nuevoPayload = {
+    id: usuario.id,
+    nombre: usuario.nombre,
+    email: usuario.correo_electronico,
+    rol: req.usuario.rol,
+    permisos: req.usuario.permisos,
+    tenantId: req.usuario.tenantId,
+    tiendaId: req.usuario.tiendaId,
+  };
+  const accessToken = jwt.sign(nuevoPayload, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRATION || '15m',
+  });
+  res.cookie('accessToken', accessToken, {
+    ...opcionesCookie(req),
+    path: '/',
+    maxAge: 15 * 60 * 1000,
+  });
+
+  auditoria('PERFIL_ACTUALIZADO', {
+    usuarioId: usuario.id,
+    email: usuario.correo_electronico,
+    ip: req.ip,
+    camposActualizados: Object.keys(datosActualizar).filter(k => !k.startsWith('codigo_')),
+  });
+
+  return res.json({
+    message: 'Perfil actualizado exitosamente.',
+    usuario: {
+      id: usuario.id,
+      nombre: usuario.nombre,
+      email: usuario.correo_electronico,
+      telefono: usuario.telefono || '',
+      rol: req.usuario.rol,
+    },
   });
 }));
 

@@ -276,6 +276,108 @@ class EmailService {
   }
 
   /**
+   * Envía el código OTP para confirmar actualización de perfil o contraseña.
+   */
+  static async enviarCodigoActualizacionPerfil({ email, nombre, codigo }) {
+    try {
+      const transporter = this.getTransporter();
+      if (!transporter) {
+        logger.warn({
+          mensaje: '[EmailService] SMTP no configurado. Omitiendo envío de código de actualización de perfil.',
+          email,
+        });
+        return { enviado: false, razon: 'SMTP no configurado' };
+      }
+
+      const remitente = process.env.SMTP_FROM || `"GESICOM E.A.S." <${process.env.SMTP_USER}>`;
+      const replyTo = process.env.SMTP_REPLY_TO || 'contacto@gesicomm.com';
+      const codigoFormateado = `${codigo.slice(0, 3)} ${codigo.slice(3)}`;
+
+      const html = `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Código de confirmación - Gesicom</title>
+  <style>
+    body { margin: 0; padding: 0; background-color: #0b0e14; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #f1f5f9; }
+    .wrapper { max-width: 600px; margin: 40px auto; padding: 0 20px; }
+    .card { background-color: #121721; border: 1px solid #1e293b; border-radius: 12px; padding: 40px 36px; box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
+    .header { text-align: left; margin-bottom: 32px; border-bottom: 1px solid #1e293b; padding-bottom: 24px; }
+    .logo-text { font-size: 22px; font-weight: 700; color: #f8fafc; letter-spacing: -0.03em; margin-left: 12px; vertical-align: middle; }
+    .logo-icon { width: 32px; height: 32px; vertical-align: middle; }
+    h1 { font-size: 24px; font-weight: 700; color: #ffffff; margin: 0 0 16px 0; letter-spacing: -0.02em; line-height: 1.3; }
+    p { font-size: 15px; line-height: 1.6; color: #94a3b8; margin: 0 0 20px 0; }
+    strong { color: #f8fafc; font-weight: 600; }
+    .box { background-color: #0b0e14; border: 1px solid #1e293b; border-radius: 8px; padding: 24px; margin: 24px 0; text-align: center; }
+    .box-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; font-weight: 600; margin-bottom: 8px; }
+    .box-value { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 36px; font-weight: 700; color: #ffc107; letter-spacing: 0.15em; }
+    .footer { border-top: 1px solid #1e293b; margin-top: 40px; padding-top: 24px; font-size: 13px; color: #64748b; line-height: 1.6; }
+    .footer a { color: #ffc107; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="card">
+      <div class="header">
+        <a href="https://gesicomm.com" style="text-decoration: none;">
+          <img src="https://gesicomm.com/icons/icon-512.png" alt="G." class="logo-icon" />
+          <span class="logo-text">Gesicom</span>
+        </a>
+      </div>
+      <h1>Confirmá los cambios en tu cuenta</h1>
+      <p>Hola, <strong>${nombre || 'usuario'}</strong>. Recibimos una solicitud para modificar los datos de tu perfil o contraseña en Gesicom. Para confirmar estos cambios, ingresá el siguiente código de seguridad en tu pantalla:</p>
+
+      <div class="box">
+        <div class="box-label">Código de seguridad</div>
+        <div class="box-value">${codigoFormateado}</div>
+        <div style="font-size: 12px; color: #64748b; margin-top: 16px;">Válido por <strong>15 minutos</strong></div>
+      </div>
+
+      <p style="font-size: 14px; background-color: rgba(255, 193, 7, 0.05); border-left: 3px solid #ffc107; padding: 12px 16px; margin: 24px 0; color: #cbd5e1;">
+        <strong style="color: #ffc107;">Aviso de seguridad:</strong> Nunca compartas este código con nadie. Si no fuiste tú quien solicitó este cambio, asegurate de que tu cuenta esté segura.
+      </p>
+
+      <div class="footer">
+        <strong>GESICOM E.A.S.</strong> — <a href="https://gesicomm.com">gesicomm.com</a><br>
+        Si tienes preguntas escríbenos a <a href="mailto:contacto@gesicomm.com">contacto@gesicomm.com</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+      const text = `Hola ${nombre || ''},\n\nTu código de confirmación de cambios en Gesicom es: ${codigo}\n\nVálido por 15 minutos. No lo compartas con nadie.\n\nGESICOM E.A.S.\ncontacto@gesicomm.com`;
+
+      const info = await transporter.sendMail({
+        from: remitente,
+        replyTo,
+        to: email,
+        subject: `${codigo} es tu código de confirmación de cambios - GESICOM E.A.S.`,
+        text,
+        html,
+      });
+
+      logger.info({
+        mensaje: '[EmailService] Código de actualización de perfil enviado.',
+        messageId: info.messageId,
+        destinatario: email,
+      });
+
+      return { enviado: true, messageId: info.messageId };
+    } catch (err) {
+      logger.error({
+        mensaje: '[EmailService] Error al enviar código de actualización de perfil:',
+        error: err.message,
+        destinatario: email,
+      });
+      return { enviado: false, error: err.message };
+    }
+  }
+
+  /**
    * Envía el enlace de recuperación de contraseña.
    */
   static async enviarRecuperacionPassword({ email, nombre, urlReset }) {
