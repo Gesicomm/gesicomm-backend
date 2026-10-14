@@ -199,6 +199,16 @@ async function tiendaDelEnvio(envio, usuarioId, options = {}) {
   return Tienda.findOne({ where: { usuario_id: usuarioId }, ...options });
 }
 
+async function tiendaDelUsuario(usuarioId, options = {}) {
+  const { tiendaId, ...queryOptions } = options;
+  if (tiendaId) {
+    const tienda = await Tienda.findOne({ where: { id: tiendaId, usuario_id: usuarioId }, ...queryOptions });
+    if (!tienda) fail('Tienda activa no encontrada.', 404);
+    return tienda;
+  }
+  return Tienda.findOne({ where: { usuario_id: usuarioId }, order: [['id', 'ASC']], ...queryOptions });
+}
+
 function trazaPedidoRaha(order) {
   const row = order.toJSON ? order.toJSON() : order;
   const request = row.request_payload || {};
@@ -299,10 +309,10 @@ async function configure(usuarioId, input) {
   });
 }
 
-async function registerStore(usuarioId, input = {}) {
+async function registerStore(usuarioId, input = {}, options = {}) {
   const credentialInput = extractCredentialInput(input);
   const env = environmentFromInput(input, credentialInput.provided ? 'sandbox' : environment());
-  const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
+  const tienda = await tiendaDelUsuario(usuarioId, { tiendaId: options.tiendaId });
   if (!tienda) fail('Primero configura tu tienda.', 404);
   return sequelize.transaction(async transaction => {
     await sequelize.query('SELECT pg_advisory_xact_lock(84271004, :usuario)', { replacements: { usuario: Number(usuarioId) }, transaction });
@@ -326,8 +336,8 @@ async function registerStore(usuarioId, input = {}) {
   });
 }
 
-async function verifySpec(usuarioId, input = {}) {
-  const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
+async function verifySpec(usuarioId, input = {}, options = {}) {
+  const tienda = await tiendaDelUsuario(usuarioId, { tiendaId: options.tiendaId });
   if (!tienda) fail('Primero configura tu tienda.', 404);
   const credentialInput = extractCredentialInput(input);
   const env = environmentFromInput(input, credentialInput.provided ? 'sandbox' : environment());
@@ -340,10 +350,10 @@ async function verifySpec(usuarioId, input = {}) {
   return { ok: true };
 }
 
-async function verifyOrder(usuarioId, input = {}) {
+async function verifyOrder(usuarioId, input = {}, options = {}) {
   const credentialInput = extractCredentialInput(input);
   const env = environmentFromInput(input, credentialInput.provided ? 'sandbox' : environment());
-  const tienda = await Tienda.findOne({ where: { usuario_id: usuarioId } });
+  const tienda = await tiendaDelUsuario(usuarioId, { tiendaId: options.tiendaId });
   if (!tienda) fail('Primero configura tu tienda.', 404);
   const connection = await connectionFor(usuarioId, { environment: env });
   const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });

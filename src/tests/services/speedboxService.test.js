@@ -162,6 +162,33 @@ it('verifies the sandbox spec with pasted credentials and stores them for automa
   }));
 });
 
+it('links RAHA using the active Gesicom store from the session', async () => {
+  connection.tienda_id = null;
+  models.Tienda.findOne.mockResolvedValueOnce({
+    id: 22,
+    nombre: 'sommix',
+    subdominio: 'sommix',
+    dominio_propio_verificado: false,
+    dominio_propio_habilitado: false,
+  });
+  client.request.mockResolvedValueOnce({ ok: true, tienda_id: '65' });
+
+  await expect(service.registerStore(7, { public_key: 'sbx_public', private_key: 'private_secret' }, { tiendaId: 22 }))
+    .resolves.toMatchObject({ tienda_id: '65', activo: true });
+
+  expect(models.Tienda.findOne).toHaveBeenCalledWith(expect.objectContaining({
+    where: { id: 22, usuario_id: 7 },
+  }));
+  expect(client.request).toHaveBeenCalledWith('store', expect.objectContaining({
+    method: 'POST',
+    body: expect.objectContaining({
+      external_store_id: 'GESICOMM-sandbox-7',
+      store_name: 'sommix',
+      domain: expect.stringContaining('sommix.'),
+    }),
+  }));
+});
+
 it('saves RAHA credentials without requiring a linked store yet', async () => {
   connection.tienda_id = null;
   await service.configure(7, { activo: false, public_key: 'new_public', private_key: 'new_secret' });

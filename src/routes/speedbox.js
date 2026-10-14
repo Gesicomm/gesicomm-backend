@@ -30,9 +30,9 @@ function publicBaseFromRequest(req) {
 }
 router.get('/', handle(req => service.status(req.usuario.id, { publicBaseUrl: publicBaseFromRequest(req) })));
 router.put('/', handle(req => service.configure(req.usuario.id, req.body)));
-router.post('/store', handle(req => service.registerStore(req.usuario.id, req.body)));
-router.post('/spec', handle(req => service.verifySpec(req.usuario.id, req.body)));
-router.post('/order-test', handle(req => service.verifyOrder(req.usuario.id, req.body)));
+router.post('/store', handle(req => service.registerStore(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));
+router.post('/spec', handle(req => service.verifySpec(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));
+router.post('/order-test', handle(req => service.verifyOrder(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));
 router.post('/eventos/:id/conciliar', handle(req => require('../services/speedbox/finanzas').conciliar(req.usuario.id, Number(req.params.id), req.body)));
 router.post('/updates', handle(req => service.verifyUpdates(req.usuario.id, req.body)));
 router.post('/pedidos/:id/enviar', handle(req => service.sendOrder(req.usuario.id, Number(req.params.id))));
