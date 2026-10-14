@@ -27,7 +27,8 @@ const VARIABLES = {
   pedido_id:      numeroPedidoVisible,
   total_gs:       (envio) => formatGs(envio.monto),
   direccion_entrega: (envio) => envio.direccion || '',
-  courier_nombre: (envio) => envio.courier_nombre || envio.courier || '',
+  courier_nombre: (envio) => envio.Courier?.nombre || envio.courier_nombre || (typeof envio.courier === 'string' ? envio.courier : '') || '',
+  courier_telefono: (envio) => envio.Courier?.telefono || envio.courier_telefono || '',
   // Aliases por compatibilidad con plantillas antiguas
   nombre:         (envio) => [envio.nombre_cliente, envio.apellido_cliente].filter(Boolean).join(' ') || envio.cliente || 'Cliente',
   producto:       (envio) => nombreProductos(envio),
@@ -35,7 +36,7 @@ const VARIABLES = {
   pedido:         numeroPedidoVisible,
   total:          (envio) => formatGs(envio.monto),
   direccion:      (envio) => envio.direccion || '',
-  courier:        (envio) => envio.courier_nombre || envio.courier || '',
+  courier:        (envio) => VARIABLES.courier_nombre(envio),
 };
 
 /**
@@ -65,6 +66,7 @@ function listarVariablesDisponibles() {
     { key: 'total_gs',          grupo: 'Pedido',  desc: 'Monto total en guaraníes',    ejemplo: formatGs(249000) },
     { key: 'direccion_entrega', grupo: 'Envío',  desc: 'Dirección de entrega',        ejemplo: 'Av. Mariscal López 1234, Asunción' },
     { key: 'courier_nombre',    grupo: 'Envío',  desc: 'Nombre del courier',            ejemplo: 'Pronto Entrega' },
+    { key: 'courier_telefono',  grupo: 'Envío',  desc: 'Teléfono del courier',          ejemplo: '0981 555 123' },
   ];
 }
 

@@ -22,6 +22,7 @@ const {
 } = require('../../models');
 const { errorHttp } = require('../../utils/errorHttp');
 const { ETAPAS } = require('./flujosBase');
+const { estadoActivadorDeFase } = require('./faseActivacion');
 
 /**
  * Fases activas del flujo, con su etiqueta.
@@ -57,6 +58,7 @@ const TIPOS_FLUJO = new Set([
   'VENTA_WHATSAPP',
   'SEGUIMIENTO_ENVIO',
   'ESCALAMIENTO_VENTAS',
+  'RECUPERACION_CLIENTES',
   'PERSONALIZADO',
 ]);
 
@@ -147,7 +149,8 @@ function normalizarFases(fases) {
     const transicionHasta = normalizarEstadoOperativo(
       fase?.transicion_estado_hasta ?? transicionLegacy.hasta,
     );
-    const accionOperativa = accionPorTransicion(transicionDesde, transicionHasta, accionOperativaCruda);
+    const estadoActivador = normalizarEstadoOperativo(estadoActivadorDeFase(fase));
+    if (estadoActivador && !ESTADOS_PEDIDO.has(estadoActivador)) errores.push(`Fase ${posicion}: estado activador inválido`);
 
     if (!nombre) errores.push(`Fase ${posicion}: falta el nombre`);
     if (!mensaje) errores.push(`Fase ${posicion}: el mensaje no puede estar vacío`);
@@ -177,9 +180,10 @@ function normalizarFases(fases) {
       orden: posicion,
       espera_sugerida_minutos: espera,
       etiqueta_id: fase?.etiqueta_id ? Number(fase.etiqueta_id) : null,
-      accion_operativa: accionOperativa,
-      transicion_estado_desde: transicionDesde,
-      transicion_estado_hasta: transicionHasta,
+      accion_operativa: null,
+      estado_activador: estadoActivador,
+      transicion_estado_desde: null,
+      transicion_estado_hasta: null,
     };
   });
 
@@ -257,6 +261,7 @@ async function sincronizarFases(flujoId, fasesNormalizadas, t) {
         espera_sugerida_minutos: fase.espera_sugerida_minutos,
         etiqueta_id: fase.etiqueta_id,
         accion_operativa: fase.accion_operativa || null,
+        estado_activador: fase.estado_activador || null,
         transicion_estado_desde: fase.transicion_estado_desde || null,
         transicion_estado_hasta: fase.transicion_estado_hasta || null,
         activo: true,
@@ -272,6 +277,7 @@ async function sincronizarFases(flujoId, fasesNormalizadas, t) {
         espera_sugerida_minutos: fase.espera_sugerida_minutos,
         etiqueta_id: fase.etiqueta_id,
         accion_operativa: fase.accion_operativa || null,
+        estado_activador: fase.estado_activador || null,
         transicion_estado_desde: fase.transicion_estado_desde || null,
         transicion_estado_hasta: fase.transicion_estado_hasta || null,
         activo: true,
@@ -328,14 +334,13 @@ async function asegurarAccionesOperativasBase(usuarioId, t = null) {
   });
 
   for (const fase of fases) {
+    if (fase.estado_activador) continue;
     const accion = accionOperativaBase(fase.flujo?.tipo, fase);
     if (!accion) continue;
-    const transicion = transicionPorAccion(accion);
-    const cambios = {};
-    if (!fase.accion_operativa) cambios.accion_operativa = accion;
-    if (transicion.desde && !fase.transicion_estado_desde) cambios.transicion_estado_desde = transicion.desde;
-    if (transicion.hasta && !fase.transicion_estado_hasta) cambios.transicion_estado_hasta = transicion.hasta;
-    if (Object.keys(cambios).length > 0) await fase.update(cambios, { transaction: t });
+    await fase.update({
+      estado_activador: accion === 'PREPARAR_PEDIDO' ? 'Preparado' : 'Despachado',
+      accion_operativa: null, transicion_estado_desde: null, transicion_estado_hasta: null,
+    }, { transaction: t });
   }
 }
 
@@ -430,6 +435,7 @@ async function asegurarFlujosBase({ usuarioId }) {
             espera_sugerida_minutos: fase.espera,
             etiqueta_id: null,
             accion_operativa: fase.accion_operativa || null,
+            estado_activador: fase.estado_activador || null,
             transicion_estado_desde: fase.transicion_estado_desde || null,
             transicion_estado_hasta: fase.transicion_estado_hasta || null,
             activo: true,
@@ -616,6 +622,10 @@ async function estadoFlujosDelPedido(envioId, { usuarioId, esAdmin }) {
       const stats = porFase.get(fase.id);
       return {
         ...fase,
+        estado_activador: estadoActivadorDeFase(fase),
+        accion_operativa: null,
+        transicion_estado_desde: null,
+        transicion_estado_hasta: null,
         envios: stats?.veces || 0,
         ultimo_envio_en: stats?.ultimo_envio_en || null,
         completada: !!stats?.completada,

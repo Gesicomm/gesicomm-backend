@@ -58,6 +58,11 @@ const WhatsappFlujoFase = sequelize.define('WhatsappFlujoFase', {
     allowNull: true,
     comment: 'Acción interna estable que se ejecuta al completar la fase. No depende del nombre ni del orden editable.',
   },
+  estado_activador: {
+    type: DataTypes.STRING(40),
+    allowNull: true,
+    comment: 'Estado logístico que habilita el mensaje; enviarlo no cambia ese estado.',
+  },
   transicion_estado_desde: {
     type: DataTypes.STRING(40),
     allowNull: true,

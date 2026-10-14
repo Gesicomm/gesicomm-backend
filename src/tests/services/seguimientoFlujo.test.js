@@ -106,6 +106,19 @@ describe('estadoFlujosDelPedido', () => {
 });
 
 describe('validación de fases', () => {
+  test('una fase antigua Desde/Hasta se guarda como estado activador y conserva su mensaje', async () => {
+    WhatsappFlujo.create.mockResolvedValue(fila({ id: 57 }));
+    WhatsappFlujo.findOne.mockResolvedValue(fila({ id: 57, nombre: 'Avisos', fases: [] }));
+    await flujoService.crearFlujo({
+      nombre: 'Avisos', tipo: 'SEGUIMIENTO_ENVIO',
+      fases: [{ nombre: 'Preparación', mensaje: 'Texto personalizado', transicion_estado_desde: 'Confirmado', transicion_estado_hasta: 'Preparado', accion_operativa: 'PREPARAR_PEDIDO' }],
+    }, CTX);
+    expect(WhatsappFlujoFase.create).toHaveBeenCalledWith(expect.objectContaining({
+      mensaje: 'Texto personalizado', estado_activador: 'Preparado', accion_operativa: null,
+      transicion_estado_desde: null, transicion_estado_hasta: null,
+    }), expect.anything());
+  });
+
   test('el flujo necesita al menos una fase', async () => {
     await expect(flujoService.crearFlujo({ nombre: 'Vacío', fases: [] }, CTX))
       .rejects.toMatchObject({ status: 422 });

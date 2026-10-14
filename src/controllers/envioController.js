@@ -18,6 +18,7 @@ const AbastecimientoFlujo = require('../services/abastecimiento/abastecimientoFl
 const TarifaDelivery = require('../services/tarifaDelivery.service');
 const ProveedorLogisticoService = require('../services/proveedorLogistico.service');
 const { destinoUploadsTmp } = require('../utils/uploadTmp');
+const PagoParService = require('../services/payments/pagoParService');
 
 const MAX_COMPROBANTE_ABASTECIMIENTO_BYTES = 5 * 1024 * 1024; // 5MB
 
@@ -1574,7 +1575,7 @@ exports.listEnviosPaginados = async (req, res) => {
           attributes: ['id', 'ejecutar_en', 'estado', 'nota', 'version', 'fase_id'],
         },
         {
-          model: EnvioItem, as: 'items', attributes: ['id', 'producto_id', 'nombre_producto', 'cantidad', 'precio_unitario', 'subtotal', 'oferta_nombre'],
+          model: EnvioItem, as: 'items', attributes: ['id', 'producto_id', 'nombre_producto', 'cantidad', 'precio_unitario', 'subtotal', 'oferta_id', 'oferta_nombre', 'origen_venta'],
           include: [{
             model: EnvioItemComponente, as: 'componentes_vendidos',
             attributes: ['id', 'producto_id', 'cantidad', 'cantidad_devuelta_vendible', 'cantidad_devuelta_danada', 'cantidad_perdida'],
@@ -1650,6 +1651,7 @@ exports.createEnvio = async (req, res) => {
       pago_anticipado,
       metodo_pago,
       metodo_pago_id,
+      metodo_pago_canal,
       comision_pct_aplicada,
       observaciones,
       courier_id,
@@ -1716,6 +1718,49 @@ exports.createEnvio = async (req, res) => {
       throw Object.assign(new Error('Selecciona la variante del producto.'), { status: 400 });
     }
 
+    // Un pedido manual nace Confirmado por defecto (no pasa por "Pendiente",
+    // ver abajo): si el confirmador lo carga como pago anticipado, tiene que
+    // venir con el método ya elegido — mismo criterio que al confirmar un
+    // pedido web (ver updateEstadoEnvio). Si trae metodo_pago_id, se resuelve
+    // contra el catálogo (nombre + comisión), nunca se confía en lo que
+    // mande el cliente para esos dos campos — mismo criterio que al marcar
+    // Entregado (ver pedido #385 en los comentarios de updateEstadoEnvio).
+    const estadoFinalCreacion = req.body.estado || 'Confirmado';
+    let metodoPagoResuelto = null;
+    let metodoPagoTextoResuelto = null;
+    if (metodo_pago_id) {
+      metodoPagoResuelto = await MetodoPago.findByPk(metodo_pago_id, { transaction: t });
+      if (!metodoPagoResuelto) {
+        await t.rollback();
+        return res.status(400).json({ error: `Método de pago inválido: "${metodo_pago_id}".` });
+      }
+      if (estadoFinalCreacion !== 'Entregado' && !metodoPagoResuelto.es_anticipado) {
+        await t.rollback();
+        return res.status(400).json({ error: `"${metodoPagoResuelto.nombre}" no está marcado como método anticipado.` });
+      }
+      // Si el catálogo marca este método como PagoPar, el confirmador
+      // también elige con qué canal pagó el cliente — mismo agrupamiento que
+      // "Analizar margen" (ver PagoParService.CATEGORIAS_CHECKOUT), validado
+      // contra esa lista fija en vez de confiar en texto libre del cliente.
+      if (metodo_pago_canal !== undefined && metodo_pago_canal !== null && String(metodo_pago_canal).trim()) {
+        if (!/pagopar/i.test(metodoPagoResuelto.nombre)) {
+          await t.rollback();
+          return res.status(400).json({ error: `"${metodoPagoResuelto.nombre}" no es un método de PagoPar: no corresponde elegir un canal.` });
+        }
+        if (!PagoParService.esCanalCheckoutValido(metodo_pago_canal)) {
+          await t.rollback();
+          return res.status(400).json({ error: `Canal de PagoPar inválido: "${metodo_pago_canal}".` });
+        }
+        metodoPagoTextoResuelto = metodo_pago_canal;
+      } else {
+        metodoPagoTextoResuelto = metodoPagoResuelto.nombre;
+      }
+    }
+    if (pago_anticipado === true && estadoFinalCreacion !== 'Pendiente' && !metodoPagoResuelto && metodo_pago !== 'PagoPar') {
+      await t.rollback();
+      return res.status(400).json({ error: 'Pago anticipado: elegí con qué método ya pagó el cliente antes de confirmar el pedido.' });
+    }
+
     const nuevoEnvio = await Envio.create(
       {
         usuario_id,
@@ -1745,9 +1790,9 @@ exports.createEnvio = async (req, res) => {
         // 'false' (contra entrega, el caso normal) — mismo criterio que
         // delivery_a_cargo arriba.
         pago_anticipado: pago_anticipado === true,
-        metodo_pago: metodo_pago || null,
-        metodo_pago_id: metodo_pago_id || null,
-        comision_pct_aplicada: comision_pct_aplicada || 0,
+        metodo_pago: metodoPagoResuelto ? metodoPagoTextoResuelto : (metodo_pago || null),
+        metodo_pago_id: metodoPagoResuelto ? metodoPagoResuelto.id : (metodo_pago_id || null),
+        comision_pct_aplicada: metodoPagoResuelto ? (Number(metodoPagoResuelto.comision_porcentaje) || 0) : (comision_pct_aplicada || 0),
         observaciones,
         // Pedido manual: si se pasa estado explícito (ej. "Pendiente"), se respeta;
         // por defecto nace en "Confirmado" (ver plan Gestión de Pedidos, sección 5).
@@ -1862,7 +1907,7 @@ exports.updateEstado = async (req, res) => {
       // los pide (ruc es opcional ahí; courier/costo de envío los define
       // el staff, nunca el visitante).
       ruc, direccion, referencia, link_maps, costo_envio, delivery_a_cargo, pago_anticipado, metodo_pago,
-      quiere_factura, razon_social, nro_comprobante, metodo_pago_id, comision_pct_aplicada,
+      quiere_factura, razon_social, nro_comprobante, metodo_pago_id, comision_pct_aplicada, metodo_pago_canal,
       ciudad, departamento, nombre_cliente, apellido_cliente, telefono,
       confirmador, origen, canal_venta_id, campaign_name, observaciones, monto, origen_preferido_id,
       // Obligatorio para pasar a Reprogramado — ver TRANSICIONES_VALIDAS.
@@ -1962,6 +2007,22 @@ exports.updateEstado = async (req, res) => {
         }
         updateData.fecha_reprogramada = fecha_reprogramada;
         updateData.motivo_reprogramacion = motivo_reprogramacion || null;
+      }
+
+      // "Pago anticipado" quiere decir que la plata ya llegó: si el
+      // confirmador lo tildó pero no dice con qué método, no hay forma de
+      // confirmar el pedido como anticipado — o se elige el método, o se
+      // destilda y sigue como contra entrega (pedido del usuario,
+      // 2026-10-14). Un pedido pagado online con PagoPar ya trae su método
+      // puesto por el webhook (ver confirmacionPago.js), así que no aplica.
+      if (estado === 'Confirmado') {
+        const pagoAnticipadoFinal = typeof pago_anticipado === 'boolean' ? pago_anticipado : envio.pago_anticipado === true;
+        const metodoFinalId = metodo_pago_id !== undefined ? metodo_pago_id : envio.metodo_pago_id;
+        const yaPagoPar = envio.metodo_pago === 'PagoPar' || metodo_pago === 'PagoPar';
+        if (pagoAnticipadoFinal && !yaPagoPar && !metodoFinalId) {
+          await t.rollback();
+          return res.status(400).json({ error: 'Pago anticipado: elegí con qué método ya pagó el cliente antes de confirmar el pedido.' });
+        }
       }
 
       if (estado === 'Entregado') {
@@ -2076,19 +2137,41 @@ exports.updateEstado = async (req, res) => {
     if (delivery_a_cargo === 'cliente' || delivery_a_cargo === 'negocio') {
       updateData.delivery_a_cargo = delivery_a_cargo;
     }
-    // Igual que delivery_a_cargo: se puede corregir en cualquier momento
-    // del ciclo del pedido, y no tiene relación con metodo_pago_id.
+    // Un pedido pagado online con PagoPar queda bloqueado: el negocio ya
+    // cobró con ese método y ningún otro, así que ni el toggle ni el método
+    // se tocan más por acá — lo fija confirmacionPago.js, nunca este
+    // endpoint (pedido del usuario, 2026-10-14).
+    const pagoParYaCobrado = envio.metodo_pago === 'PagoPar';
+    if (pagoParYaCobrado && (
+      (typeof pago_anticipado === 'boolean' && pago_anticipado !== true) ||
+      (metodo_pago_id !== undefined && String(metodo_pago_id) !== String(envio.metodo_pago_id || '')) ||
+      (metodo_pago !== undefined && metodo_pago !== 'PagoPar')
+    )) {
+      await t.rollback();
+      return res.status(400).json({ error: 'Este pedido ya fue pagado online con PagoPar: el método de pago no se puede modificar.' });
+    }
+
+    // Se puede corregir en cualquier momento del ciclo del pedido.
     if (typeof pago_anticipado === 'boolean') {
       updateData.pago_anticipado = pago_anticipado;
     }
-    // El método de pago real se define al marcar Entregado. Antes de eso
-    // solo corresponde `pago_anticipado` para saber si cobra al recibir o ya
-    // viene pago.
-    const puedeEditarMetodoPago = envio.estado === 'Entregado' || estado === 'Entregado';
+    // Contra entrega, el método real recién se sabe al entregar (lo cobra el
+    // courier, nunca antes). Anticipado es al revés: el cliente ya pagó
+    // ANTES de la entrega, así que el confirmador tiene que poder
+    // registrarlo apenas lo sabe, sin esperar a "Entregado" (pedido del
+    // usuario, 2026-10-14; antes esta columna estaba deliberadamente
+    // desconectada de metodo_pago_id, ver comentario en models/Envio.js).
+    const pagoAnticipadoFinal = typeof pago_anticipado === 'boolean' ? pago_anticipado : envio.pago_anticipado === true;
+    const puedeEditarMetodoPago = envio.estado === 'Entregado' || estado === 'Entregado' || pagoAnticipadoFinal;
     if (!puedeEditarMetodoPago && (metodo_pago_id !== undefined || metodo_pago !== undefined)) {
       await t.rollback();
       return res.status(400).json({ error: 'El método de pago se define recién al marcar el pedido como Entregado.' });
     }
+
+    // Antes de Entregado, el único método que corresponde elegir es uno
+    // marcado ANTICIPADO en el catálogo: acá se está registrando cómo pagó
+    // el cliente, no lo que terminará cobrando el courier contra entrega.
+    const soloMetodosAnticipados = envio.estado !== 'Entregado' && estado !== 'Entregado';
 
     // Mismo criterio que en la transición a Entregado: si el método de pago
     // cambia en una edición de un pedido ya entregado, el nombre y la comisión
@@ -2099,9 +2182,31 @@ exports.updateEstado = async (req, res) => {
         await t.rollback();
         return res.status(400).json({ error: `Método de pago inválido: "${metodo_pago_id}".` });
       }
+      if (soloMetodosAnticipados && !metodoEditado.es_anticipado) {
+        await t.rollback();
+        return res.status(400).json({ error: `"${metodoEditado.nombre}" no está marcado como método anticipado.` });
+      }
       updateData.metodo_pago_id = metodo_pago_id;
-      updateData.metodo_pago = metodoEditado.nombre;
       updateData.comision_pct_aplicada = Number(metodoEditado.comision_porcentaje) || 0;
+      // Si el catálogo marca este método como PagoPar, el confirmador
+      // también elige con qué canal pagó el cliente (transferencia, tarjeta,
+      // QR...) — mismo agrupamiento que "Analizar margen" (ver
+      // PagoParService.CATEGORIAS_CHECKOUT). Se valida contra esa lista fija
+      // en vez de confiar en el texto que mande el cliente, mismo criterio
+      // que el resto de este bloque (pedido del usuario, 2026-10-14).
+      if (metodo_pago_canal !== undefined && metodo_pago_canal !== null && String(metodo_pago_canal).trim()) {
+        if (!/pagopar/i.test(metodoEditado.nombre)) {
+          await t.rollback();
+          return res.status(400).json({ error: `"${metodoEditado.nombre}" no es un método de PagoPar: no corresponde elegir un canal.` });
+        }
+        if (!PagoParService.esCanalCheckoutValido(metodo_pago_canal)) {
+          await t.rollback();
+          return res.status(400).json({ error: `Canal de PagoPar inválido: "${metodo_pago_canal}".` });
+        }
+        updateData.metodo_pago = metodo_pago_canal;
+      } else {
+        updateData.metodo_pago = metodoEditado.nombre;
+      }
     } else if (puedeEditarMetodoPago && metodo_pago !== undefined && updateData.metodo_pago === undefined) {
       // Sin metodo_pago_id (carga legacy o texto libre): se respeta el texto
       // tal cual, como siempre.

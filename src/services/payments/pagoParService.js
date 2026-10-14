@@ -4,6 +4,27 @@ const axios = require('axios');
 
 class PagoParService {
   /**
+   * Las 5 categorías en las que se agrupan las formas de pago que PagoPar
+   * habilita para el comercio (ver categoriaCheckout/obtenerOpcionesCheckout)
+   * — mismo agrupamiento que usa "Analizar margen" (SensibilidadPanel.jsx)
+   * para mostrarle al usuario con qué puede pagar, y el que el confirmador
+   * elige en el pedido cuando el cliente ya pagó por PagoPar (pedido del
+   * usuario, 2026-10-14). Centralizado acá para no mantener la lista de
+   * nombres duplicada en el controlador que la valida.
+   */
+  static CATEGORIAS_CHECKOUT = {
+    'transferencia-bancaria': 'Transferencia bancaria PagoPar',
+    qr: 'Pago con QR',
+    tarjetas: 'Tarjetas de crédito/débito',
+    billeteras: 'Billeteras',
+    'bocas-de-pago': 'Bocas de pago',
+  };
+
+  static esCanalCheckoutValido(nombre) {
+    return Object.values(PagoParService.CATEGORIAS_CHECKOUT).includes(nombre);
+  }
+
+  /**
    * Saca el motivo legible de una respuesta de PagoPar.
    *
    * `resultado` no tiene forma estable: a veces es un array de objetos
@@ -65,26 +86,26 @@ class PagoParService {
     const nombre = PagoParService.normalizarTexto(metodo.nombre);
 
     if (nombre.includes('transferencia')) {
-      return { id: 'transferencia-bancaria', nombre: 'Transferencia bancaria PagoPar' };
+      return { id: 'transferencia-bancaria', nombre: PagoParService.CATEGORIAS_CHECKOUT['transferencia-bancaria'] };
     }
     if (nombre.includes('qr') || nombre.includes('pix')) {
-      return { id: 'qr', nombre: 'Pago con QR' };
+      return { id: 'qr', nombre: PagoParService.CATEGORIAS_CHECKOUT.qr };
     }
     if (/(tarjeta|mastercard|visa|american express|cabal|panal|discover|diners)/.test(nombre)) {
-      return { id: 'tarjetas', nombre: 'Tarjetas de crédito/débito' };
+      return { id: 'tarjetas', nombre: PagoParService.CATEGORIAS_CHECKOUT.tarjetas };
     }
     if (/(zimple|tigo money|personal pay|pago movil|wally|billetera claro|billetera|fondos)/.test(nombre)) {
-      return { id: 'billeteras', nombre: 'Billeteras' };
+      return { id: 'billeteras', nombre: PagoParService.CATEGORIAS_CHECKOUT.billeteras };
     }
     if (/(boca|acercandose|pagos habilitadas)/.test(nombre)) {
-      return { id: 'bocas-de-pago', nombre: 'Bocas de pago' };
+      return { id: 'bocas-de-pago', nombre: PagoParService.CATEGORIAS_CHECKOUT['bocas-de-pago'] };
     }
 
     return null;
   }
 
   static obtenerOpcionesCheckout(metodos = []) {
-    const orden = ['transferencia-bancaria', 'qr', 'tarjetas', 'billeteras', 'bocas-de-pago'];
+    const orden = Object.keys(PagoParService.CATEGORIAS_CHECKOUT);
     const grupos = new Map();
 
     for (const metodo of metodos) {

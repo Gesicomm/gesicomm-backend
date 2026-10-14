@@ -11,9 +11,9 @@ const { logger } = require('../../utils/logger');
 // notificar nada (ver seguimientoWorker.js).
 const ESTADOS_TERMINALES_SEGUIMIENTO = ['Confirmado', 'Cancelado', 'Entregado', 'Devuelto', 'Perdido'];
 
-// Pedidos que ya no se van a contactar. Un recordatorio vencido colgado de
-// uno de estos no es trabajo pendiente y no cuenta en ningún contador.
-const ESTADOS_PEDIDO_CERRADO = ['Entregado', 'Cancelado', 'Devuelto', 'Perdido'];
+// Los entregados tienen recompra; devueltos y perdidos tienen recuperación.
+// Cancelado queda fuera de las etapas automáticas de contacto.
+const ESTADOS_PEDIDO_CERRADO = ['Cancelado'];
 
 // Un recordatorio sigue "abierto" mientras alguien tenga que hacer algo con
 // él. VENCIDO no es un estado final: es un PENDIENTE al que le llegó la hora

@@ -9,7 +9,7 @@ const { adjuntarIdentificadores } = require('../pedidoIdentificador.service');
  * Dos niveles:
  *
  * 1. ETAPA (confirmación web, venta por WhatsApp, seguimiento de envío,
- *    escalamiento de ventas). La decide el ESTADO del pedido, nunca una
+ *    escalamiento de ventas, recuperación). La decide el ESTADO del pedido, nunca una
  *    persona: cuando el pedido se confirma pasa solo de "confirmación" a
  *    "seguimiento de envío", y cuando se entrega, a "escalamiento de ventas"
  *    (ver flujosBase.js). Cada etapa trabaja con los flujos de su tipo.
@@ -51,6 +51,7 @@ const {
 const flujoService = require('./flujo.service');
 const { ESTADOS_ABIERTOS, elegirRecordatorioVigente } = require('./seguimientoRecordatorio.service');
 const { ETAPAS, ETAPA_INICIAL, etapaPorTipo, etapaDelPedido } = require('./flujosBase');
+const { estadoActivadorDeFase, faseDisponibleParaPedido, faseSuperadaPorLogistica } = require('./faseActivacion');
 
 const ZONA_HORARIA = 'America/Asuncion';
 const CUANDO = ['ahora', 'hoy', 'despues', 'sin_fecha'];
@@ -107,13 +108,13 @@ function fasesOrdenadas(flujo) {
  * El mensaje siguiente al más avanzado que ya está completado. Sin ninguno
  * completado, el primero. Con el último completado, null: el flujo terminó.
  */
-function proximaFaseDerivada(flujo, faseIdsCompletadas) {
+function proximaFaseDerivada(flujo, faseIdsCompletadas, pedido = null) {
   const fases = fasesOrdenadas(flujo);
   let mayorOrdenCompletado = 0;
   for (const fase of fases) {
     if (faseIdsCompletadas.has(Number(fase.id))) mayorOrdenCompletado = Math.max(mayorOrdenCompletado, fase.orden);
   }
-  return fases.find((f) => f.orden > mayorOrdenCompletado) || null;
+  return fases.find((f) => f.orden > mayorOrdenCompletado && !faseSuperadaPorLogistica(f, pedido, flujo?.tipo)) || null;
 }
 
 /** El flujo con el que arranca un pedido en su etapa. */
@@ -168,7 +169,14 @@ function armarPendientes({
     // confirmación no adelantan nada en el seguimiento de envío.
     const delPedido = (contactosPorPedido.get(Number(pedido.id)) || []).filter((c) => flujoPorId.has(Number(c.flujo_id)));
     const completados = delPedido.filter((c) => c.estado === FASE_COMPLETADA);
-    const recordatorio = elegirRecordatorioVigente(recordatoriosPorPedido.get(Number(pedido.id)) || []);
+    const recordatoriosDeLaEtapa = (recordatoriosPorPedido.get(Number(pedido.id)) || []).filter((r) => {
+      const faseDelRecordatorio = flujosDeLaEtapa.flatMap(fasesOrdenadas).find((f) => Number(f.id) === Number(r.fase_id));
+      if (faseSuperadaPorLogistica(faseDelRecordatorio, pedido, etapa)) return false;
+      return r.flujo_id
+        ? flujoPorId.has(Number(r.flujo_id))
+        : !r.fase_id || Boolean(faseDelRecordatorio);
+    });
+    const recordatorio = elegirRecordatorioVigente(recordatoriosDeLaEtapa);
 
     let flujo = null;
     let fase = null;
@@ -192,7 +200,7 @@ function armarPendientes({
         const completadasDelFlujo = new Set(
           completados.filter((c) => Number(c.flujo_id) === Number(flujo.id)).map((c) => Number(c.fase_id)),
         );
-        fase = proximaFaseDerivada(flujo, completadasDelFlujo);
+        fase = proximaFaseDerivada(flujo, completadasDelFlujo, pedido);
         faseOrigen = fase ? 'derivada' : null;
       }
     }
@@ -210,7 +218,11 @@ function armarPendientes({
     let cuando;
     let motivo;
     let tocaEn = null;
-    if (recordatorio) {
+    const esperandoEstado = fase && !faseDisponibleParaPedido(fase, pedido, etapa);
+    if (esperandoEstado) {
+      cuando = 'sin_fecha';
+      motivo = 'esperando_estado';
+    } else if (recordatorio) {
       cuando = clasificarCuando(recordatorio, ahora);
       motivo = cuando === 'ahora' ? 'vencido' : 'programado';
       tocaEn = recordatorio.ejecutar_en;
@@ -226,6 +238,9 @@ function armarPendientes({
         cuando = 'ahora';
         motivo = 'nuevo';
       }
+    } else if (estadoActivadorDeFase(fase)) {
+      cuando = 'ahora';
+      motivo = 'estado_logistico';
     } else {
       cuando = 'sin_fecha';
       motivo = 'sin_agendar';
@@ -257,6 +272,7 @@ function armarPendientes({
       fase_abierta_en: abiertaSinCompletar?.ultimo || null,
       cuando,
       motivo,
+      estado_requerido: esperandoEstado ? (estadoActivadorDeFase(fase) || 'Preparado') : null,
       toca_en: tocaEn,
       recordatorio: recordatorio ? {
         id: recordatorio.id,
@@ -493,8 +509,8 @@ async function conteoPorEtapa({ whereBase, ahora = new Date() }) {
   for (const fila of porEstado) {
     const cantidad = Number(fila.cantidad) || 0;
     const esWhatsapp = fila.es_whatsapp === true || fila.es_whatsapp === 't' || fila.es_whatsapp === 1;
-    if (ETAPAS[0].estados.includes(fila.estado)) conteo[esWhatsapp ? 'VENTA_WHATSAPP' : 'CONFIRMACION_PEDIDO_WEB'] += cantidad;
-    else conteo.SEGUIMIENTO_ENVIO += cantidad;
+    const tipo = etapaDelPedido({ estado: fila.estado, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
+    if (tipo) conteo[tipo] += cantidad;
   }
   conteo[ETAPA_RECOMPRA] = entregados;
   return conteo;
@@ -532,9 +548,8 @@ async function vencidosPorEtapa({ whereBase, ahora = new Date() }) {
   for (const fila of filas) {
     const cantidad = Number(fila.cantidad) || 0;
     const esWhatsapp = fila.es_whatsapp === true || fila.es_whatsapp === 't' || fila.es_whatsapp === 1;
-    if (ETAPAS[0].estados.includes(fila.estado)) vencidos[esWhatsapp ? 'VENTA_WHATSAPP' : 'CONFIRMACION_PEDIDO_WEB'] += cantidad;
-    else if (fila.estado === 'Entregado') vencidos[ETAPA_RECOMPRA] += cantidad;
-    else vencidos.SEGUIMIENTO_ENVIO += cantidad;
+    const tipo = etapaDelPedido({ estado: fila.estado, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
+    if (tipo) vencidos[tipo] += cantidad;
   }
   return vencidos;
 }
@@ -566,7 +581,7 @@ function etapaValida(tipo) {
 /** POST /envios/seguimiento/tablero */
 async function tableroDeSeguimiento({ whereBase, usuarioId, esAdmin, filtros = {}, ahora = new Date() }) {
   const etapa = etapaValida(filtros.etapa);
-  // Las cuatro etapas tienen que tener siempre su flujo.
+  // Cada etapa tiene que tener siempre su flujo.
   await flujoService.asegurarFlujosBase({ usuarioId });
 
   const [{ items, flujos, truncado }, conteo, vencidos] = await Promise.all([
@@ -610,7 +625,7 @@ async function pendientesPaginados({ whereBase, usuarioId, esAdmin, filtros = {}
  * A diferencia del tablero, los pedidos llegan mezclados de todas las etapas.
  *
  * Devuelve Map envio_id → resumen. No hay entrada para los pedidos que no
- * tienen nada que enviar: cerrados sin venta (cancelado, devuelto, perdido),
+ * tienen nada que enviar: cancelados,
  * cuentas sin flujo para esa etapa, o entregados fuera de la ventana de
  * recompra.
  */
@@ -679,6 +694,7 @@ async function seguimientoDePedidos({ pedidos, usuarioId, esAdmin, ahora = new D
         terminado: !item.fase_id,
         cuando: item.fase_id ? item.cuando : null,
         motivo: item.fase_id ? item.motivo : null,
+        estado_requerido: item.estado_requerido,
         toca_en: item.toca_en,
         fase_abierta_en: item.fase_abierta_en,
         entregado_en: item.entregado_en,

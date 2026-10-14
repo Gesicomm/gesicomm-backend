@@ -73,8 +73,8 @@ const completada = (envio_id, fase_id, haceHoras, flujo_id = 10) => ({
 const FLUJO_ENVIO = {
   id: 30, usuario_id: 7, nombre: 'Seguimiento de envío', tipo: 'SEGUIMIENTO_ENVIO', predeterminado: true,
   fases: [
-    { id: 301, orden: 1, nombre: 'Pedido confirmado', accion_operativa: 'PREPARAR_PEDIDO', espera_sugerida_minutos: 0, activo: true },
-    { id: 302, orden: 2, nombre: 'Pedido despachado', accion_operativa: 'DESPACHAR_PEDIDO', espera_sugerida_minutos: 0, activo: true },
+    { id: 301, orden: 1, nombre: 'Pedido confirmado', estado_activador: 'Preparado', espera_sugerida_minutos: 0, activo: true },
+    { id: 302, orden: 2, nombre: 'Pedido despachado', estado_activador: 'Despachado', espera_sugerida_minutos: 0, activo: true },
   ],
 };
 const TRES_DIAS = 3 * 24 * 60;
@@ -85,7 +85,14 @@ const FLUJO_RECOMPRA = {
     { id: 402, orden: 2, nombre: 'Nueva compra', espera_sugerida_minutos: 7 * 24 * 60, activo: true },
   ],
 };
-const TODOS_LOS_FLUJOS = [FLUJO, FLUJO_WHATSAPP, FLUJO_ENVIO, FLUJO_RECOMPRA];
+const FLUJO_RECUPERACION = {
+  id: 50, usuario_id: 7, nombre: 'Recuperación de clientes', tipo: 'RECUPERACION_CLIENTES', predeterminado: true,
+  fases: [
+    { id: 501, orden: 1, nombre: 'Contacto tras incidencia', espera_sugerida_minutos: 0, activo: true },
+    { id: 502, orden: 2, nombre: 'Buscar una solución', espera_sugerida_minutos: 1440, activo: true },
+  ],
+};
+const TODOS_LOS_FLUJOS = [FLUJO, FLUJO_WHATSAPP, FLUJO_ENVIO, FLUJO_RECOMPRA, FLUJO_RECUPERACION];
 
 function armar({ etapa = 'CONFIRMACION_PEDIDO_WEB', pedidos, recordatorios = [], contactos = [], flujos = TODOS_LOS_FLUJOS, entregas }) {
   return servicio.armarPendientes({ etapa, pedidos, recordatorios, contactos, flujos, entregas, ahora: AHORA });
@@ -151,6 +158,31 @@ describe('en qué fase está el pedido', () => {
 });
 
 describe('las etapas: el pedido cambia solo según su estado', () => {
+  test.each(['Devuelto', 'Perdido'])('una incidencia %s arranca recuperación sin reutilizar mensajes ni recordatorios de envío', (estado) => {
+    const [item] = armar({
+      etapa: 'RECUPERACION_CLIENTES', pedidos: [pedido(1, { estado })],
+      contactos: [completada(1, 301, 4, 30), completada(1, 302, 2, 30)],
+      recordatorios: [{ id: 900, envio_id: 1, flujo_id: 30, fase_id: 302, estado: 'VENCIDO', ejecutar_en: enHoras(-1) }],
+    });
+    expect(item).toMatchObject({ flujo_id: 50, fase_id: 501, cuando: 'ahora', motivo: 'nuevo', recordatorio: null });
+  });
+
+  test('Preparado habilita el primer aviso y Despachado habilita el segundo', () => {
+    const primero = (estado) => armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [pedido(1, { estado })] })[0];
+    expect(primero('Confirmado')).toMatchObject({ motivo: 'esperando_estado', estado_requerido: 'Preparado' });
+    expect(primero('Preparado')).toMatchObject({ fase_id: 301, cuando: 'ahora' });
+    const siguiente = (estado) => armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [pedido(1, { estado })], contactos: [completada(1, 301, 1, 30)] })[0];
+    expect(siguiente('Preparado')).toMatchObject({ fase_id: 302, motivo: 'esperando_estado', estado_requerido: 'Despachado' });
+    expect(siguiente('Despachado')).toMatchObject({ fase_id: 302, cuando: 'ahora', motivo: 'estado_logistico' });
+  });
+
+  test('al despachar ofrece el aviso de despacho aunque no se haya enviado el de preparación', () => {
+    const [item] = armar({
+      etapa: 'SEGUIMIENTO_ENVIO', pedidos: [pedido(1, { estado: 'Despachado' })],
+      recordatorios: [{ id: 900, envio_id: 1, flujo_id: 30, fase_id: 301, estado: 'VENCIDO', ejecutar_en: enHoras(-1) }],
+    });
+    expect(item).toMatchObject({ fase_id: 302, cuando: 'ahora', motivo: 'nuevo', recordatorio: null });
+  });
   test('cada estado cae en su etapa', () => {
     expect(etapaDelPedido({ estado: 'Pendiente', origen: 'landing' })).toBe('CONFIRMACION_PEDIDO_WEB');
     expect(etapaDelPedido({ estado: 'EnSeguimiento', origen: 'WhatsApp' })).toBe('VENTA_WHATSAPP');
@@ -159,6 +191,7 @@ describe('las etapas: el pedido cambia solo según su estado', () => {
     }
     expect(etapaDelPedido({ estado: 'Entregado' })).toBe('ESCALAMIENTO_VENTAS');
     expect(etapaDelPedido({ estado: 'Cancelado' })).toBeNull();
+    for (const estado of ['Devuelto', 'Perdido']) expect(etapaDelPedido({ estado })).toBe('RECUPERACION_CLIENTES');
   });
 
   test('al confirmarse arranca el seguimiento de envío de cero: lo de confirmación no cuenta', () => {
@@ -169,7 +202,7 @@ describe('las etapas: el pedido cambia solo según su estado', () => {
       contactos: [completada(1, 101, 30), completada(1, 102, 20), completada(1, 103, 5)],
     });
 
-    expect(item).toMatchObject({ flujo_id: 30, fase_id: 301, fase_orden: 1, cuando: 'ahora', motivo: 'nuevo' });
+    expect(item).toMatchObject({ flujo_id: 30, fase_id: 301, fase_orden: 1, cuando: 'sin_fecha', motivo: 'esperando_estado', estado_requerido: 'Preparado' });
   });
 
   test('en seguimiento de envío avanza al marcar cada aviso', () => {
@@ -380,9 +413,9 @@ describe('tableroDeSeguimiento', () => {
       if (!opciones.group) return Array.from({ length: 12 }, (_, i) => pedido(i + 1));
       if (esConteoDeVencidos(opciones)) {
         // SQL dice 7 vencidos en confirmación (se pisa con lo del tablero) y 2 en envío.
-        return [{ estado: 'EnSeguimiento', es_whatsapp: false, cantidad: '7' }, { estado: 'Despachado', es_whatsapp: false, cantidad: '2' }, { estado: 'Entregado', es_whatsapp: false, cantidad: '1' }];
+        return [{ estado: 'EnSeguimiento', es_whatsapp: false, cantidad: '7' }, { estado: 'Despachado', es_whatsapp: false, cantidad: '2' }, { estado: 'Entregado', es_whatsapp: false, cantidad: '1' }, { estado: 'Devuelto', cantidad: '2' }, { estado: 'Perdido', cantidad: '1' }];
       }
-      return [{ estado: 'Pendiente', es_whatsapp: false, cantidad: '12' }, { estado: 'Despachado', es_whatsapp: false, cantidad: '4' }];
+      return [{ estado: 'Pendiente', es_whatsapp: false, cantidad: '12' }, { estado: 'Despachado', es_whatsapp: false, cantidad: '4' }, { estado: 'Devuelto', cantidad: '3' }, { estado: 'Perdido', cantidad: '2' }];
     });
     Envio.count.mockResolvedValue(3);
     SeguimientoRecordatorio.findAll.mockResolvedValue([]);
@@ -400,12 +433,12 @@ describe('tableroDeSeguimiento', () => {
     expect(where[Op.and][0].estado[Op.in]).toEqual(['Pendiente', 'EnSeguimiento']);
     expect(res.etapa).toBe('CONFIRMACION_PEDIDO_WEB');
     expect(res.etapas.map((e) => [e.tipo, e.pedidos])).toEqual([
-      ['CONFIRMACION_PEDIDO_WEB', 12], ['VENTA_WHATSAPP', 0], ['SEGUIMIENTO_ENVIO', 4], ['ESCALAMIENTO_VENTAS', 3],
+      ['CONFIRMACION_PEDIDO_WEB', 12], ['VENTA_WHATSAPP', 0], ['SEGUIMIENTO_ENVIO', 4], ['ESCALAMIENTO_VENTAS', 3], ['RECUPERACION_CLIENTES', 5],
     ]);
     // Vencidos por pestaña: la etapa abierta usa el número del tablero (0:
     // los 12 son nuevos, ninguno tenía recordatorio); las otras, el del conteo.
     expect(res.vencidos).toBe(0);
-    expect(res.etapas.map((e) => e.vencidos)).toEqual([0, 0, 2, 1]);
+    expect(res.etapas.map((e) => e.vencidos)).toEqual([0, 0, 2, 1, 3]);
     // No faltaba ningún flujo base: no se creó nada.
     expect(WhatsappFlujo.create).not.toHaveBeenCalled();
 
@@ -417,8 +450,25 @@ describe('tableroDeSeguimiento', () => {
   });
 });
 
-describe('los cuatro flujos base', () => {
+describe('los cinco flujos base', () => {
   beforeEach(() => jest.clearAllMocks());
+
+  test('una cuenta existente recibe Recuperación de clientes con tres mensajes listos al faltar ese flujo', async () => {
+    WhatsappFlujo.findAll.mockResolvedValue(TODOS_LOS_FLUJOS.filter((f) => f.tipo !== 'RECUPERACION_CLIENTES').map((f) => ({ tipo: f.tipo })));
+    WhatsappFlujo.create.mockImplementation(async (datos) => ({ id: 600, ...datos }));
+    WhatsappFlujoFase.create.mockResolvedValue({});
+
+    expect(await flujoService.asegurarFlujosBase({ usuarioId: 7 })).toBe(1);
+    expect(WhatsappFlujo.create).toHaveBeenCalledWith(expect.objectContaining({
+      usuario_id: 7, tipo: 'RECUPERACION_CLIENTES', nombre: 'Recuperación de clientes',
+      activo: true, activacion: 'AUTOMATICA', predeterminado: true,
+    }), expect.anything());
+    const fases = WhatsappFlujoFase.create.mock.calls.map(([fase]) => fase);
+    expect(fases.map((fase) => [fase.nombre, fase.espera_sugerida_minutos])).toEqual([
+      ['Contacto tras incidencia', 0], ['Buscar una solución', 1440], ['Retomar la compra', 4320],
+    ]);
+    expect(fases.every((fase) => fase.mensaje.includes('{cliente_nombre}') && fase.estado_activador === null)).toBe(true);
+  });
 
   test('a una cuenta que solo tiene confirmación web se le crean los otros tres, con sus mensajes', async () => {
     WhatsappFlujo.findAll.mockResolvedValue([{ tipo: 'CONFIRMACION_PEDIDO_WEB' }]);
@@ -427,16 +477,17 @@ describe('los cuatro flujos base', () => {
 
     const creados = await flujoService.asegurarFlujosBase({ usuarioId: 7 });
 
-    expect(creados).toBe(3);
+    expect(creados).toBe(4);
     expect(WhatsappFlujo.create.mock.calls.map(([d]) => [d.tipo, d.predeterminado, d.usuario_id])).toEqual([
-      ['VENTA_WHATSAPP', true, 7], ['SEGUIMIENTO_ENVIO', true, 7], ['ESCALAMIENTO_VENTAS', true, 7],
+      ['VENTA_WHATSAPP', true, 7], ['SEGUIMIENTO_ENVIO', true, 7], ['ESCALAMIENTO_VENTAS', true, 7], ['RECUPERACION_CLIENTES', true, 7],
     ]);
     // El primer mensaje de recompra nace con 3 días desde la entrega.
-    const primeraDeRecompra = WhatsappFlujoFase.create.mock.calls.map(([d]) => d).filter((d) => d.orden === 1).pop();
+    const primeraDeRecompra = WhatsappFlujoFase.create.mock.calls.map(([d]) => d).find((d) => d.nombre === '¿Cómo te fue?');
     expect(primeraDeRecompra.espera_sugerida_minutos).toBe(3 * 24 * 60);
     const primeraDeEnvio = WhatsappFlujoFase.create.mock.calls.map(([d]) => d)
       .find((d) => d.nombre === 'Pedido confirmado');
-    expect(primeraDeEnvio.accion_operativa).toBe('PREPARAR_PEDIDO');
+    expect(primeraDeEnvio.estado_activador).toBe('Preparado');
+    expect(primeraDeEnvio.accion_operativa).toBeNull();
   });
 
   test('con los cuatro tipos ya presentes no crea nada', async () => {
@@ -529,7 +580,7 @@ describe('marcar una fase como completada', () => {
   const FASE_3 = { id: 103, flujo_id: 10, orden: 3, nombre: 'Último intento', espera_sugerida_minutos: 1440 };
   const FASE_PEDIDO_CONFIRMADO = {
     id: 301, flujo_id: 30, orden: 9, nombre: 'Aviso operativo editado', mensaje: 'Preparando', etiqueta_id: null,
-    accion_operativa: 'PREPARAR_PEDIDO',
+    estado_activador: 'Preparado',
     flujo: { nombre: 'Seguimiento de envío', tipo: 'SEGUIMIENTO_ENVIO' },
   };
 
@@ -618,7 +669,7 @@ describe('marcar una fase como completada', () => {
     expect(res.cuerpo.pedido_paso_a_en_seguimiento).toBe(true);
   });
 
-  test('un pedido Confirmado pasa a Preparado al completar la fase logística de preparación', async () => {
+  test('un pedido Confirmado no permite completar el aviso de preparación antes de que logística lo prepare', async () => {
     envio.estado = 'Confirmado';
     WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce(FASE_PEDIDO_CONFIRMADO).mockResolvedValueOnce(null);
     SeguimientoContacto.findOne.mockResolvedValueOnce(fila({ id: 1, estado: 'ABIERTO_EN_WHATSAPP' }));
@@ -626,14 +677,26 @@ describe('marcar una fase como completada', () => {
 
     await controller.completarFase(peticion({}, { faseId: '301' }), res, jest.fn());
 
-    expect(envio.estado).toBe('Preparado');
-    expect(envio.estado_logistico).toBe('Preparado');
-    expect(res.cuerpo.pedido_paso_a_preparado).toBe(true);
-    expect(res.cuerpo.estado_logistico_actualizado).toBe('Preparado');
+    expect(res.codigo).toBe(422);
+    expect(envio.estado).toBe('Confirmado');
+    expect(envio.update).not.toHaveBeenCalled();
+    expect(SeguimientoContacto.create).not.toHaveBeenCalled();
+  });
+
+  test('completar preparación conserva el estado y espera el despacho para el siguiente aviso', async () => {
+    envio.estado = 'Preparado';
+    const siguiente = { id: 302, flujo_id: 30, orden: 2, nombre: 'Pedido despachado', estado_activador: 'Despachado', espera_sugerida_minutos: 240 };
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce(FASE_PEDIDO_CONFIRMADO).mockResolvedValueOnce(siguiente);
+    SeguimientoContacto.findOne.mockResolvedValueOnce(fila({ id: 1, estado: 'ABIERTO_EN_WHATSAPP' }));
+    const res = respuesta();
+    await controller.completarFase(peticion({}, { faseId: '301' }), res, jest.fn());
+    expect(envio.update).not.toHaveBeenCalled();
+    expect(SeguimientoRecordatorio.create).not.toHaveBeenCalled();
+    expect(res.cuerpo.siguiente_fase).toMatchObject({ id: 302 });
   });
 
   test('una fase sin acción operativa no cambia estado aunque tenga nombre u orden parecido', async () => {
-    envio.estado = 'Confirmado';
+    envio.estado = 'Preparado';
     const faseSinAccion = {
       ...FASE_PEDIDO_CONFIRMADO,
       orden: 1,
@@ -646,7 +709,7 @@ describe('marcar una fase como completada', () => {
 
     await controller.completarFase(peticion({}, { faseId: '301' }), res, jest.fn());
 
-    expect(envio.estado).toBe('Confirmado');
+    expect(envio.estado).toBe('Preparado');
     expect(envio.update).not.toHaveBeenCalledWith(
       expect.objectContaining({ estado: 'Preparado' }),
       expect.anything(),
@@ -723,7 +786,7 @@ describe('seguimiento de los pedidos de la bandeja', () => {
     // Entregado ayer: el primer mensaje de recompra espera 3 días desde la entrega.
     expect(mapa.get(3)).toMatchObject({ etapa: 'ESCALAMIENTO_VENTAS', fase_id: 401, cuando: 'despues', motivo: 'programado' });
     expect(mapa.has(4)).toBe(false);
-    expect(mapa.has(5)).toBe(false);
+    expect(mapa.get(5)).toMatchObject({ etapa: 'RECUPERACION_CLIENTES', fase_id: 501, cuando: 'ahora' });
   });
 
   test('con todos los mensajes enviados dice que el flujo terminó, también en recompra', async () => {

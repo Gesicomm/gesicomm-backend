@@ -8,12 +8,13 @@
  */
 const { Op, Transaction, UniqueConstraintError } = require('sequelize');
 const {
-  sequelize, Envio, EnvioItem, EnvioHistorial,
+  sequelize, Envio, EnvioItem, EnvioHistorial, Courier,
   WhatsappPlantilla, WhatsappFlujo, WhatsappFlujoFase,
   SeguimientoEtiqueta, EnvioEtiqueta,
   SeguimientoContacto, SeguimientoRecordatorio, SeguimientoConfiguracion,
 } = require('../models');
 const flujoService = require('../services/seguimiento/flujo.service');
+const { estadoActivadorDeFase, faseDisponibleParaPedido } = require('../services/seguimiento/faseActivacion');
 const { ESTADOS_ABIERTOS, elegirRecordatorioVigente } = require('../services/seguimiento/seguimientoRecordatorio.service');
 const { FASE_COMPLETADA } = require('../services/seguimiento/pendientesSeguimiento.service');
 const { registrarHistorial } = require('../utils/historial');
@@ -70,7 +71,7 @@ async function cargarEnvioODevolver404(req, res, { conItems = false } = {}) {
   const { id } = req.params;
   const envio = await Envio.findOne({
     where: filtroEnvio(req, id),
-    include: conItems ? [{ model: EnvioItem, as: 'items' }] : [],
+    include: conItems ? [{ model: EnvioItem, as: 'items' }, { model: Courier, attributes: ['id', 'nombre', 'telefono'] }] : [],
   });
   if (!envio) {
     res.status(404).json({ error: 'Pedido no encontrado' });
@@ -100,6 +101,8 @@ exports.flujosDelPedido = async (req, res) => {
   for (const flujo of flujos) {
     for (const fase of flujo.fases || []) {
       fase.mensaje_resuelto = resolverMensaje(fase.mensaje, envio);
+      fase.disponible = faseDisponibleParaPedido(fase, envio, flujo.tipo);
+      fase.estado_requerido = estadoActivadorDeFase(fase, flujo.tipo) || (flujo.tipo === 'RECUPERACION_CLIENTES' ? 'Devuelto o Perdido' : 'Preparado');
     }
   }
   res.json(flujos);
@@ -149,6 +152,9 @@ exports.registrarContacto = async (req, res) => {
       });
       if (!fase) return res.status(404).json({ error: 'Fase no encontrada' });
       mensajeBase = fase.mensaje;
+      if (!faseDisponibleParaPedido(fase, envio, fase.flujo?.tipo)) {
+        return res.status(422).json({ error: `Este mensaje espera que logística marque el pedido como ${estadoActivadorDeFase(fase, fase.flujo?.tipo) || (fase.flujo?.tipo === 'RECUPERACION_CLIENTES' ? 'Devuelto o Perdido' : 'Preparado')}.` });
+      }
     } else if (plantilla_id) {
       plantilla = await WhatsappPlantilla.findOne({
         where: esAdministrador(req) ? { id: plantilla_id } : { id: plantilla_id, usuario_id },
@@ -277,14 +283,6 @@ async function cumplirRecordatoriosDeLaFase(envioId, fase, t) {
   return cumplidos.map((r) => r.id);
 }
 
-function fasePreparaPedido(fase) {
-  if (fase?.flujo?.tipo !== 'SEGUIMIENTO_ENVIO') return false;
-  const desde = fase?.transicion_estado_desde || null;
-  const hasta = fase?.transicion_estado_hasta || null;
-  if (desde || hasta) return desde === 'Confirmado' && hasta === 'Preparado';
-  return fase?.accion_operativa === 'PREPARAR_PEDIDO';
-}
-
 /**
  * POST /api/envios/:id/seguimiento/fases/:faseId/completar — el operador
  * confirma que mandó el mensaje de esta fase. Es lo ÚNICO que hace avanzar
@@ -303,6 +301,10 @@ exports.completarFase = async (req, res) => {
   if (!envio) return;
   const fase = await buscarFaseDeLaCuenta(req, req.params.faseId);
   if (!fase) return res.status(404).json({ error: 'Fase no encontrada' });
+
+  if (!faseDisponibleParaPedido(fase, envio, fase.flujo?.tipo)) {
+    return res.status(422).json({ error: `Este mensaje espera que logística marque el pedido como ${estadoActivadorDeFase(fase, fase.flujo?.tipo) || (fase.flujo?.tipo === 'RECUPERACION_CLIENTES' ? 'Devuelto o Perdido' : 'Preparado')}.` });
+  }
 
   const resultado = await sequelize.transaction(async (t) => {
     const base = { envio_id: envio.id, fase_id: fase.id };
@@ -339,10 +341,6 @@ exports.completarFase = async (req, res) => {
       await envio.update({ estado: 'EnSeguimiento' }, { transaction: t });
       await registrarHistorial(envio.id, usuario_id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
       transicionAutomatica = true;
-    } else if (envio.estado === 'Confirmado' && fasePreparaPedido(fase)) {
-      await envio.update({ estado: 'Preparado', estado_logistico: 'Preparado' }, { transaction: t });
-      await registrarHistorial(envio.id, usuario_id, 'Confirmado → Preparado (mensaje de preparación enviado)', t);
-      transicionLogistica = 'Preparado';
     }
 
     const recordatoriosCumplidos = await cumplirRecordatoriosDeLaFase(envio.id, fase, t);
@@ -360,7 +358,7 @@ exports.completarFase = async (req, res) => {
     });
     let recordatorio = null;
     const espera = Number(siguiente?.espera_sugerida_minutos) || 0;
-    if (siguiente && espera > 0 && !yaEstaba && req.body?.agendar_siguiente !== false) {
+    if (siguiente && faseDisponibleParaPedido(siguiente, envio, fase.flujo?.tipo) && espera > 0 && !yaEstaba && req.body?.agendar_siguiente !== false) {
       const yaAgendado = await SeguimientoRecordatorio.findOne({
         where: { envio_id: envio.id, estado: 'PENDIENTE' },
         transaction: t,

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Las cuatro etapas del seguimiento por WhatsApp y el flujo con el que
+ * Las etapas del seguimiento por WhatsApp y el flujo con el que
  * arranca cada una. Toda cuenta tiene siempre un flujo de cada etapa
  * (flujo.service → asegurarFlujosBase): se pueden editar, renombrar o
  * desactivar, y se pueden agregar más, pero no quedarse sin ninguno.
@@ -11,6 +11,7 @@
  *                              WhatsApp si el pedido entró por WhatsApp
  *   confirmado … en camino   → Seguimiento de envío
  *   entregado                → Escalamiento de ventas (recompra)
+ *   devuelto o perdido       → Recuperación de clientes
  * Cuando el pedido cambia de estado, cambia de etapa solo.
  *
  * Los mensajes son un punto de partida: usan únicamente variables que
@@ -47,9 +48,9 @@ const ETAPAS = [
     descripcion: 'Pedidos ya confirmados: avisos al cliente mientras se prepara, se despacha y viaja.',
     estados: ['Confirmado', 'Preparado', 'Despachado', 'Reprogramado'],
     fases: [
-      { nombre: 'Pedido confirmado', espera: 0, accion_operativa: 'PREPARAR_PEDIDO', transicion_estado_desde: 'Confirmado', transicion_estado_hasta: 'Preparado', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ya está confirmado y lo estamos preparando.' },
-      { nombre: 'Pedido despachado', espera: 0, accion_operativa: 'DESPACHAR_PEDIDO', transicion_estado_desde: 'Preparado', transicion_estado_hasta: 'Despachado', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ya fue despachado. Lo vas a recibir en: {direccion_entrega}.' },
-      { nombre: 'Pedido en camino', espera: 0, accion_operativa: 'AVISO_EN_CAMINO', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} está en camino. Por favor tené el teléfono a mano para coordinar la entrega.' },
+      { nombre: 'Pedido confirmado', espera: 0, estado_activador: 'Preparado', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ha sido confirmado y ahora lo estamos preparando.' },
+      { nombre: 'Pedido despachado', espera: 0, estado_activador: 'Despachado', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} ha sido despachado. Por favor, mantenete atento a tu courier: {courier_nombre}, teléfono {courier_telefono}. Dirección de entrega: {direccion_entrega}.' },
+      { nombre: 'Pedido en camino', espera: 0, estado_activador: 'Despachado', mensaje: 'Hola {cliente_nombre}, tu pedido #{pedido_id} está en camino. Tu courier es {courier_nombre}, teléfono {courier_telefono}. Por favor tené el teléfono a mano para coordinar la entrega.' },
     ],
   },
   {
@@ -61,6 +62,17 @@ const ETAPAS = [
     fases: [
       { nombre: '¿Cómo te fue?', espera: 3 * UN_DIA, mensaje: 'Hola {cliente_nombre}, ¿cómo te fue con tu pedido #{pedido_id}? Nos interesa saber si llegó todo bien.' },
       { nombre: 'Nueva compra', espera: 7 * UN_DIA, mensaje: 'Hola {cliente_nombre}, gracias por tu compra. Si querés volver a pedir {productos} u otro producto, escribinos y te lo preparamos.' },
+    ],
+  },
+  {
+    tipo: 'RECUPERACION_CLIENTES',
+    nombre: 'Recuperación de clientes',
+    descripcion: 'Pedidos devueltos o perdidos: atender la incidencia y recuperar la relación con el cliente.',
+    estados: ['Devuelto', 'Perdido'],
+    fases: [
+      { nombre: 'Contacto tras incidencia', espera: 0, mensaje: 'Hola {cliente_nombre}, vimos que hubo un inconveniente con tu pedido #{pedido_id}. ¿Podés contarnos qué pasó para ayudarte?' },
+      { nombre: 'Buscar una solución', espera: UN_DIA, mensaje: 'Hola {cliente_nombre}, queremos ayudarte a resolver el inconveniente con tu pedido #{pedido_id}. ¿Cómo te gustaría que sigamos?' },
+      { nombre: 'Retomar la compra', espera: 3 * UN_DIA, mensaje: 'Hola {cliente_nombre}, si querés retomar tu compra de {productos}, escribinos y revisamos juntos las opciones disponibles.' },
     ],
   },
 ];
