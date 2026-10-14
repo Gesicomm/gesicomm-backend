@@ -4,7 +4,7 @@ jest.mock('../../models', () => ({
   EnvioItem: { findAll: jest.fn() }, EnvioItemComponente: { findAll: jest.fn() },
   Producto: { findByPk: jest.fn() }, ProductoVariante: { findAll: jest.fn(), findOne: jest.fn() },
   Deposito: { findOne: jest.fn() }, SolicitudAbastecimiento: { findOne: jest.fn() },
-  SpeedboxTienda: { findOne: jest.fn(), findOrCreate: jest.fn() }, SpeedboxPedido: { findOrCreate: jest.fn(), findOne: jest.fn() }, SpeedboxEvento: {},
+  SpeedboxTienda: { findOne: jest.fn(), findAll: jest.fn(), findOrCreate: jest.fn() }, SpeedboxPedido: { findOrCreate: jest.fn(), findOne: jest.fn() }, SpeedboxEvento: {},
 }));
 jest.mock('../../services/speedbox/client', () => ({ configuration: jest.fn(() => ({ environment: 'sandbox' })), request: jest.fn(), remoteId: value => String(value), redact: value => value }));
 jest.mock('../../services/speedbox/payload', () => ({ buildOrder: jest.fn(), buildSupplyOrder: jest.fn() }));
@@ -28,8 +28,10 @@ beforeEach(() => {
   envio = instance({ id: 31, usuario_id: 7, courier_id: 2, estado: 'Confirmado', stock_descontado: true });
   mapping = instance({ external_order_id: 'GESICOMM-sandbox-7-31', estado: 'pendiente', intentos: 0 });
   models.SpeedboxTienda.findOne.mockResolvedValue(connection);
+  models.SpeedboxTienda.findAll.mockResolvedValue([connection]);
   models.SpeedboxTienda.findOrCreate.mockResolvedValue([connection, false]);
   models.Envio.findOne.mockResolvedValue(envio);
+  models.SpeedboxPedido.findOne.mockResolvedValue(null);
   models.SpeedboxPedido.findOrCreate.mockResolvedValue([mapping, true]);
   models.SolicitudAbastecimiento.findOne.mockResolvedValue(instance({
     id: 44, usuario_id: 7, producto_id: 9, variante_id: null, cantidad: 2, tipo_logistica: 'PROPIA',
@@ -242,6 +244,25 @@ it('queues Raha catalog products even when the order has no local courier', asyn
   expect(transaction.afterCommit).toHaveBeenCalledTimes(1);
 });
 
+it('uses production credentials for real RAHA orders when the store has both environments', async () => {
+  process.env.SPEEDBOX_ENABLED = 'true';
+  const production = instance({
+    environment: 'production',
+    tienda_id: 'prod-54',
+    courier_id: null,
+    activo: true,
+    public_key: 'prod_public',
+    private_key: 'prod_secret',
+  });
+  models.SpeedboxTienda.findAll.mockResolvedValue([connection, production]);
+  const transaction = { afterCommit: jest.fn() };
+  await service.queueConfirmedOrder(envio, transaction);
+  expect(models.SpeedboxPedido.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+    where: { environment: 'production', envio_id: 31 },
+    defaults: expect.objectContaining({ external_order_id: 'GESICOMM-production-7-31' }),
+  }));
+});
+
 it('does not schedule another submission for a linked or uncertain order', async () => {
   process.env.SPEEDBOX_ENABLED = 'true';
   const transaction = { afterCommit: jest.fn() };
@@ -313,6 +334,30 @@ it('allows manual deposito supply requests when automatic RAHA shipping is pause
   await expect(service.sendSupplyRequest(7, 44)).resolves.toMatchObject({ estado: 'enviado', order_id: '900000000123999' });
   expect(client.request).toHaveBeenCalledWith('order', expect.objectContaining({
     credentials: { environment: 'sandbox', apiKey: 'stored_public', secret: 'stored_secret' },
+  }));
+});
+
+it('uses production credentials for manual supply when production keys are available', async () => {
+  const production = instance({
+    environment: 'production',
+    tienda_id: 'prod-54',
+    courier_id: null,
+    activo: false,
+    public_key: 'prod_public',
+    private_key: 'prod_secret',
+  });
+  models.SpeedboxTienda.findAll.mockResolvedValue([connection, production]);
+  const solicitud = instance({
+    id: 44,
+    usuario_id: 7,
+    tipo_logistica: 'PROPIA',
+    deposito_destino_id: 6,
+  });
+  const transaction = { afterCommit: jest.fn() };
+  await service.queueSupplyRequest(solicitud, transaction);
+  expect(models.SpeedboxPedido.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+    where: { environment: 'production', solicitud_abastecimiento_id: 44 },
+    defaults: expect.objectContaining({ external_order_id: 'GESICOMM-ABAST-production-7-44' }),
   }));
 });
 
