@@ -37,6 +37,12 @@ function ordenarConexiones(connections = []) {
 function conexionLista(connection, { requireActive = false } = {}) {
   return Boolean(connection?.tienda_id && (!requireActive || connection.activo));
 }
+function activeConnectionFields(connection) {
+  return {
+    activo: true,
+    enabled_at: connection?.enabled_at || new Date(),
+  };
+}
 async function operationalConnection(usuarioId, options = {}) {
   const { transaction, lock, requireActive = false } = options;
   const where = { usuario_id: usuarioId };
@@ -282,7 +288,9 @@ async function registerStore(usuarioId, input = {}) {
     const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
     const updates = credentialUpdates(input, connection).updates;
     if (Object.keys(updates).length) await connection.update(updates, { transaction });
-    if (connection.tienda_id) return connection;
+    if (connection.tienda_id) {
+      return connection.activo ? connection : connection.update(activeConnectionFields(connection), { transaction });
+    }
     const response = await client.request('store', { method: 'POST', credentials, body: {
       external_store_id: `GESICOMM-${env}-${usuarioId}`, store_name: tienda.nombre,
       domain: tienda.dominio_propio_verificado && tienda.dominio_propio_habilitado && tienda.dominio_propio
@@ -292,7 +300,7 @@ async function registerStore(usuarioId, input = {}) {
     let tiendaId;
     try { tiendaId = client.remoteId(response.tienda_id ?? response.store?.tienda_id ?? response.tienda?.tienda_id); }
     catch (error) { error.remoteResponse = client.redact(response); throw error; }
-    return connection.update({ tienda_id: tiendaId }, { transaction });
+    return connection.update({ tienda_id: tiendaId, ...activeConnectionFields(connection) }, { transaction });
   });
 }
 
@@ -304,7 +312,8 @@ async function verifySpec(usuarioId, input = {}) {
   const [connection] = await SpeedboxTienda.findOrCreate({ where: { usuario_id: usuarioId, environment: env }, defaults: { since_at: new Date().toISOString() } });
   const credentials = credentialsFor(connection, input, { fallbackEnvironment: env });
   await client.request('spec', { credentials });
-  const updates = { spec_verified_at: new Date(), ...credentialUpdates(input, connection).updates };
+  const updates = { spec_verified_at: new Date(), ...credentialUpdates(input, connection).updates,
+    ...(connection.tienda_id ? activeConnectionFields(connection) : {}) };
   await connection.update(updates);
   return { ok: true };
 }
@@ -344,7 +353,8 @@ async function verifyOrder(usuarioId, input = {}) {
   const response = await client.request('order', { method: 'POST', credentials, body: payload });
   const orderId = client.remoteId(response.order?.order_id);
   if (response.order?.external_order_id !== externalId) fail('RAHA respondió un pedido distinto al enviado.', 502);
-  await connection.update({ order_verified_at: new Date(), ...credentialUpdates(input, connection).updates });
+  await connection.update({ order_verified_at: new Date(), ...credentialUpdates(input, connection).updates,
+    ...activeConnectionFields(connection) });
   return { ok: true, order_id: orderId, status: response.order?.status || null };
 }
 
@@ -360,7 +370,8 @@ async function verifyUpdates(usuarioId, input = {}) {
     fail('RAHA devolvió una respuesta de updates inválida.', 502);
   }
   for (const inputEvent of response.events) await require('./events').ingest(inputEvent, 'updates');
-  await connection.update({ since_at: response.next_since_at, updates_verified_at: new Date(), ...credentialUpdates(input, connection).updates });
+  await connection.update({ since_at: response.next_since_at, updates_verified_at: new Date(),
+    ...credentialUpdates(input, connection).updates, ...activeConnectionFields(connection) });
   return { ok: true, events: response.events.length, next_since_at: response.next_since_at };
 }
 

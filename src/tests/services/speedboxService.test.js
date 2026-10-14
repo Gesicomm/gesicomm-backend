@@ -139,7 +139,13 @@ it('verifies the sandbox spec with pasted credentials and stores them for automa
   expect(models.SpeedboxTienda.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
     where: { usuario_id: 7, environment: 'sandbox' },
   }));
-  expect(connection.update).toHaveBeenCalledWith({ spec_verified_at: expect.any(Date), public_key: 'sbx_public', private_key: 'private_secret' });
+  expect(connection.update).toHaveBeenCalledWith(expect.objectContaining({
+    spec_verified_at: expect.any(Date),
+    public_key: 'sbx_public',
+    private_key: 'private_secret',
+    activo: true,
+    enabled_at: expect.any(Date),
+  }));
 });
 
 it('saves RAHA credentials without requiring a linked store yet', async () => {
@@ -176,7 +182,13 @@ it('sends a sandbox validation order using pasted credentials', async () => {
   expect(call.credentials).toEqual({ environment: 'sandbox', apiKey: 'sbx_public', secret: 'private_secret' });
   expect(call.body).toMatchObject({ tienda_id: '54', items: [{ sku: 'GESICOM-TEST-001', quantity: 1 }] });
   expect(call.body.external_order_id).toMatch(/^GESICOMM-TEST-sandbox-7-/);
-  expect(connection.update).toHaveBeenCalledWith({ order_verified_at: expect.any(Date), public_key: 'sbx_public', private_key: 'private_secret' });
+  expect(connection.update).toHaveBeenCalledWith(expect.objectContaining({
+    order_verified_at: expect.any(Date),
+    public_key: 'sbx_public',
+    private_key: 'private_secret',
+    activo: true,
+    enabled_at: expect.any(Date),
+  }));
 });
 
 it('queues confirmation even when procurement payment is pending, without sending before commit', async () => {
