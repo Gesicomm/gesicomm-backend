@@ -44,7 +44,8 @@ const { adjuntarIdentificadores } = require('../pedidoIdentificador.service');
  *
  * El filtrado y la paginación se resuelven acá, nunca en el frontend.
  */
-const { Op, fn, col, literal } = require('sequelize');
+const { Op, fn, col, literal, where: sqlWhere } = require('sequelize');
+const { estadoParaSeguimiento, fechaEntregaSeguimiento, estadoSeguimientoSql, fechaEntregaRahaSql } = require('./estadoPedido');
 const {
   Envio, EnvioItem, EnvioHistorial, SeguimientoRecordatorio, SeguimientoContacto,
 } = require('../../models');
@@ -163,7 +164,7 @@ function armarPendientes({
 
   const items = [];
   for (const pedido of pedidos) {
-    if (etapa === 'SEGUIMIENTO_ENVIO' && !etapaPorTipo(etapa).estados.includes(pedido.estado)) continue;
+    if (etapa === 'SEGUIMIENTO_ENVIO' && !etapaPorTipo(etapa).estados.includes(estadoParaSeguimiento(pedido))) continue;
     const flujosDeLaEtapa = flujosPorUsuario.get(Number(pedido.usuario_id)) || [];
     const flujoPorId = new Map(flujosDeLaEtapa.map((f) => [Number(f.id), f]));
     // Solo cuenta lo que pasó en flujos de ESTA etapa: los mensajes de
@@ -215,7 +216,7 @@ function armarPendientes({
       ? delPedido.find((c) => Number(c.fase_id) === Number(fase.id) && c.estado !== FASE_COMPLETADA)
       : null;
 
-    const entregadoEn = esRecompra ? (entregas.get(Number(pedido.id)) || pedido.updated_at || null) : null;
+    const entregadoEn = esRecompra ? (fechaEntregaSeguimiento(pedido) || entregas.get(Number(pedido.id)) || pedido.updated_at || null) : null;
     let cuando;
     let motivo;
     let tocaEn = null;
@@ -255,7 +256,7 @@ function armarPendientes({
       envio_id: pedido.id,
       numero_pedido: numeroPedidoVisible(pedido),
       numero_pedido_visible: numeroPedidoVisible(pedido),
-      estado: pedido.estado,
+      estado: estadoParaSeguimiento(pedido),
       etapa,
       cliente: nombreCliente(pedido),
       telefono: pedido.telefono || null,
@@ -399,13 +400,13 @@ function armarTablero(items, flujos, { flujo_id, cuando, busqueda, paginas = {},
 /** Qué pedidos están en la etapa: lo decide su estado (y el origen, mientras están por confirmar). */
 function whereDeEtapa(tipo, ahora) {
   const etapa = etapaPorTipo(tipo);
-  const condiciones = [{ estado: { [Op.in]: etapa.estados } }];
+  const condiciones = [sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: etapa.estados })];
   if (tipo === 'CONFIRMACION_PEDIDO_WEB') condiciones.push(literal(`NOT ${ES_WHATSAPP}`));
   if (tipo === 'VENTA_WHATSAPP') condiciones.push(literal(ES_WHATSAPP));
   if (tipo === ETAPA_RECOMPRA) {
     // Corte grueso en SQL: un entregado no pudo modificarse por última vez
     // antes de entregarse. La fecha fina de entrega se revisa después.
-    condiciones.push({ updated_at: { [Op.gte]: new Date(ahora.getTime() - VENTANA_RECOMPRA_DIAS * 86400e3) } });
+    condiciones.push(sqlWhere(literal(`COALESCE(${fechaEntregaRahaSql()}, "Envio"."updated_at")`), { [Op.gte]: new Date(ahora.getTime() - VENTANA_RECOMPRA_DIAS * 86400e3) }));
   }
   return condiciones;
 }
@@ -441,6 +442,7 @@ async function cargarPendientes({ whereBase, usuarioId, esAdmin, etapa, ahora = 
     attributes: [
       'id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id', 'estado', 'origen', 'monto',
       'nombre_cliente', 'apellido_cliente', 'cliente', 'telefono', 'ciudad', 'created_at', 'updated_at',
+      [literal(estadoSeguimientoSql()), 'estado_seguimiento'], [literal(fechaEntregaRahaSql()), 'entregado_raha_en'],
     ],
     order: [['id', 'DESC']],
     limit: LIMITE_PEDIDOS + 1,
@@ -459,7 +461,7 @@ async function cargarPendientes({ whereBase, usuarioId, esAdmin, etapa, ahora = 
   if (etapa === ETAPA_RECOMPRA && pedidos.length > 0) {
     entregas = await fechasDeEntrega(pedidos.map((p) => p.id));
     const corte = ahora.getTime() - VENTANA_RECOMPRA_DIAS * 86400e3;
-    pedidos = pedidos.filter((p) => new Date(entregas.get(Number(p.id)) || p.updated_at).getTime() >= corte);
+    pedidos = pedidos.filter((p) => new Date(fechaEntregaSeguimiento(p) || entregas.get(Number(p.id)) || p.updated_at).getTime() >= corte);
   }
 
   const ids = pedidos.map((p) => p.id);
@@ -496,9 +498,9 @@ async function conteoPorEtapa({ whereBase, ahora = new Date() }) {
   const estadosVivos = ETAPAS.filter((e) => e.tipo !== ETAPA_RECOMPRA).flatMap((e) => e.estados);
   const [porEstado, entregados] = await Promise.all([
     Envio.findAll({
-      where: { ...whereBase, estado: { [Op.in]: [...new Set(estadosVivos)] } },
-      attributes: ['estado', [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
-      group: ['estado', literal(ES_WHATSAPP)],
+      where: { ...whereBase, [Op.and]: [...(whereBase[Op.and] || []), sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: [...new Set(estadosVivos)] })] },
+      attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
+      group: [literal(estadoSeguimientoSql()), literal(ES_WHATSAPP)],
       raw: true,
     }),
     Envio.count({
@@ -535,13 +537,13 @@ async function vencidosPorEtapa({ whereBase, ahora = new Date() }) {
       ...whereBase,
       [Op.and]: [
         ...(whereBase[Op.and] || []),
-        { estado: { [Op.in]: todosLosEstados } },
-        { [Op.or]: [{ estado: { [Op.ne]: 'Entregado' } }, { updated_at: { [Op.gte]: corteRecompra } }] },
+        sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: todosLosEstados }),
+        { [Op.or]: [sqlWhere(literal(estadoSeguimientoSql()), { [Op.ne]: 'Entregado' }), sqlWhere(literal(`COALESCE(${fechaEntregaRahaSql()}, "Envio"."updated_at")`), { [Op.gte]: corteRecompra })] },
         literal(TIENE_RECORDATORIO_VENCIDO),
       ],
     },
-    attributes: ['estado', [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
-    group: ['estado', literal(ES_WHATSAPP)],
+    attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
+    group: [literal(estadoSeguimientoSql()), literal(ES_WHATSAPP)],
     raw: true,
   });
 
@@ -676,7 +678,7 @@ async function seguimientoDePedidos({ pedidos, usuarioId, esAdmin, ahora = new D
   for (const [etapa, lista] of porEtapa) {
     const esRecompra = etapa === ETAPA_RECOMPRA;
     const deLaEtapa = esRecompra
-      ? lista.filter((p) => new Date(entregas.get(Number(p.id)) || p.updated_at).getTime() >= corteRecompra)
+      ? lista.filter((p) => new Date(fechaEntregaSeguimiento(p) || entregas.get(Number(p.id)) || p.updated_at).getTime() >= corteRecompra)
       : lista;
     const nombreEtapa = etapaPorTipo(etapa).nombre;
     const fasesPorFlujo = new Map(flujos.map((f) => [Number(f.id), fasesOrdenadas(f)]));
@@ -715,7 +717,7 @@ async function seguimientoDePedidos({ pedidos, usuarioId, esAdmin, ahora = new D
       for (const pedido of deLaEtapa) {
         if (resultado.has(Number(pedido.id)) || !conFlujo.has(Number(pedido.usuario_id))) continue;
         resultado.set(Number(pedido.id), {
-          ...resumen({ entregado_en: entregas.get(Number(pedido.id)) || pedido.updated_at || null }),
+          ...resumen({ entregado_en: fechaEntregaSeguimiento(pedido) || entregas.get(Number(pedido.id)) || pedido.updated_at || null }),
           flujo_id: null, flujo_nombre: null, fase_id: null, fase_nombre: null,
           toca_en: null, fase_abierta_en: null,
         });

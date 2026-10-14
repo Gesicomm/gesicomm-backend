@@ -5,6 +5,7 @@ const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
 const { cancelarSiEstadoTerminal, elegirRecordatorioVigente } = require('../services/seguimiento/seguimientoRecordatorio.service');
 const pendientesSeguimientoService = require('../services/seguimiento/pendientesSeguimiento.service');
+const { estadoParaSeguimiento, estadoSeguimientoSql } = require('../services/seguimiento/estadoPedido');
 const { accionSiguientePedido } = require('../services/pedidos/accionSiguientePedido');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const { envolverControlador } = require('../utils/asyncHandler');
@@ -1288,10 +1289,15 @@ async function adjuntarLogisticaRaha(envios) {
     where: { envio_id: { [Op.in]: ids } },
     attributes: ['envio_id', 'external_order_id', 'order_id', 'environment', 'estado', 'status', 'status_at',
       'error', 'remote_http_status', 'request_payload', 'updated_at'],
-    raw: true,
+    order: [['updated_at', 'ASC'], ['id', 'ASC']], raw: true,
   });
   if (!pedidos.length) return envios;
-  const porEnvio = new Map(pedidos.map((pedido) => [Number(pedido.envio_id), pedido]));
+  const porEnvio = new Map();
+  for (const pedido of pedidos) {
+    const anterior = porEnvio.get(Number(pedido.envio_id));
+    const activo = (p) => Boolean(p?.order_id) && ['enviado', 'enviando', 'incierto'].includes(p.estado);
+    if (!activo(anterior) || activo(pedido)) porEnvio.set(Number(pedido.envio_id), pedido);
+  }
   const tiendaIds = [...new Set(envios.map((envio) => Number(envio.tienda_id)).filter(Boolean))];
   const tiendas = tiendaIds.length
     ? await Tienda.findAll({ where: { id: { [Op.in]: tiendaIds } }, attributes: ['id', 'nombre', 'subdominio'], raw: true })
@@ -1330,7 +1336,7 @@ async function adjuntarLogisticaRaha(envios) {
     return {
       ...envio,
       raha_logistica: {
-        gestionado: Boolean(pedido.order_id),
+        gestionado: Boolean(pedido.order_id) && ['enviado', 'enviando', 'incierto'].includes(pedido.estado),
         external_order_id: pedido.external_order_id,
         order_id: pedido.order_id,
         environment: pedido.environment,
@@ -1404,7 +1410,7 @@ exports.listEnvios = async (req, res) => {
       order: [['id', 'DESC']]
     });
 
-    res.json(await adjuntarIdentificadores(envios.map(decorarEnvio)));
+    res.json(await adjuntarLogisticaRaha(await adjuntarIdentificadores(envios.map(decorarEnvio))));
   } catch (error) {
     console.error('Error listing envios:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -1450,6 +1456,7 @@ exports.listEnviosPaginados = async (req, res) => {
       seguimiento_fecha_desde, // rango sobre ejecutar_en del próximo recordatorio PENDIENTE
       seguimiento_fecha_hasta,
       incluir_seguimiento,     // true = cada pedido trae el mensaje del flujo que le toca (columna Seguimiento)
+      seguimiento_comercial,   // usa los estados RAHA para etapas y mensajes, sin alterar el inventario local
     } = req.body;
 
 
@@ -1468,7 +1475,11 @@ exports.listEnviosPaginados = async (req, res) => {
 
     // Multi-estado
     if (Array.isArray(estados) && estados.length > 0) {
-      where.estado = { [Op.in]: estados };
+      if (seguimiento_comercial) {
+        where[Op.and] = [...(where[Op.and] || []), Sequelize.where(Sequelize.literal(estadoSeguimientoSql()), { [Op.in]: estados })];
+      } else {
+        where.estado = { [Op.in]: estados };
+      }
     }
 
     // Búsqueda flexible e insensible a mayúsculas/minúsculas de cliente (nombre, teléfono, ruc, dirección o ID)
@@ -1632,6 +1643,7 @@ exports.listEnviosPaginados = async (req, res) => {
 
     let data = await adjuntarIdentificadores(rows.map(decorarEnvio));
     data = await adjuntarLogisticaRaha(data);
+    for (const envio of data) envio.estado_seguimiento = estadoParaSeguimiento(envio);
     try {
       data = await adjuntarReputacionCliente(data, whereEnviosDeUsuario(req));
     } catch (errReputacion) {
@@ -2923,6 +2935,7 @@ exports.conteoPorEstado = async (req, res) => {
       logistica_raha,
       excluir_logistica_raha,
       separar_logistica_raha,
+      seguimiento_comercial,
     } = req.body;
 
     const where = whereEnviosDeUsuario(req);
@@ -2981,18 +2994,20 @@ exports.conteoPorEstado = async (req, res) => {
       });
     }
 
+    const estadoConteo = seguimiento_comercial ? Sequelize.literal(estadoSeguimientoSql()) : Sequelize.col('Envio.estado');
     const filas = await Envio.findAll({
       where,
       include,
-      attributes: ['estado', [Sequelize.fn('COUNT', Sequelize.fn('DISTINCT', Sequelize.col('Envio.id'))), 'cantidad']],
-      group: ['estado'],
+      attributes: [[estadoConteo, 'estado'], [Sequelize.fn('COUNT', Sequelize.fn('DISTINCT', Sequelize.col('Envio.id'))), 'cantidad']],
+      group: [estadoConteo],
       raw: true,
     });
 
     const conteos = {};
     for (const e of ESTADOS_OPERATIVOS) conteos[e] = 0;
     for (const fila of filas) {
-      conteos[fila.estado] = parseInt(fila.cantidad, 10) || 0;
+      const cantidad = parseInt(fila.cantidad, 10) || 0;
+      conteos[fila.estado] = (conteos[fila.estado] || 0) + cantidad;
     }
 
     try {

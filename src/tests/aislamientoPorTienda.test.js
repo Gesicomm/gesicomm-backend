@@ -18,6 +18,7 @@ const express = require('express');
 const request = require('supertest');
 
 jest.mock('../models', () => ({
+  SpeedboxPedido: { findOne: jest.fn(async () => null) },
   sequelize: { transaction: (cb) => cb('TX') },
   Tienda: { findAll: jest.fn() },
   Envio: { findOne: jest.fn() },

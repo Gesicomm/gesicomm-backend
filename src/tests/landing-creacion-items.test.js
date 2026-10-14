@@ -1,4 +1,4 @@
-jest.mock('../models', () => ({}));
+jest.mock('../models', () => ({ Tienda: { findByPk: jest.fn().mockResolvedValue(null) }, Usuario: {} }));
 jest.mock('../services/landing.service', () => ({
   resolverItemsCatalogo: jest.fn().mockResolvedValue([]),
   sincronizarItems: jest.fn().mockResolvedValue(),

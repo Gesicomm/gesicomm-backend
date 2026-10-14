@@ -11,7 +11,7 @@ const {
   sequelize, Envio, EnvioItem, EnvioHistorial, Courier,
   WhatsappPlantilla, WhatsappFlujo, WhatsappFlujoFase,
   SeguimientoEtiqueta, EnvioEtiqueta,
-  SeguimientoContacto, SeguimientoRecordatorio, SeguimientoConfiguracion,
+  SeguimientoContacto, SeguimientoRecordatorio, SeguimientoConfiguracion, SpeedboxPedido,
 } = require('../models');
 const flujoService = require('../services/seguimiento/flujo.service');
 const { estadoActivadorDeFase, faseDisponibleParaPedido, faseSuperadaPorLogistica } = require('../services/seguimiento/faseActivacion');
@@ -77,6 +77,11 @@ async function cargarEnvioODevolver404(req, res, { conItems = false } = {}) {
     res.status(404).json({ error: 'Pedido no encontrado' });
     return null;
   }
+  const raha = await SpeedboxPedido.findOne({
+    where: { envio_id: envio.id, usuario_id: envio.usuario_id, order_id: { [Op.ne]: null }, estado: { [Op.in]: ['enviado', 'enviando', 'incierto'] } },
+    attributes: ['status', 'status_at'], order: [['updated_at', 'DESC'], ['id', 'DESC']], raw: true,
+  });
+  if (raha) envio.raha_logistica = { ...raha, gestionado: true };
   envio.numero_pedido_visible = await referenciaPedido(envio);
   return envio;
 }
@@ -306,7 +311,6 @@ exports.completarFase = async (req, res) => {
   if (!faseDisponibleParaPedido(fase, envio, fase.flujo?.tipo)) {
     return res.status(422).json({ error: `Este mensaje espera que logística marque el pedido como ${estadoActivadorDeFase(fase, fase.flujo?.tipo) || (fase.flujo?.tipo === 'RECUPERACION_CLIENTES' ? 'Devuelto o Perdido' : 'Preparado')}.` });
   }
-
   const resultado = await sequelize.transaction(async (t) => {
     const base = { envio_id: envio.id, fase_id: fase.id };
     let contacto = await SeguimientoContacto.findOne({

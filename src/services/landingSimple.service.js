@@ -24,6 +24,7 @@ const AICodeValidator = require('./aiCodeValidator.service');
 const ImagenService = require('./imagen.service');
 const TypographyService = require('./typography.service');
 const PaymentLogoService = require('./paymentLogo.service');
+const LandingLimites = require('./landingLimites.service');
 const PaginaFactory = require('../factories/PaginaFactory');
 
 // Los dos modos que administra este servicio, ambos "una landing por
@@ -386,6 +387,7 @@ class LandingSimpleService {
    */
   static async crearLienzoBlanco(tienda_id, inquilino_id, nombreTienda, items = [], opciones = {}) {
     const template = await this.obtenerTemplateLienzoBlanco();
+    await LandingLimites.validarItemsLienzo(items, tienda_id);
     if (Array.isArray(items) && items.length) {
       await LandingService.resolverItemsCatalogo(items, inquilino_id);
     }
@@ -419,18 +421,14 @@ class LandingSimpleService {
       where: { id, tienda_id },
       include: [
         { model: LandingTemplate, as: 'template', required: true, where: { kind: { [Op.in]: KINDS_EDITOR } } },
-        { model: LandingItem, as: 'items' },
-        { model: Faq, as: 'faq' },
-        { model: LandingBeneficio, as: 'beneficios' },
-      ],
-      order: [
-        [{ model: LandingItem, as: 'items' }, 'orden', 'ASC'],
-        [{ model: Faq, as: 'faq' }, 'orden', 'ASC'],
-        [{ model: LandingBeneficio, as: 'beneficios' }, 'orden', 'ASC'],
+        { model: LandingItem, as: 'items', separate: true, order: [['orden', 'ASC']] },
+        { model: Faq, as: 'faq', separate: true, order: [['orden', 'ASC']] },
+        { model: LandingBeneficio, as: 'beneficios', separate: true, order: [['orden', 'ASC']] },
       ],
     });
     if (!landing) throw new Error('Landing no encontrada.');
     const json = landing.toJSON();
+    json.limites = { items_manual: await LandingLimites.obtenerLimiteManual(tienda_id) };
     const tienda = await Tienda.findByPk(tienda_id, { attributes: ['id', 'typography'] });
     if (tienda) {
       json.typography = {
@@ -492,16 +490,9 @@ class LandingSimpleService {
   static async actualizarCodigo(landing, tienda_id, inquilino_id, payload) {
     let advertencias = [];
     if (payload.items !== undefined) {
-      // El lienzo admite listas mucho más largas que un template (ver
-      // MAX_ITEMS_LIENZO); con "todos"/"por categoría" ni siquiera hay lista.
-      const errores = Array.isArray(payload.items) && payload.items.length > LandingService.MAX_ITEMS_LIENZO
-        ? [`Una lista elegida a mano admite hasta ${LandingService.MAX_ITEMS_LIENZO} productos. Para vender todo el catálogo usá "Todos" o "Por categoría".`]
-        : [];
-      if (errores.length) {
-        const err = new Error('Validación fallida.');
-        err.errores = errores;
-        throw err;
-      }
+      // La ampliación para pruebas se valida contra el dueño de la tienda.
+      // Con "todos"/"por categoría" estos items son ajustes de la regla.
+      await LandingLimites.validarItemsLienzo(payload.items, tienda_id);
       await LandingService.resolverItemsCatalogo(payload.items, inquilino_id);
     }
     // Cada vista se sanea por separado y ANTES de tocar content: si la de

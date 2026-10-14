@@ -17,6 +17,7 @@
 const { Op } = require('sequelize');
 
 jest.mock('../../models', () => ({
+  SpeedboxPedido: { findOne: jest.fn(async () => null) },
   sequelize: { transaction: (cb) => cb('TX') },
   Envio: { findOne: jest.fn() },
   SeguimientoRecordatorio: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), update: jest.fn() },

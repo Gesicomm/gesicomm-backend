@@ -21,6 +21,7 @@ const { Op } = require('sequelize');
 jest.mock('../../models', () => ({
   sequelize: { transaction: (cb) => cb('TX') },
   Envio: { findOne: jest.fn(), findAll: jest.fn(), count: jest.fn() },
+  SpeedboxPedido: { findOne: jest.fn(async () => null) },
   Tienda: { findAll: jest.fn(async () => [{ id: 9, usuario_id: 7, nombre: 'Alibaguay' }]) },
   EnvioItem: { findAll: jest.fn() },
   EnvioHistorial: { findAll: jest.fn() },
@@ -35,6 +36,7 @@ jest.mock('../../services/queue/seguimientoQueue', () => ({ encolarRecordatorio:
 
 const {
   Envio, EnvioItem, EnvioHistorial, WhatsappFlujo, WhatsappFlujoFase, SeguimientoContacto, SeguimientoRecordatorio,
+  SpeedboxPedido,
 } = require('../../models');
 const flujoService = require('../../services/seguimiento/flujo.service');
 const { etapaDelPedido } = require('../../services/seguimiento/flujosBase');
@@ -158,6 +160,17 @@ describe('en qué fase está el pedido', () => {
 });
 
 describe('las etapas: el pedido cambia solo según su estado', () => {
+  test.each(['cargado', 'en_camino'])('RAHA %s ofrece despacho con estado local Confirmado y sin enviar preparación', status => {
+    const [item] = armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [pedido(1, { estado: 'Confirmado', raha_logistica: { gestionado: true, status } })] });
+    expect(item).toMatchObject({ estado: 'Despachado', fase_id: 302, cuando: 'ahora', estado_requerido: null });
+  });
+
+  test('una entrega RAHA inicia Recompra y su espera se cuenta desde la entrega remota', () => {
+    const p = pedido(1, { estado: 'Confirmado', updated_at: enHoras(-1), raha_logistica: { gestionado: true, status: 'entregado', status_at: enHoras(-48) } });
+    expect(etapaDelPedido(p)).toBe('ESCALAMIENTO_VENTAS');
+    expect(armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [p] })).toEqual([]);
+    expect(armar({ etapa: 'ESCALAMIENTO_VENTAS', pedidos: [p] })[0]).toMatchObject({ estado: 'Entregado', fase_id: 401, toca_en: enHoras(24), motivo: 'programado', entregado_en: enHoras(-48) });
+  });
   test.each(['Devuelto', 'Perdido'])('una incidencia %s arranca recuperación sin reutilizar mensajes ni recordatorios de envío', (estado) => {
     const [item] = armar({
       etapa: 'RECUPERACION_CLIENTES', pedidos: [pedido(1, { estado })],
@@ -441,7 +454,8 @@ describe('tableroDeSeguimiento', () => {
     expect(where.usuario_id).toBe(7);
     expect(where.tienda_id).toBe(9);
     // Sin etapa en el pedido, arranca en confirmación web: solo por confirmar.
-    expect(where[Op.and][0].estado[Op.in]).toEqual(['Pendiente', 'EnSeguimiento']);
+    expect(where[Op.and][0].logic[Op.in]).toEqual(['Pendiente', 'EnSeguimiento']);
+    expect(where[Op.and][0].attribute.val).toContain('speedbox_pedidos');
     expect(res.etapa).toBe('CONFIRMACION_PEDIDO_WEB');
     expect(res.etapas.map((e) => [e.tipo, e.pedidos])).toEqual([
       ['CONFIRMACION_PEDIDO_WEB', 12], ['VENTA_WHATSAPP', 0], ['SEGUIMIENTO_ENVIO', 4], ['ESCALAMIENTO_VENTAS', 3], ['RECUPERACION_CLIENTES', 5],
@@ -598,7 +612,8 @@ describe('marcar una fase como completada', () => {
   let envio;
   beforeEach(() => {
     jest.clearAllMocks();
-    envio = fila({ id: 50, estado: 'EnSeguimiento', telefono: '0981 111 222', items: [] });
+    SpeedboxPedido.findOne.mockReset().mockResolvedValue(null);
+    envio = fila({ id: 50, usuario_id: 7, estado: 'EnSeguimiento', telefono: '0981 111 222', items: [] });
     Envio.findOne.mockResolvedValue(envio);
     // 1ª llamada: la fase que se completa; 2ª: la siguiente del flujo.
     // mockReset: clearAllMocks no vacía la cola de valores "Once" que dejó la prueba anterior.
@@ -730,6 +745,38 @@ describe('marcar una fase como completada', () => {
     await controller.registrarContacto(peticion({ fase_id: 302 }), res, jest.fn());
     expect(res.codigo).toBe(201);
     expect(new URL(res.cuerpo.whatsapp_url).searchParams.get('text')).toBe('Hola María, tu pedido ya ha sido despachado. Atento a tu courier: Express, teléfono 0982 333 444.');
+    expect(envio.update).not.toHaveBeenCalled();
+  });
+
+  test.each(['registrarContacto', 'completarFase'])('RAHA cargado permite %s del despacho aunque el estado local sea Confirmado', async operacion => {
+    envio.estado = 'Confirmado';
+    SpeedboxPedido.findOne.mockResolvedValue({ status: 'cargado', status_at: enHoras(-1) });
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce({
+      id: 302, flujo_id: 30, orden: 2, nombre: 'Pedido despachado', estado_activador: 'Despachado', mensaje: 'Tu pedido ha sido despachado',
+      flujo: { tipo: 'SEGUIMIENTO_ENVIO', nombre: 'Seguimiento de envío' },
+    }).mockResolvedValueOnce(null);
+    SeguimientoContacto.findOne.mockResolvedValueOnce(fila({ id: 1, estado: 'ABIERTO_EN_WHATSAPP' }));
+    SeguimientoContacto.create.mockImplementation(async datos => fila({ id: 2, ...datos }));
+    const res = respuesta();
+    const next = jest.fn();
+    await controller[operacion](peticion({ fase_id: 302 }, { faseId: '302' }), res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.codigo).toBe(operacion === 'registrarContacto' ? 201 : 200);
+    expect(envio.update).not.toHaveBeenCalled();
+    expect(SpeedboxPedido.findOne).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ envio_id: 50, usuario_id: 7 }) }));
+  });
+
+  test.each(['registrarContacto', 'completarFase'])('RAHA pendiente de confirmación bloquea el despacho al %s', async operacion => {
+    envio.estado = 'Despachado';
+    SpeedboxPedido.findOne.mockResolvedValue({ status: 'pendiente_confirmacion' });
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValue({
+      id: 302, flujo_id: 30, orden: 2, nombre: 'Pedido despachado', estado_activador: 'Despachado', mensaje: 'Despachado',
+      flujo: { tipo: 'SEGUIMIENTO_ENVIO', nombre: 'Seguimiento de envío' },
+    });
+    const res = respuesta();
+    await controller[operacion](peticion({ fase_id: 302 }, { faseId: '302' }), res, jest.fn());
+    expect(res.codigo).toBe(422);
+    expect(SeguimientoContacto.create).not.toHaveBeenCalled();
     expect(envio.update).not.toHaveBeenCalled();
   });
 

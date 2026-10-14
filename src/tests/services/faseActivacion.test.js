@@ -2,6 +2,33 @@
 
 const { faseDisponibleParaPedido, estadoActivadorDeFase } = require('../../services/seguimiento/faseActivacion');
 const { resolverMensaje, listarVariablesDisponibles } = require('../../services/seguimiento/plantillaResolver.service');
+const { etapaDelPedido } = require('../../services/seguimiento/flujosBase');
+const { estadoParaSeguimiento } = require('../../services/seguimiento/estadoPedido');
+
+test.each([
+  ['pendiente_confirmacion', 'Preparado', 'SEGUIMIENTO_ENVIO'],
+  ['creado', 'Preparado', 'SEGUIMIENTO_ENVIO'],
+  ['cargado', 'Despachado', 'SEGUIMIENTO_ENVIO'],
+  ['en_camino', 'Despachado', 'SEGUIMIENTO_ENVIO'],
+  ['entregado', 'Entregado', 'ESCALAMIENTO_VENTAS'],
+  ['devuelto', 'Devuelto', 'RECUPERACION_CLIENTES'],
+])('RAHA %s habilita su aviso y etapa aunque el pedido local siga Confirmado', (status, estado, tipo) => {
+  const pedido = { estado: 'Confirmado', stock_descontado: false, raha_logistica: { gestionado: true, status } };
+  expect(estadoParaSeguimiento(pedido)).toBe(estado);
+  expect(etapaDelPedido(pedido)).toBe(tipo);
+  expect(faseDisponibleParaPedido({ estado_activador: estado }, pedido, tipo)).toBe(true);
+  expect(faseDisponibleParaPedido({ estado_activador: estado === 'Preparado' ? 'Despachado' : 'Preparado' }, pedido, 'SEGUIMIENTO_ENVIO')).toBe(false);
+  expect(pedido.estado).toBe('Confirmado');
+});
+
+test.each(['Pendiente', 'EnSeguimiento', 'Cancelado', 'Perdido', 'Entregado', 'Devuelto'])('RAHA no reabre un pedido local %s', estado => {
+  expect(estadoParaSeguimiento({ estado, raha_logistica: { gestionado: true, status: 'cargado' } })).toBe(estado);
+});
+
+test('una integración fallida o un status desconocido conserva el estado local', () => {
+  expect(estadoParaSeguimiento({ estado: 'Confirmado', raha_logistica: { gestionado: false, status: 'cargado' } })).toBe('Confirmado');
+  expect(estadoParaSeguimiento({ estado: 'Confirmado', raha_logistica: { gestionado: true, status: 'otro' } })).toBe('Confirmado');
+});
 
 test.each([
   ['Confirmado', 'Preparado', false],
