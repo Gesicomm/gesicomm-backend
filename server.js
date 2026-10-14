@@ -395,6 +395,16 @@ sequelize.authenticate().then(async () => {
     process.exit(1);
   }
 
+  // Campos nuevos de pedidos y tiendas: aplicar antes de validar el esquema.
+  // Ambas migraciones solo agregan columnas opcionales y son idempotentes.
+  try {
+    await require('./migrations/20261014230000-add_motivo_devolucion_envios').up(sequelize.getQueryInterface(), require('sequelize'));
+    await require('./migrations/20261014240000-add_mensaje_confirmacion_pedido_tiendas').up(sequelize.getQueryInterface(), require('sequelize'));
+  } catch (error) {
+    logger.error('No se puede iniciar sin los nuevos campos de pedidos y tiendas:', error);
+    process.exit(1);
+  }
+
   // Validar que el esquema de la BD coincide con los modelos
   try {
     await validarEsquema(sequelize);
