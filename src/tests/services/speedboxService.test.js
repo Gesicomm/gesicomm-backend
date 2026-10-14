@@ -196,9 +196,14 @@ it.each(['Pendiente', 'Cancelado', 'Preparado'])('does not queue a %s order as a
   expect(models.SpeedboxPedido.findOrCreate).not.toHaveBeenCalled();
 });
 
-it('does not queue when automation is disabled', async () => {
-  expect(await service.queueConfirmedOrder(envio, {})).toBeNull();
-  expect(models.SpeedboxPedido.findOrCreate).not.toHaveBeenCalled();
+it('queues manual RAHA confirmations even when background automation is disabled or paused', async () => {
+  connection.activo = false;
+  const transaction = { afterCommit: jest.fn() };
+  await service.queueConfirmedOrder(envio, transaction);
+  expect(models.SpeedboxPedido.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+    where: { environment: 'sandbox', envio_id: 31 },
+  }));
+  expect(transaction.afterCommit).toHaveBeenCalledTimes(1);
 });
 
 it('does not queue local-only orders or an unlinked store', async () => {

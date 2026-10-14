@@ -124,7 +124,6 @@ function webhookUrl({ publicBaseUrl = null, targetEnvironment = environment() } 
 }
 
 async function dispatchConfirmedOrder(usuarioId, envioId) {
-  if (process.env.SPEEDBOX_ENABLED !== 'true') return;
   try {
     const queued = await SpeedboxPedido.findOne({ where: { usuario_id: usuarioId, envio_id: envioId, estado: 'pendiente' } });
     if (queued) await sendOrder(usuarioId, envioId);
@@ -145,8 +144,8 @@ async function dispatchSupplyRequest(usuarioId, solicitudId) {
 }
 
 async function queueConfirmedOrder(envio, transaction) {
-  if (process.env.SPEEDBOX_ENABLED !== 'true' || envio.estado !== 'Confirmado' || !envio.stock_descontado || envio.stock_liberado) return null;
-  const connection = await operationalConnection(envio.usuario_id, { transaction, requireActive: true });
+  if (envio.estado !== 'Confirmado' || !envio.stock_descontado || envio.stock_liberado) return null;
+  const connection = await operationalConnection(envio.usuario_id, { transaction });
   if (!connection?.tienda_id || !credentialsConfigured(connection)) return null;
   const pedidoRaha = await envioTieneProductosExternos(envio.id, envio.usuario_id, transaction);
   if (!pedidoRaha) return null;
@@ -373,8 +372,8 @@ async function sendOrder(usuarioId, envioId, { retry = false, acknowledgeUncerta
     let mapping = await SpeedboxPedido.findOne({ where: { envio_id: envio.id, usuario_id: usuarioId }, transaction, lock: transaction.LOCK.UPDATE });
     let connection = mapping
       ? await connectionFor(usuarioId, { environment: mapping.environment, transaction, lock: transaction.LOCK.UPDATE })
-      : await operationalConnection(usuarioId, { transaction, lock: transaction.LOCK.UPDATE, requireActive: true });
-    if (!connection?.activo || !connection?.tienda_id) fail('RAHA no está activo para esta tienda.', 409);
+      : await operationalConnection(usuarioId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!connection?.tienda_id) fail('RAHA no está vinculado para esta tienda.', 409);
     if (!mapping) {
       [mapping] = await SpeedboxPedido.findOrCreate({ where: { environment: connection.environment, envio_id: envio.id },
         defaults: { usuario_id: usuarioId, external_order_id: `GESICOMM-${connection.environment}-${usuarioId}-${envio.id}` }, transaction });
