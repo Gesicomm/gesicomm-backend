@@ -1242,6 +1242,11 @@ async function adjuntarLogisticaRaha(envios) {
   });
   if (!pedidos.length) return envios;
   const porEnvio = new Map(pedidos.map((pedido) => [Number(pedido.envio_id), pedido]));
+  const tiendaIds = [...new Set(envios.map((envio) => Number(envio.tienda_id)).filter(Boolean))];
+  const tiendas = tiendaIds.length
+    ? await Tienda.findAll({ where: { id: { [Op.in]: tiendaIds } }, attributes: ['id', 'nombre', 'subdominio'], raw: true })
+    : [];
+  const tiendasPorId = new Map(tiendas.map((tienda) => [Number(tienda.id), tienda]));
   const orderIds = pedidos.map((pedido) => pedido.order_id).filter(Boolean);
   const eventos = orderIds.length
     ? await SpeedboxEvento.findAll({
@@ -1269,6 +1274,7 @@ async function adjuntarLogisticaRaha(envios) {
   return envios.map((envio) => {
     const pedido = porEnvio.get(Number(envio.id));
     if (!pedido) return envio;
+    const tiendaGesicom = envio.tienda_id ? tiendasPorId.get(Number(envio.tienda_id)) : null;
     return {
       ...envio,
       raha_logistica: {
@@ -1276,6 +1282,9 @@ async function adjuntarLogisticaRaha(envios) {
         external_order_id: pedido.external_order_id,
         order_id: pedido.order_id,
         environment: pedido.environment,
+        gesicom_tienda_id: envio.tienda_id || null,
+        gesicom_store_name: tiendaGesicom?.nombre || null,
+        gesicom_store_subdomain: tiendaGesicom?.subdominio || null,
         tienda_id: pedido.request_payload?.tienda_id || null,
         store_name: pedido.request_payload?.store_name || null,
         estado_envio: pedido.estado,
