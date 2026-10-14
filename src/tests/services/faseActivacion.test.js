@@ -6,9 +6,9 @@ const { etapaDelPedido } = require('../../services/seguimiento/flujosBase');
 const { estadoParaSeguimiento } = require('../../services/seguimiento/estadoPedido');
 
 test.each([
-  ['pendiente_confirmacion', 'Preparado', 'SEGUIMIENTO_ENVIO'],
-  ['creado', 'Preparado', 'SEGUIMIENTO_ENVIO'],
-  ['cargado', 'Despachado', 'SEGUIMIENTO_ENVIO'],
+  ['pendiente_confirmacion', 'Pendiente', 'CONFIRMACION_PEDIDO_WEB'],
+  ['creado', 'Pendiente', 'CONFIRMACION_PEDIDO_WEB'],
+  ['cargado', 'Preparado', 'SEGUIMIENTO_ENVIO'],
   ['en_camino', 'Despachado', 'SEGUIMIENTO_ENVIO'],
   ['entregado', 'Entregado', 'ESCALAMIENTO_VENTAS'],
   ['devuelto', 'Devuelto', 'RECUPERACION_CLIENTES'],
@@ -21,7 +21,7 @@ test.each([
   expect(pedido.estado).toBe('Confirmado');
 });
 
-test.each(['Pendiente', 'EnSeguimiento', 'Cancelado', 'Perdido', 'Entregado', 'Devuelto'])('RAHA no reabre un pedido local %s', estado => {
+test.each(['Cancelado', 'Perdido', 'Entregado', 'Devuelto'])('RAHA no reabre un pedido local %s', estado => {
   expect(estadoParaSeguimiento({ estado, raha_logistica: { gestionado: true, status: 'cargado' } })).toBe(estado);
 });
 

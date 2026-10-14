@@ -28,8 +28,9 @@ beforeEach(() => {
 });
 
 test.each([
-  ['pendiente_confirmacion', ['Preparado', 'Despachado', 'Reprogramado'], 'Preparado'],
-  ['cargado', ['Preparado', 'Despachado', 'Reprogramado'], 'Despachado'],
+  ['pendiente_confirmacion', ['Pendiente', 'EnSeguimiento'], 'Pendiente'],
+  ['cargado', ['Preparado', 'Despachado', 'Reprogramado'], 'Preparado'],
+  ['en_camino', ['Preparado', 'Despachado', 'Reprogramado'], 'Despachado'],
   ['entregado', ['Entregado'], 'Entregado'],
 ])('la bandeja filtra RAHA %s por estado de seguimiento y lo adjunta a los mensajes', async (status, estados, efectivo) => {
   Envio.findAndCountAll.mockResolvedValue({ count: 1, rows: [{ id: 50, usuario_id: 7, tienda_id: 9, estado: 'Confirmado', telefono: '0981111111', monto: 150000 }] });
@@ -53,18 +54,20 @@ test.each([
   expect(seguimiento.seguimientoDePedidos.mock.calls[0][0].pedidos[0]).toMatchObject({ estado_seguimiento: efectivo });
 });
 
-test('los contadores suman despacho local y RAHA, y separan el pendiente y el tránsito de la leyenda', async () => {
+test('los contadores reúnen los pedidos RAHA y locales en los mismos estados', async () => {
   Envio.findAll.mockResolvedValue([
     { estado: 'Preparado', cantidad: '2', raha_status: null },
-    { estado: 'Preparado', cantidad: '1', raha_status: 'pendiente_confirmacion' },
+    { estado: 'Pendiente', cantidad: '1' },
     { estado: 'Despachado', cantidad: '3', raha_status: null },
-    { estado: 'Despachado', cantidad: '2', raha_status: 'cargado' },
+    { estado: 'Preparado', cantidad: '2' },
     { estado: 'Despachado', cantidad: '1', raha_status: 'en_camino' },
   ]);
   const res = respuesta();
   await controller.conteoPorEstado(req({ seguimiento_comercial: true }), res);
   expect(res.status).not.toHaveBeenCalled();
-  expect(res.json.mock.calls[0][0]).toMatchObject({ Preparado: 3, Despachado: 6, Reprogramado: 0, raha_pendiente_confirmacion: 1, raha_en_camino: 1 });
+  expect(res.json.mock.calls[0][0]).toMatchObject({ Pendiente: 1, Preparado: 4, Despachado: 4, Reprogramado: 0 });
+  expect(res.json.mock.calls[0][0]).not.toHaveProperty('raha_pendiente_confirmacion');
+  expect(res.json.mock.calls[0][0]).not.toHaveProperty('raha_en_camino');
   expect(Envio.findAll.mock.calls[0][0].attributes[0][0].val).toContain('speedbox_pedidos');
 });
 

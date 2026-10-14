@@ -201,7 +201,7 @@ exports.registrarContacto = async (req, res) => {
       }
 
       let transicionAutomatica = false;
-      if (envio.estado === 'Pendiente') {
+      if (envio.estado === 'Pendiente' && !envio.raha_logistica?.gestionado) {
         await envio.update({ estado: 'EnSeguimiento' }, { transaction: t });
         await registrarHistorial(envio.id, usuario_id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
         transicionAutomatica = true;
@@ -343,7 +343,7 @@ exports.completarFase = async (req, res) => {
     let transicionAutomatica = false;
     // Los mensajes solo avanzan su fase. Las transiciones logísticas se
     // realizan manualmente, incluso en flujos con acciones antiguas.
-    if (envio.estado === 'Pendiente') {
+    if (envio.estado === 'Pendiente' && !envio.raha_logistica?.gestionado) {
       await envio.update({ estado: 'EnSeguimiento' }, { transaction: t });
       await registrarHistorial(envio.id, usuario_id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
       transicionAutomatica = true;

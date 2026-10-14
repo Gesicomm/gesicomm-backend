@@ -160,9 +160,16 @@ describe('en qué fase está el pedido', () => {
 });
 
 describe('las etapas: el pedido cambia solo según su estado', () => {
-  test.each(['cargado', 'en_camino'])('RAHA %s ofrece despacho con estado local Confirmado y sin enviar preparación', status => {
+  test.each([['cargado', 'Preparado', 301], ['en_camino', 'Despachado', 302]])('RAHA %s ofrece su aviso unificado con estado local Confirmado', (status, estado, fase_id) => {
     const [item] = armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [pedido(1, { estado: 'Confirmado', raha_logistica: { gestionado: true, status } })] });
-    expect(item).toMatchObject({ estado: 'Despachado', fase_id: 302, cuando: 'ahora', estado_requerido: null });
+    expect(item).toMatchObject({ estado, fase_id, cuando: 'ahora', estado_requerido: null });
+  });
+
+  test('RAHA pendiente sigue en confirmación y no habilita ningún mensaje de envío', () => {
+    const p = pedido(1, { estado: 'Confirmado', raha_logistica: { gestionado: true, status: 'pendiente_confirmacion' } });
+    expect(etapaDelPedido(p)).toBe('CONFIRMACION_PEDIDO_WEB');
+    expect(armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [p] })).toEqual([]);
+    expect(armar({ etapa: 'CONFIRMACION_PEDIDO_WEB', pedidos: [p] })[0]).toMatchObject({ estado: 'Pendiente', fase_id: 101 });
   });
 
   test('una entrega RAHA inicia Recompra y su espera se cuenta desde la entrega remota', () => {
@@ -748,9 +755,9 @@ describe('marcar una fase como completada', () => {
     expect(envio.update).not.toHaveBeenCalled();
   });
 
-  test.each(['registrarContacto', 'completarFase'])('RAHA cargado permite %s del despacho aunque el estado local sea Confirmado', async operacion => {
+  test.each(['registrarContacto', 'completarFase'])('RAHA en tránsito permite %s del despacho aunque el estado local sea Confirmado', async operacion => {
     envio.estado = 'Confirmado';
-    SpeedboxPedido.findOne.mockResolvedValue({ status: 'cargado', status_at: enHoras(-1) });
+    SpeedboxPedido.findOne.mockResolvedValue({ status: 'en_camino', status_at: enHoras(-1) });
     WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce({
       id: 302, flujo_id: 30, orden: 2, nombre: 'Pedido despachado', estado_activador: 'Despachado', mensaje: 'Tu pedido ha sido despachado',
       flujo: { tipo: 'SEGUIMIENTO_ENVIO', nombre: 'Seguimiento de envío' },
