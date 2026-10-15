@@ -97,9 +97,11 @@ class McpService {
       });
     }
 
-    // Obtener productos asociados a la landing
+    // Obtener productos asociados a la landing (limitado estrictamente a lo agregado por el comerciante)
     const itemsRaw = landing.items || [];
-    const idsProductos = itemsRaw.filter(it => it.tipo === 'producto').map(it => it.referencia_id);
+    const mapaLandingItems = new Map(itemsRaw.map(it => [Number(it.referencia_id), it]));
+    const idsProductos = itemsRaw.filter(it => it.tipo === 'producto').map(it => Number(it.referencia_id));
+    const idsCombos = itemsRaw.filter(it => it.tipo === 'combo').map(it => Number(it.referencia_id));
     
     let productosDb = [];
     const includeProducto = [
@@ -109,11 +111,13 @@ class McpService {
     ];
 
     if (idsProductos.length) {
+      // Estrictamente los productos agregados a esta landing
       productosDb = await Producto.findAll({
-        where: { id: { [Op.in]: idsProductos } },
+        where: { id: { [Op.in]: idsProductos }, inquilino_id: tienda.inquilino_id, activo: true },
         include: includeProducto,
       });
     } else {
+      // Si la landing no tiene items configurados todavía, se muestra el catálogo de la tienda
       productosDb = await Producto.findAll({
         where: { tienda_id: tiendaId, activo: true },
         include: includeProducto,
@@ -124,6 +128,7 @@ class McpService {
 
     const productos = productosDb.map(p => {
       const pJson = p.toJSON ? p.toJSON() : p;
+      const landingItem = mapaLandingItems.get(Number(p.id));
       const ofertasRaw = pJson.ofertas || [];
       const bumps = ofertasRaw.filter(o => o.estrategia === 'order_bump');
       const paquetes = ofertasRaw.filter(o => o.estrategia === 'normal');
@@ -135,13 +140,25 @@ class McpService {
         .filter(Boolean);
       const imagenPrincipal = imagenesOrdenadas[0] || pJson.imagen || null;
 
+      const precioVenta = Number(p.precio_usuario || p.precio_base || p.precio || 0);
+      const precioAntes = landingItem?.precio_ancla 
+        ? Number(landingItem.precio_ancla) 
+        : (p.precio_tachado ? Number(p.precio_tachado) : null);
+      const descuentoPct = (precioAntes && precioAntes > precioVenta)
+        ? Math.round((1 - precioVenta / precioAntes) * 100)
+        : 0;
+
       return {
         id: p.id,
         content_id: `producto-${p.id}`,
         nombre: p.nombre,
         descripcion: p.descripcion_corta || p.descripcion_larga || p.descripcion || '',
-        precio_venta_gs: Number(p.precio_usuario || p.precio_base || p.precio || 0),
-        precio_antes_gs: Number(p.precio_antes || 0) || null,
+        precio_venta_gs: precioVenta,
+        precio_antes_gs: precioAntes,
+        descuento_porcentaje: descuentoPct,
+        etiqueta: landingItem?.etiqueta || null,
+        mostrar_en_inicio: landingItem ? landingItem.mostrar_en_inicio !== false : true,
+        envio_incluido: landingItem?.envio_incluido === true,
         imagen_principal: imagenPrincipal,
         imagenes: imagenesOrdenadas.length ? imagenesOrdenadas : (imagenPrincipal ? [imagenPrincipal] : []),
         categoria: pJson.categoria ? { id: pJson.categoria.id, nombre: pJson.categoria.nombre, slug: pJson.categoria.slug } : null,
@@ -155,16 +172,16 @@ class McpService {
         order_bumps: bumps.map(b => ({
           id: b.id,
           titulo: b.nombre || b.titulo,
-          precio_gs: Number(b.precio_oferta || b.precio || 0),
+          precio_gs: Number(b.precio_order_bump || b.precio_normal || b.precio || 0),
           precio_antes_gs: Number(b.precio_normal || 0) || null,
           descripcion: b.descripcion,
-          imagen: b.imagen,
+          imagen: b.imagen_url || null,
         })),
         paquetes_cantidad: paquetes.map(pq => ({
           id: pq.id,
           cantidad: pq.cantidad || 1,
           titulo: pq.nombre || pq.titulo,
-          precio_total_gs: Number(pq.precio_oferta || pq.precio || 0),
+          precio_total_gs: Number(pq.precio_normal || pq.precio || 0),
           descuento_porcentaje: pq.descuento_porcentaje || null,
         })),
       };
@@ -196,6 +213,7 @@ class McpService {
         filtrar_por_categoria: 'data-gesicomm-lista="productos" data-gesicomm-categoria="NOMBRE_O_SLUG" (muestra solo productos de esa categoría, ej: data-gesicomm-categoria="Accesorios Tech")',
         navegar_a_categoria: 'data-gesicomm-categoria-ir="NOMBRE_O_SLUG" (colocar en banners, links de navegación o tarjetas de categoría para llevar al cliente a esa vista)',
       },
+      restriccion_estricta_productos: 'ESTRICTO: Solo podés usar y mostrar los productos listados en "productos". NO inventes productos ficticios ni agregues combos o artículos de afuera que no existan en la lista "productos". Si mostrás ofertas o descuentos, usá los productos que tienen precio_antes_gs y descuento_porcentaje > 0.',
       diseno_cro_recomendado: {
         enfoque: 'Mobile-first (390px ancho base). Las compras en Paraguay se hacen un 95% desde smartphones.',
         componentes_clave: [
@@ -229,6 +247,14 @@ class McpService {
           fondo: tienda?.color_fondo || '#ffffff',
           texto: tienda?.color_texto || '#111827',
         },
+      },
+      configuracion_comercial: {
+        seleccion: venta.seleccion || 'todos',
+        banners: venta.inicio?.banners || venta.inicio_comercial?.banners || [],
+        banners_intermedios: venta.inicio?.banners_intermedios || venta.inicio_comercial?.banners_intermedios || [],
+        secciones_inicio: venta.inicio?.secciones || venta.inicio_comercial?.secciones || [],
+        urgencia: venta.urgencia || null,
+        cross_sell: venta.cross_sell || null,
       },
       categorias: categoriasDb.map(c => ({
         id: c.id,

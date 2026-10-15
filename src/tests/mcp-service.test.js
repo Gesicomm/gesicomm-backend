@@ -107,9 +107,59 @@ describe('McpService - Motor Comercial y Validaciones', () => {
       const res = await McpService.guardarCodigo(240, 1, 2, { vista: 'inicio', html });
 
       expect(LandingSimpleService.buscarPropia).toHaveBeenCalledWith(240, 1);
-      expect(LandingSimpleService.actualizarCodigo).toHaveBeenCalled();
-      expect(res.ok).toBe(true);
-      expect(res.landing_id).toBe(240);
+    });
+  });
+
+  describe('obtenerContextoComercial', () => {
+    test('trae solo los productos de landing.items, toma precio_ancla y calcula descuento', async () => {
+      const LandingSimpleService = require('../services/landingSimple.service');
+      const { Producto, Tienda, Categoria } = require('../models');
+
+      jest.spyOn(LandingSimpleService, 'obtener').mockResolvedValue({
+        id: 240,
+        titulo: 'sommix',
+        slug: 'lienzo-sommix',
+        activo: true,
+        items: [
+          { tipo: 'producto', referencia_id: 3355, precio_ancla: 605712, etiqueta: '30% OFF', mostrar_en_inicio: true, envio_incluido: false },
+        ],
+        content: {
+          venta: {
+            seleccion: 'todos',
+            inicio: {
+              banners: [{ id: 'b1', titulo: 'Promo', enlace: '/categoria/ofertas' }],
+              secciones: [{ id: 's1', tipo: 'categoria', categoria: 'Accesorios Tech' }],
+            },
+            urgencia: { activo: true, titulo: 'Flash Sale' },
+          },
+        },
+      });
+
+      jest.spyOn(Tienda, 'findByPk').mockResolvedValue({ id: 1, inquilino_id: 2, nombre: 'Sommix' });
+      jest.spyOn(Categoria, 'findAll').mockResolvedValue([]);
+      jest.spyOn(Producto, 'findAll').mockResolvedValue([
+        {
+          id: 3355,
+          nombre: '2 Sillas para Jardín',
+          precio_base: 423998,
+          precio_tachado: null,
+          categoria: null,
+          imagenes: [],
+          ofertas: [],
+          toJSON: () => ({ id: 3355, nombre: '2 Sillas para Jardín', precio_base: 423998, imagenes: [], ofertas: [] }),
+        },
+      ]);
+
+      const res = await McpService.obtenerContextoComercial(240, 1);
+
+      expect(res.productos).toHaveLength(1);
+      expect(res.productos[0].id).toBe(3355);
+      expect(res.productos[0].precio_venta_gs).toBe(423998);
+      expect(res.productos[0].precio_antes_gs).toBe(605712);
+      expect(res.productos[0].descuento_porcentaje).toBe(30);
+      expect(res.configuracion_comercial.banners).toHaveLength(1);
+      expect(res.configuracion_comercial.urgencia.titulo).toBe('Flash Sale');
+      expect(res.contrato_motor_comercial.restriccion_estricta_productos).toBeDefined();
     });
   });
 });

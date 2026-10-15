@@ -3721,7 +3721,8 @@ class LandingService {
   static conAjustesDeLanding(items, filas) {
     const ajustes = new Map((filas || []).map(f => [`${f.tipo}:${Number(f.referencia_id)}`, f]));
     if (!ajustes.size) return items;
-    return items.map(i => {
+    const ya = new Set(items.map(i => `${i.tipo}:${Number(i.referencia_id)}`));
+    const ajustados = items.map(i => {
       const ajuste = ajustes.get(`${i.tipo}:${Number(i.referencia_id)}`);
       return ajuste ? {
         ...i,
@@ -3731,6 +3732,23 @@ class LandingService {
         envio_incluido: ajuste.envio_incluido === true,
       } : i;
     });
+    for (const f of (filas || [])) {
+      const key = `${f.tipo}:${Number(f.referencia_id)}`;
+      if (!ya.has(key)) {
+        ajustados.unshift({
+          tipo: f.tipo,
+          referencia_id: Number(f.referencia_id),
+          precio_ancla: f.precio_ancla,
+          etiqueta: f.etiqueta,
+          orden: -1,
+          mostrar_en_inicio: f.mostrar_en_inicio !== false,
+          envio_incluido: f.envio_incluido === true,
+          createdAt: f.created_at || f.createdAt,
+        });
+        ya.add(key);
+      }
+    }
+    return ajustados;
   }
 
   static debeSintetizarCatalogoCodigo(landing) {
