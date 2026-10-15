@@ -10,7 +10,7 @@
 
 const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
-const { Landing, LandingItem, Producto, ProductoImagen, Oferta, Tienda, LandingTemplate, Faq } = require('../models');
+const { Landing, LandingItem, Producto, ProductoImagen, Oferta, Tienda, LandingTemplate, Faq, Categoria } = require('../models');
 const LandingSimpleService = require('./landingSimple.service');
 const LandingCodigoService = require('./landingCodigo.service');
 const AICodeValidator = require('./aiCodeValidator.service');
@@ -87,6 +87,16 @@ class McpService {
     const content = landing.content || {};
     const venta = content.venta || {};
 
+    // Obtener categorías activas de la tienda
+    let categoriasDb = [];
+    if (tienda?.inquilino_id) {
+      categoriasDb = await Categoria.findAll({
+        where: { inquilino_id: tienda.inquilino_id, activo: true },
+        attributes: ['id', 'nombre', 'slug', 'parent_id'],
+        order: [['nombre', 'ASC']],
+      });
+    }
+
     // Obtener productos asociados a la landing
     const itemsRaw = landing.items || [];
     const idsProductos = itemsRaw.filter(it => it.tipo === 'producto').map(it => it.referencia_id);
@@ -95,6 +105,7 @@ class McpService {
     const includeProducto = [
       { model: Oferta, as: 'ofertas', required: false },
       { model: ProductoImagen, as: 'imagenes', required: false },
+      { model: Categoria, as: 'categoria', required: false, attributes: ['id', 'nombre', 'slug'] },
     ];
 
     if (idsProductos.length) {
@@ -133,7 +144,7 @@ class McpService {
         precio_antes_gs: Number(p.precio_antes || 0) || null,
         imagen_principal: imagenPrincipal,
         imagenes: imagenesOrdenadas.length ? imagenesOrdenadas : (imagenPrincipal ? [imagenPrincipal] : []),
-        categoria: p.categoria || null,
+        categoria: pJson.categoria ? { id: pJson.categoria.id, nombre: pJson.categoria.nombre, slug: pJson.categoria.slug } : null,
         tiene_variantes: Array.isArray(p.variantes) && p.variantes.length > 0,
         variantes: (p.variantes || []).map(v => ({
           id: v.id,
@@ -181,6 +192,10 @@ class McpService {
         eventos_automaticos: 'El runtime dispara automáticamente ViewContent al entrar, AddToCart al hacer clic en comprar/agregar, InitiateCheckout al abrir checkout y Purchase al completar el pedido.',
         evento_personalizado: 'data-gesicomm-evento="NombreDelEvento" (para registrar clicks en CTAs secundarios o consultas).',
       },
+      directivas_categorias_y_banners: {
+        filtrar_por_categoria: 'data-gesicomm-lista="productos" data-gesicomm-categoria="NOMBRE_O_SLUG" (muestra solo productos de esa categoría, ej: data-gesicomm-categoria="Accesorios Tech")',
+        navegar_a_categoria: 'data-gesicomm-categoria-ir="NOMBRE_O_SLUG" (colocar en banners, links de navegación o tarjetas de categoría para llevar al cliente a esa vista)',
+      },
       diseno_cro_recomendado: {
         enfoque: 'Mobile-first (390px ancho base). Las compras en Paraguay se hacen un 95% desde smartphones.',
         componentes_clave: [
@@ -213,6 +228,12 @@ class McpService {
           texto: tienda?.color_texto || '#111827',
         },
       },
+      categorias: categoriasDb.map(c => ({
+        id: c.id,
+        nombre: c.nombre,
+        slug: c.slug,
+        parent_id: c.parent_id,
+      })),
       productos,
       contrato_motor_comercial: contratoMotorComercial,
       prompt_maestro_gesicomm: PROMPT_MAESTRO,
