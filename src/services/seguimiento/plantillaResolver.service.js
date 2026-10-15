@@ -19,9 +19,15 @@ function nombreProductos(envio) {
   return items.map((it) => it.oferta_nombre || it.nombre_producto).filter(Boolean).join(', ');
 }
 
+function primerNombreCliente(envio) {
+  const nombre = String(envio.nombre_cliente || '').trim()
+    || String(envio.cliente || '').trim();
+  return nombre.split(/\s+/)[0] || 'Cliente';
+}
+
 const VARIABLES = {
   // Nombres usados en el editor del frontend (SeguimientoConfig.jsx)
-  cliente_nombre: (envio) => [envio.nombre_cliente, envio.apellido_cliente].filter(Boolean).join(' ') || envio.cliente || 'Cliente',
+  cliente_nombre: primerNombreCliente,
   telefono:       (envio) => envio.telefono || '',
   productos:      (envio) => nombreProductos(envio),
   pedido_id:      numeroPedidoVisible,
@@ -30,7 +36,7 @@ const VARIABLES = {
   courier_nombre: (envio) => envio.Courier?.nombre || envio.courier_nombre || (typeof envio.courier === 'string' ? envio.courier : '') || '',
   courier_telefono: (envio) => envio.Courier?.telefono || envio.courier_telefono || '',
   // Aliases por compatibilidad con plantillas antiguas
-  nombre:         (envio) => [envio.nombre_cliente, envio.apellido_cliente].filter(Boolean).join(' ') || envio.cliente || 'Cliente',
+  nombre:         primerNombreCliente,
   producto:       (envio) => nombreProductos(envio),
   numero_pedido:  numeroPedidoVisible,
   pedido:         numeroPedidoVisible,
@@ -59,9 +65,9 @@ const VARIABLES = {
  */
 function listarVariablesDisponibles() {
   return [
-    { key: 'cliente_nombre',    grupo: 'Cliente', desc: 'Nombre del cliente',          ejemplo: 'María González' },
+    { key: 'cliente_nombre',    grupo: 'Cliente', desc: 'Primer nombre del cliente',   ejemplo: primerNombreCliente({ nombre_cliente: 'María', apellido_cliente: 'González' }) },
     { key: 'telefono',          grupo: 'Cliente', desc: 'Teléfono del cliente',        ejemplo: '0981 234 567' },
-    { key: 'pedido_id',         grupo: 'Pedido',  desc: 'Número del pedido',           ejemplo: 'Mi tienda-1001' },
+    { key: 'pedido_id',         grupo: 'Pedido',  desc: 'Tres primeras letras de la tienda y número correlativo (1001, 1002…)', ejemplo: numeroPedidoVisible({ tienda_nombre: 'Mi tienda', numero_pedido_tienda: 1 }) },
     { key: 'productos',         grupo: 'Pedido',  desc: 'Lista de productos del pedido', ejemplo: 'Zapatilla Urban Black, Remera Oversize' },
     { key: 'total_gs',          grupo: 'Pedido',  desc: 'Monto total en guaraníes',    ejemplo: formatGs(249000) },
     { key: 'direccion_entrega', grupo: 'Envío',  desc: 'Dirección de entrega',        ejemplo: 'Av. Mariscal López 1234, Asunción' },

@@ -9,7 +9,7 @@ jest.mock('../../models', () => {
 
 const { Envio, EnvioItem } = require('../../models');
 const Reportes = require('../../services/reporteService');
-const { resolverMensaje } = require('../../services/seguimiento/plantillaResolver.service');
+const { resolverMensaje, listarVariablesDisponibles } = require('../../services/seguimiento/plantillaResolver.service');
 const pedido = { id: 4, usuario_id: 7, tienda_id: 9, numero_pedido: 4, numero_pedido_tienda: 2,
   tienda_nombre: 'Alibaguay', monto: 100000, estado: 'Entregado', comision_pct_aplicada: 5 };
 const fila = { toJSON: () => ({ ...pedido }) };
@@ -22,6 +22,14 @@ beforeEach(() => {
 
 test('todos los alias de WhatsApp usan ALI-1002', () => {
   expect(resolverMensaje('Pedido {pedido_id} / {{numero_pedido}} / {pedido}', pedido)).toBe('Pedido ALI-1002 / ALI-1002 / ALI-1002');
+});
+
+test('el catálogo de la vista previa muestra el mismo formato que el mensaje real', () => {
+  const variable = listarVariablesDisponibles().find(v => v.key === 'pedido_id');
+  expect(variable.ejemplo).toBe('MIT-1001');
+  expect(variable.ejemplo).toBe(resolverMensaje('{pedido_id}', {
+    tienda_nombre: 'Mi tienda', tienda_id: 9, numero_pedido_tienda: 1,
+  }));
 });
 
 test('pedidos, comisiones y facturación comparten la referencia por tienda', async () => {

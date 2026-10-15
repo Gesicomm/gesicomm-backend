@@ -79,6 +79,7 @@ router.delete('/:id', envioController.deleteEnvio);
 // --- Seguimiento de pedidos por WhatsApp (RF Seguimiento WhatsApp) ---
 // Flujos activos + lo que ya se abrio de cada fase en ESTE pedido.
 router.get('/:id/seguimiento/flujos', seguimientoController.flujosDelPedido);
+router.get('/:id/seguimiento/imagenes/:itemId', seguimientoController.copiarImagenProducto);
 router.post('/:id/seguimiento/contactos', seguimientoController.registrarContacto);
 router.get('/:id/seguimiento/contactos', seguimientoController.listarContactos);
 // El operador confirma que mandó el mensaje de la fase: es lo que la hace avanzar.

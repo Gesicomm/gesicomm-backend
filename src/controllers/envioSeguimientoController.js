@@ -8,7 +8,7 @@
  */
 const { Op, Transaction, UniqueConstraintError } = require('sequelize');
 const {
-  sequelize, Envio, EnvioItem, EnvioHistorial, Courier,
+  sequelize, Envio, EnvioItem, EnvioHistorial, Courier, Producto, ProductoImagen, Oferta,
   WhatsappPlantilla, WhatsappFlujo, WhatsappFlujoFase,
   SeguimientoEtiqueta, EnvioEtiqueta,
   SeguimientoContacto, SeguimientoRecordatorio, SeguimientoConfiguracion, SpeedboxPedido,
@@ -20,6 +20,7 @@ const { FASE_COMPLETADA } = require('../services/seguimiento/pendientesSeguimien
 const { registrarHistorial } = require('../utils/historial');
 const { resolverMensaje } = require('../services/seguimiento/plantillaResolver.service');
 const { referenciaPedido } = require('../services/pedidoIdentificador.service');
+const { imagenesDelPedido, imagenParaCopiar } = require('../services/seguimiento/imagenesPedido.service');
 const { encolarRecordatorio } = require('../services/queue/seguimientoQueue');
 const { logger } = require('../utils/logger');
 const { envolverControlador } = require('../utils/asyncHandler');
@@ -67,11 +68,22 @@ function whatsappUrl(telefono, mensaje) {
   return `https://wa.me/${numero}?text=${encodeURIComponent(mensaje)}`;
 }
 
-async function cargarEnvioODevolver404(req, res, { conItems = false } = {}) {
+async function cargarEnvioODevolver404(req, res, { conItems = false, conImagenes = false } = {}) {
   const { id } = req.params;
+  const include = [];
+  if (conItems || conImagenes) {
+    const items = { model: EnvioItem, as: 'items' };
+    if (conImagenes) items.include = [
+      { model: Producto, attributes: ['id', 'nombre'], include: [
+        { model: ProductoImagen, as: 'imagenes', attributes: ['id', 'url', 'storage_key', 'variante_id', 'es_principal', 'orden'] },
+      ] },
+      { model: Oferta, attributes: ['id', 'imagen_url', 'imagen_storage_key'] },
+    ];
+    include.push(items, { model: Courier, attributes: ['id', 'nombre', 'telefono'] });
+  }
   const envio = await Envio.findOne({
     where: filtroEnvio(req, id),
-    include: conItems ? [{ model: EnvioItem, as: 'items' }, { model: Courier, attributes: ['id', 'nombre', 'telefono'] }] : [],
+    include,
   });
   if (!envio) {
     res.status(404).json({ error: 'Pedido no encontrado' });
@@ -93,7 +105,7 @@ async function cargarEnvioODevolver404(req, res, { conItems = false } = {}) {
  * dibujar el flujo: no hay "fase actual" guardada, se deriva del historial.
  */
 exports.flujosDelPedido = async (req, res) => {
-  const envio = await cargarEnvioODevolver404(req, res, { conItems: true });
+  const envio = await cargarEnvioODevolver404(req, res, { conImagenes: true });
   if (!envio) return;
   await flujoService.asegurarFlujosBase({ usuarioId: req.usuario.id });
   let flujos = await flujoService.estadoFlujosDelPedido(envio.id, {
@@ -104,15 +116,27 @@ exports.flujosDelPedido = async (req, res) => {
   // El mensaje tal como va a salir para ESTE pedido, con la misma función
   // que arma el enlace de WhatsApp: la vista previa del panel no puede
   // mostrar algo distinto de lo que después se abre.
+  const imagenes = imagenesDelPedido(envio).map(({ storage_key, ...imagen }) => imagen);
   for (const flujo of flujos) {
     for (const fase of flujo.fases || []) {
       fase.mensaje_resuelto = resolverMensaje(fase.mensaje, envio);
+      fase.imagenes_productos = imagenes;
       fase.disponible = faseDisponibleParaPedido(fase, envio, flujo.tipo);
       fase.superada = faseSuperadaPorLogistica(fase, envio, flujo.tipo);
       fase.estado_requerido = estadoActivadorDeFase(fase, flujo.tipo) || (flujo.tipo === 'RECUPERACION_CLIENTES' ? 'Devuelto o Perdido' : 'Preparado');
     }
   }
   res.json(flujos);
+};
+
+exports.copiarImagenProducto = async (req, res) => {
+  const envio = await cargarEnvioODevolver404(req, res, { conImagenes: true });
+  if (!envio) return;
+  const imagen = imagenesDelPedido(envio).find(i => String(i.item_id) === req.params.itemId);
+  if (!imagen) return res.status(404).json({ error: 'Imagen del producto no encontrada en este pedido' });
+  const png = await imagenParaCopiar(imagen);
+  res.set('Cache-Control', 'private, no-store');
+  res.type('image/png').send(png);
 };
 
 /**
