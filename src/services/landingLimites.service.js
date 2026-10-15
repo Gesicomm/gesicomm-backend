@@ -4,17 +4,19 @@ const { Tienda, Usuario } = require('../models');
 
 const LIMITE_MANUAL = 500;
 const LIMITE_PRUEBA = 5000;
+// ID verificado de Llevalofacil. El nombre comercial es editable y en la
+// base no coincide con el nombre usado al solicitar esta excepción.
+const TIENDA_PRUEBA_ID = 69;
 
 function esTiendaDePrueba(tienda) {
-  const nombre = String(tienda?.nombre || '').normalize('NFD').replace(/\p{M}/gu, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
-  return nombre === 'llevatelofacil'
+  return Number(tienda?.id) === TIENDA_PRUEBA_ID
     && String(tienda?.Usuario?.correo_electronico || '').trim().toLowerCase() === 'andre@gmail.com';
 }
 
 async function obtenerLimiteManual(tiendaId) {
   // La excepción usa el dueño persistido de ESTA tienda, nunca el payload.
   const tienda = await Tienda.findByPk(tiendaId, {
-    attributes: ['id', 'nombre', 'usuario_id'],
+    attributes: ['id', 'usuario_id'],
     include: [{ model: Usuario, attributes: ['correo_electronico'] }],
   });
   return esTiendaDePrueba(tienda) ? LIMITE_PRUEBA : LIMITE_MANUAL;

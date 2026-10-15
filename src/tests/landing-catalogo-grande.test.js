@@ -26,8 +26,8 @@ const productos = Array.from({ length: 4000 }, (_, i) => ({
   cantidad_disponible: 10, categoria: { nombre: i < 3900 ? 'General' : 'Final' },
 }));
 const items = productos.map(p => ({ tipo: 'producto', referencia_id: p.id, orden: p.id - 1, mostrar_en_inicio: true }));
-const tienda = { id: 7, nombre: 'Llévatelo Fácil', inquilino_id: 1, usuario_id: 20, activo: true, Usuario: { activo: true, correo_electronico: 'andre@gmail.com' } };
-const landing = { id: 9, tienda_id: 7, tipo_pagina: 'inicio', activo: true, template: { kind: 'codigo' }, items, content: { venta: { configurado: true, seleccion: 'manual' } }, secciones: [] };
+const tienda = { id: 69, nombre: 'Llevalofacil', inquilino_id: 1, usuario_id: 171, activo: true, Usuario: { activo: true, correo_electronico: 'andre@gmail.com' } };
+const landing = { id: 9, tienda_id: 69, tipo_pagina: 'inicio', activo: true, template: { kind: 'codigo' }, items, content: { venta: { configurado: true, seleccion: 'manual' } }, secciones: [] };
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -66,7 +66,7 @@ test('guarda los 4000 por el servicio real y reconstruye orden y valores por def
   const editable = { ...landing, save: jest.fn(), changed: jest.fn() };
   jest.spyOn(Simple, 'obtener').mockResolvedValue({ id: 9, limites: { items_manual: 5000 } });
   const compactos = items.map(({ tipo, referencia_id }) => ({ tipo, referencia_id }));
-  await Simple.actualizarCodigo(editable, 7, 1, { items: compactos });
+  await Simple.actualizarCodigo(editable, 69, 1, { items: compactos });
   const guardados = LandingItem.bulkCreate.mock.calls[0][0];
   expect(guardados).toHaveLength(4000);
   expect(guardados.at(-1)).toMatchObject({ referencia_id: 4000, orden: 3999, precio_ancla: null, mostrar_en_inicio: true, envio_incluido: false });
@@ -75,7 +75,7 @@ test('guarda los 4000 por el servicio real y reconstruye orden y valores por def
 test('otra tienda no puede elevar el límite enviando limites en el payload', async () => {
   Tienda.findByPk.mockResolvedValue({ ...tienda, Usuario: { correo_electronico: 'otra@gmail.com' } });
   const editable = { ...landing, save: jest.fn() };
-  await expect(Simple.actualizarCodigo(editable, 7, 1, { items, limites: { items_manual: 5000 } }))
+  await expect(Simple.actualizarCodigo(editable, 69, 1, { items, limites: { items_manual: 5000 } }))
     .rejects.toMatchObject({ errores: [expect.stringContaining('500 productos')] });
   expect(editable.save).not.toHaveBeenCalled();
   expect(LandingItem.destroy).not.toHaveBeenCalled();
@@ -83,25 +83,25 @@ test('otra tienda no puede elevar el límite enviando limites en el payload', as
 
 test('el editor recibe el límite autorizado y consulta las colecciones sin multiplicar content', async () => {
   Landing.findOne.mockResolvedValue({ ...landing, toJSON: () => ({ ...landing }) });
-  const res = await Simple.obtener(9, 7);
+  const res = await Simple.obtener(9, 69);
   expect(res.limites).toEqual({ items_manual: 5000 });
   const consulta = Landing.findOne.mock.calls[0][0];
-  expect(consulta.where).toEqual({ id: 9, tienda_id: 7 });
+  expect(consulta.where).toEqual({ id: 9, tienda_id: 69 });
   for (const as of ['items', 'faq', 'beneficios']) {
     expect(consulta.include.find(i => i.as === as)).toMatchObject({ separate: true, order: [['orden', 'ASC']] });
   }
-  Tienda.findByPk.mockResolvedValue({ ...tienda, nombre: 'Otra tienda' });
-  expect((await Simple.obtener(9, 7)).limites.items_manual).toBe(500);
+  Tienda.findByPk.mockResolvedValue({ ...tienda, id: 80, nombre: 'Otra tienda' });
+  expect((await Simple.obtener(9, 80)).limites.items_manual).toBe(500);
 });
 
 test('crear un lienzo también exige la excepción antes de reemplazar la página existente', async () => {
   jest.spyOn(Simple, 'obtenerTemplateLienzoBlanco').mockResolvedValue({ id: 3 });
   const crear = jest.spyOn(Simple, '_crearFila').mockResolvedValue({ id: 9 });
   jest.spyOn(Simple, 'obtener').mockResolvedValue({ id: 9 });
-  Tienda.findByPk.mockResolvedValue({ ...tienda, nombre: 'Otra tienda' });
-  await expect(Simple.crearLienzoBlanco(7, 1, 'Nombre del payload', items)).rejects.toMatchObject({ errores: [expect.stringContaining('500 productos')] });
+  Tienda.findByPk.mockResolvedValue({ ...tienda, id: 80, nombre: 'Otra tienda' });
+  await expect(Simple.crearLienzoBlanco(80, 1, 'Nombre del payload', items)).rejects.toMatchObject({ errores: [expect.stringContaining('500 productos')] });
   expect(crear).not.toHaveBeenCalled();
   Tienda.findByPk.mockResolvedValue(tienda);
-  await expect(Simple.crearLienzoBlanco(7, 1, tienda.nombre, items)).resolves.toEqual({ id: 9 });
+  await expect(Simple.crearLienzoBlanco(69, 1, tienda.nombre, items)).resolves.toEqual({ id: 9 });
   expect(LandingItem.bulkCreate.mock.calls[0][0]).toHaveLength(4000);
 });
