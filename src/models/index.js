@@ -123,6 +123,7 @@ const EnvioEtiqueta = require('./EnvioEtiqueta');
 const SeguimientoContacto = require('./SeguimientoContacto');
 const SeguimientoRecordatorio = require('./SeguimientoRecordatorio');
 const Notificacion = require('./Notificacion');
+const ImportacionSolicitud = require('./ImportacionSolicitud');
 const SeguimientoConfiguracion = require('./SeguimientoConfiguracion');
 const InventarioUbicacion = require('./InventarioUbicacion');
 const IngresoInventario = require('./IngresoInventario');
@@ -941,6 +942,7 @@ module.exports = {
   SeguimientoContacto,
   SeguimientoRecordatorio,
   Notificacion,
+  ImportacionSolicitud,
   SeguimientoConfiguracion,
   InventarioUbicacion,
   IngresoInventario,

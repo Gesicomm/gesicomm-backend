@@ -80,4 +80,6 @@ test('rechaza contenido que no es imagen y archivos excesivos', async () => {
   await expect(descargarImagenExterna('https://cdn.example/foto.png')).rejects.toMatchObject({ status: 502 });
   https.get.mockImplementation(respuesta({ headers: { 'content-type': 'image/png', 'content-length': String(13 * 1024 * 1024) } }));
   await expect(descargarImagenExterna('https://cdn.example/foto.png')).rejects.toMatchObject({ status: 413 });
+  https.get.mockImplementation(respuesta({ chunks: [Buffer.alloc(13 * 1024 * 1024)] }));
+  await expect(descargarImagenExterna('https://cdn.example/foto.png')).rejects.toMatchObject({ status: 413 });
 });

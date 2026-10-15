@@ -635,29 +635,6 @@ async function getProgresoSidebar(req, res) {
       orden: m.orden,
     }));
 
-    if (!modulosSidebarNormalizados.some((m) => m.menuKey === 'importada-de-china')) {
-      modulosSidebarNormalizados.push({
-        id: 'importada-de-china',
-        moduloKey: 'importada-de-china',
-        contexto: 'ecommerce',
-        seccion: 'OPERACIONES',
-        label: 'Importada de China',
-        path: '/importada-de-china',
-        prefix: null,
-        icono: 'PackageSearch',
-        menuKey: 'importada-de-china',
-        rolesPermitidos: ['usuario', 'administrador'],
-        requierePlan: null,
-        badge: null,
-        dangerBadgeKey: null,
-        orden: 90,
-      });
-      modulosSidebarNormalizados.sort((a, b) => (
-        String(a.contexto).localeCompare(String(b.contexto)) ||
-        Number(a.orden || 0) - Number(b.orden || 0)
-      ));
-    }
-
     return res.json({
       menus_desbloqueados: desbloqueadosArr,
       menusDesbloqueados: desbloqueadosArr,

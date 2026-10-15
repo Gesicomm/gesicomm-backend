@@ -278,7 +278,9 @@ class LandingSimpleService {
       where: { tienda_id },
       include: [
         { model: LandingTemplate, as: 'template', required: true, where: { kind: { [Op.in]: KINDS_EDITOR } } },
-        { model: LandingItem, as: 'items', attributes: ['id'] },
+        // No repetir content miles de veces en el resultado SQL. La lista
+        // se consulta al entrar al editor, incluso con catálogos grandes.
+        { model: LandingItem, as: 'items', attributes: ['id'], separate: true },
       ],
       order: [['created_at', 'DESC']],
     });

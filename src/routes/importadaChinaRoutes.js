@@ -8,5 +8,6 @@ router.use(verificarToken);
 router.use(resolverTiendaActiva);
 
 router.post('/solicitudes', ctrl.solicitar);
+router.get('/solicitudes', ctrl.listar);
 
 module.exports = router;

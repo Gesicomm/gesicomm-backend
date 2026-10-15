@@ -94,6 +94,17 @@ test('el editor recibe el límite autorizado y consulta las colecciones sin mult
   expect((await Simple.obtener(9, 80)).limites.items_manual).toBe(500);
 });
 
+test('el listado de acceso al editor no repite el diseño por cada producto', async () => {
+  Landing.findAll.mockResolvedValueOnce([{ toJSON: () => ({ ...landing }) }]);
+  const res = await Simple.listar(69);
+  expect(res).toHaveLength(1);
+  expect(res[0].id).toBe(9);
+  expect(res[0].items).toHaveLength(4000);
+  const consulta = Landing.findAll.mock.calls[0][0];
+  expect(consulta.where).toEqual({ tienda_id: 69 });
+  expect(consulta.include.find(i => i.as === 'items')).toMatchObject({ separate: true, attributes: ['id'] });
+});
+
 test('crear un lienzo también exige la excepción antes de reemplazar la página existente', async () => {
   jest.spyOn(Simple, 'obtenerTemplateLienzoBlanco').mockResolvedValue({ id: 3 });
   const crear = jest.spyOn(Simple, '_crearFila').mockResolvedValue({ id: 9 });
