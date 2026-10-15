@@ -89,4 +89,27 @@ describe('McpService - Motor Comercial y Validaciones', () => {
       expect(() => McpService.generarTokenMCP(usuario, null)).toThrow(/Se requiere una tienda activa/);
     });
   });
+
+  describe('guardarCodigo', () => {
+    test('llama a buscarPropia y actualizarCodigo con el modelo Sequelize', async () => {
+      const mockLanding = {
+        id: 240,
+        tienda_id: 1,
+        content: {},
+        changed: jest.fn(),
+        save: jest.fn().mockResolvedValue(true),
+      };
+      const LandingSimpleService = require('../services/landingSimple.service');
+      jest.spyOn(LandingSimpleService, 'buscarPropia').mockResolvedValue(mockLanding);
+      jest.spyOn(LandingSimpleService, 'actualizarCodigo').mockResolvedValue({ id: 240, content: {} });
+
+      const html = '<button data-gesicomm-comprar>Comprar</button>';
+      const res = await McpService.guardarCodigo(240, 1, 2, { vista: 'inicio', html });
+
+      expect(LandingSimpleService.buscarPropia).toHaveBeenCalledWith(240, 1);
+      expect(LandingSimpleService.actualizarCodigo).toHaveBeenCalled();
+      expect(res.ok).toBe(true);
+      expect(res.landing_id).toBe(240);
+    });
+  });
 });

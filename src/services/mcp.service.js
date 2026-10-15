@@ -282,7 +282,7 @@ class McpService {
    * Valida y guarda el código HTML/CSS/JS generado por Claude o Codex en la landing.
    */
   static async guardarCodigo(landingId, tiendaId, inquilinoId, { vista = 'inicio', html, css = '', js = '', contentId = null }) {
-    const landing = await LandingSimpleService.obtener(landingId, tiendaId);
+    const landing = await LandingSimpleService.buscarPropia(landingId, tiendaId);
     if (!landing) throw new Error('Landing no encontrada.');
 
     // 1. Validar motor comercial

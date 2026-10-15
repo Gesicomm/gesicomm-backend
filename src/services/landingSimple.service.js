@@ -555,7 +555,7 @@ class LandingSimpleService {
     }
     if (limpioInicio || vistasLibres || fichasPropias || legales || payload.venta !== undefined || payload.confirmaciones !== undefined) {
       landing.content = content;
-      landing.changed('content', true);
+      if (typeof landing.changed === 'function') landing.changed('content', true);
     }
     Object.assign(landing, this.camposEditables(payload, 'codigo'));
     await landing.save();
