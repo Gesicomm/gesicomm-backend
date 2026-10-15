@@ -519,6 +519,9 @@ class LandingSimpleService {
         fonts: limpioInicio.fonts,
         design_context: limpioInicio.design_context,
       };
+      if (payload.codigo?.generado_por_mcp) {
+        content.codigo.generado_por_mcp = true;
+      }
     }
     if (vistasLibres) {
       advertencias = [...advertencias, ...vistasLibres.advertencias];
@@ -531,6 +534,15 @@ class LandingSimpleService {
     if (legales) {
       advertencias = [...advertencias, ...legales.advertencias];
       content.vistas = { ...(content.vistas || {}), legales: legales.paginas };
+    }
+    if (payload.generado_por_ia !== undefined) {
+      content.generado_por_ia = Boolean(payload.generado_por_ia);
+    }
+    if (payload.origen !== undefined) {
+      content.origen = payload.origen;
+    }
+    if (payload.bloques_inicio_bloqueados !== undefined) {
+      content.bloques_inicio_bloqueados = Boolean(payload.bloques_inicio_bloqueados);
     }
     // Una sola pasada: antes había una segunda (normalizarVenta) que pisaba
     // esta y descartaba abrir_en / combos_primero / principal_id.
@@ -553,7 +565,7 @@ class LandingSimpleService {
         content.venta = { ...content.venta, prueba_social: { ...content.venta.prueba_social, estado: 'confirmado' } };
       }
     }
-    if (limpioInicio || vistasLibres || fichasPropias || legales || payload.venta !== undefined || payload.confirmaciones !== undefined) {
+    if (limpioInicio || vistasLibres || fichasPropias || legales || payload.venta !== undefined || payload.confirmaciones !== undefined || payload.generado_por_ia !== undefined || payload.bloques_inicio_bloqueados !== undefined) {
       landing.content = content;
       if (typeof landing.changed === 'function') landing.changed('content', true);
     }

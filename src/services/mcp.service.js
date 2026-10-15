@@ -216,6 +216,8 @@ class McpService {
         slug: landing.slug,
         activo: landing.activo,
         tipo_venta: venta.tipo || 'catalogo',
+        generado_por_ia: Boolean(landing.content?.generado_por_ia || landing.content?.origen === 'mcp'),
+        bloques_inicio_bloqueados: Boolean(landing.content?.bloques_inicio_bloqueados),
       },
       tienda: {
         id: tienda?.id,
@@ -339,9 +341,11 @@ class McpService {
     // 2. Sanitizar con el sanitizador oficial de Gesicomm
     const codigoLimpio = LandingCodigoService.sanitizar({ html, css, js });
 
-    // 3. Preparar payload de actualización
+    // 3. Preparar payload de actualización y marcar como generado por IA / MCP
     const content = JSON.parse(JSON.stringify(landing.content || {}));
     const vistas = content.vistas || {};
+
+    codigoLimpio.generado_por_mcp = true;
 
     if (vista === 'inicio') {
       content.codigo = codigoLimpio;
@@ -354,6 +358,10 @@ class McpService {
       content.vistas = vistas;
     }
 
+    content.generado_por_ia = true;
+    content.origen = 'mcp';
+    content.bloques_inicio_bloqueados = true;
+
     // 4. Persistir a través de LandingSimpleService
     const landingActualizada = await LandingSimpleService.actualizarCodigo(
       landing,
@@ -362,6 +370,9 @@ class McpService {
       {
         codigo: content.codigo,
         vistas: content.vistas,
+        generado_por_ia: true,
+        origen: 'mcp',
+        bloques_inicio_bloqueados: true,
       }
     );
 
