@@ -86,6 +86,23 @@ async function despublicarLanding(req, res) {
   }
 }
 
+async function organizarLanding(req, res) {
+  try {
+    const esAdmin = req.usuario.rol === 'administrador';
+    const resultado = await PrecioUsuarioService.organizarEnLandingActiva(
+      req.usuario.id,
+      req.usuario.tenantId,
+      req.body || {},
+      esAdmin,
+      req.usuario.tiendaId || null,
+    );
+    return res.json(resultado);
+  } catch (err) {
+    console.error('[vitrina] organizarLanding:', err.message);
+    return res.status(err.status || 400).json({ message: err.message || 'Error al organizar los productos de la landing.' });
+  }
+}
+
 async function guardarPrecioCombo(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
@@ -134,6 +151,7 @@ module.exports = {
   guardarPrecioProducto,
   categorizarProductos,
   despublicarLanding,
+  organizarLanding,
   guardarPrecioCombo,
   sensibilidadProducto,
   sensibilidadCombo,

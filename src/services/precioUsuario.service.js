@@ -848,9 +848,18 @@ class PrecioUsuarioService {
       return mapaCombosDto.get(item.id);
     }).filter(Boolean);
 
-    return { 
-      items, 
-      total, 
+    // "Productos en mi landing": cómo está organizado cada uno en la landing
+    // (descuento, badge, contador, colecciones) para que Mi catálogo lo
+    // muestre y permita cambiarlo — ver organizarEnLandingActiva.
+    const organizacion = landingOnly && items.length
+      ? await this.organizacionDeLanding(inquilino_id, tiendaId, items)
+      : null;
+    if (organizacion) items.forEach((item) => { item.en_landing = organizacion.porItem.get(`${item.tipo}:${item.id}`) || null; });
+
+    return {
+      ...(organizacion ? { colecciones_landing: organizacion.colecciones } : {}),
+      items,
+      total,
       page: pagina,
       totalPages: Math.ceil(total / limite),
       categorias: categoriasUnicas,
@@ -995,6 +1004,158 @@ class PrecioUsuarioService {
       landing_id: landing.id,
       despublicados: eliminados,
       restantes: Math.max(0, actuales.length - eliminados),
+    };
+  }
+
+  // Marcas de la landing activa para los items de una página de Mi catálogo,
+  // más todas las colecciones de la landing (para elegir una existente). Solo
+  // lee las partes de content.venta que hacen falta: content trae el lienzo
+  // entero.
+  static async organizacionDeLanding(inquilino_id, tiendaId, items) {
+    const { Landing, LandingItem } = require('../models');
+    const { etiquetasDe } = require('./landingOrganizar.service');
+    const landing = await Landing.findOne({
+      where: { inquilino_id, tienda_id: tiendaId, activo: true },
+      attributes: [
+        'id',
+        [sequelize.literal("content->'venta'->'urgencia'"), 'urgencia'],
+        [sequelize.literal("content->'venta'->'presentacion_productos'"), 'presentacion'],
+      ],
+      order: [
+        [sequelize.literal("CASE WHEN tipo_pagina = 'catalogo' THEN 0 WHEN es_home = true THEN 1 ELSE 2 END"), 'ASC'],
+        ['created_at', 'DESC'],
+        ['id', 'DESC'],
+      ],
+    });
+    if (!landing) return null;
+    const leer = campo => {
+      const v = typeof landing.get === 'function' ? landing.get(campo) : landing[campo];
+      if (typeof v === 'string') { try { return JSON.parse(v); } catch { return null; } }
+      return v;
+    };
+    const urgencia = leer('urgencia') || {};
+    const presentacion = leer('presentacion') || {};
+    const filas = await LandingItem.findAll({
+      where: { landing_id: landing.id },
+      attributes: ['tipo', 'referencia_id', 'etiqueta', 'precio_ancla'],
+      raw: true,
+    });
+    const colecciones = [];
+    filas.forEach(f => etiquetasDe(f.etiqueta).forEach((t) => {
+      if (!colecciones.some(c => c.toLowerCase() === t.toLowerCase())) colecciones.push(t);
+    }));
+    colecciones.sort((a, b) => a.localeCompare(b, 'es'));
+    const filaDe = new Map(filas.map(f => [`${f.tipo}:${Number(f.referencia_id)}`, f]));
+    const enContador = new Set(urgencia.activo && Array.isArray(urgencia.productos) ? urgencia.productos.map(String) : []);
+    const contadorVigente = urgencia.fin_at && new Date(urgencia.fin_at).getTime() > Date.now();
+    const porItem = new Map();
+    for (const item of items) {
+      const clave = `${item.tipo}:${item.id}`;
+      const fila = filaDe.get(clave);
+      if (!fila) continue;
+      const contentId = item.tipo === 'combo' ? `combo-${item.id}` : (item.slug || `producto-${item.id}`);
+      porItem.set(clave, {
+        precio_ancla: fila.precio_ancla != null ? Number(fila.precio_ancla) : null,
+        colecciones: etiquetasDe(fila.etiqueta),
+        badge: presentacion[clave]?.insignia_principal || '',
+        contador: Boolean(contadorVigente && (enContador.has(contentId) || enContador.has(`producto-${item.id}`))),
+      });
+    }
+    return { colecciones, porItem };
+  }
+
+  /**
+   * Organizar productos de la landing activa desde Mi catálogo (oferta,
+   * colección, quitar todo). La lógica está en landingOrganizar.service; acá
+   * solo se lee y se guarda. Solo toca productos que YA están en la landing:
+   * nunca publica uno nuevo por la espalda.
+   */
+  static async organizarEnLandingActiva(usuario_id, inquilino_id, payload = {}, esAdmin = false, tiendaId = null) {
+    const { normalizarPedido, organizar } = require('./landingOrganizar.service');
+    if (!tiendaId) {
+      const err = new Error('Seleccioná una tienda para organizar los productos de la landing.');
+      err.status = 409;
+      throw err;
+    }
+    const pedido = normalizarPedido(payload);
+    const seleccion = this.normalizarItemsLanding(payload.items);
+    if (!seleccion.length) throw new Error('Seleccioná al menos un producto.');
+
+    const { Landing, LandingItem } = require('../models');
+    const landing = await Landing.findOne({
+      where: { inquilino_id, tienda_id: tiendaId, activo: true },
+      order: [
+        [sequelize.literal("CASE WHEN tipo_pagina = 'catalogo' THEN 0 WHEN es_home = true THEN 1 ELSE 2 END"), 'ASC'],
+        ['created_at', 'DESC'],
+        ['id', 'DESC'],
+      ],
+    });
+    if (!landing) {
+      const err = new Error('No se encontró una landing activa para esta tienda.');
+      err.status = 404;
+      throw err;
+    }
+
+    const filasLanding = await LandingItem.findAll({
+      where: { landing_id: landing.id, [Op.or]: seleccion.map(i => ({ tipo: i.tipo, referencia_id: i.id })) },
+    });
+    if (!filasLanding.length) throw new Error('Ninguno de los productos elegidos está en tu landing.');
+
+    // Precio de venta del comercio (el de "Tu precio de venta") y lo que hace
+    // falta para el contador (content_id) y para quitar un descuento cuando
+    // el producto trae su propio precio tachado.
+    const idsProducto = filasLanding.filter(f => f.tipo === 'producto').map(f => f.referencia_id);
+    const idsCombo = filasLanding.filter(f => f.tipo === 'combo').map(f => f.referencia_id);
+    const [productos, combos, precios] = await Promise.all([
+      idsProducto.length ? Producto.findAll({ where: { id: { [Op.in]: idsProducto }, inquilino_id }, attributes: ['id', 'slug', 'precio_base', 'precio_tachado'] }) : [],
+      idsCombo.length ? ProductoCombo.findAll({ where: { id: { [Op.in]: idsCombo }, inquilino_id }, attributes: ['id', 'precio_total'] }) : [],
+      PrecioUsuario.findAll({ where: { usuario_id, [Op.or]: filasLanding.map(f => ({ tipo: f.tipo, referencia_id: f.referencia_id })) }, attributes: ['tipo', 'referencia_id', 'precio'] }),
+    ]);
+    const precioPropio = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, Number(p.precio)]));
+    const porProducto = new Map(productos.map(p => [Number(p.id), p]));
+    const porCombo = new Map(combos.map(c => [Number(c.id), c]));
+    const filas = filasLanding.map((f) => {
+      const id = Number(f.referencia_id);
+      const entidad = f.tipo === 'producto' ? porProducto.get(id) : porCombo.get(id);
+      const base = f.tipo === 'producto' ? Number(entidad?.precio_base) : Number(entidad?.precio_total);
+      return {
+        tipo: f.tipo,
+        referencia_id: id,
+        etiqueta: f.etiqueta,
+        precio_ancla: f.precio_ancla,
+        precio: precioPropio.get(`${f.tipo}:${id}`) || base || 0,
+        precio_tachado: f.tipo === 'producto' ? Number(entidad?.precio_tachado) || null : null,
+        content_id: f.tipo === 'combo' ? `combo-${id}` : (entidad?.slug || `producto-${id}`),
+      };
+    });
+
+    const content = landing.content && typeof landing.content === 'object' && !Array.isArray(landing.content)
+      ? { ...landing.content }
+      : {};
+    const ventaActual = content.venta && typeof content.venta === 'object' && !Array.isArray(content.venta) ? content.venta : {};
+    const resultado = organizar(filas, ventaActual, pedido);
+
+    await sequelize.transaction(async (transaction) => {
+      for (const cambio of resultado.items) {
+        const fila = filasLanding.find(f => f.tipo === cambio.tipo && Number(f.referencia_id) === cambio.referencia_id);
+        if (!fila) continue;
+        if ((fila.etiqueta ?? null) === cambio.etiqueta && (fila.precio_ancla ?? null) === cambio.precio_ancla) continue;
+        fila.etiqueta = cambio.etiqueta;
+        fila.precio_ancla = cambio.precio_ancla;
+        await fila.save({ transaction });
+      }
+      content.venta = resultado.venta;
+      landing.content = content;
+      landing.changed?.('content', true);
+      await landing.save({ transaction });
+    });
+
+    return {
+      landing_id: landing.id,
+      actualizados: filasLanding.length,
+      fuera_de_landing: seleccion.length - filasLanding.length,
+      sin_lugar: resultado.sin_lugar.length,
+      contador_lleno: resultado.contador_lleno,
     };
   }
 

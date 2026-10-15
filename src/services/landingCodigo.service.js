@@ -1047,6 +1047,23 @@ function limpiarProductosCategoria(pc) {
     items: listaDe(pc.items, 48, contentId),
     limite: Number.isInteger(limite) && limite >= 1 && limite <= 48 ? limite : 8,
     columnas: Number.isInteger(Number(pc.columnas)) && Number(pc.columnas) >= 1 && Number(pc.columnas) <= 8 ? Number(pc.columnas) : 4,
+    formato: pc.formato === 'carrusel' ? 'carrusel' : 'filas',
+  };
+}
+
+// Bloque "Colecciones" del Inicio (EditorColeccionesInicio en el frontend):
+// qué tarjetas (categorías o colecciones = etiquetas de la landing), cuáles,
+// por fila y en total. null = nunca se configuró; el runtime lo deja como
+// siempre.
+function limpiarColeccionesInicio(c) {
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return null;
+  const columnas = Number(c.columnas);
+  const limite = Number(c.limite);
+  return {
+    modo: c.modo === 'colecciones' ? 'colecciones' : 'categorias',
+    items: listaDe(c.items, 24, v => textoCorto(v, 100)),
+    columnas: Number.isInteger(columnas) && columnas >= 1 && columnas <= 6 ? columnas : 4,
+    limite: Number.isInteger(limite) && limite >= 1 && limite <= 24 ? limite : 4,
   };
 }
 
@@ -1082,6 +1099,10 @@ function limpiarInicio(inicio) {
     ...(() => {
       const marca = limpiarMarca(inicio.marca);
       return marca ? { marca } : {};
+    })(),
+    ...(() => {
+      const colecciones = limpiarColeccionesInicio(inicio.colecciones);
+      return colecciones ? { colecciones } : {};
     })(),
     ...(() => {
       const productosCategoria = limpiarProductosCategoria(inicio.productos_categoria);

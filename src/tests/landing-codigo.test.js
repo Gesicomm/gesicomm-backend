@@ -645,8 +645,15 @@ describe('LandingCodigoService.limpiarVenta', () => {
       inicio: { productos_categoria: { activo: true, titulo: 'Productos', items: ['adelfit', 'combo-1'], limite: 99 } },
     });
     expect(v.inicio.productos_categoria).toEqual({
-      activo: true, titulo: 'Productos', kicker: '', subtitulo: '', items: ['adelfit', 'combo-1'], limite: 8, columnas: 4,
+      activo: true, titulo: 'Productos', kicker: '', subtitulo: '', items: ['adelfit', 'combo-1'], limite: 8, columnas: 4, formato: 'filas',
     });
+  });
+  it('guarda el carrusel y mantiene filas para configuraciones anteriores o inválidas', () => {
+    const limpiar = formato => LandingCodigoService.limpiarVenta({
+      inicio: { productos_categoria: { formato, columnas: 4, limite: 20 } },
+    }).inicio.productos_categoria;
+    expect(limpiar('carrusel')).toMatchObject({ formato: 'carrusel', columnas: 4, limite: 20 });
+    for (const valor of [undefined, null, 'filas', 'otro']) expect(limpiar(valor).formato).toBe('filas');
   });
   it('conserva ocho columnas y veinte productos, y descarta columnas inválidas', () => {
     const limpiar = columnas => LandingCodigoService.limpiarVenta({

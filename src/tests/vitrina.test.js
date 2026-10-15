@@ -301,6 +301,49 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
   });
 });
 
+describe('PrecioUsuarioService.organizarEnLandingActiva', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    sequelize.transaction = jest.fn(async fn => fn('tx'));
+  });
+
+  test('marca como oferta solo lo que ya está en la landing y guarda ancla, badge y contador', async () => {
+    const landing = {
+      id: 11,
+      content: { html: '<lienzo>', venta: { configurado: true, urgencia: { activo: false, productos: [] } } },
+      changed: jest.fn(),
+      save: jest.fn().mockResolvedValue(),
+    };
+    const filaLanding = { tipo: 'producto', referencia_id: 1, etiqueta: null, precio_ancla: null, save: jest.fn().mockResolvedValue() };
+    Landing.findOne.mockResolvedValue(landing);
+    LandingItem.findAll = jest.fn().mockResolvedValue([filaLanding]);
+    Producto.findAll.mockResolvedValue([{ id: 1, slug: 'cacerola', precio_base: '100000', precio_tachado: null }]);
+    PrecioUsuario.findAll.mockResolvedValue([{ tipo: 'producto', referencia_id: 1, precio: '80000' }]);
+
+    const res = await PrecioUsuarioService.organizarEnLandingActiva(42, 1, {
+      accion: 'oferta', pct: 20, badge: 'Oferta', fin_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+      items: [{ tipo: 'producto', id: 1 }, { tipo: 'producto', id: 2 }],
+    }, false, 7);
+
+    expect(res).toMatchObject({ landing_id: 11, actualizados: 1, fuera_de_landing: 1 });
+    expect(filaLanding.precio_ancla).toBe(100000); // 80.000 (su precio) con 20%
+    expect(filaLanding.save).toHaveBeenCalledWith({ transaction: 'tx' });
+    expect(landing.content.html).toBe('<lienzo>');
+    expect(landing.content.venta.urgencia).toMatchObject({ activo: true, productos: ['cacerola'], estado: 'confirmado' });
+    expect(landing.content.venta.presentacion_productos['producto:1']).toEqual({ v: 2, insignia_principal: 'Oferta' });
+    expect(landing.save).toHaveBeenCalledWith({ transaction: 'tx' });
+  });
+
+  test('sin tienda o sin productos de la landing no toca nada', async () => {
+    await expect(PrecioUsuarioService.organizarEnLandingActiva(42, 1, { accion: 'quitar_todo', items: [{ tipo: 'producto', id: 1 }] }, false, null))
+      .rejects.toThrow(/Seleccioná una tienda/);
+    Landing.findOne.mockResolvedValue({ id: 11, content: {}, save: jest.fn() });
+    LandingItem.findAll = jest.fn().mockResolvedValue([]);
+    await expect(PrecioUsuarioService.organizarEnLandingActiva(42, 1, { accion: 'quitar_todo', items: [{ tipo: 'producto', id: 1 }] }, false, 7))
+      .rejects.toThrow(/Ninguno de los productos/);
+  });
+});
+
 describe('PrecioUsuarioService.analizarSensibilidadProducto', () => {
   beforeEach(() => {
     jest.clearAllMocks();
