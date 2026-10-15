@@ -1046,6 +1046,7 @@ function limpiarProductosCategoria(pc) {
     subtitulo: textoCorto(pc.subtitulo, 160),
     items: listaDe(pc.items, 48, contentId),
     limite: Number.isInteger(limite) && limite >= 1 && limite <= 48 ? limite : 8,
+    columnas: Number.isInteger(Number(pc.columnas)) && Number(pc.columnas) >= 1 && Number(pc.columnas) <= 8 ? Number(pc.columnas) : 4,
   };
 }
 

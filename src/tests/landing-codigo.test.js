@@ -645,7 +645,14 @@ describe('LandingCodigoService.limpiarVenta', () => {
       inicio: { productos_categoria: { activo: true, titulo: 'Productos', items: ['adelfit', 'combo-1'], limite: 99 } },
     });
     expect(v.inicio.productos_categoria).toEqual({
-      activo: true, titulo: 'Productos', kicker: '', subtitulo: '', items: ['adelfit', 'combo-1'], limite: 8,
+      activo: true, titulo: 'Productos', kicker: '', subtitulo: '', items: ['adelfit', 'combo-1'], limite: 8, columnas: 4,
     });
+  });
+  it('conserva ocho columnas y veinte productos, y descarta columnas inválidas', () => {
+    const limpiar = columnas => LandingCodigoService.limpiarVenta({
+      inicio: { productos_categoria: { columnas, limite: 20 } },
+    }).inicio.productos_categoria;
+    expect(limpiar(8)).toMatchObject({ columnas: 8, limite: 20 });
+    for (const valor of [0, 9, -1, 2.5, 'incorrecto']) expect(limpiar(valor).columnas).toBe(4);
   });
 });
