@@ -8,6 +8,7 @@ const {
   MetaReporteImport,
   MetaReporteFila,
   MetaCampanaGasto,
+  MetaCampanaLead,
   MetaIntegration,
   Landing,
   LandingTemplate,
@@ -257,6 +258,22 @@ class MetaReportesService {
       : [];
     const mapaGastos = new Map(gastos.map(g => [g.meta_campana_interna_id, g]));
 
+    // Leads resueltos automáticamente por producto al crearse cada pedido
+    // (ver metaCampanaLeads.service.js) — cuenta pedidos distintos, no filas:
+    // un pedido con 2 productos de la misma campaña es 1 solo lead.
+    const leads = campanas.length
+      ? await MetaCampanaLead.findAll({
+        where: { meta_campana_interna_id: { [Op.in]: campanas.map(c => c.id) } },
+        attributes: [
+          'meta_campana_interna_id',
+          [fn('COUNT', fn('DISTINCT', col('envio_id'))), 'total'],
+        ],
+        group: ['meta_campana_interna_id'],
+        raw: true,
+      })
+      : [];
+    const mapaLeads = new Map(leads.map(l => [l.meta_campana_interna_id, Number(l.total) || 0]));
+
     return campanas.map(c => {
       const json = c.toJSON();
       json.productos = (json.producto_ids || []).map(id => mapaProductos.get(id)).filter(Boolean);
@@ -264,6 +281,7 @@ class MetaReportesService {
       json.gasto_total = Number(gasto?.total) || 0;
       json.gasto_registros = Number(gasto?.registros) || 0;
       json.gasto_ultimo_dia = gasto?.ultimo_dia || null;
+      json.leads = mapaLeads.get(json.id) || 0;
       return json;
     });
   }

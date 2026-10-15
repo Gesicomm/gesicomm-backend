@@ -84,6 +84,7 @@ const MetaCampanaInterna = require('./MetaCampanaInterna');
 const MetaReporteImport = require('./MetaReporteImport');
 const MetaReporteFila = require('./MetaReporteFila');
 const MetaCampanaGasto = require('./MetaCampanaGasto');
+const MetaCampanaLead = require('./MetaCampanaLead');
 const Proveedor = require('./Proveedor');
 const CategoriaCostoGasto = require('./CategoriaCostoGasto');
 const CostoGasto = require('./CostoGasto');
@@ -607,6 +608,15 @@ MetaReporteFila.belongsTo(MetaCampanaInterna, { foreignKey: 'meta_campana_intern
 MetaCampanaInterna.hasMany(MetaCampanaGasto, { as: 'gastos', foreignKey: 'meta_campana_interna_id', onDelete: 'CASCADE' });
 MetaCampanaGasto.belongsTo(MetaCampanaInterna, { foreignKey: 'meta_campana_interna_id', as: 'campana' });
 
+// Leads resueltos automáticamente por producto al crear un pedido — ver
+// MetaCampanaLead.js y metaCampanaLeads.service.js.
+MetaCampanaInterna.hasMany(MetaCampanaLead, { as: 'leads', foreignKey: 'meta_campana_interna_id', onDelete: 'CASCADE' });
+MetaCampanaLead.belongsTo(MetaCampanaInterna, { foreignKey: 'meta_campana_interna_id', as: 'campana' });
+Envio.hasMany(MetaCampanaLead, { as: 'campana_leads', foreignKey: 'envio_id', onDelete: 'CASCADE' });
+MetaCampanaLead.belongsTo(Envio, { foreignKey: 'envio_id' });
+Producto.hasMany(MetaCampanaLead, { foreignKey: 'producto_id', onDelete: 'CASCADE' });
+MetaCampanaLead.belongsTo(Producto, { foreignKey: 'producto_id' });
+
 // ============================================================
 // Relaciones de Control financiero (Finanzas)
 // ============================================================
@@ -904,6 +914,7 @@ module.exports = {
   MetaReporteImport,
   MetaReporteFila,
   MetaCampanaGasto,
+  MetaCampanaLead,
   Proveedor,
   CategoriaCostoGasto,
   CanalVenta,

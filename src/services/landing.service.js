@@ -35,6 +35,7 @@ const { logger } = require('../utils/logger');
 const CanalVentaService = require('./canalVenta.service');
 const CuponService = require('./cupon.service');
 const PedidoNumeracion = require('./pedidoNumeracion.service');
+const { registrarLeadsDeCampana } = require('./metaCampanaLeads.service');
 const { numeroPedidoVisible } = require('../utils/pedidoNumero');
 const MetaCapiService = require('./metaCapi.service');
 const ImagenService = require('./imagen.service');
@@ -4311,6 +4312,18 @@ class LandingService {
       if (cuponAplicado) {
         await CuponService.registrarUso(cuponAplicado.id, t);
       }
+
+      // Lead automático: si algún producto del carrito está en una campaña
+      // interna activa de tipo "web", se registra solo — nadie lo elige acá
+      // (ver metaCampanaLeads.service.js).
+      await registrarLeadsDeCampana({
+        envioId: envioCreado.id,
+        usuarioId: tienda.usuario_id,
+        inquilinoId: tienda.inquilino_id,
+        origen: envioCreado.origen,
+        items: envioCreado.items || [],
+        transaction: t,
+      });
 
       await registrarHistorial(envioCreado.id, null, 'Pedido creado automáticamente', t);
       return envioCreado;

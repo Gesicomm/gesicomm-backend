@@ -12,6 +12,7 @@ const { envolverControlador } = require('../utils/asyncHandler');
 const PedidoNumeracion = require('../services/pedidoNumeracion.service');
 const { adjuntarIdentificadores, filtroNumeroPedidoVisible } = require('../services/pedidoIdentificador.service');
 const ProductoService = require('../services/producto.service');
+const { registrarLeadsDeCampana } = require('../services/metaCampanaLeads.service');
 const StockPorTienda = require('../services/stockPorTienda.service');
 const path = require('path');
 const multer = require('multer');
@@ -1885,6 +1886,18 @@ exports.createEnvio = async (req, res) => {
         transaction: t
       }
     );
+
+    // Lead automático: si algún producto del pedido está en una campaña
+    // interna activa del mismo tipo (web/whatsapp según el origen), se
+    // registra solo — nadie lo elige a mano (ver metaCampanaLeads.service.js).
+    await registrarLeadsDeCampana({
+      envioId: nuevoEnvio.id,
+      usuarioId: usuario_id,
+      inquilinoId: req.usuario.tenantId,
+      origen: nuevoEnvio.origen,
+      items: nuevoEnvio.items || [],
+      transaction: t,
+    });
 
     // Si nace en "Confirmado", reserva stock real desde la creación.
     if (nuevoEnvio.estado === 'Confirmado') {
