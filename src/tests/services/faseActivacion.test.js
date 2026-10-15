@@ -6,8 +6,7 @@ const { etapaDelPedido } = require('../../services/seguimiento/flujosBase');
 const { estadoParaSeguimiento } = require('../../services/seguimiento/estadoPedido');
 
 test.each([
-  ['pendiente_confirmacion', 'Pendiente', 'CONFIRMACION_PEDIDO_WEB'],
-  ['creado', 'Pendiente', 'CONFIRMACION_PEDIDO_WEB'],
+  ['pendiente_confirmacion', 'Confirmado', 'SEGUIMIENTO_ENVIO'],
   ['cargado', 'Preparado', 'SEGUIMIENTO_ENVIO'],
   ['en_camino', 'Despachado', 'SEGUIMIENTO_ENVIO'],
   ['entregado', 'Entregado', 'ESCALAMIENTO_VENTAS'],
@@ -16,7 +15,7 @@ test.each([
   const pedido = { estado: 'Confirmado', stock_descontado: false, raha_logistica: { gestionado: true, status } };
   expect(estadoParaSeguimiento(pedido)).toBe(estado);
   expect(etapaDelPedido(pedido)).toBe(tipo);
-  expect(faseDisponibleParaPedido({ estado_activador: estado }, pedido, tipo)).toBe(true);
+  expect(faseDisponibleParaPedido({ estado_activador: estado }, pedido, tipo)).toBe(status !== 'pendiente_confirmacion');
   expect(faseDisponibleParaPedido({ estado_activador: estado === 'Preparado' ? 'Despachado' : 'Preparado' }, pedido, 'SEGUIMIENTO_ENVIO')).toBe(false);
   expect(pedido.estado).toBe('Confirmado');
 });

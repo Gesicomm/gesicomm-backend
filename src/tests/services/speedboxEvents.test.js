@@ -14,6 +14,11 @@ const models = require('../../models');
 const inventory = require('../../controllers/envioController');
 const client = require('../../services/speedbox/client');
 const events = require('../../services/speedbox/events');
+const { estadoParaSeguimiento } = require('../../services/seguimiento/estadoPedido');
+
+it.each(['cargado', 'en_camino', 'entregado', 'devuelto'])('el evento %s usa el mismo estado para logística y seguimiento', status => {
+  expect(estadoParaSeguimiento({ estado: 'Confirmado', raha_logistica: { gestionado: true, status } })).toBe(events.STATES[status]);
+});
 
 function instance(value) { return { ...value, update: jest.fn(async function update(changes) { Object.assign(this, changes); return this; }) }; }
 function webhook(status, id = 'evt-1', at = '2026-10-02T12:00:00Z') {

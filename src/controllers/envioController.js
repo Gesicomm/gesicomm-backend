@@ -5,7 +5,7 @@ const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
 const { registrarHistorial } = require('../utils/historial');
 const { cancelarSiEstadoTerminal, elegirRecordatorioVigente } = require('../services/seguimiento/seguimientoRecordatorio.service');
 const pendientesSeguimientoService = require('../services/seguimiento/pendientesSeguimiento.service');
-const { estadoParaSeguimiento, estadoSeguimientoSql } = require('../services/seguimiento/estadoPedido');
+const { estadoParaSeguimiento, estadoSeguimientoSql, esperandoConfirmacionLogisticaSql } = require('../services/seguimiento/estadoPedido');
 const { accionSiguientePedido } = require('../services/pedidos/accionSiguientePedido');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
 const { envolverControlador } = require('../utils/asyncHandler');
@@ -1457,6 +1457,7 @@ exports.listEnviosPaginados = async (req, res) => {
       seguimiento_fecha_hasta,
       incluir_seguimiento,     // true = cada pedido trae el mensaje del flujo que le toca (columna Seguimiento)
       seguimiento_comercial,   // usa los estados RAHA para etapas y mensajes, sin alterar el inventario local
+      incluir_pendientes_logisticos,
     } = req.body;
 
 
@@ -1476,7 +1477,9 @@ exports.listEnviosPaginados = async (req, res) => {
     // Multi-estado
     if (Array.isArray(estados) && estados.length > 0) {
       if (seguimiento_comercial) {
-        where[Op.and] = [...(where[Op.and] || []), Sequelize.where(Sequelize.literal(estadoSeguimientoSql()), { [Op.in]: estados })];
+        const filtroEstado = Sequelize.where(Sequelize.literal(estadoSeguimientoSql()), { [Op.in]: estados });
+        where[Op.and] = [...(where[Op.and] || []), incluir_pendientes_logisticos
+          ? { [Op.or]: [filtroEstado, Sequelize.literal(esperandoConfirmacionLogisticaSql())] } : filtroEstado];
       } else {
         where.estado = { [Op.in]: estados };
       }
@@ -2936,6 +2939,7 @@ exports.conteoPorEstado = async (req, res) => {
       excluir_logistica_raha,
       separar_logistica_raha,
       seguimiento_comercial,
+      incluir_pendientes_logisticos,
     } = req.body;
 
     const where = whereEnviosDeUsuario(req);
@@ -2995,6 +2999,11 @@ exports.conteoPorEstado = async (req, res) => {
     }
 
     const estadoConteo = seguimiento_comercial ? Sequelize.literal(estadoSeguimientoSql()) : Sequelize.col('Envio.estado');
+    if (seguimiento_comercial && incluir_pendientes_logisticos) {
+      where[Op.and] = [...(where[Op.and] || []), { [Op.or]: [
+        Sequelize.where(estadoConteo, { [Op.ne]: 'Confirmado' }), Sequelize.literal(esperandoConfirmacionLogisticaSql()),
+      ] }];
+    }
     const filas = await Envio.findAll({
       where,
       include,

@@ -96,10 +96,11 @@ exports.flujosDelPedido = async (req, res) => {
   const envio = await cargarEnvioODevolver404(req, res, { conItems: true });
   if (!envio) return;
   await flujoService.asegurarFlujosBase({ usuarioId: req.usuario.id });
-  const flujos = await flujoService.estadoFlujosDelPedido(envio.id, {
+  let flujos = await flujoService.estadoFlujosDelPedido(envio.id, {
     usuarioId: req.usuario.id,
     esAdmin: esAdministrador(req),
   });
+  if (envio.raha_logistica?.gestionado) flujos = flujos.filter(f => !['CONFIRMACION_PEDIDO_WEB', 'VENTA_WHATSAPP'].includes(f.tipo));
   // El mensaje tal como va a salir para ESTE pedido, con la misma función
   // que arma el enlace de WhatsApp: la vista previa del panel no puede
   // mostrar algo distinto de lo que después se abre.

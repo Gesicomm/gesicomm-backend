@@ -165,11 +165,10 @@ describe('las etapas: el pedido cambia solo según su estado', () => {
     expect(item).toMatchObject({ estado, fase_id, cuando: 'ahora', estado_requerido: null });
   });
 
-  test('RAHA pendiente sigue en confirmación y no habilita ningún mensaje de envío', () => {
+  test('RAHA pendiente espera en seguimiento de envío sin volver a confirmación comercial', () => {
     const p = pedido(1, { estado: 'Confirmado', raha_logistica: { gestionado: true, status: 'pendiente_confirmacion' } });
-    expect(etapaDelPedido(p)).toBe('CONFIRMACION_PEDIDO_WEB');
-    expect(armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [p] })).toEqual([]);
-    expect(armar({ etapa: 'CONFIRMACION_PEDIDO_WEB', pedidos: [p] })[0]).toMatchObject({ estado: 'Pendiente', fase_id: 101 });
+    expect(etapaDelPedido(p)).toBe('SEGUIMIENTO_ENVIO');
+    expect(armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [p] })[0]).toMatchObject({ estado: 'Confirmado', fase_id: 301, motivo: 'esperando_estado', estado_requerido: 'Preparado' });
   });
 
   test('una entrega RAHA inicia Recompra y su espera se cuenta desde la entrega remota', () => {
@@ -773,6 +772,18 @@ describe('marcar una fase como completada', () => {
     expect(SpeedboxPedido.findOne).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ envio_id: 50, usuario_id: 7 }) }));
   });
 
+  test.each(['registrarContacto', 'completarFase'])('RAHA cargado habilita %s del preparado y conserva el pedido local', async operacion => {
+    envio.estado = 'Confirmado';
+    SpeedboxPedido.findOne.mockResolvedValue({ status: 'cargado', status_at: enHoras(-1) });
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce(FASE_PEDIDO_CONFIRMADO).mockResolvedValueOnce(null);
+    SeguimientoContacto.findOne.mockResolvedValueOnce(fila({ id: 1, estado: 'ABIERTO_EN_WHATSAPP' }));
+    SeguimientoContacto.create.mockImplementation(async datos => fila({ id: 2, ...datos }));
+    const res = respuesta();
+    await controller[operacion](peticion({ fase_id: 301 }, { faseId: '301' }), res, jest.fn());
+    expect(res.codigo).toBe(operacion === 'registrarContacto' ? 201 : 200);
+    expect(envio.update).not.toHaveBeenCalled();
+  });
+
   test.each(['registrarContacto', 'completarFase'])('RAHA pendiente de confirmación bloquea el despacho al %s', async operacion => {
     envio.estado = 'Despachado';
     SpeedboxPedido.findOne.mockResolvedValue({ status: 'pendiente_confirmacion' });
@@ -782,6 +793,17 @@ describe('marcar una fase como completada', () => {
     });
     const res = respuesta();
     await controller[operacion](peticion({ fase_id: 302 }, { faseId: '302' }), res, jest.fn());
+    expect(res.codigo).toBe(422);
+    expect(SeguimientoContacto.create).not.toHaveBeenCalled();
+    expect(envio.update).not.toHaveBeenCalled();
+  });
+
+  test.each(['registrarContacto', 'completarFase'])('RAHA ya enviado no vuelve a habilitar confirmación comercial al %s', async operacion => {
+    envio.estado = 'Confirmado';
+    SpeedboxPedido.findOne.mockResolvedValue({ status: 'pendiente_confirmacion' });
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValue({ ...FASE_2, flujo: { tipo: 'CONFIRMACION_PEDIDO_WEB', nombre: 'Confirmación de pedido web' } });
+    const res = respuesta();
+    await controller[operacion](peticion({ fase_id: 102 }), res, jest.fn());
     expect(res.codigo).toBe(422);
     expect(SeguimientoContacto.create).not.toHaveBeenCalled();
     expect(envio.update).not.toHaveBeenCalled();

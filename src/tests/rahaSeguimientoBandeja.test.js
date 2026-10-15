@@ -28,7 +28,7 @@ beforeEach(() => {
 });
 
 test.each([
-  ['pendiente_confirmacion', ['Pendiente', 'EnSeguimiento'], 'Pendiente'],
+  ['pendiente_confirmacion', ['Preparado', 'Despachado', 'Reprogramado'], 'Confirmado'],
   ['cargado', ['Preparado', 'Despachado', 'Reprogramado'], 'Preparado'],
   ['en_camino', ['Preparado', 'Despachado', 'Reprogramado'], 'Despachado'],
   ['entregado', ['Entregado'], 'Entregado'],
@@ -36,12 +36,15 @@ test.each([
   Envio.findAndCountAll.mockResolvedValue({ count: 1, rows: [{ id: 50, usuario_id: 7, tienda_id: 9, estado: 'Confirmado', telefono: '0981111111', monto: 150000 }] });
   SpeedboxPedido.findAll.mockResolvedValue([{ envio_id: 50, order_id: '54', estado: 'enviado', status, environment: 'production' }]);
   const res = respuesta();
-  await controller.listEnviosPaginados(req({ estados, seguimiento_comercial: true, incluir_seguimiento: true }), res);
+  const incluirPendientes = estados.includes('Preparado');
+  await controller.listEnviosPaginados(req({ estados, seguimiento_comercial: true, incluir_seguimiento: true, incluir_pendientes_logisticos: incluirPendientes }), res);
   expect(res.status).not.toHaveBeenCalled();
   const options = Envio.findAndCountAll.mock.calls[0][0];
   expect(options.where).toMatchObject({ usuario_id: 7, tienda_id: 9 });
   expect(options.where.estado).toBeUndefined();
-  const filtro = options.where[Op.and][0];
+  const condicion = options.where[Op.and][0];
+  const filtro = incluirPendientes ? condicion[Op.or][0] : condicion;
+  if (incluirPendientes) expect(condicion[Op.or][1].val).toContain("= 'Confirmado' AND");
   expect(filtro.logic[Op.in]).toEqual(estados);
   expect(filtro.attribute.val).toContain('speedbox_pedidos');
   // Sequelize arma la consulta con el filtro antes de LIMIT/OFFSET.
@@ -57,7 +60,7 @@ test.each([
 test('los contadores reúnen los pedidos RAHA y locales en los mismos estados', async () => {
   Envio.findAll.mockResolvedValue([
     { estado: 'Preparado', cantidad: '2', raha_status: null },
-    { estado: 'Pendiente', cantidad: '1' },
+    { estado: 'Confirmado', cantidad: '1' },
     { estado: 'Despachado', cantidad: '3', raha_status: null },
     { estado: 'Preparado', cantidad: '2' },
     { estado: 'Despachado', cantidad: '1', raha_status: 'en_camino' },
@@ -65,7 +68,7 @@ test('los contadores reúnen los pedidos RAHA y locales en los mismos estados', 
   const res = respuesta();
   await controller.conteoPorEstado(req({ seguimiento_comercial: true }), res);
   expect(res.status).not.toHaveBeenCalled();
-  expect(res.json.mock.calls[0][0]).toMatchObject({ Pendiente: 1, Preparado: 4, Despachado: 4, Reprogramado: 0 });
+  expect(res.json.mock.calls[0][0]).toMatchObject({ Confirmado: 1, Preparado: 4, Despachado: 4, Reprogramado: 0 });
   expect(res.json.mock.calls[0][0]).not.toHaveProperty('raha_pendiente_confirmacion');
   expect(res.json.mock.calls[0][0]).not.toHaveProperty('raha_en_camino');
   expect(Envio.findAll.mock.calls[0][0].attributes[0][0].val).toContain('speedbox_pedidos');

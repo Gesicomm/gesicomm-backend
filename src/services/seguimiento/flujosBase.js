@@ -1,5 +1,5 @@
 'use strict';
-const { estadoParaSeguimiento } = require('./estadoPedido');
+const { estadoParaSeguimiento, esperandoConfirmacionLogistica } = require('./estadoPedido');
 
 /**
  * Las etapas del seguimiento por WhatsApp y el flujo con el que
@@ -91,6 +91,7 @@ function esOrigenWhatsapp(origen) {
 
 /** La etapa en la que está un pedido, según su estado (y su origen mientras está por confirmar). */
 function etapaDelPedido(pedido) {
+  if (esperandoConfirmacionLogistica(pedido)) return 'SEGUIMIENTO_ENVIO';
   const estado = estadoParaSeguimiento(pedido);
   if (['Pendiente', 'EnSeguimiento'].includes(estado)) {
     return esOrigenWhatsapp(pedido.origen) ? 'VENTA_WHATSAPP' : 'CONFIRMACION_PEDIDO_WEB';

@@ -45,7 +45,7 @@ const { adjuntarIdentificadores } = require('../pedidoIdentificador.service');
  * El filtrado y la paginación se resuelven acá, nunca en el frontend.
  */
 const { Op, fn, col, literal, where: sqlWhere } = require('sequelize');
-const { estadoParaSeguimiento, fechaEntregaSeguimiento, estadoSeguimientoSql, fechaEntregaRahaSql } = require('./estadoPedido');
+const { estadoParaSeguimiento, fechaEntregaSeguimiento, estadoSeguimientoSql, fechaEntregaRahaSql, statusRahaSql, enSeguimientoEnvio, seguimientoEnvioSql } = require('./estadoPedido');
 const {
   Envio, EnvioItem, EnvioHistorial, SeguimientoRecordatorio, SeguimientoContacto,
 } = require('../../models');
@@ -164,7 +164,7 @@ function armarPendientes({
 
   const items = [];
   for (const pedido of pedidos) {
-    if (etapa === 'SEGUIMIENTO_ENVIO' && !etapaPorTipo(etapa).estados.includes(estadoParaSeguimiento(pedido))) continue;
+    if (etapa === 'SEGUIMIENTO_ENVIO' && !enSeguimientoEnvio(pedido)) continue;
     const flujosDeLaEtapa = flujosPorUsuario.get(Number(pedido.usuario_id)) || [];
     const flujoPorId = new Map(flujosDeLaEtapa.map((f) => [Number(f.id), f]));
     // Solo cuenta lo que pasó en flujos de ESTA etapa: los mensajes de
@@ -400,7 +400,7 @@ function armarTablero(items, flujos, { flujo_id, cuando, busqueda, paginas = {},
 /** Qué pedidos están en la etapa: lo decide su estado (y el origen, mientras están por confirmar). */
 function whereDeEtapa(tipo, ahora) {
   const etapa = etapaPorTipo(tipo);
-  const condiciones = [sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: etapa.estados })];
+  const condiciones = [tipo === 'SEGUIMIENTO_ENVIO' ? literal(seguimientoEnvioSql()) : sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: etapa.estados })];
   if (tipo === 'CONFIRMACION_PEDIDO_WEB') condiciones.push(literal(`NOT ${ES_WHATSAPP}`));
   if (tipo === 'VENTA_WHATSAPP') condiciones.push(literal(ES_WHATSAPP));
   if (tipo === ETAPA_RECOMPRA) {
@@ -443,6 +443,7 @@ async function cargarPendientes({ whereBase, usuarioId, esAdmin, etapa, ahora = 
       'id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id', 'estado', 'origen', 'monto',
       'nombre_cliente', 'apellido_cliente', 'cliente', 'telefono', 'ciudad', 'created_at', 'updated_at',
       [literal(estadoSeguimientoSql()), 'estado_seguimiento'], [literal(fechaEntregaRahaSql()), 'entregado_raha_en'],
+      [literal(statusRahaSql()), 'raha_status'],
     ],
     order: [['id', 'DESC']],
     limit: LIMITE_PEDIDOS + 1,
@@ -498,9 +499,9 @@ async function conteoPorEtapa({ whereBase, ahora = new Date() }) {
   const estadosVivos = ETAPAS.filter((e) => e.tipo !== ETAPA_RECOMPRA).flatMap((e) => e.estados);
   const [porEstado, entregados] = await Promise.all([
     Envio.findAll({
-      where: { ...whereBase, [Op.and]: [...(whereBase[Op.and] || []), sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: [...new Set(estadosVivos)] })] },
-      attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
-      group: [literal(estadoSeguimientoSql()), literal(ES_WHATSAPP)],
+      where: { ...whereBase, [Op.and]: [...(whereBase[Op.and] || []), { [Op.or]: [sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: [...new Set(estadosVivos)] }), literal(seguimientoEnvioSql())] }] },
+      attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(statusRahaSql()), 'raha_status'], [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
+      group: [literal(estadoSeguimientoSql()), literal(statusRahaSql()), literal(ES_WHATSAPP)],
       raw: true,
     }),
     Envio.count({
@@ -512,7 +513,7 @@ async function conteoPorEtapa({ whereBase, ahora = new Date() }) {
   for (const fila of porEstado) {
     const cantidad = Number(fila.cantidad) || 0;
     const esWhatsapp = fila.es_whatsapp === true || fila.es_whatsapp === 't' || fila.es_whatsapp === 1;
-    const tipo = etapaDelPedido({ estado: fila.estado, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
+    const tipo = etapaDelPedido({ estado: fila.estado, raha_status: fila.raha_status, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
     if (tipo) conteo[tipo] += cantidad;
   }
   conteo[ETAPA_RECOMPRA] = entregados;
@@ -537,13 +538,13 @@ async function vencidosPorEtapa({ whereBase, ahora = new Date() }) {
       ...whereBase,
       [Op.and]: [
         ...(whereBase[Op.and] || []),
-        sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: todosLosEstados }),
+        { [Op.or]: [sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: todosLosEstados }), literal(seguimientoEnvioSql())] },
         { [Op.or]: [sqlWhere(literal(estadoSeguimientoSql()), { [Op.ne]: 'Entregado' }), sqlWhere(literal(`COALESCE(${fechaEntregaRahaSql()}, "Envio"."updated_at")`), { [Op.gte]: corteRecompra })] },
         literal(TIENE_RECORDATORIO_VENCIDO),
       ],
     },
-    attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
-    group: [literal(estadoSeguimientoSql()), literal(ES_WHATSAPP)],
+    attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(statusRahaSql()), 'raha_status'], [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
+    group: [literal(estadoSeguimientoSql()), literal(statusRahaSql()), literal(ES_WHATSAPP)],
     raw: true,
   });
 
@@ -551,7 +552,7 @@ async function vencidosPorEtapa({ whereBase, ahora = new Date() }) {
   for (const fila of filas) {
     const cantidad = Number(fila.cantidad) || 0;
     const esWhatsapp = fila.es_whatsapp === true || fila.es_whatsapp === 't' || fila.es_whatsapp === 1;
-    const tipo = etapaDelPedido({ estado: fila.estado, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
+    const tipo = etapaDelPedido({ estado: fila.estado, raha_status: fila.raha_status, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
     if (tipo) vencidos[tipo] += cantidad;
   }
   return vencidos;

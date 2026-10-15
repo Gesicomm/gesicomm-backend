@@ -17,6 +17,7 @@ function estadoActivadorDeFase(fase, tipo) {
 }
 
 function faseDisponibleParaPedido(fase, pedido, tipo) {
+  if (pedido?.raha_logistica?.gestionado && ['CONFIRMACION_PEDIDO_WEB', 'VENTA_WHATSAPP'].includes(tipo)) return false;
   const estado = estadoParaSeguimiento(pedido);
   if (tipo === 'RECUPERACION_CLIENTES' && !['Devuelto', 'Perdido'].includes(estado)) return false;
   if (tipo === 'ESCALAMIENTO_VENTAS' && estado !== 'Entregado') return false;
