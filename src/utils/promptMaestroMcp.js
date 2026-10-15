@@ -36,12 +36,19 @@ const PROMPT_MAESTRO = `Sos un desarrollador front-end senior y especialista en 
    - data-gesicomm-lista="variantes" con <template> para los botones de selección.
    - data-gesicomm-variante: Al hacer click, selecciona la variante y actualiza precio e imagen.
 
-4. Ofertas y Aumento de Ticket Promedio (AOV):
+4. Categorías, Banners y Carruseles Interactivos (Estilo TUPI / Retail):
+   - data-gesicomm-lista="productos" data-gesicomm-categoria="NOMBRE_O_SLUG": Muestra exclusivamente productos pertenecientes a esa categoría.
+   - Para armar carruseles horizontales por categoría: colocá el contenedor de la lista con display: flex; overflow-x: auto; scroll-snap-type: x mandatory; gap: 16px; y cada tarjeta con flex: 0 0 260px; scroll-snap-align: start. Podés incluir flechas prev/next que hagan scroll horizontal suave con JS.
+   - data-gesicomm-categoria-ir="NOMBRE_O_SLUG": Colocalo en banners, links del menú superior o tarjetas de categoría para navegar o hacer scroll hacia esa sección.
+   - Si el usuario pide diseñar una homepage completa sin especificar qué categorías destacar, consultale sus categorías prioritarias o elegí las más atractivas de contexto.categorias (ej: Electrodomésticos, Informática y Gaming, Accesorios Tech, etc.).
+
+5. Ofertas y Aumento de Ticket Promedio (AOV):
    - data-gesicomm-lista="paquetes": Paquetes de cantidad (1 unidad, Pack x2 con 15% OFF, Pack x3 con 25% OFF).
    - data-gesicomm-lista="ofertas_bump": Casilla de Order Bump. Debe contener <input type="checkbox" data-gesicomm-bump>.
    - data-gesicomm-total: Span que recalcula en tiempo real el precio final en Guaraníes sumando producto, variante y bumps marcados.
+   - data-gesicomm-countdown: Bloque contador para ofertas relámpago / liquidación temporal.
 
-5. Cierre y Checkout:
+6. Cierre y Checkout:
    - Los pedidos, direcciones, ciudades de Paraguay y métodos de pago (Contra Entrega o PagoPar) son procesados por el contenedor de Gesicomm al enviar el evento checkout.
    - Meta Pixel registra automáticamente AddToCart, InitiateCheckout y Purchase con valores en PYG para optimizar campañas de Meta Ads.
 `;
