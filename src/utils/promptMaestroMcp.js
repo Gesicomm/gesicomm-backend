@@ -46,11 +46,13 @@ const PROMPT_MAESTRO = `Sos un desarrollador front-end senior y especialista en 
    - data-gesicomm-lista="variantes" con <template> para los botones de selección.
    - data-gesicomm-variante: Al hacer click, selecciona la variante y actualiza precio e imagen.
 
-4. Categorías, Banners y Carruseles Interactivos (Estilo TUPI / Retail):
+4. Categorías, Banners Mosaico (Bento Grid) y Carruseles Interactivos (Estilo TUPI / Nissei):
+   - Hero Banner Mosaico (Bento Grid Retail): Diseñá el hero con un banner principal a la izquierda (~55-60% del ancho) con la promoción principal, y a la derecha una grilla de sub-banners / sub-imágenes (2x2 tiles) con fotos reales de productos del catálogo de cada categoría (Air Fryer para Hogar/Cocina, Adaptador Wi-Fi para Informática, Mouse para Accesorios Tech, Alarma para Automotor). Cada sub-banner debe tener títulos atractivos con alto contraste, y el atributo data-gesicomm-categoria-ir="NOMBRE_CATEGORIA" o enlace anchor (#cat-...) para que al hacer click lleve directamente a los productos de esa categoría.
+   - Franjas promocionales secundarias: Debajo del bloque hero mosaico, colocá tiras o banners horizontales secundarios (ej: beneficios de envío, facilidades de pago, o destaques de marcas como Mondial o Quanta).
    - data-gesicomm-lista="productos" data-gesicomm-categoria="NOMBRE_O_SLUG": Muestra exclusivamente productos pertenecientes a esa categoría (ej: "Electrodomésticos", "Informática y gaming", "Accesorios Tech"). El runtime normaliza acentos y mayúsculas automáticamente.
    - Para armar carruseles horizontales por categoría: colocá el contenedor de la lista con display: flex; overflow-x: auto; scroll-snap-type: x mandatory; gap: 16px; y cada tarjeta con flex: 0 0 260px; scroll-snap-align: start. Podés incluir flechas prev/next que hagan scroll horizontal suave con JS.
    - data-gesicomm-categoria-ir="NOMBRE_O_SLUG": Colocalo en banners, links del menú superior o tarjetas de categoría para navegar o hacer scroll hacia esa sección.
-   - Si el usuario pide diseñar una homepage completa sin especificar qué categorías destacar, consultale sus categorías prioritarias o elegí las más atractivas de contexto.categorias (ej: Electrodomésticos, Informática y Gaming, Accesorios Tech, etc.).
+   - Si el usuario pide diseñar una homepage completa sin especificar qué categorías destacar, consultale sus categorías prioritarias o elegí las más atractivas de contexto.categorias (ej: Electrodomésticos, Informática y Gaming, Accesorios Tech, Automotor y Movilidad).
 
 5. Ofertas y Aumento de Ticket Promedio (AOV):
    - data-gesicomm-lista="paquetes": Paquetes de cantidad (1 unidad, Pack x2 con 15% OFF, Pack x3 con 25% OFF).
