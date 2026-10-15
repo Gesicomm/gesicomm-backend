@@ -15,8 +15,8 @@ test.each([
   const pedido = { estado: 'Confirmado', stock_descontado: false, raha_logistica: { gestionado: true, status } };
   expect(estadoParaSeguimiento(pedido)).toBe(estado);
   expect(etapaDelPedido(pedido)).toBe(tipo);
-  expect(faseDisponibleParaPedido({ estado_activador: estado }, pedido, tipo)).toBe(status !== 'pendiente_confirmacion');
-  expect(faseDisponibleParaPedido({ estado_activador: estado === 'Preparado' ? 'Despachado' : 'Preparado' }, pedido, 'SEGUIMIENTO_ENVIO')).toBe(false);
+  expect(faseDisponibleParaPedido({ estado_activador: estado }, pedido, tipo)).toBe(true);
+  expect(faseDisponibleParaPedido({ estado_activador: ['Confirmado', 'Preparado'].includes(estado) ? 'Despachado' : 'Preparado' }, pedido, 'SEGUIMIENTO_ENVIO')).toBe(false);
   expect(pedido.estado).toBe('Confirmado');
 });
 

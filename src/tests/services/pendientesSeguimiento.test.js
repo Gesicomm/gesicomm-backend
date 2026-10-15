@@ -165,10 +165,10 @@ describe('las etapas: el pedido cambia solo según su estado', () => {
     expect(item).toMatchObject({ estado, fase_id, cuando: 'ahora', estado_requerido: null });
   });
 
-  test('RAHA pendiente espera en seguimiento de envío sin volver a confirmación comercial', () => {
+  test('una orden creada en RAHA ya está confirmada y habilita el primer mensaje de seguimiento', () => {
     const p = pedido(1, { estado: 'Confirmado', raha_logistica: { gestionado: true, status: 'pendiente_confirmacion' } });
     expect(etapaDelPedido(p)).toBe('SEGUIMIENTO_ENVIO');
-    expect(armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [p] })[0]).toMatchObject({ estado: 'Confirmado', fase_id: 301, motivo: 'esperando_estado', estado_requerido: 'Preparado' });
+    expect(armar({ etapa: 'SEGUIMIENTO_ENVIO', pedidos: [p] })[0]).toMatchObject({ estado: 'Confirmado', fase_id: 301, cuando: 'ahora', motivo: 'nuevo', estado_requerido: null });
   });
 
   test('una entrega RAHA inicia Recompra y su espera se cuenta desde la entrega remota', () => {
@@ -795,6 +795,18 @@ describe('marcar una fase como completada', () => {
     await controller[operacion](peticion({ fase_id: 302 }, { faseId: '302' }), res, jest.fn());
     expect(res.codigo).toBe(422);
     expect(SeguimientoContacto.create).not.toHaveBeenCalled();
+    expect(envio.update).not.toHaveBeenCalled();
+  });
+
+  test.each(['registrarContacto', 'completarFase'])('la orden RAHA creada permite %s del primer aviso sin otra confirmación', async operacion => {
+    envio.estado = 'Confirmado';
+    SpeedboxPedido.findOne.mockResolvedValue({ status: 'pendiente_confirmacion' });
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce(FASE_PEDIDO_CONFIRMADO).mockResolvedValueOnce(null);
+    SeguimientoContacto.findOne.mockResolvedValueOnce(fila({ id: 1, estado: 'ABIERTO_EN_WHATSAPP' }));
+    SeguimientoContacto.create.mockImplementation(async datos => fila({ id: 2, ...datos }));
+    const res = respuesta();
+    await controller[operacion](peticion({ fase_id: 301 }, { faseId: '301' }), res, jest.fn());
+    expect(res.codigo).toBe(operacion === 'registrarContacto' ? 201 : 200);
     expect(envio.update).not.toHaveBeenCalled();
   });
 
