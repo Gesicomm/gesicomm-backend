@@ -34,9 +34,8 @@ async function imagenParaCopiar(imagen) {
     if (!archivo.startsWith(raiz + path.sep)) throw new Error('Ruta de imagen inválida');
     buffer = await fs.readFile(archivo);
   } else {
-    const error = new Error('Esta imagen externa debe copiarse desde el navegador.');
-    error.status = 422;
-    throw error;
+    const { descargarImagenExterna } = require('../../utils/descargarImagenExterna');
+    buffer = await descargarImagenExterna(imagen.url);
   }
   return sharp(buffer, { limitInputPixels: 40000000 }).rotate().resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
 }

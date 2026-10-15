@@ -1,9 +1,11 @@
 'use strict';
 
 jest.mock('../../services/r2/r2.service', () => ({ R2Service: { getObject: jest.fn() } }));
+jest.mock('../../utils/descargarImagenExterna', () => ({ descargarImagenExterna: jest.fn() }));
 const sharp = require('sharp');
 const { R2Service } = require('../../services/r2/r2.service');
 const { imagenesDelPedido, imagenParaCopiar } = require('../../services/seguimiento/imagenesPedido.service');
+const { descargarImagenExterna } = require('../../utils/descargarImagenExterna');
 
 test('la foto corresponde a la oferta comprada o a su variante, sin elegir otra variante', () => {
   const imagenes = [
@@ -40,8 +42,15 @@ test('convierte la imagen almacenada a PNG para el portapapeles', async () => {
   expect(await sharp(png).metadata()).toMatchObject({ format: 'png', width: 2, height: 1 });
 });
 
-test('no descarga URLs externas ni lee rutas fuera de uploads', async () => {
-  await expect(imagenParaCopiar({ url: 'https://externo.example/foto.jpg' })).rejects.toMatchObject({ status: 422 });
+test('convierte la imagen externa a PNG en el servidor, sin depender del navegador', async () => {
+  const jpg = await sharp({ create: { width: 3, height: 2, channels: 3, background: '#159957' } }).jpeg().toBuffer();
+  descargarImagenExterna.mockResolvedValue(jpg);
+  const png = await imagenParaCopiar({ url: 'https://externo.example/foto.jpg' });
+  expect(descargarImagenExterna).toHaveBeenCalledWith('https://externo.example/foto.jpg');
+  expect(await sharp(png).metadata()).toMatchObject({ format: 'png', width: 3, height: 2 });
+});
+
+test('no lee rutas fuera de uploads', async () => {
   await expect(imagenParaCopiar({ url: '/uploads/../../.env' })).rejects.toThrow('Ruta de imagen inválida');
   await expect(imagenParaCopiar({ url: '/uploads/%2e%2e/%2e%2e/.env' })).rejects.toThrow('Ruta de imagen inválida');
 });
