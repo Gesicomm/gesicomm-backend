@@ -10,7 +10,7 @@
 
 const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
-const { Landing, LandingItem, Producto, Oferta, Tienda, LandingTemplate, Faq } = require('../models');
+const { Landing, LandingItem, Producto, ProductoImagen, Oferta, Tienda, LandingTemplate, Faq } = require('../models');
 const LandingSimpleService = require('./landingSimple.service');
 const LandingCodigoService = require('./landingCodigo.service');
 const AICodeValidator = require('./aiCodeValidator.service');
@@ -92,12 +92,22 @@ class McpService {
     const idsProductos = itemsRaw.filter(it => it.tipo === 'producto').map(it => it.referencia_id);
     
     let productosDb = [];
+    const includeProducto = [
+      { model: Oferta, as: 'ofertas', required: false },
+      { model: ProductoImagen, as: 'imagenes', required: false },
+    ];
+
     if (idsProductos.length) {
       productosDb = await Producto.findAll({
         where: { id: { [Op.in]: idsProductos } },
-        include: [
-          { model: Oferta, as: 'ofertas', required: false },
-        ],
+        include: includeProducto,
+      });
+    } else {
+      productosDb = await Producto.findAll({
+        where: { tienda_id: tiendaId, activo: true },
+        include: includeProducto,
+        limit: 12,
+        order: [['id', 'DESC']],
       });
     }
 
@@ -108,15 +118,21 @@ class McpService {
       const paquetes = ofertasRaw.filter(o => o.estrategia === 'normal');
       const upsells = ofertasRaw.filter(o => o.estrategia === 'upsell');
 
+      const imagenesOrdenadas = (pJson.imagenes || [])
+        .sort((a, b) => (b.es_principal ? 1 : 0) - (a.es_principal ? 1 : 0) || (a.orden || 0) - (b.orden || 0))
+        .map(img => img.url)
+        .filter(Boolean);
+      const imagenPrincipal = imagenesOrdenadas[0] || pJson.imagen || null;
+
       return {
         id: p.id,
         content_id: `producto-${p.id}`,
         nombre: p.nombre,
-        descripcion: p.descripcion,
+        descripcion: p.descripcion_corta || p.descripcion_larga || p.descripcion || '',
         precio_venta_gs: Number(p.precio_usuario || p.precio_base || p.precio || 0),
         precio_antes_gs: Number(p.precio_antes || 0) || null,
-        imagen_principal: p.imagen || null,
-        imagenes: Array.isArray(p.imagenes) ? p.imagenes : (p.imagen ? [p.imagen] : []),
+        imagen_principal: imagenPrincipal,
+        imagenes: imagenesOrdenadas.length ? imagenesOrdenadas : (imagenPrincipal ? [imagenPrincipal] : []),
         categoria: p.categoria || null,
         tiene_variantes: Array.isArray(p.variantes) && p.variantes.length > 0,
         variantes: (p.variantes || []).map(v => ({
@@ -268,6 +284,11 @@ class McpService {
     // Chequeo de order bump
     if (/data-gesicomm-lista=["']ofertas_bump["']/.test(texto) && !/data-gesicomm-bump/.test(texto)) {
       errores.push('La sección de Order Bump no tiene la casilla con el atributo data-gesicomm-bump.');
+    }
+
+    // Chequeo de botón flotante de WhatsApp duplicado
+    if (/whatsapp/i.test(texto) && /fixed/i.test(texto) && (/(?:bottom|right)/i.test(texto))) {
+      advertencias.push('Detectamos un botón flotante de WhatsApp con position: fixed. Gesicomm ya inyecta automáticamente el botón oficial de WhatsApp en la esquina inferior. Te recomendamos remover tu botón flotante propio para evitar que se superpongan en pantalla.');
     }
 
     return {
