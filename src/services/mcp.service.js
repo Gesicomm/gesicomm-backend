@@ -1,0 +1,337 @@
+'use strict';
+
+/**
+ * Servicio MCP de Gesicomm.
+ * Expone contexto comercial, catálogo, validaciones y guardado seguro de código
+ * para que agentes de IA (Claude Code, OpenAI Codex, Cursor) construyan y actualicen
+ * landings en "Lienzo en blanco" respetando al 100% el motor comercial, carrito,
+ * pedidos y píxeles de Gesicomm.
+ */
+
+const jwt = require('jsonwebtoken');
+const { Op } = require('sequelize');
+const { Landing, LandingItem, Producto, Oferta, Tienda, LandingTemplate, Faq } = require('../models');
+const LandingSimpleService = require('./landingSimple.service');
+const LandingCodigoService = require('./landingCodigo.service');
+const AICodeValidator = require('./aiCodeValidator.service');
+const { PROMPT_MAESTRO } = require('../utils/promptMaestroMcp');
+
+class McpService {
+
+  /**
+   * Genera un token JWT de larga duración (30 días) para que Claude o Codex
+   * se autentiquen con el MCP Server sin depender de cookies de navegador.
+   */
+  static generarTokenMCP(usuario, tiendaId) {
+    if (!tiendaId) throw new Error('Se requiere una tienda activa para generar el token MCP.');
+    const payload = {
+      id: usuario.id,
+      nombre: usuario.nombre,
+      email: usuario.email,
+      rol: usuario.rol,
+      permisos: usuario.permisos || ['gestionar_landing'],
+      tenantId: usuario.tenantId,
+      tiendaId: Number(tiendaId),
+      tipo: 'mcp_access',
+    };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '30d' });
+    return {
+      token,
+      tiendaId: Number(tiendaId),
+      expiraEn: '30d',
+    };
+  }
+
+  /**
+   * Lista las landings de la tienda que usan Lienzo en Blanco (código libre).
+   */
+  static async listarLandings(tiendaId) {
+    const landings = await Landing.findAll({
+      where: { tienda_id: tiendaId },
+      include: [
+        {
+          model: LandingTemplate,
+          as: 'template',
+          required: false,
+        },
+      ],
+      order: [['id', 'DESC']],
+    });
+
+    return landings.map(l => {
+      const content = l.content || {};
+      const esLienzo = l.template?.slug === 'lienzo-blanco' || content.editor_type === 'code' || l.template?.kind === 'codigo';
+      return {
+        id: l.id,
+        titulo: l.titulo || 'Sin título',
+        slug: l.slug,
+        activo: !!l.activo,
+        es_home: !!l.es_home,
+        es_lienzo_blanco: esLienzo,
+        tipo_venta: content.venta?.tipo || 'catalogo',
+        fecha_actualizacion: l.updated_at,
+      };
+    });
+  }
+
+  /**
+   * Obtiene la radiografía comercial completa de la landing para que Claude / Codex
+   * conozcan cada producto, sus ofertas, variantes, precios en Guaraníes y las
+   * directivas obligatorias para que el motor de pedidos y píxel funcionen.
+   */
+  static async obtenerContextoComercial(landingId, tiendaId) {
+    const landing = await LandingSimpleService.obtener(landingId, tiendaId);
+    if (!landing) throw new Error('Landing no encontrada.');
+
+    const tienda = await Tienda.findByPk(tiendaId);
+    const content = landing.content || {};
+    const venta = content.venta || {};
+
+    // Obtener productos asociados a la landing
+    const itemsRaw = landing.items || [];
+    const idsProductos = itemsRaw.filter(it => it.tipo === 'producto').map(it => it.referencia_id);
+    
+    let productosDb = [];
+    if (idsProductos.length) {
+      productosDb = await Producto.findAll({
+        where: { id: { [Op.in]: idsProductos } },
+        include: [
+          { model: Oferta, as: 'ofertas', required: false },
+        ],
+      });
+    }
+
+    const productos = productosDb.map(p => {
+      const pJson = p.toJSON ? p.toJSON() : p;
+      const ofertasRaw = pJson.ofertas || [];
+      const bumps = ofertasRaw.filter(o => o.estrategia === 'order_bump');
+      const paquetes = ofertasRaw.filter(o => o.estrategia === 'normal');
+      const upsells = ofertasRaw.filter(o => o.estrategia === 'upsell');
+
+      return {
+        id: p.id,
+        content_id: `producto-${p.id}`,
+        nombre: p.nombre,
+        descripcion: p.descripcion,
+        precio_venta_gs: Number(p.precio_usuario || p.precio_base || p.precio || 0),
+        precio_antes_gs: Number(p.precio_antes || 0) || null,
+        imagen_principal: p.imagen || null,
+        imagenes: Array.isArray(p.imagenes) ? p.imagenes : (p.imagen ? [p.imagen] : []),
+        categoria: p.categoria || null,
+        tiene_variantes: Array.isArray(p.variantes) && p.variantes.length > 0,
+        variantes: (p.variantes || []).map(v => ({
+          id: v.id,
+          nombre: v.nombre,
+          precio_adicional_gs: Number(v.precio || 0),
+          stock: v.stock,
+        })),
+        order_bumps: bumps.map(b => ({
+          id: b.id,
+          titulo: b.nombre || b.titulo,
+          precio_gs: Number(b.precio_oferta || b.precio || 0),
+          precio_antes_gs: Number(b.precio_normal || 0) || null,
+          descripcion: b.descripcion,
+          imagen: b.imagen,
+        })),
+        paquetes_cantidad: paquetes.map(pq => ({
+          id: pq.id,
+          cantidad: pq.cantidad || 1,
+          titulo: pq.nombre || pq.titulo,
+          precio_total_gs: Number(pq.precio_oferta || pq.precio || 0),
+          descuento_porcentaje: pq.descuento_porcentaje || null,
+        })),
+      };
+    });
+
+    const contratoMotorComercial = {
+      regla_oro: 'NO programes carritos ni checkout en JS. Solo usá las directivas data-gesicomm-* y el runtime de Gesicomm procesará pedidos, inventario, PagoPar y Meta Pixel automáticamente.',
+      moneda: 'PYG (Guaraníes paraguayos)',
+      directivas_carrito_pedidos: {
+        comprar_y_abrir_checkout: 'data-gesicomm-comprar (colocar en botones principales de compra. Al clickear, agrega al carrito y abre el checkout)',
+        agregar_silencioso: 'data-gesicomm-agregar (colocar en tarjetas de catálogo donde el cliente puede seguir navegando)',
+        order_bump: 'data-gesicomm-bump (colocar en <input type="checkbox" data-gesicomm-bump> dentro del contenedor de la oferta bump)',
+        variante_selector: 'data-gesicomm-variante="ID" o data-gesicomm-lista="variantes" (para que el cliente seleccione talle o color antes de comprar)',
+        cantidad_input: 'data-gesicomm-cantidad-input (input numérico para elegir cantidad)',
+        total_dinamico: 'data-gesicomm-total (elemento que muestra el total recalculado en Guaraníes)',
+      },
+      directivas_binds_datos: {
+        precio: 'data-gesicomm-bind="precio" (reemplaza por el precio real formateado en Guaraníes)',
+        precio_antes: 'data-gesicomm-bind="precio_antes" (precio tachado si existe descuento)',
+        ahorro: 'data-gesicomm-bind="ahorro" (calcula automáticamente "Ahorrás Gs X")',
+        nombre: 'data-gesicomm-bind="nombre" (título del producto)',
+        imagen: 'data-gesicomm-bind="imagen" (asigna el src a la imagen del producto)',
+      },
+      tracking_y_pixel: {
+        eventos_automaticos: 'El runtime dispara automáticamente ViewContent al entrar, AddToCart al hacer clic en comprar/agregar, InitiateCheckout al abrir checkout y Purchase al completar el pedido.',
+        evento_personalizado: 'data-gesicomm-evento="NombreDelEvento" (para registrar clicks en CTAs secundarios o consultas).',
+      },
+      diseno_cro_recomendado: {
+        enfoque: 'Mobile-first (390px ancho base). Las compras en Paraguay se hacen un 95% desde smartphones.',
+        componentes_clave: [
+          'Sticky CTA bar inferior en mobile con botón Comprar ahora',
+          'Bloque de beneficios con iconos (Envío a todo el país, Pago contra entrega, Garantía)',
+          'Badges llamativos de descuento y urgencia moderada',
+          'Selector visual de variantes con pills táctiles',
+          'Sección de prueba social / testimonios de clientes verificados',
+          'Acordeón FAQ con respuestas a dudas de envíos y pagos',
+        ],
+      },
+    };
+
+    return {
+      landing: {
+        id: landing.id,
+        titulo: landing.titulo,
+        slug: landing.slug,
+        activo: landing.activo,
+        tipo_venta: venta.tipo || 'catalogo',
+      },
+      tienda: {
+        id: tienda?.id,
+        nombre: tienda?.nombre,
+        slug: tienda?.slug,
+        whatsapp: tienda?.whatsapp || '',
+        colores: {
+          primario: tienda?.color_primario || '#2563eb',
+          fondo: tienda?.color_fondo || '#ffffff',
+          texto: tienda?.color_texto || '#111827',
+        },
+      },
+      productos,
+      contrato_motor_comercial: contratoMotorComercial,
+      prompt_maestro_gesicomm: PROMPT_MAESTRO,
+    };
+  }
+
+  /**
+   * Obtiene el código actual de la vista seleccionada.
+   */
+  static async obtenerCodigo(landingId, tiendaId, vista = 'inicio', contentId = null) {
+    const landing = await LandingSimpleService.obtener(landingId, tiendaId);
+    if (!landing) throw new Error('Landing no encontrada.');
+
+    const content = landing.content || {};
+    const vistas = content.vistas || {};
+
+    if (vista === 'inicio') {
+      return {
+        vista: 'inicio',
+        codigo: content.codigo || { html: '', css: '', js: '' },
+      };
+    }
+
+    if (vista === 'producto' && contentId) {
+      const propia = vistas.productos?.[contentId];
+      if (propia) return { vista: `propia:${contentId}`, codigo: propia };
+    }
+
+    if (vistas[vista]) {
+      return {
+        vista,
+        codigo: vistas[vista],
+      };
+    }
+
+    return {
+      vista,
+      codigo: { html: '', css: '', js: '' },
+    };
+  }
+
+  /**
+   * Valida que el código HTML respete el motor comercial de Gesicomm antes de guardarlo.
+   */
+  static validarMotorComercial(html, vista = 'inicio') {
+    const texto = String(html || '');
+    const errores = [];
+    const advertencias = [];
+    const sugerencias = [];
+
+    // Chequeo de CTA obligatorio para que funcione el carrito
+    const tieneComprar = /data-gesicomm-comprar/.test(texto);
+    const tieneAgregar = /data-gesicomm-agregar/.test(texto);
+
+    if (!tieneComprar && !tieneAgregar) {
+      errores.push('Falta el botón de compra: El HTML debe contener al menos un elemento con "data-gesicomm-comprar" o "data-gesicomm-agregar" para que el visitante pueda comprar, entrar al carrito y activar el Píxel de Meta.');
+    }
+
+    // Chequeo de scripts invasivos
+    if (/<script\b[^>]*>(?![\s\S]*<\/script>)[\s\S]*/i.test(texto) || /onclick\s*=\s*["'][^"']*window\.location/i.test(texto)) {
+      advertencias.push('Se detectaron scripts o manejadores onclick invasivos. Los scripts inline serán removidos por seguridad; usá las directivas data-gesicomm-* nativas.');
+    }
+
+    // Chequeo de precios hardcodeados vs dinámicos
+    if (/Gs\s*[0-9]{2,3}\.?[0-9]{3}/i.test(texto) && !/data-gesicomm-bind=["']precio["']/.test(texto)) {
+      sugerencias.push('Detectamos precios escritos en texto fijo. Te recomendamos usar data-gesicomm-bind="precio" para que el precio siempre coincida con el catálogo de Gesicomm.');
+    }
+
+    // Chequeo de order bump
+    if (/data-gesicomm-lista=["']ofertas_bump["']/.test(texto) && !/data-gesicomm-bump/.test(texto)) {
+      errores.push('La sección de Order Bump no tiene la casilla con el atributo data-gesicomm-bump.');
+    }
+
+    return {
+      valido: errores.length === 0,
+      errores,
+      advertencias,
+      sugerencias,
+    };
+  }
+
+  /**
+   * Valida y guarda el código HTML/CSS/JS generado por Claude o Codex en la landing.
+   */
+  static async guardarCodigo(landingId, tiendaId, inquilinoId, { vista = 'inicio', html, css = '', js = '', contentId = null }) {
+    const landing = await LandingSimpleService.obtener(landingId, tiendaId);
+    if (!landing) throw new Error('Landing no encontrada.');
+
+    // 1. Validar motor comercial
+    const validacion = this.validarMotorComercial(html, vista);
+    if (!validacion.valido) {
+      const err = new Error('El código no cumple con los requisitos del motor comercial de Gesicomm.');
+      err.errores = validacion.errores;
+      err.advertencias = validacion.advertencias;
+      throw err;
+    }
+
+    // 2. Sanitizar con el sanitizador oficial de Gesicomm
+    const codigoLimpio = LandingCodigoService.sanitizar({ html, css, js });
+
+    // 3. Preparar payload de actualización
+    const content = JSON.parse(JSON.stringify(landing.content || {}));
+    const vistas = content.vistas || {};
+
+    if (vista === 'inicio') {
+      content.codigo = codigoLimpio;
+    } else if (vista === 'producto' && contentId) {
+      if (!vistas.productos) vistas.productos = {};
+      vistas.productos[contentId] = codigoLimpio;
+      content.vistas = vistas;
+    } else {
+      vistas[vista] = codigoLimpio;
+      content.vistas = vistas;
+    }
+
+    // 4. Persistir a través de LandingSimpleService
+    const landingActualizada = await LandingSimpleService.actualizarCodigo(
+      landing,
+      tiendaId,
+      inquilinoId,
+      {
+        codigo: content.codigo,
+        vistas: content.vistas,
+      }
+    );
+
+    return {
+      ok: true,
+      landing_id: landingActualizada.id,
+      vista,
+      advertencias: validacion.advertencias,
+      sugerencias: validacion.sugerencias,
+      mensaje: `Vista "${vista}" actualizada y conectada exitosamente al motor comercial de Gesicomm.`,
+    };
+  }
+}
+
+module.exports = McpService;

@@ -45,6 +45,7 @@ const liquidacionRoutes = require('./src/routes/liquidacionRoutes');
 const vitrinaRoutes = require('./src/routes/vitrina');
 const landingRoutes = require('./src/routes/landing');
 const landingSimpleRoutes = require('./src/routes/landingSimple');
+const mcpRoutes = require('./src/routes/mcp');
 const pagesRoutes = require('./src/routes/pages');
 const landingTemplatesRoutes = require('./src/routes/landing-templates');
 const landingPublicaRoutes = require('./src/routes/landingPublica');
@@ -181,6 +182,7 @@ app.use((req, res, next) => (
 // vistas guardadas y una lista larga recibía un 413 y no guardaba nada.
 // No subir de 1mb sin tocar nginx: su client_max_body_size por defecto es 1m.
 app.use('/api/mis-landings-simples', express.json({ limit: '1mb' }));
+app.use('/api/mcp', express.json({ limit: '1mb' }));
 // Mismo motivo que la línea de arriba: una página del Page Builder manda
 // su HTML/CSS/JS entero en el body. El techo de producto son 600 KB
 // sumando los tres campos (lo valida builderPageVersion.service.js con un
@@ -250,6 +252,7 @@ app.use('/api/liquidaciones', liquidacionRoutes);
 app.use('/api/vitrina', vitrinaRoutes);
 app.use('/api/mis-landings', landingRoutes);
 app.use('/api/mis-landings-simples', landingSimpleRoutes);
+app.use('/api/mcp', mcpRoutes);
 app.use('/api/pages', pagesRoutes);
 app.use('/api/landing-templates', landingTemplatesRoutes);
 app.use('/api/mi-tienda', tiendaRoutes);
