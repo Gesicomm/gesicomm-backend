@@ -21,22 +21,22 @@ function fechaEntregaSeguimiento(pedido) {
   return pedido?.entregado_raha_en || (raha?.gestionado && raha.status === 'entregado' ? raha.status_at : null);
 }
 
-function esperandoConfirmacionLogistica(pedido) {
+function esRahaConfirmado(pedido) {
   return estadoParaSeguimiento(pedido) === 'Confirmado'
     && (pedido?.raha_status === 'pendiente_confirmacion'
       || (pedido?.raha_logistica?.gestionado && (!pedido.raha_logistica.status || pedido.raha_logistica.status === 'pendiente_confirmacion')));
 }
 
 function enSeguimientoEnvio(pedido) {
-  return ['Preparado', 'Despachado', 'Reprogramado'].includes(estadoParaSeguimiento(pedido)) || Boolean(esperandoConfirmacionLogistica(pedido));
+  return ['Preparado', 'Despachado', 'Reprogramado'].includes(estadoParaSeguimiento(pedido)) || Boolean(esRahaConfirmado(pedido));
 }
 
-function esperandoConfirmacionLogisticaSql() {
+function esRahaConfirmadoSql() {
   return `(${estadoSeguimientoSql()} = 'Confirmado' AND ${statusRahaSql()} = 'pendiente_confirmacion')`;
 }
 
 function seguimientoEnvioSql() {
-  return `(${estadoSeguimientoSql()} IN ('Preparado', 'Despachado', 'Reprogramado') OR ${esperandoConfirmacionLogisticaSql()})`;
+  return `(${estadoSeguimientoSql()} IN ('Preparado', 'Despachado', 'Reprogramado') OR ${esRahaConfirmadoSql()})`;
 }
 
 // La misma proyección en SQL, antes de paginar o contar. Sin interpolar datos
@@ -62,4 +62,4 @@ function fechaEntregaRahaSql() {
     ORDER BY sp.updated_at DESC, sp.id DESC LIMIT 1)`;
 }
 
-module.exports = { estadoParaSeguimiento, fechaEntregaSeguimiento, estadoSeguimientoSql, statusRahaSql, fechaEntregaRahaSql, esperandoConfirmacionLogistica, enSeguimientoEnvio, esperandoConfirmacionLogisticaSql, seguimientoEnvioSql };
+module.exports = { estadoParaSeguimiento, fechaEntregaSeguimiento, estadoSeguimientoSql, statusRahaSql, fechaEntregaRahaSql, esRahaConfirmado, enSeguimientoEnvio, esRahaConfirmadoSql, seguimientoEnvioSql };

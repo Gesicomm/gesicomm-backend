@@ -8,14 +8,14 @@ const LIMITE_PRUEBA = 5000;
 function esTiendaDePrueba(tienda) {
   const nombre = String(tienda?.nombre || '').normalize('NFD').replace(/\p{M}/gu, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
   return nombre === 'llevatelofacil'
-    && String(tienda?.Usuario?.email || '').trim().toLowerCase() === 'andre@gmail.com';
+    && String(tienda?.Usuario?.correo_electronico || '').trim().toLowerCase() === 'andre@gmail.com';
 }
 
 async function obtenerLimiteManual(tiendaId) {
   // La excepción usa el dueño persistido de ESTA tienda, nunca el payload.
   const tienda = await Tienda.findByPk(tiendaId, {
     attributes: ['id', 'nombre', 'usuario_id'],
-    include: [{ model: Usuario, attributes: ['email'] }],
+    include: [{ model: Usuario, attributes: ['correo_electronico'] }],
   });
   return esTiendaDePrueba(tienda) ? LIMITE_PRUEBA : LIMITE_MANUAL;
 }

@@ -37,7 +37,7 @@ test.each([
   SpeedboxPedido.findAll.mockResolvedValue([{ envio_id: 50, order_id: '54', estado: 'enviado', status, environment: 'production' }]);
   const res = respuesta();
   const incluirPendientes = estados.includes('Preparado');
-  await controller.listEnviosPaginados(req({ estados, seguimiento_comercial: true, incluir_seguimiento: true, incluir_pendientes_logisticos: incluirPendientes }), res);
+  await controller.listEnviosPaginados(req({ estados, seguimiento_comercial: true, incluir_seguimiento: true, incluir_confirmados_raha: incluirPendientes }), res);
   expect(res.status).not.toHaveBeenCalled();
   const options = Envio.findAndCountAll.mock.calls[0][0];
   expect(options.where).toMatchObject({ usuario_id: 7, tienda_id: 9 });

@@ -26,7 +26,7 @@ const productos = Array.from({ length: 4000 }, (_, i) => ({
   cantidad_disponible: 10, categoria: { nombre: i < 3900 ? 'General' : 'Final' },
 }));
 const items = productos.map(p => ({ tipo: 'producto', referencia_id: p.id, orden: p.id - 1, mostrar_en_inicio: true }));
-const tienda = { id: 7, nombre: 'Llévatelo Fácil', inquilino_id: 1, usuario_id: 20, activo: true, Usuario: { activo: true, email: 'andre@gmail.com' } };
+const tienda = { id: 7, nombre: 'Llévatelo Fácil', inquilino_id: 1, usuario_id: 20, activo: true, Usuario: { activo: true, correo_electronico: 'andre@gmail.com' } };
 const landing = { id: 9, tienda_id: 7, tipo_pagina: 'inicio', activo: true, template: { kind: 'codigo' }, items, content: { venta: { configurado: true, seleccion: 'manual' } }, secciones: [] };
 
 beforeEach(() => {
@@ -73,7 +73,7 @@ test('guarda los 4000 por el servicio real y reconstruye orden y valores por def
 });
 
 test('otra tienda no puede elevar el límite enviando limites en el payload', async () => {
-  Tienda.findByPk.mockResolvedValue({ ...tienda, Usuario: { email: 'otra@gmail.com' } });
+  Tienda.findByPk.mockResolvedValue({ ...tienda, Usuario: { correo_electronico: 'otra@gmail.com' } });
   const editable = { ...landing, save: jest.fn() };
   await expect(Simple.actualizarCodigo(editable, 7, 1, { items, limites: { items_manual: 5000 } }))
     .rejects.toMatchObject({ errores: [expect.stringContaining('500 productos')] });

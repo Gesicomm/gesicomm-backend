@@ -1,5 +1,5 @@
 'use strict';
-const { estadoParaSeguimiento } = require('./estadoPedido');
+const { estadoParaSeguimiento, esRahaConfirmado } = require('./estadoPedido');
 
 function estadoActivadorDeFase(fase, tipo) {
   const configurado = fase?.estado_activador || fase?.transicion_estado_hasta
@@ -21,10 +21,10 @@ function faseDisponibleParaPedido(fase, pedido, tipo) {
   const estado = estadoParaSeguimiento(pedido);
   if (tipo === 'RECUPERACION_CLIENTES' && !['Devuelto', 'Perdido'].includes(estado)) return false;
   if (tipo === 'ESCALAMIENTO_VENTAS' && estado !== 'Entregado') return false;
-  if (tipo === 'SEGUIMIENTO_ENVIO' && !['Preparado', 'Despachado', 'Reprogramado'].includes(estado)) return false;
+  if (tipo === 'SEGUIMIENTO_ENVIO' && !['Preparado', 'Despachado', 'Reprogramado'].includes(estado) && !esRahaConfirmado(pedido)) return false;
   const requerido = estadoActivadorDeFase(fase, tipo);
   if (!requerido) return true;
-  if (requerido === 'Preparado') return estado === 'Preparado';
+  if (requerido === 'Preparado') return estado === 'Preparado' || (tipo === 'SEGUIMIENTO_ENVIO' && esRahaConfirmado(pedido));
   if (requerido === 'Despachado') return ['Despachado', 'Reprogramado'].includes(estado);
   return estado === requerido;
 }
