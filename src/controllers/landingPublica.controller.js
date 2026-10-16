@@ -172,9 +172,14 @@ async function obtenerPorSlug(req, res) {
           precioMax: options.precioMax,
           soloInicio: options.soloInicio === true || options.soloInicio === 'true',
           soloDescuento: options.soloDescuento === true || options.soloDescuento === 'true',
+          soloDatos: options.soloDatos === true || options.soloDatos === 'true',
           busqueda: typeof options.busqueda === 'string' ? options.busqueda : (typeof options.q === 'string' ? options.q : ''),
         })
-      : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview, { tipoPagina });
+      : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview, {
+          tipoPagina,
+          ...(['inicio', 'categoria', 'checkout'].includes(vista) || TIPOS_PAGINA_PUBLICA.has(vista)
+            ? { vistaPublica: vista } : {}),
+        });
     if (resultado === null) {
       // `tienda.com/<algo>` puede ser otra landing o un producto: el frontend
       // pide primero la landing y, con el 404, recién ahí el producto. Ese 404
@@ -699,7 +704,9 @@ async function registrarEvento(req, res) {
       ...(Array.isArray(custom_data?.content_ids) ? custom_data.content_ids : []),
       ...(Array.isArray(items) ? items.map(i => i?.content_id) : []),
     ].filter(id => typeof id === 'string').slice(0, MAX_CONTENT_IDS);
-    const catalogo = await LandingService.obtenerCatalogoParaEvento(landing_id, contentIdsEvento);
+    const catalogo = contentIdsEvento.length
+      ? await LandingService.obtenerCatalogoParaEvento(landing_id, contentIdsEvento)
+      : new Map();
 
     // Nunca bloquea la respuesta al visitante por un fallo de Meta — ver
     // metaCapi.service.js, enviarEvento() no rechaza.

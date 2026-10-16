@@ -263,4 +263,26 @@ describe('LandingService.vistasPublicas — ficha propia por producto', () => {
     const directo = { ...content, venta: { abrir_en: 'producto' } };
     expect(LandingService.vistasPublicas(directo, null, 'adelfit').productos).toEqual({ adelfit: content.vistas.productos.adelfit });
   });
+
+  it('la portada no descarga los diseños de otras páginas', () => {
+    const completo = { ...content, vistas: { ...content.vistas,
+      catalogo: { html: 'Catálogo' }, categoria: { html: 'Categoría' }, checkout: { html: 'Checkout' },
+      legales: { contacto: { html: 'Contacto' }, politica_envio: { html: 'Envíos' } },
+    } };
+    expect(LandingService.vistasPublicas(completo, null, 'adelfit', 'inicio')).toEqual({});
+    for (const vista of ['catalogo', 'categoria', 'checkout']) {
+      expect(LandingService.vistasPublicas(completo, null, null, vista)).toEqual({ [vista]: completo.vistas[vista] });
+    }
+    expect(LandingService.vistasPublicas(completo, null, null, 'contacto'))
+      .toEqual({ legales: { contacto: completo.vistas.legales.contacto } });
+    expect(LandingService.vistasPublicas(completo, null, null, 'politica_envio'))
+      .toEqual({ legales: { politica_envio: completo.vistas.legales.politica_envio } });
+  });
+
+  it('la portada que abre en un producto conserva la ficha general y la propia', () => {
+    const directo = { ...content, venta: { abrir_en: 'producto' } };
+    expect(LandingService.vistasPublicas(directo, null, 'adelfit', 'inicio')).toEqual({
+      producto: content.vistas.producto, productos: { adelfit: content.vistas.productos.adelfit },
+    });
+  });
 });

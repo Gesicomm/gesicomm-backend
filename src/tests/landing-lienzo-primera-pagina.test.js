@@ -26,7 +26,7 @@ for (const m of [
 
 const LandingService = require('../services/landing.service');
 
-const N = 100; // PRIMERA_PAGINA_LIENZO
+const N = 25; // PRIMERA_PAGINA_LIENZO
 const item = (id, extra = {}) => ({ tipo: 'producto', referencia_id: id, orden: id, mostrar_en_inicio: true, ...extra });
 const producto = (id, categoria = 'Cocina') => ({ id, slug: `prod-${id}`, categoria: { nombre: categoria } });
 const idsDe = items => items.map(i => `${i.tipo}:${i.referencia_id}`);
@@ -141,7 +141,7 @@ describe('primeraPaginaLienzo', () => {
     expect(res.total).toBe(149);
     expect(res.items[0].referencia_id).toBe(2);
     expect(res.items).toHaveLength(N);
-    expect(res.items.at(-1).referencia_id).toBe(101);
+    expect(res.items.at(-1).referencia_id).toBe(N + 1);
   });
 
   it('combos: se identifican como combo-ID y usan la categoría y la foto de su producto padre', async () => {

@@ -108,4 +108,10 @@ describe('GET /api/l/:slug cuando el slug es un producto', () => {
     expect(res.statusCode).toBe(404);
     expect(LandingService.obtenerProductoPublico).not.toHaveBeenCalled();
   });
+
+  test.each(['checkout', 'categoria', 'contacto', 'politica_envio'])('pasa la vista %s al servicio sin cambiar la página base', async (vista) => {
+    LandingService.obtenerPublica.mockResolvedValue({ disponible: true });
+    await ctrl.obtenerPorSlug(fakeReq({ params: {}, query: { vista } }), fakeRes());
+    expect(LandingService.obtenerPublica).toHaveBeenCalledWith(tienda, null, false, { tipoPagina: null, vistaPublica: vista });
+  });
 });

@@ -59,7 +59,7 @@ const MAX_ITEMS_LIENZO = 500;
 // obtenerCatalogoPublico, que trae imágenes solo de la página pedida.
 // Aparte de estos viajan los que la configuración nombra (destacados,
 // vitrinas, recomendados…) y el de la ficha — ver primeraPaginaLienzo.
-const PRIMERA_PAGINA_LIENZO = 100;
+const PRIMERA_PAGINA_LIENZO = 25;
 // Tope de productos "nombrados por la configuración" que se suman a la
 // primera página: una landing con cientos de ids escritos a mano no puede
 // volver a inflar la respuesta que este recorte existe para achicar.
@@ -1234,10 +1234,16 @@ class LandingService {
    *   contra estos, no se arma el catálogo entero en cada PageView.
    */
   static async obtenerCatalogoParaEvento(landing_id, contentIds = null) {
+    // PageView no identifica productos. No leer content ni los miles de
+    // items de la landing para terminar devolviendo un catálogo vacío.
+    if (Array.isArray(contentIds) && contentIds.length === 0) return new Map();
     const landing = await Landing.findByPk(landing_id, {
       attributes: ['id', 'content'],
       include: [
-        { model: LandingItem, as: 'items', attributes: ['tipo', 'referencia_id', 'orden'] },
+        // content puede pesar más de 1 MB. Un JOIN lo repetía por cada
+        // LandingItem antes de que Sequelize deduplicara la landing: miles
+        // de filas bastaban para agotar el heap en un evento de navegador.
+        { model: LandingItem, as: 'items', attributes: ['tipo', 'referencia_id', 'orden'], separate: true, order: [['orden', 'ASC']] },
         { model: LandingTemplate, as: 'template', required: false, attributes: ['kind'] },
         // usuario_id: el catálogo por regla se acota al dueño (visibilidadDeTienda).
         { model: Tienda, attributes: ['inquilino_id', 'usuario_id'] },
@@ -1857,21 +1863,26 @@ class LandingService {
    * solo viaja la del producto que se va a mostrar (el de la URL, o el
    * principal si la landing abre directo en un producto).
    */
-  static vistasPublicas(content, contentIdPedido = null, contentIdPrincipal = null) {
+  static vistasPublicas(content, contentIdPedido = null, contentIdPrincipal = null, vistaActual = null) {
     const vistas = content?.vistas || {};
     const venta = content?.venta || {};
     const propias = vistas.productos || {};
     const salida = {};
+    const esProducto = vistaActual === 'producto' || (vistaActual === 'inicio' && venta.abrir_en === 'producto');
     for (const vista of ['catalogo', 'categoria', 'checkout']) {
+      if (vistaActual && vistaActual !== vista) continue;
       if (vistas[vista]) salida[vista] = vistas[vista];
     }
-    if (vistas.producto) salida.producto = vistas.producto;
-    if (vistas.legales && typeof vistas.legales === 'object') salida.legales = vistas.legales;
+    if ((!vistaActual || esProducto) && vistas.producto) salida.producto = vistas.producto;
+    if (vistas.legales && typeof vistas.legales === 'object') {
+      if (!vistaActual) salida.legales = vistas.legales;
+      else if (vistas.legales[vistaActual]) salida.legales = { [vistaActual]: vistas.legales[vistaActual] };
+    }
     // El principal va primero en los items cuando la landing abre en él
     // (ver principal_id en obtenerPublica).
     const buscado = contentIdPedido || (venta.abrir_en === 'producto' ? contentIdPrincipal : null);
     const elegidas = buscado && propias[buscado] ? { [buscado]: propias[buscado] } : {};
-    if (Object.keys(elegidas).length) salida.productos = elegidas;
+    if ((!vistaActual || esProducto) && Object.keys(elegidas).length) salida.productos = elegidas;
     return salida;
   }
 
@@ -1883,7 +1894,7 @@ class LandingService {
     const content = landing.content || {};
     return {
       codigo: content.codigo || { html: '', css: '', js: '' },
-      vistas: this.vistasPublicas(content),
+      vistas: this.vistasPublicas(content, null, null, 'catalogo'),
       venta: content.venta || null,
     };
   }
@@ -2150,14 +2161,20 @@ class LandingService {
       : (itemsFallbackCodigo || null)
         ? itemsFallbackCodigo
       : (landing.items || []);
-    // Lienzo con lista manual larga: completos van solo la primera página
-    // y lo que la configuración nombra; el total y las categorías se
-    // calculan sobre toda la lista (ver primeraPaginaLienzo).
+    // Lienzo con lista larga (manual O por regla "todos"/"categoría"):
+    // completos van solo la primera página y lo que la configuración
+    // nombra; el total y las categorías se calculan sobre toda la lista
+    // (ver primeraPaginaLienzo). Antes esto se saltaba para "todos"/
+    // "categoría" (itemsFallbackCodigo): con un catálogo grande (miles de
+    // productos) hidrataba TODO en Sequelize completo (galería, variantes,
+    // opciones, FAQ, ofertas anidadas) y tumbó el backend por OOM el
+    // 2026-10-16 — mismo patrón que ya se arregló en mcp.service.js y
+    // precioUsuario.service.js ese día, pero en este tercer lugar.
     let catalogoLienzo = null;
     if (esCodigo && Array.isArray(opciones.soloContentIds)) {
       // Pedido puntual (obtenerProductosPublicos): solo estos, completos.
       items = await this.itemsDelLienzo(landing, tienda, { contentIds: opciones.soloContentIds });
-    } else if (esCodigo && !itemsFallbackCodigo && items.length > PRIMERA_PAGINA_LIENZO) {
+    } else if (esCodigo && items.length > PRIMERA_PAGINA_LIENZO) {
       catalogoLienzo = await this.primeraPaginaLienzo(landing, items, {
         asegurarContentId: opciones.asegurarContentId || null,
         // El total y las categorías no cuentan lo que después no se muestra.
@@ -2879,7 +2896,7 @@ class LandingService {
     // frontend público por template.slug, con un componente fijo. Evita el
     // cómputo (y el acoplamiento) del árbol de secciones flexible para
     // esas landings.
-    const { secciones, secciones_producto } = esRigida
+    const { secciones, secciones_producto } = (esRigida || esCodigo)
       ? { secciones: [], secciones_producto: [] }
       : this.construirSeccionesPublicas(landing, {
         testimonios: testimoniosDto,
@@ -2928,7 +2945,8 @@ class LandingService {
         // Ficha de producto propia y configuración de venta (formato,
         // ventas cruzadas elegidas, recomendados): las lee el runtime.
         ...(landing.content?.vistas
-          ? { vistas: this.vistasPublicas(landing.content, opciones.asegurarContentId, itemsDto.find(i => i.tipo === 'producto')?.content_id) }
+          ? { vistas: this.vistasPublicas(landing.content, opciones.asegurarContentId, itemsDto.find(i => i.tipo === 'producto')?.content_id,
+              opciones.asegurarContentId ? 'producto' : (opciones.vistaPublica || opciones.tipoPagina || 'inicio')) }
           : {}),
         ...(landing.content?.venta ? { venta: { ...landing.content.venta, payment_logos: paymentLogos } } : { venta: { payment_logos: paymentLogos } }),
         // Catálogo recortado: el navegador recibe solo una parte, así que el
@@ -3087,8 +3105,8 @@ class LandingService {
       // Solo con el catálogo recortado: categorías de TODA la lista (el
       // navegador ya no puede deducirlas de los productos que recibe).
       categorias_catalogo: catalogoLienzo ? catalogoLienzo.categorias : undefined,
-      secciones: secciones,
-      secciones_producto: secciones_producto,
+      secciones: esCodigo ? undefined : secciones,
+      secciones_producto: esCodigo ? undefined : secciones_producto,
       testimonios: testimoniosDto,
       faq: faqDto,
       // Para que el header pueda armar links tipo "Página" entre Inicio/
@@ -3149,6 +3167,7 @@ class LandingService {
       busqueda = '',
       soloInicio = false,
       soloDescuento = false,
+      soloDatos = false,
     } = opciones;
 
     const where = { tienda_id: tienda.id };
@@ -3159,7 +3178,7 @@ class LandingService {
       include: [
         { model: LandingItem, as: 'items', separate: true, order: [['orden', 'ASC']] },
         { model: LandingTemplate, as: 'template', required: false },
-        { model: LandingSeccion, as: 'secciones', separate: true, where: { producto_id: null }, order: [['orden', 'ASC']] },
+        ...(!soloDatos ? [{ model: LandingSeccion, as: 'secciones', separate: true, where: { producto_id: null }, order: [['orden', 'ASC']] }] : []),
       ],
     });
     if (!landing) return null;
@@ -3169,7 +3188,7 @@ class LandingService {
     // Sin registrarVisita, por lo mismo que en obtenerPublica: la cuenta el
     // navegador para que esta respuesta pueda vivir en el CDN.
     let seccionesInicio = [];
-    if (landing.tipo_pagina !== 'inicio') {
+    if (!soloDatos && landing.tipo_pagina !== 'inicio') {
       const inicio = await Landing.findOne({
         where: { tienda_id: tienda.id, tipo_pagina: 'inicio' },
         include: [{ model: LandingSeccion, as: 'secciones', separate: true, where: { producto_id: null }, order: [['orden', 'ASC']] }],
@@ -3233,7 +3252,7 @@ class LandingService {
       // Pasarelas reales para el CartDrawer de esta página (antes venían en
       // []). Las ciudades de envío las pide el carrito aparte, cuando hay
       // algo para comprar (ver deliveryPublico).
-      PaymentService.getPublicGateways(tienda.usuario_id),
+      soloDatos ? Promise.resolve([]) : PaymentService.getPublicGateways(tienda.usuario_id),
     ]);
 
     const mapaProducto = new Map(productos.map(p => [p.id, p]));
@@ -3447,6 +3466,18 @@ class LandingService {
       };
     });
 
+    // El iframe ya tiene identidad y diseño: al filtrar o paginar necesita
+    // exclusivamente datos del listado, no volver a descargar la página.
+    if (soloDatos) {
+      return {
+        disponible: true,
+        catalogo_items: itemsDto,
+        paginacion: { pagina: paginaFinal, porPagina: porPaginaFinal, total, totalPaginas },
+        categorias_disponibles: categoriasDisponibles,
+        etiquetas_disponibles: etiquetasDisponibles,
+        marcas_disponibles: marcasDisponibles,
+      };
+    }
     const esRigida = landing.template?.kind === 'rigido';
     const esFunnel = landing.template?.kind === 'funnel';
     const typography = await TypographyService.resolver(tienda, landing);
@@ -3633,8 +3664,11 @@ class LandingService {
       }
     }
 
+    // La ficha comparte identidad y configuración de compra con la tienda,
+    // pero no publica la portada ni todo su catálogo.
+    const datosFicha = this.datosPublicosDeFicha(landing, item, relacionados);
     return {
-      ...landing,
+      ...datosFicha,
       secciones_producto: this.completarSeccionesProductoPublicas(seccionesProducto, landing.secciones),
       producto: item,
       relacionados,
@@ -3645,6 +3679,71 @@ class LandingService {
         og_imagen: item.imagen || landing.seo?.og_imagen || null,
       },
     };
+  }
+
+  static datosPublicosDeFicha(landing, producto, relacionados) {
+    const salida = {};
+    for (const clave of [
+      'disponible', 'slug', 'es_home', 'tipo_pagina', 'titulo', 'template',
+      'tienda', 'logo_imagen', 'contacto_landing', 'contacto', 'tema', 'diseno',
+      'typography', 'checkout', 'meta', 'paginas_hermanas',
+    ]) {
+      if (landing[clave] !== undefined) salida[clave] = landing[clave];
+    }
+
+    const content = landing.content || {};
+    if (landing.template?.kind === 'codigo') {
+      const vistas = content.vistas || {};
+      const venta = content.venta || {};
+      salida.content = {
+        // La ficha hereda encabezado, pie, CSS y JS del código de inicio.
+        codigo: content.codigo,
+        vistas: {
+          ...(vistas.producto ? { producto: vistas.producto } : {}),
+          ...(vistas.productos?.[producto.content_id]
+            ? { productos: { [producto.content_id]: vistas.productos[producto.content_id] } }
+            : {}),
+        },
+        venta: { ...venta },
+      };
+      // Mantener la configuración del encabezado y del pie compartidos.
+      for (const clave of ['inicio', 'inicio_comercial']) {
+        if (!venta[clave]) continue;
+        salida.content.venta[clave] = {};
+        for (const global of ['encabezado', 'menu_links', 'menu_categorias', 'categorias', 'footer', 'anuncios']) {
+          if (venta[clave][global] !== undefined) salida.content.venta[clave][global] = venta[clave][global];
+        }
+      }
+      delete salida.content.venta.destacados;
+    } else {
+      salida.content = Object.fromEntries(Object.entries(content).filter(([clave]) =>
+        clave.startsWith('ficha_') || clave === 'ofertas_carrito' || clave === 'ofertas_producto_vista'));
+    }
+
+    const catalogo = landing.catalogo_items?.length ? landing.catalogo_items : (landing.items || []);
+    // El menú compartido necesita los nombres, no las fichas de cada categoría.
+    salida.categorias_catalogo = (landing.categorias_catalogo ||
+      [...new Set(catalogo.map(i => i.categoria).filter(Boolean))].map(nombre => ({ nombre })))
+      .map(c => ({ nombre: c.nombre }));
+    const candidatos = catalogo.filter(i => i.content_id !== producto.content_id);
+    const reco = content.venta?.recomendados || {};
+    // El runtime del lienzo calcula sus recomendados con estos mismos criterios.
+    const recomendados = landing.template?.kind !== 'codigo' || reco.activo === false ? []
+      : reco.modo === 'manual' && reco.items?.length
+        ? reco.items.map(id => candidatos.find(i => i.content_id === id)).filter(Boolean)
+        : [
+            ...candidatos.filter(i => i.categoria && i.categoria === producto.categoria),
+            ...candidatos.filter(i => !i.categoria || i.categoria !== producto.categoria),
+          ];
+    const necesarios = new Set([
+      producto.content_id,
+      ...recomendados.slice(0, reco.max || 4).map(i => i.content_id),
+      ...(relacionados?.items || []).map(i => i.slug),
+    ]);
+    const idsRelacionados = new Set((relacionados?.items || []).map(i => Number(i.id)));
+    salida.catalogo_items = catalogo.filter(i => necesarios.has(i.content_id)
+      || (i.tipo === 'producto' && idsRelacionados.has(Number(i.referencia_id))));
+    return salida;
   }
 
   /**

@@ -77,6 +77,8 @@ const adminAuthTrackingRoutes = require('./src/routes/adminAuthTracking');
 const brevoRoutes = require('./src/routes/brevo');
 
 const app = express();
+const diagnosticoMemoria = require('./src/utils/diagnosticoMemoria').crearDiagnosticoMemoria();
+app.use(diagnosticoMemoria.middleware);
 // 1 hop: Nginx resuelve la IP real del visitante ANTES de proxear acá y
 // PISA X-Forwarded-For con un solo valor (ver deploy/nginx/), así que Node
 // solo necesita confiar en Nginx mismo por más proxies que haya delante.
@@ -424,6 +426,10 @@ sequelize.authenticate().then(async () => {
   servidorHttp = app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });
+
+  // TEMPORAL — diagnóstico del OOM del 2026-10-16. Sacar apenas se encuentre
+  // la fuga: console.log a propósito (no logger/JSON) para grepear fácil.
+  setInterval(diagnosticoMemoria.muestra, 15000).unref();
 }).catch(err => {
   logger.error('Error al sincronizar la base de datos:', err);
 });

@@ -9,6 +9,7 @@ jest.mock('../models', () => {
 });
 jest.mock('../services/pricing.service', () => ({
   aplicarDescuentoFecha: precio => precio,
+  precioConDescuentoVigente: (precioLista, precioUsuario) => (precioUsuario ?? precioLista),
   calcularPrecioBase: precio => ({ base: precio, efectivo: precio }),
 }));
 jest.mock('../services/stockPorTienda.service', () => ({ ajustarStockALaTienda: jest.fn().mockResolvedValue() }));
@@ -42,15 +43,15 @@ beforeEach(() => {
 
 afterEach(() => jest.restoreAllMocks());
 
-test('la portada anuncia 4000 y solo carga 100 fichas completas; la ficha 4000 sigue accesible', async () => {
+test('la portada anuncia 4000 y solo carga 25 fichas completas; la ficha 4000 sigue accesible', async () => {
   const res = await Service.obtenerPublica(tienda, null);
-  expect(res.catalogo_items).toHaveLength(100);
+  expect(res.catalogo_items).toHaveLength(25);
   expect(res.content.catalogo).toEqual({ total: 4000, paginado: true });
   expect(res.categorias_catalogo.find(c => c.nombre === 'Final').cantidad).toBe(100);
-  expect(ProductoVariante.findAll.mock.calls[0][0].where.producto_id[Op.in]).toHaveLength(100);
+  expect(ProductoVariante.findAll.mock.calls[0][0].where.producto_id[Op.in]).toHaveLength(25);
 
   const ficha = await Service.obtenerPublica(tienda, null, false, { asegurarContentId: 'prod-4000' });
-  expect(ficha.catalogo_items).toHaveLength(101);
+  expect(ficha.catalogo_items).toHaveLength(26);
   expect(ficha.catalogo_items.at(-1).content_id).toBe('prod-4000');
 });
 
@@ -60,6 +61,38 @@ test('la última página muestra el producto 4000 y consulta imágenes solo para
   expect(res.catalogo_items).toHaveLength(20);
   expect(res.catalogo_items.at(-1).content_id).toBe('prod-4000');
   expect(ProductoImagen.findAll.mock.calls[0][0].where.producto_id[Op.in]).toEqual(Array.from({ length: 20 }, (_, i) => 3981 + i));
+});
+
+test('el listado de categoría devuelve solo sus productos, filtros y paginación sin reconstruir diseños', async () => {
+  const res = await Service.obtenerCatalogoPublico(tienda, null, false, {
+    categoria: 'Final', porPagina: 25, pagina: 2, soloDatos: true,
+  });
+  expect(Object.keys(res).sort()).toEqual([
+    'disponible', 'catalogo_items', 'paginacion', 'categorias_disponibles', 'etiquetas_disponibles', 'marcas_disponibles',
+  ].sort());
+  expect(res.paginacion).toEqual({ pagina: 2, porPagina: 25, total: 100, totalPaginas: 4 });
+  expect(res.catalogo_items).toHaveLength(25);
+  expect(res.catalogo_items.every(i => i.categoria === 'Final')).toBe(true);
+  expect(ProductoImagen.findAll.mock.calls[0][0].where.producto_id[Op.in]).toHaveLength(25);
+  expect(require('../services/typography.service').resolver).not.toHaveBeenCalled();
+  expect(require('../services/payments/paymentService').getPublicGateways).not.toHaveBeenCalled();
+  expect(Landing.findOne.mock.calls[0][0].include.some(i => i.as === 'secciones')).toBe(false);
+});
+
+test('el servicio real publica solo el diseño de la vista solicitada', async () => {
+  const vistas = { producto: { html: 'Ficha' }, catalogo: { html: 'Catálogo' },
+    categoria: { html: 'Categoría' }, checkout: { html: 'Checkout' },
+    legales: { contacto: { html: 'Contacto' }, politica_envio: { html: 'Envíos' } } };
+  Landing.findOne.mockResolvedValue({ ...landing, content: { ...landing.content, vistas } });
+  const inicio = await Service.obtenerPublica(tienda, null);
+  expect(inicio.content.vistas).toEqual({});
+  expect(JSON.parse(JSON.stringify(inicio))).not.toHaveProperty('secciones');
+  for (const vistaPublica of ['checkout', 'categoria']) {
+    const pagina = await Service.obtenerPublica(tienda, null, false, { vistaPublica });
+    expect(pagina.content.vistas).toEqual({ [vistaPublica]: vistas[vistaPublica] });
+  }
+  const contacto = await Service.obtenerPublica(tienda, null, false, { vistaPublica: 'contacto' });
+  expect(contacto.content.vistas).toEqual({ legales: { contacto: vistas.legales.contacto } });
 });
 
 test('guarda los 4000 por el servicio real y reconstruye orden y valores por defecto', async () => {

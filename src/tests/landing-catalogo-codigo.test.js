@@ -34,7 +34,7 @@ describe('configuración del lienzo en el catálogo público', () => {
     expect(content.venta.inicio.encabezado.mostrar_nombre).toBe(false);
     expect(content.venta.inicio.menu_links.map(item => item.texto)).toEqual(['Inicio', 'Productos', 'Promociones', 'Nosotros', 'Contacto']);
     expect(content.codigo).toEqual(codigo);
-    expect(content.vistas).toMatchObject({ catalogo: vistas.catalogo, categoria: vistas.categoria, checkout: vistas.checkout });
+    expect(content.vistas).toEqual({ catalogo: vistas.catalogo });
     expect(content.vistas).not.toHaveProperty('productos');
     expect(content).not.toHaveProperty('overrides_producto');
   });
