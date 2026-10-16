@@ -75,6 +75,16 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
   let perdidos = 0;
   let reprogramados = 0;
 
+  // Foto del estado ACTUAL de cada pedido (no acumulado como los contadores
+  // de abajo): "Resumen de Pedidos" del dashboard necesita saber cuántos
+  // están HOY en cada paso del flujo operativo (Pendiente -> Confirmado ->
+  // Preparado -> Despachado -> Entregado), no cuántos "pasaron por" cada
+  // paso en algún momento. Se usa el `estado` tal cual, con la misma
+  // capitalización que castea envioController.ESTADOS_OPERATIVOS / lib/courier.js
+  // (frontend), así que el front puede indexar este mapa por esos mismos
+  // nombres sin normalizar nada.
+  const porEstadoActual = {};
+
   // Contadores por canal — 'landing' es su propio bucket (checkout propio con
   // formulario, ver landing.service.js crearCheckout) en vez de diluirse en
   // "otros": es la única forma de armar el Embudo de Formularios Web.
@@ -124,6 +134,9 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     if (isPerdido) perdidos++;
     if (isReprogramado) reprogramados++;
 
+    const estadoActual = e.estado || 'Pendiente';
+    porEstadoActual[estadoActual] = (porEstadoActual[estadoActual] || 0) + 1;
+
     // Primero el canal asignado; si el pedido todavía no fue migrado, se
     // intenta ubicar por el `origen` de texto. El guion bajo se normaliza a
     // guion porque los slugs del catálogo usan guion (META_ADS → meta-ads).
@@ -162,6 +175,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     perdidos, tasa_perdida: pctPerdida,
     reprogramados, tasa_reprogramacion: pctReprogramacion,
     en_transito: enTransito,
+    por_estado_actual: porEstadoActual,
     canales,
   };
 }

@@ -213,6 +213,7 @@ class McpService {
         filtrar_por_categoria: 'data-gesicomm-lista="productos" data-gesicomm-categoria="NOMBRE_O_SLUG" (muestra solo productos de esa categoría, ej: data-gesicomm-categoria="Accesorios Tech")',
         navegar_a_categoria: 'data-gesicomm-categoria-ir="NOMBRE_O_SLUG" (colocar en banners, links de navegación o tarjetas de categoría para llevar al cliente a esa vista)',
       },
+      libertad_creativa_diseno: 'LIBERTAD TOTAL: Tenés autonomía absoluta para maquetar el HTML y CSS desde cero (minimalista, bento, editorial, carruseles fluidos, dark mode, etc.). No estás obligado a mantener ninguna estructura previa; tu único requisito técnico es colocar los atributos data-gesicomm-* necesarios para que la compra, el checkout y el Meta Pixel funcionen.',
       restriccion_estricta_productos: 'ESTRICTO: Solo podés usar y mostrar los productos listados en "productos". NO inventes productos ficticios ni agregues combos o artículos de afuera que no existan en la lista "productos". Si mostrás ofertas o descuentos, usá los productos que tienen precio_antes_gs y descuento_porcentaje > 0.',
       diseno_cro_recomendado: {
         enfoque: 'Mobile-first (390px ancho base). Las compras en Paraguay se hacen un 95% desde smartphones.',
@@ -277,29 +278,25 @@ class McpService {
 
     const content = landing.content || {};
     const vistas = content.vistas || {};
+    let codigo = { html: '', css: '', js: '' };
+    let vistaRes = vista;
 
     if (vista === 'inicio') {
-      return {
-        vista: 'inicio',
-        codigo: content.codigo || { html: '', css: '', js: '' },
-      };
-    }
-
-    if (vista === 'producto' && contentId) {
+      codigo = content.codigo || { html: '', css: '', js: '' };
+    } else if (vista === 'producto' && contentId) {
       const propia = vistas.productos?.[contentId];
-      if (propia) return { vista: `propia:${contentId}`, codigo: propia };
-    }
-
-    if (vistas[vista]) {
-      return {
-        vista,
-        codigo: vistas[vista],
-      };
+      if (propia) {
+        vistaRes = `propia:${contentId}`;
+        codigo = propia;
+      }
+    } else if (vistas[vista]) {
+      codigo = vistas[vista];
     }
 
     return {
-      vista,
-      codigo: { html: '', css: '', js: '' },
+      vista: vistaRes,
+      codigo,
+      nota_diseno: 'Tenés libertad absoluta de rediseño. No estás obligado a conservar la estructura HTML ni CSS existente; podés crear una propuesta visual completamente nueva desde cero siempre que mantengas los atributos data-gesicomm-* requeridos por el motor comercial.',
     };
   }
 
