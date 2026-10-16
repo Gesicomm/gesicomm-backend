@@ -16,6 +16,10 @@ const LandingCodigoService = require('./landingCodigo.service');
 const AICodeValidator = require('./aiCodeValidator.service');
 const { PROMPT_MAESTRO } = require('../utils/promptMaestroMcp');
 
+// Tope de productos que entran al contexto comercial de la IA — ver el
+// comentario en obtenerContextoComercial().
+const MAX_PRODUCTOS_CONTEXTO_MCP = 60;
+
 class McpService {
 
   /**
@@ -111,10 +115,17 @@ class McpService {
     ];
 
     if (idsProductos.length) {
-      // Estrictamente los productos agregados a esta landing
+      // Estrictamente los productos agregados a esta landing — pero el
+      // lienzo en blanco permite hasta LIMITE_MANUAL (500) items curados a
+      // mano, y esta consulta no tenía tope: con un catálogo grande (varios
+      // cientos de productos, cada uno con imágenes/ofertas/categoría) la
+      // traía entera a memoria y tumbó el backend por OOM (2026-10-16). El
+      // contexto es para que la IA diseñe la landing, no un catálogo
+      // completo — 60 productos de sobra para esa tarea.
       productosDb = await Producto.findAll({
-        where: { id: { [Op.in]: idsProductos }, inquilino_id: tienda.inquilino_id, activo: true },
+        where: { id: { [Op.in]: idsProductos.slice(0, MAX_PRODUCTOS_CONTEXTO_MCP) }, inquilino_id: tienda.inquilino_id, activo: true },
         include: includeProducto,
+        limit: MAX_PRODUCTOS_CONTEXTO_MCP,
       });
     } else {
       // Si la landing no tiene items configurados todavía, se muestra el catálogo de la tienda
