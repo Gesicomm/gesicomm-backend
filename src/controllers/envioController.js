@@ -1727,8 +1727,17 @@ exports.createEnvio = async (req, res) => {
       ruc,
       nro_comprobante,
       origen_preferido_id,
+      // Override manual de Lead Orgánico/Campaña, elegido por el vendedor al
+      // cargar el lead (popup Venta por WhatsApp) — ver lead_tipo_manual en
+      // Envio.js. No es obligatorio: los pedidos web no lo mandan.
+      lead_tipo_manual,
       items
     } = req.body;
+
+    if (lead_tipo_manual !== undefined && lead_tipo_manual !== null && !['organico', 'campana'].includes(lead_tipo_manual)) {
+      await t.rollback();
+      return res.status(400).json({ error: "lead_tipo_manual debe ser 'organico', 'campana' o null." });
+    }
 
     const hoy = fecha || new Date().toISOString().split('T')[0];
     const fullCliente = `${nombre_cliente || ''} ${apellido_cliente || ''}`.trim() || 'Cliente';
@@ -1869,6 +1878,7 @@ exports.createEnvio = async (req, res) => {
         utm_campaign: utm_campaign || null,
         estado_comercial: estado_comercial || 'Confirmado',
         estado_logistico: estado_logistico || 'Pendiente',
+        lead_tipo_manual: lead_tipo_manual || null,
         items: items && items.length > 0 ? items.map(item => {
           const oferta = item.oferta_id ? ofertasPorId.get(Number(item.oferta_id)) : null;
           return {
