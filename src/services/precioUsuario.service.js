@@ -405,6 +405,18 @@ class PrecioUsuarioService {
     const pagina = Math.max(1, parseInt(page, 10) || 1);
     const limite = Math.min(10000, Math.max(1, parseInt(limit, 10) || 10));
     const offset = (pagina - 1) * limite;
+    // "Seleccionar todo el catálogo filtrado" (VitrinaGrid) pide limit=total:
+    // con un catálogo grande (miles de productos) el enriquecimiento de abajo
+    // (imágenes, categoría personalizada, ofertas, combos anidados — todo
+    // instancias de Sequelize, no las filas livianas del SQL crudo) tumbó el
+    // backend por OOM el 2026-10-16. Nada de lo que usa esa selección masiva
+    // (generar landing, cambiar precios, categorizar, armar combo, eliminar)
+    // necesita más que id/tipo/nombre/creado_por/precio — se salta el
+    // enriquecimiento entero a partir de cierto tamaño de página, sin bajarle
+    // el tope: así "seleccionar todo" sigue andando con cualquier cantidad de
+    // productos.
+    const UMBRAL_LIVIANO = 200;
+    const liviano = filtros.liviano === true || limite > UMBRAL_LIVIANO;
 
     const replacements = { usuario_id, inquilino_id };
     if (tiendaId != null) replacements.tienda_id = tiendaId;
@@ -552,6 +564,25 @@ class PrecioUsuarioService {
       sequelize.query(dataQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
       this.obtenerIdsAdministradores(inquilino_id),
     ]);
+    const total = parseInt(countResult[0]?.total || 0);
+
+    if (liviano) {
+      return {
+        items: paginatedItems.map(it => ({
+          id: it.id,
+          tipo: it.tipo,
+          nombre: it.nombre,
+          creado_por: it.creado_por,
+          precio_efectivo: parseFloat(it.precio_efectivo) || 0,
+        })),
+        total,
+        page: pagina,
+        totalPages: Math.max(1, Math.ceil(total / limite)),
+        categorias: [],
+        proveedores: [],
+        marcas: [],
+      };
+    }
 
     const visibilidadProductoPaginado = this.combinarVisibilidadProducto(
       this.visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly, administradoresIds),
@@ -567,8 +598,6 @@ class PrecioUsuarioService {
       tipo: i.tipo, referencia_id: i.id, precio: i.precio_usuario, categoria_id: i.categoria_personalizada_id,
     }));
 
-    const total = parseInt(countResult[0]?.total || 0);
-    
     const idsProductos = paginatedItems.filter(i => i.tipo === 'producto').map(i => i.id);
     const idsCombos = paginatedItems.filter(i => i.tipo === 'combo').map(i => i.id);
 

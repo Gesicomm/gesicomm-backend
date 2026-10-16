@@ -125,6 +125,35 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     expect(sequelize.query.mock.calls[1][0]).toContain('ORDER BY nombre ASC, tipo ASC, id ASC');
   });
 
+  test('"seleccionar todo" (limit grande) se salta el enriquecimiento pesado — ver OOM del 2026-10-16', async () => {
+    sequelize.query
+      .mockResolvedValueOnce([{ total: 3630 }]) // countQuery
+      .mockResolvedValueOnce(Array.from({ length: 3630 }, (_, i) => ({
+        id: i + 1, tipo: 'producto', nombre: `Producto ${i + 1}`, creado_por: 42, precio_efectivo: '1000',
+      }))); // dataQuery
+
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { limit: 3630 });
+
+    expect(resultado.total).toBe(3630);
+    expect(resultado.items).toHaveLength(3630);
+    expect(resultado.items[0]).toEqual({ id: 1, tipo: 'producto', nombre: 'Producto 1', creado_por: 42, precio_efectivo: 1000 });
+    // Nada de Sequelize con includes anidados (categoría/marca/proveedor/imágenes/combos) para esta selección masiva.
+    expect(Producto.findAll).not.toHaveBeenCalled();
+    expect(ProductoCombo.findAll).not.toHaveBeenCalled();
+    expect(ProductoImagen.findAll).not.toHaveBeenCalled();
+  });
+
+  test('liviano: true fuerza el modo liviano aunque el limit sea chico', async () => {
+    sequelize.query
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([{ id: 10, tipo: 'producto', nombre: 'X', creado_por: null, precio_efectivo: '500' }]);
+
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { limit: 10, liviano: true });
+
+    expect(resultado.items).toEqual([{ id: 10, tipo: 'producto', nombre: 'X', creado_por: null, precio_efectivo: 500 }]);
+    expect(Producto.findAll).not.toHaveBeenCalled();
+  });
+
   test('en modo usuario, todos incluye solo productos globales/admin y propios', async () => {
     sequelize.query
       .mockResolvedValueOnce([{ total: 0 }])
