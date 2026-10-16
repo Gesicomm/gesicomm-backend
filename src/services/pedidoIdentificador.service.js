@@ -46,7 +46,7 @@ function sqlReferenciaPedido(alias = 'Envio') {
     'Sin tienda'
   )`;
   const numeroSql = `CASE WHEN ${envio}.tienda_id IS NULL THEN ${envio}.numero_pedido ELSE ${envio}.numero_pedido_tienda END + 1000`;
-  const referenciaSql = `LEFT(REGEXP_REPLACE(UPPER(TRIM(${nombreSql})), '[[:space:]]', '', 'g'), 3) || '-' || CAST((${numeroSql}) AS TEXT)`;
+  const referenciaSql = `CASE WHEN ${envio}.es_lead = true THEN 'LEAD-' || CAST(${envio}.id AS TEXT) ELSE LEFT(REGEXP_REPLACE(UPPER(TRIM(${nombreSql})), '[[:space:]]', '', 'g'), 3) || '-' || CAST((${numeroSql}) AS TEXT) END`;
   return { numeroSql, referenciaSql };
 }
 
@@ -54,7 +54,7 @@ function filtroNumeroPedidoVisible(texto) {
   const valor = String(texto || '').replace(/^#/, '').trim();
   const { numeroSql, referenciaSql } = sqlReferenciaPedido();
   if (/^\d+$/.test(valor)) {
-    return Sequelize.where(Sequelize.literal(numeroSql), Number(valor));
+    return { [Op.or]: [Sequelize.where(Sequelize.literal(numeroSql), Number(valor)), { es_lead: true, id: Number(valor) }] };
   }
   return Sequelize.where(Sequelize.literal(referenciaSql), { [Op.iLike]: `%${valor}%` });
 }

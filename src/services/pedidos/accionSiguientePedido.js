@@ -1,4 +1,5 @@
 'use strict';
+const { esLeadWhatsapp } = require('../seguimiento/flujosBase');
 
 /**
  * La próxima acción operativa de un pedido según su estado: es lo que la
@@ -16,11 +17,12 @@ function accionSiguientePedido(envioLike) {
   // "En seguimiento" es un pendiente al que ya se le escribió: sigue estando
   // por confirmar, y la bandeja tiene que seguir ofreciendo confirmarlo.
   if (envio.estado === 'Pendiente' || envio.estado === 'EnSeguimiento') {
+    const consulta = esLeadWhatsapp(envio);
     return {
       tipo: 'confirmar',
-      titulo: 'Confirmar pedido',
-      descripcion: 'Validar datos, dirección y disponibilidad antes de mover stock.',
-      cta: 'Completar datos',
+      titulo: consulta ? 'Ayudar a elegir productos' : 'Confirmar pedido',
+      descripcion: consulta ? 'Agregar los productos elegidos por el cliente para iniciar su pedido.' : 'Validar datos, dirección y disponibilidad antes de mover stock.',
+      cta: consulta ? (envio.items?.length ? 'Confirmar compra' : 'Elegir productos') : 'Completar datos',
       tono: 'warning',
       siguiente_estado: 'Confirmado',
       prioridad: 10,

@@ -69,6 +69,8 @@ const LIMITE_POR_PAGINA_MAXIMO = 50;
 // la historia como "para enviar ahora".
 const VENTANA_RECOMPRA_DIAS = 60;
 const ES_WHATSAPP = `(UPPER(COALESCE("Envio"."origen", '')) LIKE '%WHATSAPP%')`;
+const ES_LEAD = `"Envio"."es_lead" = true`;
+const TIENE_PRODUCTOS = `EXISTS (SELECT 1 FROM envio_items consulta_item WHERE consulta_item.envio_id = "Envio"."id")`;
 // Mismo criterio que elegirRecordatorioVigente + clasificarCuando, en SQL:
 // el recordatorio que manda es el PENDIENTE si hay uno; si no, el VENCIDO.
 const TIENE_RECORDATORIO_VENCIDO = `(
@@ -402,7 +404,10 @@ function whereDeEtapa(tipo, ahora) {
   const etapa = etapaPorTipo(tipo);
   const condiciones = [tipo === 'SEGUIMIENTO_ENVIO' ? literal(seguimientoEnvioSql()) : sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: etapa.estados })];
   if (tipo === 'CONFIRMACION_PEDIDO_WEB') condiciones.push(literal(`NOT ${ES_WHATSAPP}`));
-  if (tipo === 'VENTA_WHATSAPP') condiciones.push(literal(ES_WHATSAPP));
+  if (['VENTA_WHATSAPP', 'CONSULTA_GENERAL_WHATSAPP', 'SEGUIMIENTO_PRODUCTO_WHATSAPP'].includes(tipo)) {
+    condiciones.push(literal(ES_WHATSAPP));
+    condiciones.push(literal(tipo === 'VENTA_WHATSAPP' ? `NOT (${ES_LEAD})` : `(${ES_LEAD}) AND ${tipo === 'CONSULTA_GENERAL_WHATSAPP' ? 'NOT ' : ''}${TIENE_PRODUCTOS}`));
+  }
   if (tipo === ETAPA_RECOMPRA) {
     // Corte grueso en SQL: un entregado no pudo modificarse por última vez
     // antes de entregarse. La fecha fina de entrega se revisa después.
@@ -440,10 +445,11 @@ async function cargarPendientes({ whereBase, usuarioId, esAdmin, etapa, ahora = 
   const filas = await Envio.findAll({
     where: { ...whereBase, [Op.and]: [...(whereBase[Op.and] || []), ...whereDeEtapa(etapa, ahora)] },
     attributes: [
-      'id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id', 'estado', 'origen', 'monto',
+      'id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id', 'estado', 'origen', 'monto', 'es_lead',
       'nombre_cliente', 'apellido_cliente', 'cliente', 'telefono', 'ciudad', 'created_at', 'updated_at',
       [literal(estadoSeguimientoSql()), 'estado_seguimiento'], [literal(fechaEntregaRahaSql()), 'entregado_raha_en'],
       [literal(statusRahaSql()), 'raha_status'],
+      [literal(TIENE_PRODUCTOS), 'tiene_productos'],
     ],
     order: [['id', 'DESC']],
     limit: LIMITE_PEDIDOS + 1,
@@ -500,8 +506,8 @@ async function conteoPorEtapa({ whereBase, ahora = new Date() }) {
   const [porEstado, entregados] = await Promise.all([
     Envio.findAll({
       where: { ...whereBase, [Op.and]: [...(whereBase[Op.and] || []), { [Op.or]: [sqlWhere(literal(estadoSeguimientoSql()), { [Op.in]: [...new Set(estadosVivos)] }), literal(seguimientoEnvioSql())] }] },
-      attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(statusRahaSql()), 'raha_status'], [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
-      group: [literal(estadoSeguimientoSql()), literal(statusRahaSql()), literal(ES_WHATSAPP)],
+      attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(statusRahaSql()), 'raha_status'], [literal(ES_WHATSAPP), 'es_whatsapp'], [literal(TIENE_PRODUCTOS), 'tiene_productos'], [literal(ES_LEAD), 'es_lead'], [fn('COUNT', col('id')), 'cantidad']],
+      group: [literal(estadoSeguimientoSql()), literal(statusRahaSql()), literal(ES_WHATSAPP), literal(TIENE_PRODUCTOS), literal(ES_LEAD)],
       raw: true,
     }),
     Envio.count({
@@ -513,7 +519,7 @@ async function conteoPorEtapa({ whereBase, ahora = new Date() }) {
   for (const fila of porEstado) {
     const cantidad = Number(fila.cantidad) || 0;
     const esWhatsapp = fila.es_whatsapp === true || fila.es_whatsapp === 't' || fila.es_whatsapp === 1;
-    const tipo = etapaDelPedido({ estado: fila.estado, raha_status: fila.raha_status, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
+    const tipo = etapaDelPedido({ estado: fila.estado, raha_status: fila.raha_status, tiene_productos: fila.tiene_productos, es_lead: fila.es_lead, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
     if (tipo) conteo[tipo] += cantidad;
   }
   conteo[ETAPA_RECOMPRA] = entregados;
@@ -543,8 +549,8 @@ async function vencidosPorEtapa({ whereBase, ahora = new Date() }) {
         literal(TIENE_RECORDATORIO_VENCIDO),
       ],
     },
-    attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(statusRahaSql()), 'raha_status'], [literal(ES_WHATSAPP), 'es_whatsapp'], [fn('COUNT', col('id')), 'cantidad']],
-    group: [literal(estadoSeguimientoSql()), literal(statusRahaSql()), literal(ES_WHATSAPP)],
+    attributes: [[literal(estadoSeguimientoSql()), 'estado'], [literal(statusRahaSql()), 'raha_status'], [literal(ES_WHATSAPP), 'es_whatsapp'], [literal(TIENE_PRODUCTOS), 'tiene_productos'], [literal(ES_LEAD), 'es_lead'], [fn('COUNT', col('id')), 'cantidad']],
+    group: [literal(estadoSeguimientoSql()), literal(statusRahaSql()), literal(ES_WHATSAPP), literal(TIENE_PRODUCTOS), literal(ES_LEAD)],
     raw: true,
   });
 
@@ -552,7 +558,7 @@ async function vencidosPorEtapa({ whereBase, ahora = new Date() }) {
   for (const fila of filas) {
     const cantidad = Number(fila.cantidad) || 0;
     const esWhatsapp = fila.es_whatsapp === true || fila.es_whatsapp === 't' || fila.es_whatsapp === 1;
-    const tipo = etapaDelPedido({ estado: fila.estado, raha_status: fila.raha_status, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
+    const tipo = etapaDelPedido({ estado: fila.estado, raha_status: fila.raha_status, tiene_productos: fila.tiene_productos, es_lead: fila.es_lead, origen: esWhatsapp ? 'WHATSAPP' : 'landing' });
     if (tipo) vencidos[tipo] += cantidad;
   }
   return vencidos;

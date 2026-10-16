@@ -49,3 +49,9 @@ test('la búsqueda numérica usa el correlativo público exacto y el texto se es
   expect(sql).toContain('LEFT(REGEXP_REPLACE(UPPER(TRIM(');
   expect(sql).toContain('t.id = "Envio".tienda_id');
 });
+
+
+test('los leads tienen referencia de contacto sin número de pedido', () => {
+  expect(numeroPedidoVisible({ id: 88, es_lead: true, numero_pedido: null, numero_pedido_tienda: null })).toBe('LEAD-88');
+  expect(numeroPedidoVisible({ id: 88, es_lead: true, numero_pedido_visible: 'ALI-1001' })).toBe('LEAD-88');
+});

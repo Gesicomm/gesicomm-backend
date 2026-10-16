@@ -61,11 +61,11 @@ const desgloseEnvio = desgloseDelivery;
 async function getResumenFunnel(whereBase, canalesCatalogo = []) {
   const envios = await Envio.findAll({
     where: whereBase,
-    attributes: ['id', 'estado', 'estado_comercial', 'estado_logistico', 'courier_id', 'origen', 'canal_venta_id', 'monto', 'lead_tipo_manual'],
+    attributes: ['id', 'estado', 'estado_comercial', 'estado_logistico', 'courier_id', 'origen', 'canal_venta_id', 'monto', 'lead_tipo_manual', 'es_lead'],
     raw: true,
   });
 
-  const totalCreados = envios.length;
+  const totalCreados = envios.filter(e => !e.es_lead).length;
   let confirmados = 0;
   let cancelados = 0;
   let despachados = 0;
@@ -153,7 +153,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     const isReprogramado = st === 'reprogramado' || stLog === 'reprogramado';
 
     if (isConfirmado) confirmados++;
-    if (isCancelado) cancelados++;
+    if (isCancelado && !e.es_lead) cancelados++;
     if (isDespachado) despachados++;
     if (isEntregado) entregados++;
     if (isDevuelto) devueltos++;
@@ -162,7 +162,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     if (isReprogramado) reprogramados++;
 
     const estadoActual = e.estado || 'Pendiente';
-    porEstadoActual[estadoActual] = (porEstadoActual[estadoActual] || 0) + 1;
+    if (!e.es_lead) porEstadoActual[estadoActual] = (porEstadoActual[estadoActual] || 0) + 1;
 
     // Primero el canal asignado; si el pedido todavía no fue migrado, se
     // intenta ubicar por el `origen` de texto. El guion bajo se normaliza a
@@ -213,6 +213,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
 
   return {
     total_creados: totalCreados,
+    total_leads: envios.length - totalCreados,
     confirmados, tasa_confirmacion: pctConfirmacion,
     cancelados, tasa_cancelacion: pctCancelacion,
     despachados, tasa_despacho: pctDespachados,

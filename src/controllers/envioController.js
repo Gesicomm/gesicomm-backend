@@ -1670,9 +1670,13 @@ exports.listEnviosPaginados = async (req, res) => {
       }
     }
 
+    const porTipoRegistro = await Envio.count({ where, group: ['es_lead'] });
+    const totalLeads = Number(porTipoRegistro.find(grupo => grupo.es_lead === true)?.count) || 0;
     res.json({
       data,
       total: count,
+      total_leads: totalLeads,
+      total_pedidos: count - totalLeads,
       page: pageNum,
       limit: limitNum,
       totalPages: Math.ceil(count / limitNum),
@@ -1739,6 +1743,12 @@ exports.createEnvio = async (req, res) => {
       return res.status(400).json({ error: "lead_tipo_manual debe ser 'organico', 'campana' o null." });
     }
 
+    const consultaGeneral = String(origen || '').toUpperCase().includes('WHATSAPP') && (!items || items.length === 0 || req.body.es_lead === true || (req.body.es_lead !== false && lead_tipo_manual === 'organico'));
+    if (consultaGeneral && ((req.body.estado && req.body.estado !== 'Pendiente') || (estado_comercial && estado_comercial !== 'Pendiente') || pago_anticipado || ((!items || items.length === 0) && Number(monto) > 0))) {
+      await t.rollback();
+      return res.status(400).json({ error: 'Un lead sin productos debe guardarse pendiente y sin importe ni pago.' });
+    }
+
     const hoy = fecha || new Date().toISOString().split('T')[0];
     const fullCliente = `${nombre_cliente || ''} ${apellido_cliente || ''}`.trim() || 'Cliente';
 
@@ -1770,8 +1780,8 @@ exports.createEnvio = async (req, res) => {
       ? new Map((await Oferta.findAll({ where: { id: ofertaIds, inquilino_id: req.usuario.tenantId }, transaction: t })).map(o => [o.id, o]))
       : new Map();
 
-    const numeroPedido = await PedidoNumeracion.reservarNumeroPedido(usuario_id, t);
-    const numeroPedidoTienda = await PedidoNumeracion.reservarNumeroPedidoTienda(req.usuario.tiendaId, t);
+    const numeroPedido = consultaGeneral ? null : await PedidoNumeracion.reservarNumeroPedido(usuario_id, t);
+    const numeroPedidoTienda = consultaGeneral ? null : await PedidoNumeracion.reservarNumeroPedidoTienda(req.usuario.tiendaId, t);
 
     for (const item of items || []) {
       if (!Number.isSafeInteger(Number(item.cantidad ?? 1)) || Number(item.cantidad ?? 1) <= 0) {
@@ -1790,7 +1800,7 @@ exports.createEnvio = async (req, res) => {
     // contra el catálogo (nombre + comisión), nunca se confía en lo que
     // mande el cliente para esos dos campos — mismo criterio que al marcar
     // Entregado (ver pedido #385 en los comentarios de updateEstadoEnvio).
-    const estadoFinalCreacion = req.body.estado || 'Confirmado';
+    const estadoFinalCreacion = req.body.estado || (consultaGeneral ? 'Pendiente' : 'Confirmado');
     let metodoPagoResuelto = null;
     let metodoPagoTextoResuelto = null;
     if (metodo_pago_id) {
@@ -1832,6 +1842,7 @@ exports.createEnvio = async (req, res) => {
         tienda_id: req.usuario.tiendaId || null,
         numero_pedido: numeroPedido,
         numero_pedido_tienda: numeroPedidoTienda,
+        es_lead: consultaGeneral,
         courier_id: courier_id || null,
         cliente: fullCliente,
         fecha: hoy,
@@ -1861,7 +1872,7 @@ exports.createEnvio = async (req, res) => {
         observaciones,
         // Pedido manual: si se pasa estado explícito (ej. "Pendiente"), se respeta;
         // por defecto nace en "Confirmado" (ver plan Gestión de Pedidos, sección 5).
-        estado: req.body.estado || 'Confirmado',
+        estado: estadoFinalCreacion,
         dispatchedAt: hoy,
         origen: origen || 'WEB',
         canal_venta_id: canal_venta_id || null,
@@ -1876,7 +1887,7 @@ exports.createEnvio = async (req, res) => {
         utm_source: utm_source || null,
         utm_medium: utm_medium || null,
         utm_campaign: utm_campaign || null,
-        estado_comercial: estado_comercial || 'Confirmado',
+        estado_comercial: estado_comercial || (consultaGeneral ? 'Pendiente' : 'Confirmado'),
         estado_logistico: estado_logistico || 'Pendiente',
         lead_tipo_manual: lead_tipo_manual || null,
         items: items && items.length > 0 ? items.map(item => {
@@ -2017,7 +2028,7 @@ exports.updateEstado = async (req, res) => {
       ruc, direccion, referencia, link_maps, costo_envio, delivery_a_cargo, pago_anticipado, metodo_pago,
       quiere_factura, razon_social, nro_comprobante, metodo_pago_id, comision_pct_aplicada, metodo_pago_canal,
       ciudad, departamento, nombre_cliente, apellido_cliente, telefono,
-      confirmador, origen, canal_venta_id, campaign_name, observaciones, monto, origen_preferido_id,
+      confirmador, origen, canal_venta_id, campaign_name, observaciones, monto, origen_preferido_id, items, lead_tipo_manual,
       // Obligatorio para pasar a Reprogramado — ver TRANSICIONES_VALIDAS.
       fecha_reprogramada, motivo_reprogramacion,
       // Lo que cuesta el viaje en falso que se acaba de hacer. Se acumula en
@@ -2065,6 +2076,63 @@ exports.updateEstado = async (req, res) => {
     }
 
     const updateData = {};
+    // WhatsApp permite elegir los productos al confirmar, antes de reservar
+    // stock. Se conserva el contacto y su historial en la misma transacción.
+    const esWhatsapp = String(envio.origen || '').toUpperCase().includes('WHATSAPP');
+    if (envio.es_lead && estado && !['Pendiente', 'EnSeguimiento', 'Cancelado', 'Confirmado'].includes(estado)) {
+      throw Object.assign(new Error('Convertí el lead en pedido antes de iniciar su logística.'), { status: 400 });
+    }
+    if (items !== undefined) {
+      if (!esWhatsapp || !['Pendiente', 'EnSeguimiento'].includes(envio.estado) || envio.stock_descontado) {
+        throw Object.assign(new Error('Solo se pueden elegir productos de WhatsApp antes de confirmar y reservar stock.'), { status: 400 });
+      }
+      if (!Array.isArray(items) || items.length > 80 || items.some(it => !it || !Number.isSafeInteger(Number(it.producto_id)) || Number(it.producto_id) <= 0 || !Number.isSafeInteger(Number(it.cantidad)) || Number(it.cantidad) <= 0 || !Number.isFinite(Number(it.precio_unitario)) || Number(it.precio_unitario) < 0 || (it.oferta_id && (!Number.isSafeInteger(Number(it.oferta_id)) || Number(it.oferta_id) <= 0)) || (it.variante_id && (!Number.isSafeInteger(Number(it.variante_id)) || Number(it.variante_id) <= 0)))) {
+        throw Object.assign(new Error('Revisá los productos, cantidades y precios del lead.'), { status: 400 });
+      }
+      const ids = [...new Set(items.map(it => Number(it.producto_id)))];
+      const productos = ids.length ? await Producto.findAll({ where: { id: { [Op.in]: ids }, inquilino_id: req.usuario.tenantId }, transaction: t }) : [];
+      if (productos.length !== ids.length) throw Object.assign(new Error('Hay productos que no pertenecen a esta cuenta.'), { status: 400 });
+      const sinVariante = items.filter(it => !it.variante_id && !it.oferta_id).map(it => Number(it.producto_id));
+      if (sinVariante.length && await ProductoVariante.count({ where: { producto_id: { [Op.in]: sinVariante }, activo: true }, transaction: t })) {
+        throw Object.assign(new Error('Selecciona la variante del producto.'), { status: 400 });
+      }
+      const varianteIds = [...new Set(items.map(it => Number(it.variante_id)).filter(Boolean))];
+      const variantes = varianteIds.length ? await ProductoVariante.findAll({ where: { id: { [Op.in]: varianteIds }, producto_id: { [Op.in]: ids }, activo: true }, transaction: t }) : [];
+      const variantePorId = new Map(variantes.map(v => [Number(v.id), v]));
+      if (items.some(it => it.variante_id && Number(variantePorId.get(Number(it.variante_id))?.producto_id) !== Number(it.producto_id))) throw Object.assign(new Error('Variante inválida para el producto.'), { status: 400 });
+      const ofertaIds = [...new Set(items.map(it => Number(it.oferta_id)).filter(Boolean))];
+      const ofertas = ofertaIds.length ? await Oferta.findAll({ where: { id: { [Op.in]: ofertaIds }, inquilino_id: req.usuario.tenantId }, transaction: t }) : [];
+      const ofertaPorId = new Map(ofertas.map(o => [Number(o.id), o]));
+      if (items.some(it => it.oferta_id && Number(ofertaPorId.get(Number(it.oferta_id))?.producto_ancla_id) !== Number(it.producto_id))) throw Object.assign(new Error('Oferta inválida para el producto.'), { status: 400 });
+      const porId = new Map(productos.map(p => [Number(p.id), p]));
+      if ((envio.items || []).length) await EnvioItem.destroy({ where: { envio_id: envio.id }, transaction: t });
+      envio.items = await EnvioItem.bulkCreate(items.map(it => ({
+        envio_id: envio.id, producto_id: Number(it.producto_id), nombre_producto: porId.get(Number(it.producto_id)).nombre,
+        variante_id: Number(it.variante_id) || null,
+        oferta_id: Number(it.oferta_id) || null,
+        oferta_codigo: ofertaPorId.get(Number(it.oferta_id))?.codigo || null,
+        oferta_nombre: ofertaPorId.get(Number(it.oferta_id))?.nombre || null,
+        cantidad: Number(it.cantidad), precio_unitario: Number(it.precio_unitario), subtotal: Number(it.cantidad) * Number(it.precio_unitario),
+      })), { transaction: t });
+      await registrarLeadsDeCampana({ envioId: envio.id, usuarioId: envio.usuario_id, inquilinoId: req.usuario.tenantId, origen: envio.origen, items: envio.items, transaction: t });
+      await registrarHistorial(envio.id, usuario_id, items.length ? 'Productos agregados al lead de WhatsApp' : 'Consulta general actualizada', t);
+    }
+    if (lead_tipo_manual !== undefined) {
+      if (lead_tipo_manual !== null && !['organico', 'campana'].includes(lead_tipo_manual)) throw Object.assign(new Error('Tipo de lead inválido.'), { status: 400 });
+      updateData.lead_tipo_manual = lead_tipo_manual;
+    }
+    if (esWhatsapp && !(envio.items || []).length && (estado === 'Confirmado' || estado_comercial === 'Confirmado')) {
+      throw Object.assign(new Error('Agregá los productos elegidos antes de confirmar el pedido.'), { status: 400 });
+    }
+    if (envio.es_lead && estado === 'Confirmado') {
+      updateData.es_lead = false;
+      updateData.estado_comercial = 'Confirmado';
+      updateData.numero_pedido = envio.numero_pedido || await PedidoNumeracion.reservarNumeroPedido(envio.usuario_id, t);
+      updateData.numero_pedido_tienda = envio.numero_pedido_tienda || await PedidoNumeracion.reservarNumeroPedidoTienda(envio.tienda_id, t);
+    }
+    if (envio.es_lead && estado_comercial === 'Confirmado' && estado !== 'Confirmado') {
+      throw Object.assign(new Error('Usá Crear y confirmar pedido para convertir este lead.'), { status: 400 });
+    }
     if (estado !== undefined && estado !== envio.estado) {
       if (estado === 'Devuelto' || estado === 'Perdido') {
         await t.rollback();
@@ -2331,6 +2399,10 @@ exports.updateEstado = async (req, res) => {
     if (campaign_name !== undefined) updateData.campaign_name = campaign_name;
     if (observaciones !== undefined) updateData.observaciones = observaciones;
     if (monto !== undefined) updateData.monto = monto;
+    if (items !== undefined) {
+      const flete = (delivery_a_cargo ?? envio.delivery_a_cargo) === 'negocio' ? 0 : Number(costo_envio ?? envio.costo_envio) || 0;
+      updateData.monto = envio.items.reduce((total, it) => total + Number(it.subtotal), 0) + flete;
+    }
     if (nombre_cliente !== undefined || apellido_cliente !== undefined) {
       updateData.nombre_cliente = nombre_cliente !== undefined ? nombre_cliente : envio.nombre_cliente;
       updateData.apellido_cliente = apellido_cliente !== undefined ? apellido_cliente : envio.apellido_cliente;
@@ -3143,7 +3215,7 @@ exports.conteoPorEstado = async (req, res) => {
         attributes: [
           [
             Sequelize.literal(`COALESCE(SUM(CASE
-              WHEN "Envio"."estado" NOT IN ('Entregado', 'Cancelado', 'Devuelto', 'Perdido')
+              WHEN "Envio"."es_lead" = false AND "Envio"."estado" NOT IN ('Entregado', 'Cancelado', 'Devuelto', 'Perdido')
               THEN COALESCE("Envio"."monto", 0) + COALESCE("Envio"."costo_envio", 0)
               ELSE 0
             END), 0)`),
@@ -3414,7 +3486,7 @@ exports.dashboardGeneralPedidos = async (req, res) => {
     const envios = await Envio.findAll({
       where, include,
       attributes: [
-        'id', 'estado', 'estado_financiero', 'fecha_reprogramada', 'courier_id',
+        'id', 'estado', 'estado_financiero', 'fecha_reprogramada', 'courier_id', 'es_lead',
         'abastecimiento_estado', 'abastecimiento_costo',
       ],
     });
@@ -3440,6 +3512,7 @@ exports.dashboardGeneralPedidos = async (req, res) => {
     const courierMap = new Map(); // courier_id -> { nombre, despachados, entregados, devueltos, perdidos }
 
     for (const e of envios) {
+      if (e.es_lead) continue;
       resultadoOperativo.ingresados += 1;
       if (CONFIRMADO_EN_ADELANTE.includes(e.estado)) resultadoOperativo.confirmados += 1;
       if (e.estado === 'Entregado') resultadoOperativo.entregados += 1;

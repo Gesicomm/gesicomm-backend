@@ -94,7 +94,9 @@ const FLUJO_RECUPERACION = {
     { id: 502, orden: 2, nombre: 'Buscar una solución', espera_sugerida_minutos: 1440, activo: true },
   ],
 };
-const TODOS_LOS_FLUJOS = [FLUJO, FLUJO_WHATSAPP, FLUJO_ENVIO, FLUJO_RECOMPRA, FLUJO_RECUPERACION];
+const FLUJO_CONSULTA = { id: 60, usuario_id: 7, tipo: 'CONSULTA_GENERAL_WHATSAPP', nombre: 'Consulta general por WhatsApp', predeterminado: true, fases: [{ id: 601, orden: 1, nombre: 'Bienvenida', espera_sugerida_minutos: 0, activo: true }] };
+const FLUJO_PRODUCTO = { id: 70, usuario_id: 7, tipo: 'SEGUIMIENTO_PRODUCTO_WHATSAPP', nombre: 'Seguimiento de producto por WhatsApp', predeterminado: true, fases: [{ id: 701, orden: 1, nombre: 'Presentación del producto', espera_sugerida_minutos: 0, activo: true }] };
+const TODOS_LOS_FLUJOS = [FLUJO_PRODUCTO, FLUJO_CONSULTA, FLUJO, FLUJO_WHATSAPP, FLUJO_ENVIO, FLUJO_RECOMPRA, FLUJO_RECUPERACION];
 
 function armar({ etapa = 'CONFIRMACION_PEDIDO_WEB', pedidos, recordatorios = [], contactos = [], flujos = TODOS_LOS_FLUJOS, entregas }) {
   return servicio.armarPendientes({ etapa, pedidos, recordatorios, contactos, flujos, entregas, ahora: AHORA });
@@ -464,12 +466,12 @@ describe('tableroDeSeguimiento', () => {
     expect(where[Op.and][0].attribute.val).toContain('speedbox_pedidos');
     expect(res.etapa).toBe('CONFIRMACION_PEDIDO_WEB');
     expect(res.etapas.map((e) => [e.tipo, e.pedidos])).toEqual([
-      ['CONFIRMACION_PEDIDO_WEB', 12], ['VENTA_WHATSAPP', 0], ['SEGUIMIENTO_ENVIO', 4], ['ESCALAMIENTO_VENTAS', 3], ['RECUPERACION_CLIENTES', 5],
+      ['CONFIRMACION_PEDIDO_WEB', 12], ['CONSULTA_GENERAL_WHATSAPP', 0], ['SEGUIMIENTO_PRODUCTO_WHATSAPP', 0], ['VENTA_WHATSAPP', 0], ['SEGUIMIENTO_ENVIO', 4], ['ESCALAMIENTO_VENTAS', 3], ['RECUPERACION_CLIENTES', 5],
     ]);
     // Vencidos por pestaña: la etapa abierta usa el número del tablero (0:
     // los 12 son nuevos, ninguno tenía recordatorio); las otras, el del conteo.
     expect(res.vencidos).toBe(0);
-    expect(res.etapas.map((e) => e.vencidos)).toEqual([0, 0, 2, 1, 3]);
+    expect(res.etapas.map((e) => e.vencidos)).toEqual([0, 0, 0, 0, 2, 1, 3]);
     // No faltaba ningún flujo base: no se creó nada.
     expect(WhatsappFlujo.create).not.toHaveBeenCalled();
 
@@ -508,9 +510,9 @@ describe('los cinco flujos base', () => {
 
     const creados = await flujoService.asegurarFlujosBase({ usuarioId: 7 });
 
-    expect(creados).toBe(4);
+    expect(creados).toBe(6);
     expect(WhatsappFlujo.create.mock.calls.map(([d]) => [d.tipo, d.predeterminado, d.usuario_id])).toEqual([
-      ['VENTA_WHATSAPP', true, 7], ['SEGUIMIENTO_ENVIO', true, 7], ['ESCALAMIENTO_VENTAS', true, 7], ['RECUPERACION_CLIENTES', true, 7],
+      ['CONSULTA_GENERAL_WHATSAPP', true, 7], ['SEGUIMIENTO_PRODUCTO_WHATSAPP', true, 7], ['VENTA_WHATSAPP', true, 7], ['SEGUIMIENTO_ENVIO', true, 7], ['ESCALAMIENTO_VENTAS', true, 7], ['RECUPERACION_CLIENTES', true, 7],
     ]);
     // El primer mensaje de recompra nace con 3 días desde la entrega.
     const primeraDeRecompra = WhatsappFlujoFase.create.mock.calls.map(([d]) => d).find((d) => d.nombre === '¿Cómo te fue?');
@@ -531,7 +533,7 @@ describe('los cinco flujos base', () => {
   test('si quedó el flujo viejo Contacto inicial, crea Confirmación de pedido web como predeterminado sin borrarlo', async () => {
     WhatsappFlujo.findAll.mockResolvedValue([
       { id: 99, tipo: 'CONFIRMACION_PEDIDO_WEB', nombre: 'Contacto inicial', predeterminado: true, activo: true },
-      ...TODOS_LOS_FLUJOS.slice(1).map((f) => ({ id: f.id, tipo: f.tipo, nombre: f.nombre, predeterminado: true, activo: true })),
+      ...TODOS_LOS_FLUJOS.filter(f => f.tipo !== 'CONFIRMACION_PEDIDO_WEB').map((f) => ({ id: f.id, tipo: f.tipo, nombre: f.nombre, predeterminado: true, activo: true })),
     ]);
     WhatsappFlujo.create.mockImplementation(async (datos) => ({ id: 501, ...datos }));
     WhatsappFlujoFase.create.mockResolvedValue({});
@@ -627,6 +629,29 @@ describe('marcar una fase como completada', () => {
     SeguimientoContacto.findOne.mockReset();
     SeguimientoRecordatorio.findAll.mockResolvedValue([]);
     SeguimientoContacto.count.mockResolvedValue(1);
+  });
+
+  test('abrir WhatsApp guarda y genera el enlace solo para el producto elegido', async () => {
+    Object.assign(envio, { es_lead: true, origen: 'WHATSAPP', items: [{ producto_id: 10, nombre_producto: 'Silla' }, { producto_id: 20, nombre_producto: 'Mesa' }] });
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValue({ ...FASE_2, mensaje: 'Sobre {productos}', flujo: { nombre: 'Producto', tipo: 'SEGUIMIENTO_PRODUCTO_WHATSAPP' } });
+    SeguimientoContacto.create.mockResolvedValueOnce({ id: 998 });
+    const res = respuesta();
+    await controller.registrarContacto(peticion({ fase_id: 102, producto_ids: [20] }), res, jest.fn());
+    expect(res.codigo).toBe(201);
+    expect(decodeURIComponent(res.cuerpo.whatsapp_url)).toContain('Sobre Mesa');
+    expect(decodeURIComponent(res.cuerpo.whatsapp_url)).not.toContain('Silla');
+    expect(SeguimientoContacto.create).toHaveBeenCalledWith(expect.objectContaining({ envio_id: 50, fase_id: 102, mensaje_generado: 'Sobre Mesa' }), expect.anything());
+  });
+
+  test('completar una fase registra el producto elegido sin reutilizar el mensaje de otro producto', async () => {
+    Object.assign(envio, { es_lead: true, origen: 'WHATSAPP', items: [{ producto_id: 10, nombre_producto: 'Silla' }, { producto_id: 20, nombre_producto: 'Mesa' }] });
+    WhatsappFlujoFase.findOne.mockReset().mockResolvedValueOnce({ ...FASE_2, mensaje: 'Sobre {productos}', flujo: { nombre: 'Producto', tipo: 'SEGUIMIENTO_PRODUCTO_WHATSAPP' } }).mockResolvedValueOnce(null);
+    SeguimientoContacto.findOne.mockResolvedValue(null);
+    SeguimientoContacto.create.mockResolvedValueOnce({ id: 999 });
+    const res = respuesta();
+    await controller.completarFase(peticion({ producto_ids: [20] }), res, jest.fn());
+    expect(SeguimientoContacto.create).toHaveBeenCalledWith(expect.objectContaining({ envio_id: 50, fase_id: 102, mensaje_generado: 'Sobre Mesa' }), expect.anything());
+    expect(SeguimientoContacto.findOne).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ mensaje_generado: 'Sobre Mesa' }) }));
   });
 
   test('la apertura pendiente pasa a completada y el mensaje siguiente queda agendado solo', async () => {
@@ -986,5 +1011,45 @@ describe('seguimiento de los pedidos de la bandeja', () => {
     expect(mapa.size).toBe(0);
     expect(WhatsappFlujo.findAll).not.toHaveBeenCalled();
     expect(SeguimientoContacto.findAll).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('consultas generales sin productos', () => {
+  test('elige bienvenida sin productos y venta al agregar productos al mismo lead', () => {
+    const lead = pedido(900, { origen: 'WHATSAPP', es_lead: true, items: [] });
+    expect(etapaDelPedido(lead)).toBe('CONSULTA_GENERAL_WHATSAPP');
+    const [bienvenida] = armar({ etapa: 'CONSULTA_GENERAL_WHATSAPP', pedidos: [lead] });
+    expect(bienvenida).toMatchObject({ envio_id: 900, flujo_id: 60, fase_id: 601 });
+    lead.items.push({ producto_id: 1, cantidad: 1 });
+    expect(etapaDelPedido(lead)).toBe('SEGUIMIENTO_PRODUCTO_WHATSAPP');
+    const [producto] = armar({ etapa: 'SEGUIMIENTO_PRODUCTO_WHATSAPP', pedidos: [lead] });
+    expect(producto).toMatchObject({ envio_id: 900, flujo_id: 70, fase_id: 701 });
+    expect(lead.es_lead).toBe(true);
+    lead.es_lead = false;
+    expect(etapaDelPedido(lead)).toBe('VENTA_WHATSAPP');
+    const [venta] = armar({ etapa: 'VENTA_WHATSAPP', pedidos: [lead] });
+    expect(venta).toMatchObject({ envio_id: 900, flujo_id: 20, fase_id: 201 });
+  });
+
+  test('la lectura SQL y la lectura con ítems clasifican igual', () => {
+    for (const estado of ['Pendiente', 'EnSeguimiento']) {
+      expect(etapaDelPedido({ estado, origen: 'WHATSAPP', tiene_productos: false })).toBe('CONSULTA_GENERAL_WHATSAPP');
+      expect(etapaDelPedido({ estado, origen: 'WHATSAPP', tiene_productos: true })).toBe('VENTA_WHATSAPP');
+      expect(etapaDelPedido({ estado, origen: 'LANDING', items: [] })).toBe('CONFIRMACION_PEDIDO_WEB');
+    }
+    expect(etapaDelPedido({ estado: 'Cancelado', origen: 'WHATSAPP', items: [] })).toBeNull();
+  });
+
+  test('crea el flujo de bienvenida para una cuenta existente, sin resumen de pedido', async () => {
+    jest.clearAllMocks();
+    WhatsappFlujo.findAll.mockResolvedValue(TODOS_LOS_FLUJOS.filter(f => f.tipo !== 'CONSULTA_GENERAL_WHATSAPP').map(f => ({ tipo: f.tipo })));
+    WhatsappFlujo.create.mockImplementation(async datos => ({ id: 700, ...datos }));
+    WhatsappFlujoFase.create.mockResolvedValue({});
+    expect(await flujoService.asegurarFlujosBase({ usuarioId: 7 })).toBe(1);
+    expect(WhatsappFlujo.create).toHaveBeenCalledWith(expect.objectContaining({ tipo: 'CONSULTA_GENERAL_WHATSAPP', activacion: 'AUTOMATICA' }), expect.anything());
+    const fases = WhatsappFlujoFase.create.mock.calls.map(([f]) => f);
+    expect(fases.map(f => f.nombre)).toEqual(['Bienvenida', 'Ayuda para elegir', 'Retomar la consulta']);
+    expect(fases.every(f => !/\{productos\}|\{total_gs\}|\{pedido_id\}/.test(f.mensaje))).toBe(true);
   });
 });

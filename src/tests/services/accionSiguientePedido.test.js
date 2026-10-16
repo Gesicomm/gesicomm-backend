@@ -46,3 +46,8 @@ test('el circuito sigue en orden: confirmar, preparar, despachar, resultado, ren
   expect(tipo('Entregado', { estado_financiero: 'pendiente_liquidacion' })).toBe('rendir');
   expect(tipo('Cancelado')).toBe('cerrado');
 });
+
+
+test('un lead sin productos ofrece elegir productos antes de confirmar', () => {
+  expect(accionSiguientePedido({ estado: 'Pendiente', origen: 'WHATSAPP', items: [] })).toMatchObject({ cta: 'Elegir productos', tipo: 'confirmar' });
+});

@@ -4,6 +4,7 @@ async function migrarNumeroPedidoTienda(sequelize) {
   await sequelize.transaction(async (transaction) => {
     const query = sql => sequelize.query(sql, { transaction });
     await query(`ALTER TABLE envios ADD COLUMN IF NOT EXISTS numero_pedido_tienda INTEGER`);
+    await query(`ALTER TABLE envios ADD COLUMN IF NOT EXISTS es_lead BOOLEAN NOT NULL DEFAULT false`);
     await query(`CREATE TABLE IF NOT EXISTS pedido_tienda_counters (
       tienda_id INTEGER PRIMARY KEY REFERENCES tiendas(id) ON DELETE CASCADE,
       ultimo_numero_pedido INTEGER NOT NULL DEFAULT 0,
@@ -25,7 +26,7 @@ async function migrarNumeroPedidoTienda(sequelize) {
     await query(`
       WITH maximos AS (
         SELECT tienda_id, MAX(numero_pedido_tienda) AS ultimo FROM envios
-        WHERE tienda_id IS NOT NULL GROUP BY tienda_id
+        WHERE tienda_id IS NOT NULL AND es_lead = false GROUP BY tienda_id
       ), numerados AS (
         SELECT e.id, ROW_NUMBER() OVER (
           PARTITION BY e.tienda_id ORDER BY e.created_at, e.id
@@ -33,7 +34,7 @@ async function migrarNumeroPedidoTienda(sequelize) {
         FROM envios e
         LEFT JOIN maximos m ON m.tienda_id = e.tienda_id
         LEFT JOIN pedido_tienda_counters c ON c.tienda_id = e.tienda_id
-        WHERE e.tienda_id IS NOT NULL AND e.numero_pedido_tienda IS NULL
+        WHERE e.tienda_id IS NOT NULL AND e.numero_pedido_tienda IS NULL AND e.es_lead = false
       )
       UPDATE envios e SET numero_pedido_tienda = n.numero
       FROM numerados n WHERE e.id = n.id
@@ -41,7 +42,7 @@ async function migrarNumeroPedidoTienda(sequelize) {
     await query(`
       INSERT INTO pedido_tienda_counters (tienda_id, ultimo_numero_pedido)
       SELECT tienda_id, MAX(numero_pedido_tienda) FROM envios
-      WHERE tienda_id IS NOT NULL GROUP BY tienda_id
+      WHERE tienda_id IS NOT NULL AND numero_pedido_tienda IS NOT NULL AND es_lead = false GROUP BY tienda_id
       ON CONFLICT (tienda_id) DO UPDATE SET
         ultimo_numero_pedido = GREATEST(pedido_tienda_counters.ultimo_numero_pedido, EXCLUDED.ultimo_numero_pedido),
         updated_at = NOW()

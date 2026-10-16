@@ -1,5 +1,6 @@
 'use strict';
 const { estadoParaSeguimiento, esRahaConfirmado } = require('./estadoPedido');
+const { esLeadWhatsapp, etapaDelPedido } = require('./flujosBase');
 
 function estadoActivadorDeFase(fase, tipo) {
   const configurado = fase?.estado_activador || fase?.transicion_estado_hasta
@@ -17,6 +18,8 @@ function estadoActivadorDeFase(fase, tipo) {
 }
 
 function faseDisponibleParaPedido(fase, pedido, tipo) {
+  if (['CONSULTA_GENERAL_WHATSAPP', 'SEGUIMIENTO_PRODUCTO_WHATSAPP'].includes(tipo) && etapaDelPedido(pedido) !== tipo) return false;
+  if (['VENTA_WHATSAPP', 'CONFIRMACION_PEDIDO_WEB'].includes(tipo) && esLeadWhatsapp(pedido)) return false;
   if (pedido?.raha_logistica?.gestionado && ['CONFIRMACION_PEDIDO_WEB', 'VENTA_WHATSAPP'].includes(tipo)) return false;
   const estado = estadoParaSeguimiento(pedido);
   if (tipo === 'RECUPERACION_CLIENTES' && !['Devuelto', 'Perdido'].includes(estado)) return false;

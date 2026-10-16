@@ -19,6 +19,7 @@ const { ESTADOS_ABIERTOS, elegirRecordatorioVigente } = require('../services/seg
 const { FASE_COMPLETADA } = require('../services/seguimiento/pendientesSeguimiento.service');
 const { registrarHistorial } = require('../utils/historial');
 const { resolverMensaje } = require('../services/seguimiento/plantillaResolver.service');
+const { seleccionarProductosMensaje } = require('../services/seguimiento/contextoProductosMensaje');
 const { referenciaPedido } = require('../services/pedidoIdentificador.service');
 const { imagenesDelPedido, imagenParaCopiar } = require('../services/seguimiento/imagenesPedido.service');
 const { encolarRecordatorio } = require('../services/queue/seguimientoQueue');
@@ -73,11 +74,11 @@ async function cargarEnvioODevolver404(req, res, { conItems = false, conImagenes
   const include = [];
   if (conItems || conImagenes) {
     const items = { model: EnvioItem, as: 'items' };
-    if (conImagenes) items.include = [
-      { model: Producto, attributes: ['id', 'nombre'], include: [
+    items.include = [
+      { model: Producto, attributes: ['id', 'nombre', 'descripcion_corta', 'descripcion_larga', 'sobre_este_producto', 'propuesta_valor', 'beneficios'], ...(conImagenes ? { include: [
         { model: ProductoImagen, as: 'imagenes', attributes: ['id', 'url', 'storage_key', 'variante_id', 'es_principal', 'orden'] },
-      ] },
-      { model: Oferta, attributes: ['id', 'imagen_url', 'imagen_storage_key'] },
+      ] } : {}) },
+      ...(conImagenes ? [{ model: Oferta, attributes: ['id', 'imagen_url', 'imagen_storage_key'] }] : []),
     ];
     include.push(items, { model: Courier, attributes: ['id', 'nombre', 'telefono'] });
   }
@@ -107,19 +108,20 @@ async function cargarEnvioODevolver404(req, res, { conItems = false, conImagenes
 exports.flujosDelPedido = async (req, res) => {
   const envio = await cargarEnvioODevolver404(req, res, { conImagenes: true });
   if (!envio) return;
+  const contextoMensaje = seleccionarProductosMensaje(envio, req.query?.producto_ids);
   await flujoService.asegurarFlujosBase({ usuarioId: req.usuario.id });
   let flujos = await flujoService.estadoFlujosDelPedido(envio.id, {
     usuarioId: req.usuario.id,
     esAdmin: esAdministrador(req),
   });
-  if (envio.raha_logistica?.gestionado) flujos = flujos.filter(f => !['CONFIRMACION_PEDIDO_WEB', 'VENTA_WHATSAPP'].includes(f.tipo));
+  if (envio.raha_logistica?.gestionado) flujos = flujos.filter(f => !['CONFIRMACION_PEDIDO_WEB', 'VENTA_WHATSAPP', 'CONSULTA_GENERAL_WHATSAPP', 'SEGUIMIENTO_PRODUCTO_WHATSAPP'].includes(f.tipo));
   // El mensaje tal como va a salir para ESTE pedido, con la misma función
   // que arma el enlace de WhatsApp: la vista previa del panel no puede
   // mostrar algo distinto de lo que después se abre.
-  const imagenes = imagenesDelPedido(envio).map(({ storage_key, ...imagen }) => imagen);
+  const imagenes = imagenesDelPedido(contextoMensaje).map(({ storage_key, ...imagen }) => imagen);
   for (const flujo of flujos) {
     for (const fase of flujo.fases || []) {
-      fase.mensaje_resuelto = resolverMensaje(fase.mensaje, envio);
+      fase.mensaje_resuelto = resolverMensaje(fase.mensaje, contextoMensaje);
       fase.imagenes_productos = imagenes;
       fase.disponible = faseDisponibleParaPedido(fase, envio, flujo.tipo);
       fase.superada = faseSuperadaPorLogistica(fase, envio, flujo.tipo);
@@ -202,7 +204,8 @@ exports.registrarContacto = async (req, res) => {
     const telefono = telefonoOverride || envio.telefono;
     if (!telefono) return res.status(400).json({ error: 'El pedido no tiene teléfono registrado' });
 
-    const mensajeResuelto = resolverMensaje(mensajeBase, envio);
+    const contextoMensaje = seleccionarProductosMensaje(envio, req.body.producto_ids);
+    const mensajeResuelto = resolverMensaje(mensajeBase, contextoMensaje);
 
     const etiquetaAutomatica = fase?.etiqueta_id || plantilla?.etiqueta_id || null;
 
@@ -276,7 +279,7 @@ exports.registrarContacto = async (req, res) => {
     });
   } catch (error) {
     logger.error({ mensaje: '[Seguimiento] Error registrando contacto.', error: error.message });
-    res.status(500).json({ error: 'Error al registrar el contacto' });
+    res.status(error.status || 500).json({ error: error.status ? error.message : 'Error al registrar el contacto' });
   }
 };
 
@@ -336,8 +339,10 @@ exports.completarFase = async (req, res) => {
   if (!faseDisponibleParaPedido(fase, envio, fase.flujo?.tipo)) {
     return res.status(422).json({ error: `Este mensaje espera que logística marque el pedido como ${estadoActivadorDeFase(fase, fase.flujo?.tipo) || (fase.flujo?.tipo === 'RECUPERACION_CLIENTES' ? 'Devuelto o Perdido' : 'Preparado')}.` });
   }
+  const contextoMensaje = seleccionarProductosMensaje(envio, req.body?.producto_ids);
+  const mensajeActual = resolverMensaje(fase.mensaje, contextoMensaje);
   const resultado = await sequelize.transaction(async (t) => {
-    const base = { envio_id: envio.id, fase_id: fase.id };
+    const base = { envio_id: envio.id, fase_id: fase.id, ...(req.body?.producto_ids ? { mensaje_generado: mensajeActual } : {}) };
     let contacto = await SeguimientoContacto.findOne({
       where: { ...base, estado: 'ABIERTO_EN_WHATSAPP' },
       order: [['created_at', 'DESC']],
@@ -357,7 +362,7 @@ exports.completarFase = async (req, res) => {
           etiqueta_id: fase.etiqueta_id || null,
           usuario_id,
           telefono: envio.telefono || '',
-          mensaje_generado: resolverMensaje(fase.mensaje, envio),
+          mensaje_generado: mensajeActual,
           canal: 'WHATSAPP',
           estado: FASE_COMPLETADA,
         }, { transaction: t });

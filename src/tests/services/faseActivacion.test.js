@@ -75,3 +75,15 @@ test('las variables admiten datos planos y no inventan contactos cuando falta co
   expect(resolverMensaje('{courier_nombre} {courier_telefono}', { courier_nombre: 'Express', courier_telefono: '0985 555 555' })).toBe('Express 0985 555 555');
   expect(resolverMensaje('{courier_nombre}/{courier_telefono}', {})).toBe('/');
 });
+
+
+test('un lead sin productos solo habilita consulta general y cambia al elegir productos', () => {
+  const lead = { estado: 'Pendiente', origen: 'WHATSAPP', items: [] };
+  expect(faseDisponibleParaPedido({}, lead, 'CONSULTA_GENERAL_WHATSAPP')).toBe(true);
+  expect(faseDisponibleParaPedido({}, lead, 'VENTA_WHATSAPP')).toBe(false);
+  lead.items.push({ producto_id: 1 });
+  expect(faseDisponibleParaPedido({}, lead, 'CONSULTA_GENERAL_WHATSAPP')).toBe(false);
+  expect(faseDisponibleParaPedido({}, lead, 'VENTA_WHATSAPP')).toBe(true);
+  lead.estado = 'Cancelado';
+  expect(faseDisponibleParaPedido({}, lead, 'CONSULTA_GENERAL_WHATSAPP')).toBe(false);
+});

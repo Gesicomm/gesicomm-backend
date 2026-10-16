@@ -57,3 +57,17 @@ test('la copia entrega PNG privado y solo acepta un ítem perteneciente al pedid
   expect((await request(app).get('/envios/51/imagenes/20')).status).toBe(404);
   expect(imagenParaCopiar).not.toHaveBeenCalled();
 });
+
+
+test('la vista previa filtra texto, beneficios e imágenes por el producto elegido', async () => {
+  Envio.findOne.mockResolvedValue({ id: 50, usuario_id: 7, estado: 'EnSeguimiento', origen: 'WHATSAPP', es_lead: true, items: [
+    { id: 20, producto_id: 10, nombre_producto: 'Camisa', Producto: { id: 10, beneficios: ['Algodón'], imagenes: [{ id: 1, url: '/uploads/camisa.webp' }] } },
+    { id: 21, producto_id: 11, nombre_producto: 'Pantalón', Producto: { id: 11, beneficios: ['Bolsillos'], imagenes: [{ id: 2, url: '/uploads/pantalon.webp' }] } },
+  ] });
+  flujoService.estadoFlujosDelPedido.mockResolvedValue([{ tipo: 'SEGUIMIENTO_PRODUCTO_WHATSAPP', fases: [{ id: 101, mensaje: '{productos}: {producto_beneficios}' }] }]);
+  const res = await request(app).get('/envios/50/flujos').query({ producto_ids: '11' });
+  expect(res.status).toBe(200);
+  expect(res.body[0].fases[0].mensaje_resuelto).toBe('Pantalón: • Bolsillos');
+  expect(res.body[0].fases[0].imagenes_productos.map(i => i.item_id)).toEqual([21]);
+  expect(Envio.findOne.mock.results).toHaveLength(1);
+});

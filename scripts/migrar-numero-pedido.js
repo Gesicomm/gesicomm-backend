@@ -6,6 +6,7 @@ async function migrarNumeroPedido() {
     ALTER TABLE "envios"
     ADD COLUMN IF NOT EXISTS "numero_pedido" INTEGER
   `);
+  await sequelize.query(`ALTER TABLE envios ADD COLUMN IF NOT EXISTS es_lead BOOLEAN NOT NULL DEFAULT false`);
 
   await sequelize.query(`
     WITH numerados AS (
@@ -16,6 +17,7 @@ async function migrarNumeroPedido() {
           ORDER BY COALESCE(created_at, NOW()), id
         ) AS numero
       FROM "envios"
+      WHERE es_lead = false
     )
     UPDATE "envios" e
     SET "numero_pedido" = n.numero
@@ -37,7 +39,7 @@ async function migrarNumeroPedido() {
     INSERT INTO "pedido_counters" ("usuario_id", "ultimo_numero_pedido", "created_at", "updated_at")
     SELECT "usuario_id", MAX("numero_pedido"), NOW(), NOW()
     FROM "envios"
-    WHERE "numero_pedido" IS NOT NULL
+    WHERE "numero_pedido" IS NOT NULL AND es_lead = false
     GROUP BY "usuario_id"
     ON CONFLICT ("usuario_id") DO UPDATE
     SET "ultimo_numero_pedido" = GREATEST(
@@ -49,7 +51,7 @@ async function migrarNumeroPedido() {
 
   await sequelize.query(`
     ALTER TABLE "envios"
-    ALTER COLUMN "numero_pedido" SET NOT NULL
+    ALTER COLUMN "numero_pedido" DROP NOT NULL
   `);
 
   await sequelize.query(`

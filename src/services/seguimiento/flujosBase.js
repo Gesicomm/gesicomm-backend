@@ -34,6 +34,28 @@ const ETAPAS = [
     ],
   },
   {
+    tipo: 'CONSULTA_GENERAL_WHATSAPP',
+    nombre: 'Consulta general por WhatsApp',
+    descripcion: 'Leads sin compra confirmada, con o sin productos de interés: dar la bienvenida y asesorar hasta que decidan comprar.',
+    estados: ['Pendiente', 'EnSeguimiento'],
+    fases: [
+      { nombre: 'Bienvenida', espera: 0, mensaje: 'Hola {cliente_nombre}, ¡gracias por escribirnos! ¿En qué podemos ayudarte hoy?' },
+      { nombre: 'Ayuda para elegir', espera: 4 * 60, mensaje: 'Hola {cliente_nombre}, si todavía no sabés qué elegir, contanos qué estás buscando y te ayudamos a encontrar una opción.' },
+      { nombre: 'Retomar la consulta', espera: UN_DIA, mensaje: 'Hola {cliente_nombre}, ¿seguís buscando algo? Estamos para orientarte cuando quieras.' },
+    ],
+  },
+  {
+    tipo: 'SEGUIMIENTO_PRODUCTO_WHATSAPP',
+    nombre: 'Seguimiento de producto por WhatsApp',
+    descripcion: 'Leads con productos de interés: presentar la información del catálogo y resolver dudas antes de crear el pedido.',
+    estados: ['Pendiente', 'EnSeguimiento'],
+    fases: [
+      { nombre: 'Presentación del producto', espera: 0, mensaje: 'Hola {cliente_nombre}, te cuento sobre {productos}:\n\n{producto_descripcion}\n\n{producto_beneficios}\n\n¿Qué te gustaría saber?' },
+      { nombre: 'Resolver dudas', espera: 4 * 60, mensaje: 'Hola {cliente_nombre}, ¿tenés alguna duda sobre {productos}? Te ayudamos a ver si es lo que necesitás.' },
+      { nombre: 'Decisión de compra', espera: UN_DIA, mensaje: 'Hola {cliente_nombre}, ¿te gustaría avanzar con {productos}? Si querés comprar, armamos tu pedido y coordinamos la entrega.' },
+    ],
+  },
+  {
     tipo: 'VENTA_WHATSAPP',
     nombre: 'Venta por WhatsApp',
     descripcion: 'Ventas que empezaron en una conversación de WhatsApp y falta cerrarlas.',
@@ -89,11 +111,31 @@ function esOrigenWhatsapp(origen) {
   return String(origen || '').toUpperCase().includes('WHATSAPP');
 }
 
+// Origen e intención son independientes: los productos de interés no convierten
+// un lead en pedido. Sin marcador, se mantiene compatibilidad con datos antiguos.
+function esLeadWhatsapp(pedido) {
+  if (typeof pedido.es_lead === 'boolean') return esOrigenWhatsapp(pedido.origen) && pedido.es_lead;
+  return esOrigenWhatsapp(pedido.origen) && (
+    Array.isArray(pedido.items) ? pedido.items.length === 0
+      : [false, 'f', 0].includes(pedido.tiene_productos)
+  );
+}
+
+function tieneProductos(pedido) {
+  return Array.isArray(pedido.items) ? pedido.items.length > 0 : [true, 't', 1].includes(pedido.tiene_productos);
+}
+
+function esConsultaGeneral(pedido) {
+  return esLeadWhatsapp(pedido) && !tieneProductos(pedido);
+}
+
 /** La etapa en la que está un pedido, según su estado (y su origen mientras está por confirmar). */
 function etapaDelPedido(pedido) {
   if (esRahaConfirmado(pedido)) return 'SEGUIMIENTO_ENVIO';
   const estado = estadoParaSeguimiento(pedido);
   if (['Pendiente', 'EnSeguimiento'].includes(estado)) {
+    if (esConsultaGeneral(pedido)) return 'CONSULTA_GENERAL_WHATSAPP';
+    if (esLeadWhatsapp(pedido)) return 'SEGUIMIENTO_PRODUCTO_WHATSAPP';
     return esOrigenWhatsapp(pedido.origen) ? 'VENTA_WHATSAPP' : 'CONFIRMACION_PEDIDO_WEB';
   }
   const etapa = ETAPAS.find((e) => e.tipo !== 'VENTA_WHATSAPP' && e.estados.includes(estado));
@@ -101,5 +143,5 @@ function etapaDelPedido(pedido) {
 }
 
 module.exports = {
-  ETAPAS, TIPOS_DE_ETAPA, ETAPA_INICIAL, etapaPorTipo, etapaDelPedido, esOrigenWhatsapp,
+  ETAPAS, TIPOS_DE_ETAPA, ETAPA_INICIAL, etapaPorTipo, etapaDelPedido, esOrigenWhatsapp, esConsultaGeneral, esLeadWhatsapp,
 };

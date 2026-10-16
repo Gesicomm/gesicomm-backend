@@ -20,8 +20,14 @@ const Envio = sequelize.define('Envio', {
   },
   numero_pedido: {
     type: DataTypes.INTEGER,
-    allowNull: false,
+    allowNull: true,
     comment: 'Correlativo interno por usuario, conservado para integraciones existentes.',
+  },
+  es_lead: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    comment: 'Contacto comercial todavía sin compra confirmada; sus productos son de interés, no dinero por cobrar.',
   },
   numero_pedido_tienda: {
     type: DataTypes.INTEGER,
