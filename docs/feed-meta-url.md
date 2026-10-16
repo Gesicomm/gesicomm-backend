@@ -30,9 +30,10 @@ ese surtido, sus precios públicos y su disponibilidad, sin costos ni clientes.
 
 ## Qué se actualiza
 
-El archivo usa el DTO público de la landing: precios de venta efectivos,
+El archivo consulta los campos comerciales de la landing: precios de venta efectivos,
 promociones vigentes, textos personalizados, imágenes, marca y stock de la
-tienda. No recalcula precios desde costos del proveedor por su cuenta.
+tienda. Reutiliza los servicios de precios y stock de la vitrina, sin cargar
+plantillas ni el resto del contenido del editor.
 Los IDs se comparten con los eventos Pixel/CAPI y quedan fijados al crear
 el producto; editar su slug no cambia la identidad histórica.
 
@@ -60,7 +61,8 @@ depende de la configuración elegida para ese origen en Meta.
   No equivale a una cuota comercial de planes.
 - El backend debe permanecer encendido para actualizar los archivos.
 - Nunca se sirve el CSV mientras se está generando: se construye en un archivo
-  temporal, en lotes de hasta 40 fichas, y se publica completo. Un fallo conserva
+  temporal, en lotes de hasta 500 fichas, con dos lotes simultáneos como máximo,
+  y se publica completo. Un fallo conserva
   la última versión. Bloqueo PostgreSQL por landing y revisión de configuración
   impiden que dos procesos publiquen simultáneamente una generación antigua.
 
@@ -77,3 +79,16 @@ están cubiertos por `VitrinaGrid.test.jsx`.
 
 Estas pruebas no certifican importación ni aprobación de artículos dentro de
 Meta; ese último paso requiere configurar el origen en Commerce Manager.
+
+## Medición de rendimiento
+
+En una lectura de prueba en el VPS con 3630 productos, la proyección comercial
+completa tardó 2070 ms. Para los mismos 40 productos, la consulta anterior tardó
+4171 ms y la nueva 459 ms, sin diferencias en precios, stock, textos, marca ni
+imagen. Son mediciones de consulta y proyección; no incluyen la descarga ni el
+procesamiento de Meta y no constituyen un tiempo garantizado.
+
+El estado del feed cuenta los productos en SQL y evita cargar sus fichas.
+La vitrina consulta la organización de los productos de la página actual y
+obtiene en paralelo los nombres de las colecciones. Se mantienen el aislamiento
+por tienda, la selección guardada y los enlaces del dominio de cada tienda.

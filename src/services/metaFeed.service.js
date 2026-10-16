@@ -92,10 +92,11 @@ async function tiendaPrivada(usuario) {
 }
 
 async function configuracion(tienda) {
-  return (await MetaFeed.findOrCreate({ where: { tienda_id: tienda.id, landing_id: tienda.feed_landing_id } }))[0];
+  const where = { tienda_id: tienda.id, landing_id: tienda.feed_landing_id };
+  return await MetaFeed.findOne({ where }) || (await MetaFeed.findOrCreate({ where }))[0];
 }
 
-async function candidatos(tienda) {
+async function candidatos(tienda, { conteo = false } = {}) {
   const landing = await Landing.findOne({ where: { tienda_id: tienda.id, id: tienda.feed_landing_id, activo: true },
     attributes: ['id', 'tipo_pagina', 'producto_id'],
     include: [{ model: LandingItem, as: 'items', attributes: ['tipo', 'referencia_id'], separate: true }] });
@@ -105,12 +106,19 @@ async function candidatos(tienda) {
       : landing.items || [];
   const ids = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
   const visibles = await LandingService.whereVisibleEnTienda(tienda);
+  const { ProductoCombo } = require('../models');
+  const comboIds = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
+  if (conteo) {
+    const cantidades = await Promise.all([
+      ids.length ? Producto.count({ where: { [Op.and]: [{ id: { [Op.in]: ids }, inquilino_id: tienda.inquilino_id, activo: true, estado_venta: 'en_venta' }, visibles] } }) : 0,
+      comboIds.length ? ProductoCombo.count({ where: { id: { [Op.in]: comboIds }, inquilino_id: tienda.inquilino_id, activo: true } }) : 0,
+    ]);
+    return cantidades.reduce((suma, n) => suma + Number(n), 0);
+  }
   const productos = ids.length ? await Producto.findAll({ where: {
     [Op.and]: [{ id: { [Op.in]: ids }, inquilino_id: tienda.inquilino_id, activo: true, estado_venta: 'en_venta' }, visibles],
   }, attributes: ['id', 'slug', 'meta_content_id', 'nombre', 'categoria_id', 'proveedor_id', 'tags'] }) : [];
   // Combos retain their existing combo-{id} event IDs. Their payload is resolved by the public service.
-  const { ProductoCombo } = require('../models');
-  const comboIds = items.filter(i => i.tipo === 'combo').map(i => i.referencia_id);
   const combos = comboIds.length ? await ProductoCombo.findAll({ where: {
     id: { [Op.in]: comboIds }, inquilino_id: tienda.inquilino_id, activo: true,
   }, attributes: ['id', 'nombre'] }) : [];
@@ -135,7 +143,7 @@ function huella(items, revision, tiendaId) {
 
 async function estado(tienda) {
   const c = await configuracion(tienda);
-  return { landing_id: tienda.feed_landing_id, activo: c.activo, seleccionados: (await candidatos(tienda)).length, limite: LIMITE, revision: c.revision,
+  return { landing_id: tienda.feed_landing_id, activo: c.activo, seleccionados: await candidatos(tienda, { conteo: true }), limite: LIMITE, revision: c.revision,
     pendiente: c.revision !== c.revision_generada || trabajos.has(tienda.feed_landing_id),
     url: `https://${dominioDeTienda(tienda)}/api/l/feed-productos.csv?landing=${tienda.feed_landing_id}`,
     generado_at: c.generado_at, descargado_at: c.descargado_at, cantidad: c.cantidad,

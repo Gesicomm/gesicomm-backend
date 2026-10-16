@@ -90,7 +90,9 @@ describe('regla "todos" / "por categoría"', () => {
   it('el carrito resuelve solo los content_ids pedidos (slug, producto-N, combo-N)', async () => {
     await LandingService.itemsDelLienzo({ content: { venta: reglaTodos } }, tienda, { contentIds: ['air-fryer', 'producto-5', 'combo-3'] });
     const where = mockProductoFindAll.mock.calls[0][0].where;
-    expect(where[Op.or]).toEqual([{ slug: { [Op.in]: ['air-fryer'] } }, { id: { [Op.in]: [5] } }]);
+    expect(where[Op.or]).toEqual([{ [Op.or]: [
+      { slug: { [Op.in]: ['air-fryer'] } }, { meta_content_id: { [Op.in]: ['air-fryer'] } },
+    ] }, { id: { [Op.in]: [5] } }]);
     expect(mockComboFindAll.mock.calls[0][0].where.id[Op.in]).toEqual([3]);
   });
 
