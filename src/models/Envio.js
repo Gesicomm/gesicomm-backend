@@ -292,6 +292,16 @@ const Envio = sequelize.define('Envio', {
     allowNull: false,
     defaultValue: 'pendiente_liquidacion',
   },
+  // Override manual sobre el cálculo automático de Lead Orgánico/Campaña
+  // (MetaCampanaLead, ver metaCampanaLeads.service.js): el vendedor sabe
+  // cosas que el matching por producto no puede saber (ej. el cliente llegó
+  // por recomendación aunque el producto tenga campaña activa). NULL =
+  // confiar en el automático.
+  lead_tipo_manual: {
+    type: DataTypes.STRING(20),
+    allowNull: true,
+    validate: { isIn: [['organico', 'campana']] },
+  },
   fecha_reprogramada: {
     type: DataTypes.DATEONLY,
     allowNull: true,

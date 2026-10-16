@@ -61,7 +61,7 @@ const desgloseEnvio = desgloseDelivery;
 async function getResumenFunnel(whereBase, canalesCatalogo = []) {
   const envios = await Envio.findAll({
     where: whereBase,
-    attributes: ['id', 'estado', 'estado_comercial', 'estado_logistico', 'courier_id', 'origen', 'canal_venta_id', 'monto'],
+    attributes: ['id', 'estado', 'estado_comercial', 'estado_logistico', 'courier_id', 'origen', 'canal_venta_id', 'monto', 'lead_tipo_manual'],
     raw: true,
   });
 
@@ -107,9 +107,16 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     : [];
   const setConLeadCampana = new Set(leadsDeCampana.map(l => l.envio_id));
 
+  // Mismas 7 métricas de siempre, reutilizadas para el canal entero Y para
+  // cada mitad de WhatsApp (orgánico/campaña) — el dashboard los pinta como
+  // dos embudos completos y separados, no como un desglose al pie del embudo
+  // único (ver MiDashboard.jsx: tabs "lead_organico"/"lead_campana").
+  const subFunnelVacio = () => ({ total: 0, cancelados: 0, confirmados: 0, preparados: 0, despachados: 0, entregados: 0, devueltos: 0 });
   const canalVacio = () => ({
-    total: 0, cancelados: 0, confirmados: 0, preparados: 0, despachados: 0, entregados: 0, devueltos: 0,
+    ...subFunnelVacio(),
     lead_organico: 0, lead_campana: 0,
+    organico: subFunnelVacio(),
+    campana: subFunnelVacio(),
   });
   const canales = {};
   const canalPorId = new Map();
@@ -170,8 +177,19 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     if (isDespachado) canal.despachados++;
     if (isEntregado) canal.entregados++;
     if (isDevuelto) canal.devueltos++;
-    if (setConLeadCampana.has(e.id)) canal.lead_campana++;
+    // El vendedor puede corregir el cálculo automático a mano (ver
+    // lead_tipo_manual en Envio.js) — su marca gana cuando existe.
+    const esLeadCampana = e.lead_tipo_manual ? e.lead_tipo_manual === 'campana' : setConLeadCampana.has(e.id);
+    if (esLeadCampana) canal.lead_campana++;
     else canal.lead_organico++;
+    const sub = esLeadCampana ? canal.campana : canal.organico;
+    sub.total++;
+    if (isCancelado) sub.cancelados++;
+    if (isConfirmado) sub.confirmados++;
+    if (isPreparado) sub.preparados++;
+    if (isDespachado) sub.despachados++;
+    if (isEntregado) sub.entregados++;
+    if (isDevuelto) sub.devueltos++;
   }
 
   const pctConfirmacion = totalCreados > 0 ? Number(((confirmados / totalCreados) * 100).toFixed(1)) : 0;
@@ -188,6 +206,9 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
   for (const canal of Object.values(canales)) {
     canal.tasa = canal.total > 0 ? Number(((canal.confirmados / canal.total) * 100).toFixed(1)) : 0;
     canal.efectividad = canal.total > 0 ? Number(((canal.entregados / canal.total) * 100).toFixed(1)) : 0;
+    for (const sub of [canal.organico, canal.campana]) {
+      sub.efectividad = sub.total > 0 ? Number(((sub.entregados / sub.total) * 100).toFixed(1)) : 0;
+    }
   }
 
   return {

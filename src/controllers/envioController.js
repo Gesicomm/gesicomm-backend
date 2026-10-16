@@ -1,4 +1,4 @@
-const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, ProveedorLogistico, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Deposito, Rol, SeguimientoRecordatorio, InventarioUbicacion, SpeedboxPedido, SpeedboxEvento, sequelize } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, EnvioIntentoEntrega, Courier, ProveedorLogistico, Producto, ProductoVariante, Oferta, OfertaComponente, MetodoPago, EnvioHistorial, Usuario, Tienda, Deposito, Rol, SeguimientoRecordatorio, InventarioUbicacion, SpeedboxPedido, SpeedboxEvento, MetaCampanaLead, sequelize } = require('../models');
 const { Op, Sequelize, Transaction } = require('sequelize');
 
 const { getAnalyticsCompleto } = require('../services/pedidosAnalyticsService');
@@ -1613,6 +1613,10 @@ exports.listEnviosPaginados = async (req, res) => {
       where,
       include: [
         { model: Courier, attributes: ['id', 'nombre'] },
+        // Liviano a propósito: la tabla de Pedidos solo necesita saber SI
+        // hay al menos un lead de campaña (ver columna Tipo / Lead
+        // Orgánico vs Lead Campaña), no el detalle de cuál.
+        { model: MetaCampanaLead, as: 'campana_leads', attributes: ['id'], required: false },
         {
           model: SeguimientoRecordatorio,
           as: 'recordatorios',
@@ -1957,6 +1961,36 @@ const TRANSICIONES_VALIDAS = {
   Cancelado: [],
   Devuelto: [],
   Perdido: [],
+};
+
+/**
+ * Corrige a mano si un pedido cuenta como "Lead Orgánico" o "Lead Campaña"
+ * en el embudo del Dashboard (ver pedidosAnalyticsService.js) y en la
+ * columna Tipo de la tabla de Pedidos. Por defecto se calcula solo (si el
+ * producto está en una campaña activa, ver MetaCampanaLead) — esto es para
+ * cuando el vendedor sabe que esa venta puntual fue distinta (ej. llegó por
+ * recomendación aunque el producto tenga campaña activa).
+ */
+exports.actualizarLeadTipoManual = async (req, res) => {
+  try {
+    const { id } = req.params;
+    // null limpia la marca manual y vuelve a confiar en el cálculo
+    // automático — por eso se distingue `undefined` (no vino el campo) de
+    // `null` (el frontend pidió explícitamente "volver a automático").
+    const { lead_tipo_manual } = req.body;
+    if (lead_tipo_manual !== null && !['organico', 'campana'].includes(lead_tipo_manual)) {
+      return res.status(400).json({ error: "lead_tipo_manual debe ser 'organico', 'campana' o null." });
+    }
+    const idNum = parseInt(id, 10) || 0;
+    const envio = await Envio.findOne({ where: filtroEnvioPropio(req, { id: idNum }) });
+    if (!envio) return res.status(404).json({ error: 'Pedido no encontrado' });
+
+    await envio.update({ lead_tipo_manual });
+    res.json({ id: envio.id, lead_tipo_manual: envio.lead_tipo_manual });
+  } catch (error) {
+    console.error('Error actualizarLeadTipoManual:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
 };
 
 exports.updateEstado = async (req, res) => {

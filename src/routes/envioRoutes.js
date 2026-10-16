@@ -26,6 +26,11 @@ router.get('/gesicomm/pendientes', envioController.listarPedidosParaPrepararGesi
 
 // Actualizar estado o courier
 router.put('/:id/estado', envioController.updateEstado);
+
+// Corrección manual de Lead Orgánico/Campaña sobre el cálculo automático
+// (ver lead_tipo_manual en Envio.js) — separado de /estado, que tiene su
+// propia máquina de transiciones y no debería validar nada de esto.
+router.put('/:id/lead-tipo', envioController.actualizarLeadTipoManual);
 router.get('/:id/proveedor-logistico-sugerido', envioController.sugerirProveedorLogisticoGesicomm);
 
 // Editar el precio de un item puntual (ej. descuento por seguimiento comercial)
