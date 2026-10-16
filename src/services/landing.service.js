@@ -1486,7 +1486,16 @@ class LandingService {
     let totalAñadidosCarrito = 0;
     let totalCheckoutsIniciados = 0;
     let totalContactos = 0;
-    
+    // Mismo evento Contact/Lead que totalContactos, partido en dos: con
+    // content_ids (la persona estaba viendo un producto — ficha o el ícono
+    // flotante mientras la mira, mismo criterio que ya usa el mensaje de
+    // WhatsApp, ver gesicomm_whatsapp_dos_plantillas) es "lead venta"; sin
+    // eso (inicio, categorías, contacto del pie) es "lead web". No es un
+    // evento nuevo: es el mismo dato que ya se guardaba, solo que antes se
+    // sumaba todo junto en totalContactos.
+    let totalLeadsWeb = 0;
+    let totalLeadsVenta = 0;
+
     const productosMap = new Map();
 
     /**
@@ -1529,6 +1538,8 @@ class LandingService {
       } else if (['Contact', 'Lead'].includes(c.tipo_evento)) {
         totalContactos += 1;
         if (diaStat) diaStat.contactos += 1;
+        const tieneProducto = Array.isArray(c.payload?.custom_data?.content_ids) && c.payload.custom_data.content_ids.length > 0;
+        if (tieneProducto) totalLeadsVenta += 1; else totalLeadsWeb += 1;
       }
 
       // Las filas viejas sin event_id en el payload no se deduplican (quedan
@@ -1583,6 +1594,8 @@ class LandingService {
       checkouts_iniciados: totalCheckoutsIniciados,
       contactos_whatsapp: totalContactos, // kept naming for backwards compatibility just in case
       conversaciones_whatsapp: totalContactos, // legacy
+      leads_web: totalLeadsWeb,
+      leads_venta: totalLeadsVenta,
       ctr: totalVisitas > 0 ? totalContactos / totalVisitas : 0,
       valor_carritos: valorCarritosTotal,
       serie: [...serieMap.values()],
