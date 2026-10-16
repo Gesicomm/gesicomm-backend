@@ -69,6 +69,25 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     LandingItem.destroy.mockReset();
   });
 
+  test('las páginas grandes conservan la portada sin hidratar productos ni galerías', async () => {
+    sequelize.query.mockResolvedValueOnce([{ total: 3 }]).mockResolvedValueOnce([
+      { id: 10, tipo: 'producto', nombre: 'Producto', precio_efectivo: '100000', imagen: 'https://cdn.test/producto.webp' },
+      { id: 20, tipo: 'combo', nombre: 'Combo', precio_efectivo: '200000', imagen: 'https://cdn.test/combo.webp' },
+      { id: 30, tipo: 'producto', nombre: 'Sin foto', precio_efectivo: '50000' },
+    ]);
+
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { limit: 10000 }, false, 69);
+
+    expect(resultado.items.map(i => i.imagen)).toEqual(['https://cdn.test/producto.webp', 'https://cdn.test/combo.webp', null]);
+    expect(Producto.findAll).not.toHaveBeenCalled();
+    expect(ProductoImagen.findAll).not.toHaveBeenCalled();
+    const sql = sequelize.query.mock.calls[1][0];
+    expect(sql).toContain('pi.producto_id = p.id AND pi.inquilino_id = :inquilino_id');
+    expect(sql).toContain('ci.combo_id = c.id AND ci.inquilino_id = :inquilino_id');
+    expect(sql).toContain('COALESCE(');
+    expect(sequelize.query.mock.calls[1][1].replacements.tienda_id).toBe(69);
+  });
+
   test('incluye filtro p.creado_por = :usuario_id en la consulta SQL cuando solamenteMios es true', async () => {
     sequelize.query
       .mockResolvedValueOnce([{ total: 1 }]) // countQuery
@@ -136,7 +155,7 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
 
     expect(resultado.total).toBe(3630);
     expect(resultado.items).toHaveLength(3630);
-    expect(resultado.items[0]).toEqual({ id: 1, tipo: 'producto', nombre: 'Producto 1', creado_por: 42, precio_efectivo: 1000 });
+    expect(resultado.items[0]).toEqual({ id: 1, tipo: 'producto', nombre: 'Producto 1', creado_por: 42, precio_efectivo: 1000, imagen: null });
     // Nada de Sequelize con includes anidados (categoría/marca/proveedor/imágenes/combos) para esta selección masiva.
     expect(Producto.findAll).not.toHaveBeenCalled();
     expect(ProductoCombo.findAll).not.toHaveBeenCalled();
@@ -150,7 +169,7 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
 
     const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { limit: 10, liviano: true });
 
-    expect(resultado.items).toEqual([{ id: 10, tipo: 'producto', nombre: 'X', creado_por: null, precio_efectivo: 500 }]);
+    expect(resultado.items).toEqual([{ id: 10, tipo: 'producto', nombre: 'X', creado_por: null, precio_efectivo: 500, imagen: null }]);
     expect(Producto.findAll).not.toHaveBeenCalled();
   });
 

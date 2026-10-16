@@ -416,12 +416,23 @@ class PrecioUsuarioService {
     // instancias de Sequelize, no las filas livianas del SQL crudo) tumbó el
     // backend por OOM el 2026-10-16. Nada de lo que usa esa selección masiva
     // (generar landing, cambiar precios, categorizar, armar combo, eliminar)
-    // necesita más que id/tipo/nombre/creado_por/precio — se salta el
+    // necesita el enriquecimiento completo — se salta el
     // enriquecimiento entero a partir de cierto tamaño de página, sin bajarle
     // el tope: así "seleccionar todo" sigue andando con cualquier cantidad de
     // productos.
     const UMBRAL_LIVIANO = 200;
     const liviano = filtros.liviano === true || limite > UMBRAL_LIVIANO;
+    // El editor también pide páginas grandes. Conservar una portada mediante
+    // subconsultas indexadas, sin hidratar miles de modelos y sus asociaciones.
+    const portadaProductoSql = `(SELECT pi.url FROM producto_imagenes pi
+      WHERE pi.producto_id = p.id AND pi.inquilino_id = :inquilino_id
+      ORDER BY (pi.variante_id IS NULL) DESC, pi.es_principal DESC, pi.orden ASC, pi.id ASC
+      LIMIT 1)`;
+    const portadaComboSql = `COALESCE(
+      (SELECT ci.url FROM producto_combo_imagenes ci
+       WHERE ci.combo_id = c.id AND ci.inquilino_id = :inquilino_id
+       ORDER BY ci.es_principal DESC, ci.orden ASC, ci.id ASC LIMIT 1),
+      ${portadaProductoSql})`;
 
     const replacements = { usuario_id, inquilino_id };
     if (tiendaId != null) replacements.tienda_id = tiendaId;
@@ -515,6 +526,7 @@ class PrecioUsuarioService {
       SELECT p.id, 'producto' as tipo, p.nombre, p.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, p.creado_por,
         pu.precio as precio_usuario, pu.categoria_id as categoria_personalizada_id,
         COALESCE(pu.precio, p.precio_base) as precio_efectivo
+        ${liviano ? `, ${portadaProductoSql} AS imagen` : ''}
       FROM productos p
       LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
       WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
@@ -533,6 +545,7 @@ class PrecioUsuarioService {
       SELECT c.id, 'combo' as tipo, c.nombre, c.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, c.creado_por,
         pu.precio as precio_usuario, pu.categoria_id as categoria_personalizada_id,
         COALESCE(pu.precio, c.precio_total) as precio_efectivo
+        ${liviano ? `, ${portadaComboSql} AS imagen` : ''}
       FROM producto_combos c
       INNER JOIN productos p ON c.producto_id = p.id AND p.inquilino_id = :inquilino_id AND p.activo = true
       LEFT JOIN precios_usuario pu ON pu.tipo = 'combo' AND pu.referencia_id = c.id AND pu.usuario_id = :usuario_id
@@ -579,6 +592,7 @@ class PrecioUsuarioService {
           nombre: it.nombre,
           creado_por: it.creado_por,
           precio_efectivo: parseFloat(it.precio_efectivo) || 0,
+          imagen: it.imagen || null,
         })),
         total,
         page: pagina,
