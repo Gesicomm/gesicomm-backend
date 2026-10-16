@@ -17,6 +17,7 @@
 const { Envio, EnvioItem, Landing, PaymentGateway, PaymentTransaction, Tienda, Usuario } = require('../models');
 const LandingService = require('../services/landing.service');
 const MetaCapiService = require('../services/metaCapi.service');
+const MetaFeedService = require('../services/metaFeed.service');
 const BuilderPublicPageService = require('../services/builderPublicPage.service');
 const PagoParService = require('../services/payments/pagoParService');
 const { confirmarPedidoPagado } = require('../services/payments/confirmacionPago');
@@ -751,4 +752,34 @@ async function registrarVisitaPublica(req, res) {
   }
 }
 
-module.exports = { obtenerPorSlug, obtenerProducto, obtenerProductos, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia, deliveryPublico };
+/**
+ * Feed CSV del catálogo para Commerce Manager de Meta (scheduled fetch).
+ * El id de cada fila es el mismo content_id que ya usan el Pixel/CAPI (ver
+ * metaCapi.service.js) — así Meta cruza sus eventos con el catálogo sin
+ * mapeo manual.
+ *
+ * Streamea en lotes (metaFeed.service.js) en vez de armar el CSV entero en
+ * memoria: un catálogo de miles de productos fue justamente lo que tumbó el
+ * backend por OOM el 2026-10-16 (ver mcp.service.js).
+ */
+async function feedProductosMeta(req, res) {
+  const tienda = req.tienda;
+  if (!tienda) return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
+
+  res.status(200);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'inline; filename="productos.csv"');
+  res.write(MetaFeedService.CAMPOS_CSV.join(',') + '\n');
+  try {
+    for await (const lineas of MetaFeedService.filasFeed(tienda)) {
+      if (lineas.length) res.write(lineas.join('\n') + '\n');
+    }
+  } catch (err) {
+    console.error('[landing-publica] feedProductosMeta:', err.message);
+    // El CSV parcial ya puede estar en vuelo — no hay forma limpia de avisar
+    // un error a esta altura, Meta simplemente reintentará en el próximo fetch.
+  }
+  res.end();
+}
+
+module.exports = { obtenerPorSlug, obtenerProducto, obtenerProductos, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia, deliveryPublico, feedProductosMeta };

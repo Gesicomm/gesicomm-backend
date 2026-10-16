@@ -103,6 +103,10 @@ router.get('/geografia', limitePublico, ctrl.geografia);
 // Ciudades de envío de la tienda (el carrito las pide aparte, ya no viajan en
 // la landing). Mismo motivo para ir antes del catch-all /:slug.
 router.get('/delivery', limitePublico, resolverTiendaOpcional, ctrl.deliveryPublico);
+// Feed del catálogo para Commerce Manager de Meta (scheduled fetch, CSV).
+// Antes del catch-all /:slug, si no "feed-productos.csv" se interpretaría
+// como el slug de una landing.
+router.get('/feed-productos.csv', limitePublico, resolverTiendaOpcional, ctrl.feedProductosMeta);
 router.get('/:slug', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug);
 router.get('/:slug/delivery', limitePublico, resolverTiendaOpcional, ctrl.deliveryPublico);
 router.post('/:slug/buscar', limitePublico, resolverTiendaOpcional, ctrl.obtenerPorSlug); // busqueda catalogo
