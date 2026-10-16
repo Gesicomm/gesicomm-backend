@@ -23,6 +23,11 @@ const PricingService = require('./pricing.service');
 
 class PrecioUsuarioService {
 
+  // OJO: a propósito NO usa precioConDescuentoVigente — esta es la vista
+  // de "Mi catálogo" del comercio, donde el precio propio (precioUsuario)
+  // siempre gana por diseño (ver tests vitrina-precio-publico y
+  // vitrina-combo-precio-publico). El descuento por fecha que SÍ se cobra
+  // de verdad vive en el checkout/landing pública (ver PricingService).
   static precioPublico(producto, precioUsuario) {
     const descontado = PricingService.aplicarDescuentoFecha(Number(producto.precio_base), producto.descuento_porcentaje, producto.descuento_inicio, producto.descuento_fin);
     const minimo = producto.precio_minimo == null ? null : Number(producto.precio_minimo);

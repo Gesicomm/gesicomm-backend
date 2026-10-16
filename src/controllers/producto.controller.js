@@ -211,6 +211,45 @@ async function historialPrecios(req, res) {
   }
 }
 
+/**
+ * Descuento real con vigencia, para varios productos a la vez — distinto
+ * de precio_ancla (tachado, solo visual): esto baja de verdad lo que se
+ * cobra mientras dure `fin_at`, y vuelve solo al precio normal al vencer.
+ * body: { ids: number[], pct: number|null, fin_at: string|null }
+ * pct null = quitar el descuento de esos productos.
+ */
+async function descuentoMasivo(req, res) {
+  try {
+    const { ids, pct, fin_at } = req.body;
+    if (!Array.isArray(ids) || !ids.length) {
+      return res.status(400).json({ message: 'Seleccioná al menos un producto.' });
+    }
+    let pctNum = null;
+    if (pct != null && pct !== '') {
+      pctNum = Number(pct);
+      if (!Number.isFinite(pctNum) || pctNum <= 0 || pctNum >= 95) {
+        return res.status(400).json({ message: 'El descuento tiene que estar entre 1% y 94%.' });
+      }
+      const fin = fin_at ? new Date(fin_at) : null;
+      if (!fin || Number.isNaN(fin.getTime()) || fin.getTime() <= Date.now()) {
+        return res.status(400).json({ message: 'Elegí una fecha de fin futura para el descuento real.' });
+      }
+    }
+
+    const inquilino_id = req.usuario.tenantId;
+    const usuario_id = req.usuario.id;
+    const esAdmin = req.usuario.rol === 'administrador';
+    const resultado = await ProductoService.descuentoMasivo(
+      ids, { pct: pctNum, finAt: pctNum != null ? new Date(fin_at).toISOString() : null },
+      inquilino_id, usuario_id, esAdmin, req.usuario.tiendaId || null,
+    );
+    return res.json(resultado);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: err.message || 'Error al aplicar el descuento.' });
+  }
+}
+
 async function actualizar(req, res) {
   const t = await sequelize.transaction();
   try {
@@ -348,6 +387,7 @@ module.exports = {
   relacionados,
   historialPrecios,
   actualizar,
+  descuentoMasivo,
   eliminar,
   importarShopify
 };

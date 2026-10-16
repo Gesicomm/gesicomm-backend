@@ -1174,8 +1174,9 @@ class LandingService {
     // no romper datos publicados antes de retirar el flujo de creación.
     if (activo && landing.tipo_pagina === 'funnel') {
       if (!landing.producto_id) throw new Error('No se puede publicar un funnel sin producto.');
-      const producto = await Producto.findByPk(landing.producto_id, { attributes: ['cantidad_disponible'] });
-      if (producto && Number(producto.cantidad_disponible) <= 0) {
+      const producto = await Producto.findByPk(landing.producto_id, { attributes: ['id', 'creado_por', 'cantidad_disponible'] });
+      await StockPorTienda.ajustarStockCatalogoAdmin(landing.inquilino_id, { productos: [producto] });
+      if (producto && producto.cantidad_disponible != null && Number(producto.cantidad_disponible) <= 0) {
         throw new Error('No se puede publicar: el producto no tiene stock disponible.');
       }
     } else if (activo && !this.TIPOS_SIN_CATALOGO.includes(landing.tipo_pagina)) {
@@ -1189,8 +1190,9 @@ class LandingService {
       const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
       const tieneCombo = items.some(i => i.tipo === 'combo');
       if (idsProducto.length && !tieneCombo) {
-        const productos = await Producto.findAll({ where: { id: idsProducto }, attributes: ['cantidad_disponible'] });
-        const hayStock = productos.some(p => Number(p.cantidad_disponible) > 0);
+        const productos = await Producto.findAll({ where: { id: idsProducto }, attributes: ['id', 'creado_por', 'cantidad_disponible'] });
+        await StockPorTienda.ajustarStockCatalogoAdmin(landing.inquilino_id, { productos });
+        const hayStock = productos.some(p => p.cantidad_disponible == null || Number(p.cantidad_disponible) > 0);
         if (!hayStock) throw new Error('No se puede publicar: ninguno de los productos incluidos tiene stock disponible.');
       }
     }
@@ -2357,8 +2359,9 @@ class LandingService {
         ? parseFloat(producto.precio_minimo)
         : null;
       const precioUsuarioProducto = mapaPrecios.get(`producto:${producto.id}`);
-      const precioBaseConDescuentoProducto = PricingService.aplicarDescuentoFecha(
+      const precioBaseConDescuentoProducto = PricingService.precioConDescuentoVigente(
         precioBaseProducto,
+        precioUsuarioProducto,
         producto.descuento_porcentaje,
         producto.descuento_inicio,
         producto.descuento_fin
@@ -2366,7 +2369,7 @@ class LandingService {
       return PricingService.calcularPrecioBase(
         precioBaseConDescuentoProducto,
         precioMinimoProducto,
-        precioUsuarioProducto
+        null
       ).efectivo;
     };
 
@@ -2508,8 +2511,8 @@ class LandingService {
       // combo no tiene ventana propia, ya trae precio_total fijo.
       const precioBaseConDescuento = esCombo
         ? precioBase
-        : PricingService.aplicarDescuentoFecha(precioBase, entidad.descuento_porcentaje, entidad.descuento_inicio, entidad.descuento_fin);
-      const { base: precioBaseEfectivo, efectivo: precioEfectivo } = PricingService.calcularPrecioBase(precioBaseConDescuento, precioMinimo, precioUsuario);
+        : PricingService.precioConDescuentoVigente(precioBase, precioUsuario, entidad.descuento_porcentaje, entidad.descuento_inicio, entidad.descuento_fin);
+      const { base: precioBaseEfectivo, efectivo: precioEfectivo } = PricingService.calcularPrecioBase(precioBaseConDescuento, precioMinimo, null);
 
       const galeriaFuente = productoParaFiltros ? (mapaImagenes.get(productoParaFiltros.id) || []) : [];
       const galeriaCombo = esCombo
@@ -3271,8 +3274,8 @@ class LandingService {
       const precioUsuario = mapaPrecios.get(`${tipo}:${prod.id}`);
       const baseConDescuento = tipo === 'combo'
         ? precioBase
-        : PricingService.aplicarDescuentoFecha(precioBase, prod.descuento_porcentaje, prod.descuento_inicio, prod.descuento_fin);
-      return PricingService.calcularPrecioBase(baseConDescuento, precioMinimo, precioUsuario);
+        : PricingService.precioConDescuentoVigente(precioBase, precioUsuario, prod.descuento_porcentaje, prod.descuento_inicio, prod.descuento_fin);
+      return PricingService.calcularPrecioBase(baseConDescuento, precioMinimo, null);
     };
 
     const resolverMedios = (override, imagenesBase, imagenesDto) => {

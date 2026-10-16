@@ -85,25 +85,20 @@ function asignar(registro, campo, valor) {
 }
 
 /**
- * Pisa EN MEMORIA el stock de productos y variantes ya cargados con el que
- * le corresponde a la tienda. No escribe en la base: es para las lecturas
- * públicas (vitrina, carrito, checkout), que arman su respuesta a partir de
- * `cantidad_disponible` y `stock` de estas instancias.
- *
- * Cuesta una consulta; las de variantes solo se hacen si algún producto tiene
- * stock en otra tienda (nunca en una cuenta de una sola tienda).
+ * El catálogo del administrador/global siempre está disponible. Aplica el
+ * contrato stock=null en memoria, sin alterar las cantidades almacenadas.
+ * Se comparte entre publicación, tienda pública y checkout.
  */
-async function ajustarStockALaTienda(tienda, { productos = [], variantes = [] } = {}) {
-  if (!tienda?.id || !tienda.usuario_id) return;
+async function ajustarStockCatalogoAdmin(inquilinoId, { productos = [], variantes = [] } = {}) {
   const listaProductos = (productos || []).filter(Boolean);
   const listaVariantes = (variantes || []).filter(Boolean);
   const productoIds = [...listaProductos.map(p => p.id), ...listaVariantes.map(v => v.producto_id)];
-  if (productoIds.length === 0) return;
+  if (productoIds.length === 0) return new Set();
 
   // El catálogo global/admin se vende sin límite de unidades. null es el
   // contrato público de stock ilimitado, también para variantes y checkout.
   const administradores = await Usuario.findAll({
-    where: { inquilino_id: tienda.inquilino_id },
+    where: { inquilino_id: inquilinoId },
     attributes: ['id'],
     include: [{ model: Rol, attributes: [], where: { nombre: 'administrador' }, required: true }],
     raw: true,
@@ -112,7 +107,7 @@ async function ajustarStockALaTienda(tienda, { productos = [], variantes = [] } 
   const conocidos = new Set(listaProductos.filter(p => p.creado_por !== undefined).map(p => Number(p.id)));
   const faltantes = [...new Set(productoIds.map(Number))].filter(id => !conocidos.has(id));
   const padres = faltantes.length ? await Producto.findAll({
-    where: { id: { [Op.in]: faltantes }, inquilino_id: tienda.inquilino_id },
+    where: { id: { [Op.in]: faltantes }, inquilino_id: inquilinoId },
     attributes: ['id', 'creado_por'],
   }) : [];
   const ilimitados = new Set();
@@ -127,6 +122,17 @@ async function ajustarStockALaTienda(tienda, { productos = [], variantes = [] } 
   for (const variante of listaVariantes) {
     if (ilimitados.has(Number(variante.producto_id))) asignar(variante, 'stock', null);
   }
+  return ilimitados;
+}
+
+/** Ajusta en memoria el stock propio a la tienda y conserva el admin ilimitado. */
+async function ajustarStockALaTienda(tienda, { productos = [], variantes = [] } = {}) {
+  if (!tienda?.id || !tienda.usuario_id) return;
+  const listaProductos = (productos || []).filter(Boolean);
+  const listaVariantes = (variantes || []).filter(Boolean);
+  const productoIds = [...listaProductos.map(p => p.id), ...listaVariantes.map(v => v.producto_id)];
+  if (!productoIds.length) return;
+  const ilimitados = await ajustarStockCatalogoAdmin(tienda.inquilino_id, { productos: listaProductos, variantes: listaVariantes });
 
   const reparto = await repartoPorTienda({
     usuarioId: tienda.usuario_id,
@@ -176,4 +182,4 @@ async function ajustarStockALaTienda(tienda, { productos = [], variantes = [] } 
   }
 }
 
-module.exports = { clave, repartoPorTienda, stockParaLaTienda, ajustarStockALaTienda };
+module.exports = { clave, repartoPorTienda, stockParaLaTienda, ajustarStockALaTienda, ajustarStockCatalogoAdmin };

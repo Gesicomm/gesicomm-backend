@@ -19,6 +19,7 @@
 const { Op } = require('sequelize');
 const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate, Testimonio, Producto, Tienda } = require('../models');
 const LandingService = require('./landing.service');
+const StockPorTienda = require('./stockPorTienda.service');
 const LandingCodigoService = require('./landingCodigo.service');
 const AICodeValidator = require('./aiCodeValidator.service');
 const ImagenService = require('./imagen.service');
@@ -745,8 +746,9 @@ class LandingSimpleService {
 
     if (activo && landing.tipo_pagina === 'funnel') {
       if (!landing.producto_id) throw new Error('No se puede publicar un funnel sin producto.');
-      const producto = await Producto.findByPk(landing.producto_id, { attributes: ['cantidad_disponible'] });
-      if (producto && Number(producto.cantidad_disponible) <= 0) {
+      const producto = await Producto.findByPk(landing.producto_id, { attributes: ['id', 'creado_por', 'cantidad_disponible'] });
+      await StockPorTienda.ajustarStockCatalogoAdmin(landing.inquilino_id, { productos: [producto] });
+      if (producto && producto.cantidad_disponible != null && Number(producto.cantidad_disponible) <= 0) {
         throw new Error('No se puede publicar: el producto no tiene stock disponible.');
       }
     } else if (activo && landing.tipo_pagina !== 'contacto') {
@@ -758,8 +760,9 @@ class LandingSimpleService {
       const idsProducto = items.filter(i => i.tipo === 'producto').map(i => i.referencia_id);
       const tieneCombo = items.some(i => i.tipo === 'combo');
       if (idsProducto.length && !tieneCombo) {
-        const productos = await Producto.findAll({ where: { id: idsProducto }, attributes: ['cantidad_disponible'] });
-        const hayStock = productos.some(p => Number(p.cantidad_disponible) > 0);
+        const productos = await Producto.findAll({ where: { id: idsProducto }, attributes: ['id', 'creado_por', 'cantidad_disponible'] });
+        await StockPorTienda.ajustarStockCatalogoAdmin(landing.inquilino_id, { productos });
+        const hayStock = productos.some(p => p.cantidad_disponible == null || Number(p.cantidad_disponible) > 0);
         if (!hayStock) throw new Error('No se puede publicar: ninguno de los productos incluidos tiene stock disponible.');
       }
     }

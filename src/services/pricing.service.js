@@ -70,6 +70,22 @@ class PricingService {
   }
 
   /**
+   * Precio de lista (o el propio de la vendedora si lo fijó) con el
+   * descuento por fecha ya aplicado encima. ANTES el descuento se calculaba
+   * sobre precio_base y el precio propio lo pisaba entero — si la vendedora
+   * tenía "Tu precio de venta" cargado (caso común: catálogo importado), el
+   * descuento por fecha quedaba guardado en la base pero nunca se cobraba.
+   * Ahora el descuento es SIEMPRE lo último que se aplica, sobre el precio
+   * que de verdad está vigente. Los callers pasan el resultado a
+   * calcularPrecioBase con precioUsuario=null: ya está resuelto acá, que
+   * vuelva a pisarlo sería repetir el bug.
+   */
+  static precioConDescuentoVigente(precioLista, precioUsuario, descuentoPorcentaje, descuentoInicio, descuentoFin) {
+    const base = (precioUsuario !== undefined && precioUsuario !== null) ? precioUsuario : precioLista;
+    return this.aplicarDescuentoFecha(base, descuentoPorcentaje, descuentoInicio, descuentoFin);
+  }
+
+  /**
    * "La cantidad decide el precio": si no vino una oferta elegida a mano,
    * busca entre las Ofertas activas del producto (tipo_contenido='pack',
    * estrategia='normal') una cuya receta pida exactamente esa cantidad del
@@ -174,12 +190,13 @@ class PricingService {
 
     // El descuento por fecha es una propiedad de Producto — un combo ya
     // trae su precio_total fijado a mano por el admin, no tiene ventana de
-    // descuento propia.
+    // descuento propia. Se aplica sobre el precio REAL (propio si lo fijó,
+    // si no el de lista) — ver precioConDescuentoVigente.
     const precioBaseConDescuento = esCombo
       ? precioLista
-      : this.aplicarDescuentoFecha(precioLista, entidad.descuento_porcentaje, entidad.descuento_inicio, entidad.descuento_fin);
+      : this.precioConDescuentoVigente(precioLista, precioUsuario, entidad.descuento_porcentaje, entidad.descuento_inicio, entidad.descuento_fin);
 
-    const { base, efectivo } = this.calcularPrecioBase(precioBaseConDescuento, precioMinimo, precioUsuario);
+    const { base, efectivo } = this.calcularPrecioBase(precioBaseConDescuento, precioMinimo, null);
 
     let precioFinal = efectivo;
     let nombreFinal = entidad.nombre;

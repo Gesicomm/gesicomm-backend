@@ -121,10 +121,11 @@ async function* filasFeed(tienda) {
 
       const precioMinimo = producto.precio_minimo !== null && producto.precio_minimo !== undefined
         ? parseFloat(producto.precio_minimo) : null;
-      const baseConDescuento = PricingService.aplicarDescuentoFecha(
-        parseFloat(producto.precio_base), producto.descuento_porcentaje, producto.descuento_inicio, producto.descuento_fin,
+      const baseConDescuento = PricingService.precioConDescuentoVigente(
+        parseFloat(producto.precio_base), precioUsuarioPorProducto.get(producto.id),
+        producto.descuento_porcentaje, producto.descuento_inicio, producto.descuento_fin,
       );
-      const { efectivo } = PricingService.calcularPrecioBase(baseConDescuento, precioMinimo, precioUsuarioPorProducto.get(producto.id));
+      const { efectivo } = PricingService.calcularPrecioBase(baseConDescuento, precioMinimo, null);
 
       lineas.push(filaCsv({
         id: producto.id,

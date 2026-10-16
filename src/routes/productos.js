@@ -44,6 +44,9 @@ router.post('/importar-shopify', verificarPermiso('crear_productos'), subirArchi
 router.get('/importar-masivo/formato', verificarPermiso('crear_productos'), ctrl.formatoImportacionMasiva);
 router.get('/importar-masivo/plantilla', verificarPermiso('crear_productos'), ctrl.plantillaImportacionMasiva);
 router.post('/importar-masivo', verificarPermiso('crear_productos'), subirArchivoImportacion, ctrl.importarMasivo);
+// Descuento real con vigencia para varios productos a la vez (Organizar
+// productos / Mi catálogo) — antes de /:id para que no lo capture como id.
+router.put('/descuento-masivo', verificarPermiso('editar_productos'), ctrl.descuentoMasivo);
 router.post('/', verificarPermiso('crear_productos'), ctrl.crear);
 router.get('/:id', verificarPermiso('ver_productos'), ctrl.detalle);
 router.get('/:id/historial-precios', verificarPermiso('ver_productos'), ctrl.historialPrecios);

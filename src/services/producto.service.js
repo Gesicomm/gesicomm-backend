@@ -767,6 +767,44 @@ class ProductoService {
     return this.serializar(producto, esAdmin, usuario_id);
   }
 
+  /**
+   * Descuento real por tiempo limitado, para varios productos a la vez
+   * (pestaña Categorías → Organizar productos / Mi catálogo). A diferencia
+   * de precio_ancla/precio_tachado (que solo es visual), esto baja el
+   * precio que de verdad se cobra en el checkout mientras dure — ver
+   * PricingService.precioConDescuentoVigente. Al vencer `fin_at` vuelve
+   * solo al precio normal, no hace falta ningún job que lo revierta.
+   *
+   * `pct == null` quita el descuento (lo deja en 0, sin fechas) en vez de
+   * aplicarlo — mismo botón "Quitar oferta" de Organizar productos.
+   * Reusa ProductoService.actualizar() producto por producto, así nunca se
+   * duplica la validación contra precio_minimo ni el registro en
+   * HistorialPrecio. No tira si un id no existe o no es de este inquilino/
+   * tienda: lo reporta en `omitidos` y sigue con el resto.
+   */
+  static async descuentoMasivo(ids, { pct, finAt }, inquilino_id, usuario_id, esAdmin, tiendaId = null) {
+    const idsLimpios = [...new Set((ids || []).map(id => Number(id)).filter(Number.isFinite))];
+    if (!idsLimpios.length) throw new Error('Seleccioná al menos un producto.');
+
+    const campos = (pct != null)
+      ? { descuento_porcentaje: Number(pct), descuento_inicio: new Date().toISOString(), descuento_fin: finAt }
+      : { descuento_porcentaje: 0, descuento_inicio: null, descuento_fin: null };
+
+    const actualizados = [];
+    const omitidos = [];
+    await sequelize.transaction(async (transaction) => {
+      for (const id of idsLimpios) {
+        try {
+          await this.actualizar(id, campos, inquilino_id, usuario_id, esAdmin, transaction, tiendaId);
+          actualizados.push(id);
+        } catch (err) {
+          omitidos.push({ id, motivo: err.message });
+        }
+      }
+    });
+    return { actualizados, omitidos };
+  }
+
   /** FAQ propia del producto ("Todo lo que necesitas saber") — ver ProductoFaq.js. */
   static async listarFaq(id, inquilino_id) {
     const producto = await Producto.findOne({ where: { id, inquilino_id }, attributes: ['id'] });
