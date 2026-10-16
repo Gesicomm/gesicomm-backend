@@ -1743,10 +1743,12 @@ exports.createEnvio = async (req, res) => {
       return res.status(400).json({ error: "lead_tipo_manual debe ser 'organico', 'campana' o null." });
     }
 
-    const consultaGeneral = String(origen || '').toUpperCase().includes('WHATSAPP') && (!items || items.length === 0 || req.body.es_lead === true || (req.body.es_lead !== false && lead_tipo_manual === 'organico'));
-    if (consultaGeneral && ((req.body.estado && req.body.estado !== 'Pendiente') || (estado_comercial && estado_comercial !== 'Pendiente') || pago_anticipado || ((!items || items.length === 0) && Number(monto) > 0))) {
+    // Todo contacto cargado por WhatsApp es lead hasta confirmar la compra.
+    // El origen orgánico/campaña no determina si ya existe un pedido.
+    const leadWhatsapp = String(origen || '').toUpperCase().includes('WHATSAPP');
+    if (leadWhatsapp && ((req.body.estado && req.body.estado !== 'Pendiente') || (estado_comercial && estado_comercial !== 'Pendiente') || pago_anticipado || ((!items || items.length === 0) && Number(monto) > 0))) {
       await t.rollback();
-      return res.status(400).json({ error: 'Un lead sin productos debe guardarse pendiente y sin importe ni pago.' });
+      return res.status(400).json({ error: 'El lead debe guardarse pendiente y sin pago; si no tiene productos, tampoco puede tener importe.' });
     }
 
     const hoy = fecha || new Date().toISOString().split('T')[0];
@@ -1780,8 +1782,8 @@ exports.createEnvio = async (req, res) => {
       ? new Map((await Oferta.findAll({ where: { id: ofertaIds, inquilino_id: req.usuario.tenantId }, transaction: t })).map(o => [o.id, o]))
       : new Map();
 
-    const numeroPedido = consultaGeneral ? null : await PedidoNumeracion.reservarNumeroPedido(usuario_id, t);
-    const numeroPedidoTienda = consultaGeneral ? null : await PedidoNumeracion.reservarNumeroPedidoTienda(req.usuario.tiendaId, t);
+    const numeroPedido = leadWhatsapp ? null : await PedidoNumeracion.reservarNumeroPedido(usuario_id, t);
+    const numeroPedidoTienda = leadWhatsapp ? null : await PedidoNumeracion.reservarNumeroPedidoTienda(req.usuario.tiendaId, t);
 
     for (const item of items || []) {
       if (!Number.isSafeInteger(Number(item.cantidad ?? 1)) || Number(item.cantidad ?? 1) <= 0) {
@@ -1800,7 +1802,7 @@ exports.createEnvio = async (req, res) => {
     // contra el catálogo (nombre + comisión), nunca se confía en lo que
     // mande el cliente para esos dos campos — mismo criterio que al marcar
     // Entregado (ver pedido #385 en los comentarios de updateEstadoEnvio).
-    const estadoFinalCreacion = req.body.estado || (consultaGeneral ? 'Pendiente' : 'Confirmado');
+    const estadoFinalCreacion = req.body.estado || (leadWhatsapp ? 'Pendiente' : 'Confirmado');
     let metodoPagoResuelto = null;
     let metodoPagoTextoResuelto = null;
     if (metodo_pago_id) {
@@ -1842,7 +1844,7 @@ exports.createEnvio = async (req, res) => {
         tienda_id: req.usuario.tiendaId || null,
         numero_pedido: numeroPedido,
         numero_pedido_tienda: numeroPedidoTienda,
-        es_lead: consultaGeneral,
+        es_lead: leadWhatsapp,
         courier_id: courier_id || null,
         cliente: fullCliente,
         fecha: hoy,
@@ -1887,7 +1889,7 @@ exports.createEnvio = async (req, res) => {
         utm_source: utm_source || null,
         utm_medium: utm_medium || null,
         utm_campaign: utm_campaign || null,
-        estado_comercial: estado_comercial || (consultaGeneral ? 'Pendiente' : 'Confirmado'),
+        estado_comercial: estado_comercial || (leadWhatsapp ? 'Pendiente' : 'Confirmado'),
         estado_logistico: estado_logistico || 'Pendiente',
         lead_tipo_manual: lead_tipo_manual || null,
         items: items && items.length > 0 ? items.map(item => {

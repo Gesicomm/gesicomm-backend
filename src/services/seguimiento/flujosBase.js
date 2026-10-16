@@ -36,7 +36,7 @@ const ETAPAS = [
   {
     tipo: 'CONSULTA_GENERAL_WHATSAPP',
     nombre: 'Consulta general por WhatsApp',
-    descripcion: 'Leads sin compra confirmada, con o sin productos de interés: dar la bienvenida y asesorar hasta que decidan comprar.',
+    descripcion: 'Leads sin productos elegidos: dar la bienvenida y ayudar a encontrar lo que necesitan.',
     estados: ['Pendiente', 'EnSeguimiento'],
     fases: [
       { nombre: 'Bienvenida', espera: 0, mensaje: 'Hola {cliente_nombre}, ¡gracias por escribirnos! ¿En qué podemos ayudarte hoy?' },

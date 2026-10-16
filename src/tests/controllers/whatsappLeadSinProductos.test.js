@@ -64,12 +64,15 @@ test('impide confirmar un lead que todavía no eligió productos', async () => {
 });
 
 
-test('un contacto orgánico con productos de interés sigue siendo lead', async () => {
+test.each(['organico', 'campana'])('un contacto %s con productos de interés sigue siendo lead incluso si un cliente anterior manda es_lead=false', async tipo => {
   const r = res();
-  await controller.createEnvio(req({ nombre_cliente: 'Consulta', telefono: '0981111222', origen: 'WHATSAPP', lead_tipo_manual: 'organico', es_lead: true, monto: 50000, items: [{ producto_id: 10, cantidad: 1, precio_unitario: 50000 }] }), r);
+  await controller.createEnvio(req({ nombre_cliente: 'Consulta', telefono: '0981111222', origen: 'WHATSAPP', lead_tipo_manual: tipo, es_lead: false, monto: 50000, items: [{ producto_id: 10, cantidad: 1, precio_unitario: 50000 }] }), r);
   expect(r.status).toHaveBeenCalledWith(201);
   expect(models.Envio.create).toHaveBeenCalledWith(expect.objectContaining({ es_lead: true, numero_pedido: null, monto: 50000 }), expect.anything());
   expect(require('../../services/pedidoNumeracion.service').reservarNumeroPedido).not.toHaveBeenCalled();
+  const creado = models.Envio.create.mock.calls[0][0];
+  expect(creado.estado).toBe('Pendiente');
+  expect(require('../../services/seguimiento/flujosBase').etapaDelPedido(creado)).toBe('SEGUIMIENTO_PRODUCTO_WHATSAPP');
 });
 
 
