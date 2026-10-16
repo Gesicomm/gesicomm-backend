@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op } = require('sequelize');
-const { InventarioUbicacion, Deposito, ProductoVariante } = require('../models');
+const { InventarioUbicacion, Deposito, Producto, ProductoVariante, Usuario, Rol } = require('../models');
 
 /**
  * Cuánto stock de un producto es de UNA tienda.
@@ -100,6 +100,34 @@ async function ajustarStockALaTienda(tienda, { productos = [], variantes = [] } 
   const productoIds = [...listaProductos.map(p => p.id), ...listaVariantes.map(v => v.producto_id)];
   if (productoIds.length === 0) return;
 
+  // El catálogo global/admin se vende sin límite de unidades. null es el
+  // contrato público de stock ilimitado, también para variantes y checkout.
+  const administradores = await Usuario.findAll({
+    where: { inquilino_id: tienda.inquilino_id },
+    attributes: ['id'],
+    include: [{ model: Rol, attributes: [], where: { nombre: 'administrador' }, required: true }],
+    raw: true,
+  });
+  const admins = new Set(administradores.map(u => Number(u.id)));
+  const conocidos = new Set(listaProductos.filter(p => p.creado_por !== undefined).map(p => Number(p.id)));
+  const faltantes = [...new Set(productoIds.map(Number))].filter(id => !conocidos.has(id));
+  const padres = faltantes.length ? await Producto.findAll({
+    where: { id: { [Op.in]: faltantes }, inquilino_id: tienda.inquilino_id },
+    attributes: ['id', 'creado_por'],
+  }) : [];
+  const ilimitados = new Set();
+  for (const producto of [...listaProductos, ...padres]) {
+    if (producto.creado_por === null || admins.has(Number(producto.creado_por))) {
+      ilimitados.add(Number(producto.id));
+    }
+  }
+  for (const producto of listaProductos) {
+    if (ilimitados.has(Number(producto.id))) asignar(producto, 'cantidad_disponible', null);
+  }
+  for (const variante of listaVariantes) {
+    if (ilimitados.has(Number(variante.producto_id))) asignar(variante, 'stock', null);
+  }
+
   const reparto = await repartoPorTienda({
     usuarioId: tienda.usuario_id,
     tiendaId: tienda.id,
@@ -114,6 +142,7 @@ async function ajustarStockALaTienda(tienda, { productos = [], variantes = [] } 
   if (afectados.size === 0) return;
 
   for (const variante of listaVariantes) {
+    if (ilimitados.has(Number(variante.producto_id))) continue;
     if (!afectados.has(Number(variante.producto_id))) continue;
     asignar(variante, 'stock', stockParaLaTienda(variante.stock, reparto.get(clave(variante.producto_id, variante.id))));
   }

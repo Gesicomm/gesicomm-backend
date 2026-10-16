@@ -179,7 +179,7 @@ class PrecioUsuarioService {
   }
 
   static async listarCatalogo(usuario_id, inquilino_id, esAdmin = false, tiendaId = null) {
-    const administradoresIds = esAdmin ? [] : await this.obtenerIdsAdministradores(inquilino_id);
+    const administradoresIds = await this.obtenerIdsAdministradores(inquilino_id);
     const visibilidadProducto = this.visibilidadCatalogoWhere(usuario_id, esAdmin, false, administradoresIds);
     const visibilidadTienda = !esAdmin ? this.visibilidadTiendaProductoWhere(usuario_id, tiendaId) : {};
     const visibilidadProductoTienda = this.combinarVisibilidadProducto(visibilidadProducto, visibilidadTienda);
@@ -333,7 +333,7 @@ class PrecioUsuarioService {
         categoria_id: categoriaPersonalizada?.id || p.categoria?.id || null,
         categoria_original: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
-        stock: p.cantidad_disponible,
+        stock: p.creado_por == null || administradoresIds.some(id => Number(id) === Number(p.creado_por)) ? null : p.cantidad_disponible,
         tiene_opciones: idsConOpciones.has(p.id),
         destacado: !!p.destacado,
         creado_en: p.created_at,
@@ -376,7 +376,7 @@ class PrecioUsuarioService {
         categoria_id: categoriaPersonalizada?.id || padre?.categoria?.id || null,
         categoria_original: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
-        stock: padre?.cantidad_disponible ?? null,
+        stock: padre?.creado_por == null || administradoresIds.some(id => Number(id) === Number(padre.creado_por)) ? null : padre.cantidad_disponible,
         destacado: false,
         creado_en: c.created_at,
         creado_por: c.creado_por,
@@ -550,7 +550,7 @@ class PrecioUsuarioService {
     const [countResult, paginatedItems, administradoresIds] = await Promise.all([
       sequelize.query(countQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
       sequelize.query(dataQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
-      !esAdmin ? this.obtenerIdsAdministradores(inquilino_id) : [],
+      this.obtenerIdsAdministradores(inquilino_id),
     ]);
 
     const visibilidadProductoPaginado = this.combinarVisibilidadProducto(
@@ -783,7 +783,7 @@ class PrecioUsuarioService {
         categoria_original: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
         proveedor: p.proveedor?.nombre || null,
-        stock: p.cantidad_disponible,
+        stock: p.creado_por == null || administradoresIds.some(id => Number(id) === Number(p.creado_por)) ? null : p.cantidad_disponible,
         tiene_opciones: idsConOpciones.has(p.id),
         destacado: !!p.destacado,
         creado_en: p.created_at,
@@ -827,7 +827,7 @@ class PrecioUsuarioService {
         categoria_original: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
         proveedor: padre?.proveedor?.nombre || null,
-        stock: padre?.cantidad_disponible ?? null,
+        stock: padre?.creado_por == null || administradoresIds.some(id => Number(id) === Number(padre.creado_por)) ? null : padre.cantidad_disponible,
         destacado: false,
         creado_en: c.created_at,
         creado_por: c.creado_por,

@@ -17,6 +17,7 @@
  */
 
 const crypto = require('crypto');
+const { porcentajeDescuento } = require('../utils/porcentajeDescuento');
 const { Op } = require('sequelize');
 const slugify = require('slugify');
 const {
@@ -2232,7 +2233,7 @@ class LandingService {
             include: [{
               model: Producto,
               as: 'producto',
-              attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+              attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible', 'creado_por'],
               include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
             }, {
               model: ProductoVariante,
@@ -2728,7 +2729,7 @@ class LandingService {
         // % de descuento calculado desde precio_antes vs precio efectivo.
         // Si no hay precio_antes, descuento_pct = 0 (no se muestra badge).
         descuento_pct: precioAntesCalculado
-          ? Math.round((1 - precioEfectivo / precioAntesCalculado) * 100)
+          ? porcentajeDescuento(precioAntesCalculado, precioEfectivo)
           : 0,
         imagen: imagenPrincipalPublica,
         imagenes: galeriaPublica,
@@ -3198,7 +3199,7 @@ class LandingService {
           attributes: [
             'id', 'slug', 'nombre', 'descripcion_corta', 'precio_base', 'precio_minimo',
             'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin',
-            'cantidad_disponible', 'destacado', 'created_at',
+            'cantidad_disponible', 'creado_por', 'destacado', 'created_at',
           ],
           include: [{ association: 'categoria', attributes: ['nombre'] }, { model: Marca, attributes: ['nombre'] }],
         })
@@ -3211,7 +3212,7 @@ class LandingService {
               model: Producto,
               as: 'producto_padre',
               where: { activo: true, ...this.whereDeEstaTienda(tienda) },
-              attributes: ['id', 'nombre', 'cantidad_disponible'],
+              attributes: ['id', 'nombre', 'cantidad_disponible', 'creado_por'],
               include: [{ association: 'categoria', attributes: ['nombre'] }, { model: Marca, attributes: ['nombre'] }],
             },
             { model: ProductoComboImagen, as: 'imagenes', attributes: ['id', 'url', 'orden', 'es_principal'] },
@@ -3426,7 +3427,7 @@ class LandingService {
         descripcion: esCombo ? entidad.descripcion : (override?.descripcion || entidad.descripcion_corta),
         precio: resto.precio,
         precio_antes: resto.precio_antes,
-        descuento_pct: resto.precio_antes ? Math.round((1 - resto.precio / resto.precio_antes) * 100) : 0,
+        descuento_pct: resto.precio_antes ? porcentajeDescuento(resto.precio_antes, resto.precio) : 0,
         imagen: imagenPrincipal,
         imagenes: galeriaPublica,
         stock: resto.stock,
@@ -3862,7 +3863,7 @@ class LandingService {
               {
                 model: Producto,
                 as: 'producto',
-                attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible'],
+                attributes: ['id', 'nombre', 'sku', 'precio_costo', 'cantidad_disponible', 'creado_por'],
                 include: [{ model: ProductoImagen, as: 'imagenes', attributes: ['url', 'es_principal'] }]
               },
               { model: ProductoVariante, as: 'variante' },
