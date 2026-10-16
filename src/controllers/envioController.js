@@ -2037,7 +2037,7 @@ exports.updateEstado = async (req, res) => {
       costo_intento,
     } = req.body;
 
-    if (!estado && courier_id === undefined && proveedor_logistico_id === undefined && !estado_comercial && !estado_logistico) {
+    if (!estado && courier_id === undefined && proveedor_logistico_id === undefined && !estado_comercial && !estado_logistico && items === undefined) {
       await t.rollback();
       return res.status(400).json({ error: 'Se requiere al menos estado o courier_id' });
     }

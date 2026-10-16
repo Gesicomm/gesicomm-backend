@@ -99,3 +99,27 @@ test('no permite reemplazar productos con stock ya reservado', async () => {
   expect(r.status).toHaveBeenCalledWith(400);
   expect(models.EnvioItem.destroy).not.toHaveBeenCalled();
 });
+
+test.each(['Pendiente', 'EnSeguimiento'])('elegir productos conserva el estado actual %s sin solicitar una transición', async estado => {
+  Object.assign(lead, { estado, es_lead: true, numero_pedido: null, stock_descontado: false });
+  const r = res();
+  await controller.updateEstado(req({ items: [{ producto_id: 10, cantidad: 2, precio_unitario: 50000 }] }), r);
+  expect(r.status).not.toHaveBeenCalled();
+  expect(t.commit).toHaveBeenCalled();
+  expect(t.rollback).not.toHaveBeenCalled();
+  expect(lead.estado).toBe(estado);
+  expect(lead.es_lead).toBe(true);
+  expect(lead.numero_pedido).toBeNull();
+  expect(lead.stock_descontado).toBe(false);
+  expect(lead.items).toEqual([expect.objectContaining({ producto_id: 10, cantidad: 2 })]);
+  expect(require('../../services/pedidoNumeracion.service').reservarNumeroPedido).not.toHaveBeenCalled();
+});
+
+test('elegir productos no habilita retroceder explícitamente de seguimiento a pendiente', async () => {
+  Object.assign(lead, { estado: 'EnSeguimiento', es_lead: true });
+  const r = res();
+  await controller.updateEstado(req({ estado: 'Pendiente', items: [{ producto_id: 10, cantidad: 1, precio_unitario: 50000 }] }), r);
+  expect(r.status).toHaveBeenCalledWith(400);
+  expect(t.rollback).toHaveBeenCalled();
+  expect(t.commit).not.toHaveBeenCalled();
+});
