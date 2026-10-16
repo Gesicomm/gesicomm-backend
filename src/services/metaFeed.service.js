@@ -44,23 +44,27 @@ function celda(valor) {
   return /[",\n]/.test(texto) ? `"${texto.replace(/"/g, '""')}"` : texto;
 }
 
-function filaCsv(producto, dominio) {
-  const contentId = producto.slug || `producto-${producto.id}`;
-  const descripcion = textoPlano(producto.descripcion_corta || producto.descripcion_larga).slice(0, 5000);
-  const disponible = producto.cantidad_disponible === null || producto.cantidad_disponible === undefined
+/**
+ * @param {object} datos - plano, no una instancia de Sequelize: id, slug,
+ *   nombre, descripcion, cantidadDisponible, precioEfectivo, imagenUrl, marca.
+ */
+function filaCsv(datos, dominio) {
+  const contentId = datos.slug || `producto-${datos.id}`;
+  const descripcion = textoPlano(datos.descripcion).slice(0, 5000);
+  const disponible = datos.cantidadDisponible === null || datos.cantidadDisponible === undefined
     ? true // no rastrea stock: siempre a la venta, mismo criterio que la vitrina pública
-    : Number(producto.cantidad_disponible) > 0;
+    : Number(datos.cantidadDisponible) > 0;
 
   const fila = {
     id: contentId,
-    title: producto.nombre,
-    description: descripcion || producto.nombre,
+    title: datos.nombre,
+    description: descripcion || datos.nombre,
     availability: disponible ? 'in stock' : 'out of stock',
     condition: 'new',
-    price: `${Math.round(producto.precio_efectivo)} PYG`,
+    price: `${Math.round(datos.precioEfectivo)} PYG`,
     link: `https://${dominio}/${contentId}`,
-    image_link: producto.imagen_principal,
-    brand: producto.Marca?.nombre || producto.marca_nombre_tienda,
+    image_link: datos.imagenUrl,
+    brand: datos.marca,
   };
   return CAMPOS_CSV.map(campo => celda(fila[campo])).join(',');
 }
@@ -122,10 +126,16 @@ async function* filasFeed(tienda) {
       );
       const { efectivo } = PricingService.calcularPrecioBase(baseConDescuento, precioMinimo, precioUsuarioPorProducto.get(producto.id));
 
-      producto.setDataValue('imagen_principal', imagen.url);
-      producto.setDataValue('precio_efectivo', efectivo);
-      producto.setDataValue('marca_nombre_tienda', tienda.nombre);
-      lineas.push(filaCsv(producto, dominio));
+      lineas.push(filaCsv({
+        id: producto.id,
+        slug: producto.slug,
+        nombre: producto.nombre,
+        descripcion: producto.descripcion_corta || producto.descripcion_larga,
+        cantidadDisponible: producto.cantidad_disponible,
+        precioEfectivo: efectivo,
+        imagenUrl: imagen.url,
+        marca: producto.Marca?.nombre || tienda.nombre,
+      }, dominio));
     }
     yield lineas;
 

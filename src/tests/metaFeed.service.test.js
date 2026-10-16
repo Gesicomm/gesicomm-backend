@@ -36,13 +36,11 @@ describe('metaFeed.service', () => {
       id: 5,
       slug: null,
       nombre: 'Zapatilla "Pro", edición límite',
-      descripcion_corta: '<b>Cómoda</b>&nbsp;y liviana',
-      descripcion_larga: null,
-      cantidad_disponible: 3,
-      imagen_principal: 'https://cdn.gesicomm.com/x.jpg',
-      precio_efectivo: 150000.6,
-      marca_nombre_tienda: 'Llévalo Fácil',
-      Marca: null,
+      descripcion: '<b>Cómoda</b>&nbsp;y liviana',
+      cantidadDisponible: 3,
+      imagenUrl: 'https://cdn.gesicomm.com/x.jpg',
+      precioEfectivo: 150000.6,
+      marca: 'Llévalo Fácil',
     });
 
     it('arma las columnas en el orden declarado', () => {
@@ -66,13 +64,13 @@ describe('metaFeed.service', () => {
       expect(fila).toContain('150001 PYG');
     });
 
-    it('in stock / out of stock según cantidad_disponible', () => {
-      expect(filaCsv({ ...base(), cantidad_disponible: 0 }, 'x')).toContain('out of stock');
-      expect(filaCsv({ ...base(), cantidad_disponible: 3 }, 'x')).toContain('in stock');
+    it('in stock / out of stock según cantidadDisponible', () => {
+      expect(filaCsv({ ...base(), cantidadDisponible: 0 }, 'x')).toContain('out of stock');
+      expect(filaCsv({ ...base(), cantidadDisponible: 3 }, 'x')).toContain('in stock');
     });
 
     it('sin stock trackeado (null) siempre in stock', () => {
-      expect(filaCsv({ ...base(), cantidad_disponible: null }, 'x')).toContain('in stock');
+      expect(filaCsv({ ...base(), cantidadDisponible: null }, 'x')).toContain('in stock');
     });
 
     it('escapa comillas y comas (RFC 4180) en el título', () => {
@@ -80,13 +78,13 @@ describe('metaFeed.service', () => {
       expect(fila).toContain('"Zapatilla ""Pro"", edición límite"');
     });
 
-    it('prefiere la marca del producto sobre el nombre de la tienda', () => {
-      const fila = filaCsv({ ...base(), Marca: { nombre: 'Nike' } }, 'x');
+    it('usa la marca resuelta tal cual se le pasa', () => {
+      const fila = filaCsv({ ...base(), marca: 'Nike' }, 'x');
       expect(fila.endsWith(',Nike')).toBe(true);
     });
 
-    it('despoja el HTML de la descripción cuando no hay descripcion_corta', () => {
-      const fila = filaCsv({ ...base(), descripcion_corta: null, descripcion_larga: '<p>Hecho a mano</p>' }, 'x');
+    it('despoja el HTML de la descripción', () => {
+      const fila = filaCsv({ ...base(), descripcion: '<p>Hecho a mano</p>' }, 'x');
       expect(fila).toContain('Hecho a mano');
       expect(fila).not.toContain('<p>');
     });
