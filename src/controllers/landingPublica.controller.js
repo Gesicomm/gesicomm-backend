@@ -773,20 +773,31 @@ async function feedProductosMeta(req, res) {
   const tienda = req.tienda;
   if (!tienda) return res.status(404).json({ message: 'Este dominio no corresponde a ninguna tienda.' });
 
-  res.status(200);
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'inline; filename="productos.csv"');
-  res.write(MetaFeedService.CAMPOS_CSV.join(',') + '\n');
   try {
-    for await (const lineas of MetaFeedService.filasFeed(tienda)) {
-      if (lineas.length) res.write(lineas.join('\n') + '\n');
-    }
+    const id = req.query.landing == null ? null : Number(req.query.landing);
+    if (id !== null && (!Number.isSafeInteger(id) || id <= 0)) return res.status(400).json({ message: 'Landing inválida.' });
+    const landing = await Landing.findOne({ where: {
+      tienda_id: tienda.id, activo: true, ...(id ? { id } : { es_home: true }),
+    }, attributes: ['id', 'slug'] });
+    if (!landing) return res.status(404).json({ message: 'Landing publicada no encontrada.' });
+    tienda.feed_landing_id = landing.id;
+    tienda.feed_slug = landing.slug;
+    const { archivo, config } = await MetaFeedService.archivoPublico(tienda);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'inline; filename="productos-meta.csv"');
+    res.setHeader('Cache-Control', 'no-store');
+    res.on('finish', () => {
+      if (res.statusCode === 200) config.update({ descargado_at: new Date() }).catch(() => {});
+    });
+    return res.sendFile(archivo, err => {
+      if (!err) return;
+      if (res.headersSent) return res.destroy(err);
+      res.status(503).set('Retry-After', '60').json({ message: 'El feed se está preparando. Reintentá en un minuto.' });
+    });
   } catch (err) {
-    console.error('[landing-publica] feedProductosMeta:', err.message);
-    // El CSV parcial ya puede estar en vuelo — no hay forma limpia de avisar
-    // un error a esta altura, Meta simplemente reintentará en el próximo fetch.
+    return res.status(err.status || 503).set('Retry-After', '60').set('Cache-Control', 'no-store')
+      .json({ message: err.status ? err.message : 'No se pudo preparar el feed. Se conserva la última versión completa.' });
   }
-  res.end();
 }
 
 module.exports = { obtenerPorSlug, obtenerProducto, obtenerProductos, registrarEvento, registrarVisitaPublica, crearCheckout, recalcularCarrito, validarCupon, resultadoPago, geografia, deliveryPublico, feedProductosMeta };

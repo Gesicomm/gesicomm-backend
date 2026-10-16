@@ -69,7 +69,7 @@ describe('primeraPaginaLienzo', () => {
     const items = tiendaGrande();
     await LandingService.primeraPaginaLienzo({ content: {} }, items);
     expect(mockProductoFindAll).toHaveBeenCalledTimes(1);
-    expect(mockProductoFindAll.mock.calls[0][0].attributes).toEqual(['id', 'slug']);
+    expect(mockProductoFindAll.mock.calls[0][0].attributes).toEqual(['id', 'meta_content_id', 'slug']);
     // Imágenes: una consulta, solo para la foto de cada categoría (3), nunca para todo el catálogo.
     expect(mockImagenFindAll).toHaveBeenCalledTimes(1);
     const idsFoto = Object.getOwnPropertySymbols(mockImagenFindAll.mock.calls[0][0].where.producto_id)

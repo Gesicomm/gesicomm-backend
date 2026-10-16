@@ -1267,7 +1267,7 @@ class LandingService {
 
     const [productos, combos, variantes] = await Promise.all([
       idsProducto.length
-        ? Producto.findAll({ where: { id: { [Op.in]: idsProducto } }, attributes: ['id', 'slug', 'nombre'] })
+        ? Producto.findAll({ where: { id: { [Op.in]: idsProducto } }, attributes: ['id', 'meta_content_id', 'slug', 'nombre'] })
         : Promise.resolve([]),
       idsCombo.length
         ? ProductoCombo.findAll({ where: { id: { [Op.in]: idsCombo } }, attributes: ['id', 'nombre'] })
@@ -1286,7 +1286,7 @@ class LandingService {
 
     const catalogo = new Map();
     productos.forEach(p => {
-      catalogo.set(p.slug || `producto-${p.id}`, {
+      catalogo.set(p.meta_content_id || p.slug || `producto-${p.id}`, {
         nombre: p.nombre,
         variantes: variantesPorProducto.get(p.id) || new Set(),
       });
@@ -1782,7 +1782,7 @@ class LandingService {
     if (contentIds) {
       const { slugs, idsProducto, idsCombo } = this.separarContentIds(contentIds);
       const condiciones = [
-        slugs.length ? { slug: { [Op.in]: slugs } } : null,
+        slugs.length ? { [Op.or]: [{ slug: { [Op.in]: slugs } }, { meta_content_id: { [Op.in]: slugs } }] } : null,
         idsProducto.length ? { id: { [Op.in]: idsProducto } } : null,
       ].filter(Boolean);
       buscarProductos = condiciones.length > 0;
@@ -1968,7 +1968,7 @@ class LandingService {
       idsProducto.length
         ? Producto.findAll({
           where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...whereProducto },
-          attributes: ['id', 'slug'],
+          attributes: ['id', 'meta_content_id', 'slug'],
           include: [{ association: 'categoria', attributes: ['nombre'] }],
         })
         : [],
@@ -1983,7 +1983,7 @@ class LandingService {
         })
         : [],
     ]);
-    const infoProducto = new Map(productos.map(p => [p.id, { contentId: p.slug || `producto-${p.id}`, categoria: p.categoria?.nombre || null, productoImagenId: p.id }]));
+    const infoProducto = new Map(productos.map(p => [p.id, { contentId: p.meta_content_id || p.slug || `producto-${p.id}`, categoria: p.categoria?.nombre || null, productoImagenId: p.id }]));
     const infoCombo = new Map(combos.map(c => [c.id, { contentId: `combo-${c.id}`, categoria: c.producto_padre?.categoria?.nombre || null, productoImagenId: c.producto_padre?.id || null }]));
     const vendibles = items
       .map(item => ({ item, info: (item.tipo === 'combo' ? infoCombo : infoProducto).get(Number(item.referencia_id)) }))
@@ -2068,7 +2068,7 @@ class LandingService {
       const buscados = contentIds || [asegurar];
       const { slugs, idsProducto, idsCombo } = this.separarContentIds(buscados);
       const idsPorSlug = slugs.length
-        ? (await Producto.findAll({ where: { slug: { [Op.in]: slugs } }, attributes: ['id'] })).map(p => p.id)
+        ? (await Producto.findAll({ where: { [Op.or]: [{ slug: { [Op.in]: slugs } }, { meta_content_id: { [Op.in]: slugs } }] }, attributes: ['id'] })).map(p => p.id)
         : [];
       const setProducto = new Set([...idsProducto, ...idsPorSlug]);
       const setCombo = new Set(idsCombo);
@@ -2173,7 +2173,7 @@ class LandingService {
     // 2026-10-16 — mismo patrón que ya se arregló en mcp.service.js y
     // precioUsuario.service.js ese día, pero en este tercer lugar.
     let catalogoLienzo = null;
-    if (esCodigo && Array.isArray(opciones.soloContentIds)) {
+    if (Array.isArray(opciones.soloContentIds)) {
       // Pedido puntual (obtenerProductosPublicos): solo estos, completos.
       items = await this.itemsDelLienzo(landing, tienda, { contentIds: opciones.soloContentIds });
     } else if (esCodigo && items.length > PRIMERA_PAGINA_LIENZO) {
@@ -2738,7 +2738,8 @@ class LandingService {
 
       itemsDto.push({
         // ID público estable — nunca LandingItem.id (cambiaría entre landings para el mismo producto).
-        content_id: entidad.slug || `${item.tipo}-${entidad.id}`,
+        content_id: entidad.meta_content_id || entidad.slug || `${item.tipo}-${entidad.id}`,
+        url_slug: entidad.slug || null,
         referencia_id: entidad.id,
         tipo: item.tipo,
         nombre: entidad.nombre,
@@ -3219,7 +3220,7 @@ class LandingService {
         ? Producto.findAll({
           where: { id: { [Op.in]: idsProducto }, activo: true, estado_venta: 'en_venta', ...visiblesEnTienda },
           attributes: [
-            'id', 'slug', 'nombre', 'descripcion_corta', 'precio_base', 'precio_minimo',
+            'id', 'meta_content_id', 'slug', 'nombre', 'descripcion_corta', 'precio_base', 'precio_minimo',
             'precio_tachado', 'descuento_porcentaje', 'descuento_inicio', 'descuento_fin',
             'cantidad_disponible', 'creado_por', 'destacado', 'created_at',
           ],
@@ -3317,7 +3318,8 @@ class LandingService {
 
       listado.push({
         item, entidad, esCombo,
-        content_id: entidad.slug || `${item.tipo}-${entidad.id}`,
+        content_id: entidad.meta_content_id || entidad.slug || `${item.tipo}-${entidad.id}`,
+        url_slug: entidad.slug || null,
         referencia_id: entidad.id,
         tipo: item.tipo,
         nombre: entidad.nombre,
@@ -3596,7 +3598,7 @@ class LandingService {
     // justo los que el catálogo linkea. mostrar_en_inicio decide dónde
     // aparece un producto, nunca si su página existe.
     const catalogoCompleto = landing.catalogo_items?.length ? landing.catalogo_items : (landing.items || []);
-    const item = catalogoCompleto.find(i => i.content_id === productoSlug);
+    const item = catalogoCompleto.find(i => (i.content_id === productoSlug || i.url_slug === productoSlug));
     if (!item) return null;
 
     // Diseño propio del producto (ver LandingSeccion.producto_id): es una
@@ -3791,7 +3793,7 @@ class LandingService {
     if (acotar) {
       whereProducto[Op.or] = [
         ...(acotar.producto?.length ? [{ id: { [Op.in]: acotar.producto } }] : []),
-        ...(acotar.slugs?.length ? [{ slug: { [Op.in]: acotar.slugs } }] : []),
+        ...(acotar.slugs?.length ? [{ slug: { [Op.in]: acotar.slugs } }, { meta_content_id: { [Op.in]: acotar.slugs } }] : []),
       ];
       if (!whereProducto[Op.or].length) delete whereProducto[Op.or];
     }

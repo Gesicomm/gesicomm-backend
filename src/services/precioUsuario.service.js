@@ -707,6 +707,13 @@ class PrecioUsuarioService {
     const marcasUnicas = marcasUnicasData ? marcasUnicasData.map(m => m.nombre) : [];
 
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
+    const organizacionPendiente = landingOnly && paginatedItems.length
+      ? this.organizacionDeLanding(inquilino_id, tiendaId, paginatedItems.map(item => ({
+        ...item, slug: item.tipo === 'producto' ? productos.find(p => p.id === item.id)?.slug : null,
+      }))) : Promise.resolve(null);
+    // Attach rejection handling immediately while independent gallery queries
+    // run, so a metadata failure cannot become an unhandled rejection.
+    organizacionPendiente.catch(() => {});
     const categoriaIdsPersonalizadas = [...new Set(precios.map(p => p.categoria_id).filter(Boolean))];
     const idsProductosEnCombos = [
       ...new Set([
@@ -885,9 +892,7 @@ class PrecioUsuarioService {
     // "Productos en mi landing": cómo está organizado cada uno en la landing
     // (descuento, badge, contador, colecciones) para que Mi catálogo lo
     // muestre y permita cambiarlo — ver organizarEnLandingActiva.
-    const organizacion = landingOnly && items.length
-      ? await this.organizacionDeLanding(inquilino_id, tiendaId, items)
-      : null;
+    const organizacion = await organizacionPendiente;
     if (organizacion) items.forEach((item) => { item.en_landing = organizacion.porItem.get(`${item.tipo}:${item.id}`) || null; });
 
     return {
@@ -1069,13 +1074,18 @@ class PrecioUsuarioService {
     };
     const urgencia = leer('urgencia') || {};
     const presentacion = leer('presentacion') || {};
-    const filas = await LandingItem.findAll({
-      where: { landing_id: landing.id },
-      attributes: ['tipo', 'referencia_id', 'etiqueta', 'precio_ancla'],
-      raw: true,
-    });
+    const [filas, etiquetas] = await Promise.all([
+      LandingItem.findAll({
+        where: { landing_id: landing.id, [Op.or]: items.map(i => ({ tipo: i.tipo, referencia_id: i.id })) },
+        attributes: ['tipo', 'referencia_id', 'etiqueta', 'precio_ancla'], raw: true,
+      }),
+      LandingItem.findAll({
+        where: { landing_id: landing.id, etiqueta: { [Op.ne]: null } },
+        attributes: [[sequelize.fn('DISTINCT', sequelize.col('etiqueta')), 'etiqueta']], raw: true,
+      }),
+    ]);
     const colecciones = [];
-    filas.forEach(f => etiquetasDe(f.etiqueta).forEach((t) => {
+    etiquetas.forEach(f => etiquetasDe(f.etiqueta).forEach((t) => {
       if (!colecciones.some(c => c.toLowerCase() === t.toLowerCase())) colecciones.push(t);
     }));
     colecciones.sort((a, b) => a.localeCompare(b, 'es'));

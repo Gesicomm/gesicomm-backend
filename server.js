@@ -410,6 +410,15 @@ sequelize.authenticate().then(async () => {
     process.exit(1);
   }
 
+  // Feed por URL: identidad estable y selección aislada por tienda.
+  try {
+    await require('./migrations/20261016200000-meta-feed-url').up(sequelize.getQueryInterface());
+    await require('./migrations/20261016210000-repair-meta-feed-landing').up(sequelize.getQueryInterface());
+  } catch (error) {
+    logger.error('No se puede iniciar sin el esquema del feed de Meta:', error);
+    process.exit(1);
+  }
+
   // Validar que el esquema de la BD coincide con los modelos
   try {
     await validarEsquema(sequelize);
@@ -423,6 +432,7 @@ sequelize.authenticate().then(async () => {
   iniciarJobReconciliacionSuscripciones();
   iniciarJobReconciliacionRecordatorios();
   iniciarJobSpeedbox();
+  require('./src/services/metaFeed.service').iniciarJobMetaFeed();
   servidorHttp = app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });

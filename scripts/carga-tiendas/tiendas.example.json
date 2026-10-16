@@ -1,0 +1,13 @@
+{
+  "entorno": "aislado",
+  "eventos": true,
+  "metaCapiDesactivada": true,
+  "tiendas": [
+    {
+      "origen": "http://127.0.0.1:3300",
+      "host": "carga-01.example.test",
+      "categoria": "Cocina",
+      "producto": "producto-de-ensayo"
+    }
+  ]
+}

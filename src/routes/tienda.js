@@ -38,6 +38,12 @@ router.use(verificarToken);
 router.use(verificarPermiso('gestionar_tienda'));
 router.use(resolverTiendaActiva);
 
+const metaFeed = require('../controllers/metaFeed.controller');
+router.get('/meta-feed/landing-actual', metaFeed.actual);
+router.get('/meta-feed/:landingId', metaFeed.estado);
+router.patch('/meta-feed/:landingId', metaFeed.activar);
+router.post('/meta-feed/:landingId/actualizar', metaFeed.actualizar);
+
 router.get('/subdominio/disponibilidad', ctrl.disponibilidadSubdominio);
 
 router.get('/dominio-propio/estado', ctrl.estadoDominioPropio);

@@ -247,6 +247,11 @@ const Producto = sequelize.define('Producto', {
     allowNull: true,
   },
   // --- SEO ---
+  meta_content_id: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+    comment: 'Identidad comercial inmutable, fijada por PostgreSQL; compartida por feed y eventos.',
+  },
   slug: {
     type: DataTypes.STRING(255),
     allowNull: false,
