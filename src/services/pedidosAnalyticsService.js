@@ -1,6 +1,6 @@
 'use strict';
 
-const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto, CategoriaCostoGasto, PaymentTransaction, CanalVenta, Landing, LandingEvento, Tienda, MetodoPago, MetaReporteFila, MetaCampanaInterna, MetaReporteImport } = require('../models');
+const { Envio, EnvioItem, EnvioItemComponente, Courier, Producto, Usuario, CostoGasto, CategoriaCostoGasto, PaymentTransaction, CanalVenta, Landing, LandingEvento, Tienda, MetodoPago, MetaReporteFila, MetaCampanaInterna, MetaReporteImport, MetaCampanaLead } = require('../models');
 const { Op, fn, col, literal } = require('sequelize');
 const sequelize = require('../config/database');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
@@ -92,18 +92,37 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
   // agregar un canal es cargar una fila, no tocar este archivo. Se indexan
   // por id y por slug para poder ubicar tanto un pedido ya migrado
   // (canal_venta_id) como uno viejo que todavía tiene el `origen` de texto.
+  // Qué pedidos tienen al menos un lead de campaña resuelto automáticamente
+  // por producto (ver metaCampanaLeads.service.js) — para partir "Leads" del
+  // canal WhatsApp en orgánico/campaña sin pedirle nada al vendedor (mismo
+  // criterio que ya se usa en Ads & Campañas, no una marca manual aparte).
+  const envioIdsDelRango = envios.map(e => e.id);
+  const leadsDeCampana = envioIdsDelRango.length
+    ? await MetaCampanaLead.findAll({
+      where: { envio_id: { [Op.in]: envioIdsDelRango } },
+      attributes: ['envio_id'],
+      group: ['envio_id'],
+      raw: true,
+    })
+    : [];
+  const setConLeadCampana = new Set(leadsDeCampana.map(l => l.envio_id));
+
+  const canalVacio = () => ({
+    total: 0, cancelados: 0, confirmados: 0, preparados: 0, despachados: 0, entregados: 0, devueltos: 0,
+    lead_organico: 0, lead_campana: 0,
+  });
   const canales = {};
   const canalPorId = new Map();
   const canalPorSlug = new Map();
   for (const c of canalesCatalogo) {
-    canales[c.slug] = { canal_id: c.id, nombre: c.nombre, total: 0, cancelados: 0, confirmados: 0, entregados: 0 };
+    canales[c.slug] = { canal_id: c.id, nombre: c.nombre, ...canalVacio() };
     canalPorId.set(c.id, canales[c.slug]);
     canalPorSlug.set(c.slug, canales[c.slug]);
   }
   // "Sin canal" recoge los pedidos que todavía no tienen canal asignado y
   // cuyo `origen` histórico no coincide con ninguno del catálogo. Existe
   // para que ningún pedido (ni su facturación) desaparezca del reporte.
-  canales.sin_canal = { canal_id: null, nombre: 'Sin canal', total: 0, cancelados: 0, confirmados: 0, entregados: 0 };
+  canales.sin_canal = { canal_id: null, nombre: 'Sin canal', ...canalVacio() };
 
   for (const e of envios) {
     const st = (e.estado || '').toLowerCase();
@@ -118,6 +137,7 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     const isCancelado = stCom === 'cancelado' || stCom === 'rechazado' || st === 'cancelado' || st === 'rechazado';
 
     // Logística
+    const isPreparado = ['preparado', 'despachado', 'en tránsito', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st) || stLog === 'preparado';
     const isDespachado = ['en tránsito', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st) || ['asignado', 'despachado', 'en tránsito', 'entregado', 'devuelto', 'perdido'].includes(stLog);
     const isEntregado = st === 'entregado' || stLog === 'entregado';
     const isDevuelto = ['devuelto', 'no entregado', 'fallido'].includes(st) || stLog === 'devuelto';
@@ -146,7 +166,12 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     canal.total++;
     if (isCancelado) canal.cancelados++;
     if (isConfirmado) canal.confirmados++;
+    if (isPreparado) canal.preparados++;
+    if (isDespachado) canal.despachados++;
     if (isEntregado) canal.entregados++;
+    if (isDevuelto) canal.devueltos++;
+    if (setConLeadCampana.has(e.id)) canal.lead_campana++;
+    else canal.lead_organico++;
   }
 
   const pctConfirmacion = totalCreados > 0 ? Number(((confirmados / totalCreados) * 100).toFixed(1)) : 0;
