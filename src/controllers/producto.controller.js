@@ -303,11 +303,13 @@ async function eliminar(req, res) {
     const inquilino_id = req.usuario.tenantId;
     const esAdmin = req.usuario.rol === 'administrador';
     await ProductoService.eliminar(req.params.id, inquilino_id, req.usuario.id, esAdmin, req.usuario.tiendaId || null);
-    return res.json({ message: 'Producto dado de baja correctamente.' });
+    return res.json({ message: 'Producto eliminado definitivamente.' });
   } catch (err) {
     console.error(err);
-    const status = err.message.includes('no encontrado') ? 404 : 500;
-    return res.status(status).json({ message: err.message || 'Error al dar de baja el producto.' });
+    const status = err.status || (err.name === 'SequelizeForeignKeyConstraintError' ? 409 : err.message.includes('no encontrado') ? 404 : 500);
+    return res.status(status).json({ message: err.name === 'SequelizeForeignKeyConstraintError'
+      ? 'No se puede eliminar: el producto tiene registros asociados que deben resolverse primero.'
+      : err.message || 'Error al eliminar el producto.' });
   }
 }
 

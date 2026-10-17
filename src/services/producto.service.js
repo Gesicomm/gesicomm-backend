@@ -2,7 +2,8 @@
 
 const { Op } = require('sequelize');
 const slugify = require('slugify');
-const { sequelize, Producto, HistorialPrecio, ProductoVariante, Oferta, OfertaComponente, ProductoFaq, PrecioUsuario, Deposito, InventarioUbicacion } = require('../models');
+const { sequelize, Producto, HistorialPrecio, ProductoVariante, Oferta, OfertaComponente, ProductoFaq, PrecioUsuario, Deposito, InventarioUbicacion,
+  LandingItem, ProductoCombo, ProductoComboItem, ProductoRelacionado, EnvioItemComponente, IngresoInventarioItem, SolicitudAbastecimiento } = require('../models');
 const { calcularPrecioEfectivo, validarPrecioMinimo } = require('../utils/precio');
 const PricingService = require('./pricing.service');
 
@@ -953,16 +954,35 @@ class ProductoService {
     if (!esAdmin && usuario_id != null && tiendaId != null) {
       whereProducto[Op.and] = [this.visibilidadTiendaProducto(usuario_id, tiendaId)];
     }
-    const producto = await Producto.findOne({ where: whereProducto });
-    if (!producto) throw new Error('Producto no encontrado.');
-
-    if (!esAdmin && producto.creado_por !== usuario_id) {
-      throw new Error('No tienes permiso para dar de baja un producto que no creaste.');
-    }
-
-    producto.activo = false;
-    producto.modificado_por = usuario_id;
-    await producto.save();
+    await sequelize.transaction(async transaction => {
+      const producto = await Producto.findOne({ where: whereProducto, transaction, lock: transaction.LOCK.UPDATE });
+      if (!producto) throw Object.assign(new Error('Producto no encontrado.'), { status: 404 });
+      if (!esAdmin && Number(producto.creado_por) !== Number(usuario_id)) {
+        throw Object.assign(new Error('No tienes permiso para eliminar un producto que no creaste.'), { status: 403 });
+      }
+      // Estas tablas conservan el producto físico usado en una operación.
+      // No borrar sus filas ni convertirlas silenciosamente en huérfanas.
+      for (const modelo of [EnvioItemComponente, IngresoInventarioItem, SolicitudAbastecimiento]) {
+        if (await modelo.count({ where: { producto_id: producto.id }, transaction })) {
+          throw Object.assign(new Error('No se puede eliminar definitivamente: el producto tiene historial de ventas o inventario asociado.'), { status: 409 });
+        }
+      }
+      if (await ProductoComboItem.count({ where: { producto_incluido_id: producto.id }, transaction })
+        || await OfertaComponente.count({ where: { producto_id: producto.id }, transaction })) {
+        throw Object.assign(new Error('Quitá el producto de los combos y ofertas que lo incluyen antes de eliminarlo definitivamente.'), { status: 409 });
+      }
+      const combos = await ProductoCombo.findAll({ where: { producto_id: producto.id }, attributes: ['id'], transaction });
+      const comboIds = combos.map(combo => combo.id);
+      for (const modelo of [LandingItem, PrecioUsuario]) {
+        await modelo.destroy({ where: { tipo: 'producto', referencia_id: producto.id }, transaction });
+        if (comboIds.length) await modelo.destroy({ where: { tipo: 'combo', referencia_id: { [Op.in]: comboIds } }, transaction });
+      }
+      await ProductoRelacionado.destroy({ where: { [Op.or]: [{ producto_id: producto.id }, { producto_relacionado_id: producto.id }] }, transaction });
+      await InventarioUbicacion.destroy({ where: { producto_id: producto.id }, transaction });
+      // Imágenes, variantes, FAQ, opciones, ofertas ancla y combos propios
+      // tienen FK ON DELETE CASCADE. Los pedidos conservan su snapshot.
+      await producto.destroy({ transaction, force: true });
+    });
     return true;
   }
 }
