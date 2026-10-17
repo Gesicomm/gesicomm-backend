@@ -1060,6 +1060,8 @@ function limpiarColeccionesInicio(c) {
   const columnas = Number(c.columnas);
   const limite = Number(c.limite);
   return {
+    ...(typeof c.titulo === 'string' ? { titulo: textoCorto(c.titulo, 100) } : {}),
+    ...(typeof c.subtitulo === 'string' ? { subtitulo: textoCorto(c.subtitulo, 160) } : {}),
     modo: c.modo === 'colecciones' ? 'colecciones' : 'categorias',
     items: listaDe(c.items, 24, v => textoCorto(v, 100)),
     columnas: Number.isInteger(columnas) && columnas >= 1 && columnas <= 6 ? columnas : 4,

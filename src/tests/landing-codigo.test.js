@@ -7,6 +7,13 @@
 
 const LandingCodigoService = require('../services/landingCodigo.service');
 
+test('Colecciones conserva título, subtítulo vacío, selección y límite al guardar', () => {
+  const colecciones = { modo: 'categorias', items: ['Audio', 'Bebés'], columnas: 2, limite: 4, titulo: 'Elegí tu categoría', subtitulo: '' };
+  const venta = LandingCodigoService.limpiarVenta({ inicio: { colecciones } });
+  expect(venta.inicio.colecciones).toEqual(colecciones);
+  expect(venta.inicio_comercial.colecciones).toEqual(colecciones);
+});
+
 describe('LandingCodigoService.sanitizar', () => {
 
   describe('HTML', () => {
