@@ -26,6 +26,7 @@ const ImagenService = require('./imagen.service');
 const TypographyService = require('./typography.service');
 const PaymentLogoService = require('./paymentLogo.service');
 const LandingLimites = require('./landingLimites.service');
+const CachePurgeService = require('./cachePurge.service');
 const PaginaFactory = require('../factories/PaginaFactory');
 
 // Los dos modos que administra este servicio, ambos "una landing por
@@ -572,13 +573,18 @@ class LandingSimpleService {
     }
     Object.assign(landing, this.camposEditables(payload, 'codigo'));
     await landing.save();
+    let tienda = null;
     if (payload.venta !== undefined) {
-      const tienda = await Tienda.findByPk(tienda_id);
+      tienda = await Tienda.findByPk(tienda_id);
       await PaymentLogoService.guardarVisibilidadLanding(landing, tienda, content.venta?.payment_logos || []);
     }
     if (payload.items !== undefined) {
       await LandingService.sincronizarItems(landing.id, payload.items);
     }
+    // Mejor esfuerzo: nunca debe frenar ni fallar el guardado — ver
+    // CachePurgeService. Sin esto, la landing pública tarda hasta 60s
+    // (proxy_cache_valid) en mostrar lo recién guardado.
+    CachePurgeService.purgarLanding(tienda || await Tienda.findByPk(tienda_id), landing).catch(() => {});
     const dto = await this.obtener(landing.id, tienda_id);
     return { ...dto, codigo_advertencias: advertencias };
   }
