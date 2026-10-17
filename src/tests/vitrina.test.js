@@ -88,6 +88,28 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     expect(sequelize.query.mock.calls[1][1].replacements.tienda_id).toBe(69);
   });
 
+  test('el catálogo del editor conserva el identificador público y la categoría en páginas grandes', async () => {
+    sequelize.query.mockResolvedValueOnce([{ total: 3630 }]).mockResolvedValueOnce([
+      { id: 10, tipo: 'producto', slug: 'abridor-de-vino', nombre: 'Abridor', categoria_id: 8, categoria: 'Cocina', precio_efectivo: '100000' },
+      { id: 20, tipo: 'combo', slug: null, nombre: 'Pack', categoria_id: 8, categoria: 'Cocina', precio_efectivo: '200000' },
+    ]);
+
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { limit: 10000 }, false, 69);
+
+    // El selector de 10 usa el slug y las reglas por categoría usan el nombre.
+    // Ambos deben coincidir con el catálogo completo que carga el editor.
+    expect(resultado.items[0]).toMatchObject({ slug: 'abridor-de-vino', categoria_id: 8, categoria: 'Cocina' });
+    expect(resultado.items[1]).toMatchObject({ slug: null, categoria_id: 8, categoria: 'Cocina' });
+    const sql = sequelize.query.mock.calls[1][0];
+    expect(sql).toContain('p.slug');
+    expect(sql).toContain('NULL::text AS slug');
+    expect(sql).toContain('cat.nombre');
+    expect(sql).toContain('cat.id = COALESCE(pu.categoria_id, p.categoria_id)');
+    expect(sql).toContain('cat.inquilino_id = :inquilino_id');
+    expect(Producto.findAll).not.toHaveBeenCalled();
+    expect(ProductoCombo.findAll).not.toHaveBeenCalled();
+  });
+
   test('incluye filtro p.creado_por = :usuario_id en la consulta SQL cuando solamenteMios es true', async () => {
     sequelize.query
       .mockResolvedValueOnce([{ total: 1 }]) // countQuery
@@ -155,7 +177,7 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
 
     expect(resultado.total).toBe(3630);
     expect(resultado.items).toHaveLength(3630);
-    expect(resultado.items[0]).toEqual({ id: 1, tipo: 'producto', nombre: 'Producto 1', creado_por: 42, precio_efectivo: 1000, imagen: null });
+    expect(resultado.items[0]).toEqual({ id: 1, tipo: 'producto', slug: null, nombre: 'Producto 1', categoria_id: null, categoria: null, creado_por: 42, precio_efectivo: 1000, imagen: null });
     // Nada de Sequelize con includes anidados (categoría/marca/proveedor/imágenes/combos) para esta selección masiva.
     expect(Producto.findAll).not.toHaveBeenCalled();
     expect(ProductoCombo.findAll).not.toHaveBeenCalled();
@@ -169,7 +191,7 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
 
     const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { limit: 10, liviano: true });
 
-    expect(resultado.items).toEqual([{ id: 10, tipo: 'producto', nombre: 'X', creado_por: null, precio_efectivo: 500, imagen: null }]);
+    expect(resultado.items).toEqual([{ id: 10, tipo: 'producto', slug: null, nombre: 'X', categoria_id: null, categoria: null, creado_por: null, precio_efectivo: 500, imagen: null }]);
     expect(Producto.findAll).not.toHaveBeenCalled();
   });
 
