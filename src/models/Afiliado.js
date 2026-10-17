@@ -16,6 +16,8 @@ const Afiliado = sequelize.define('Afiliado', {
   documento_pago: { type: DataTypes.STRING(80), allowNull: true },
   cuenta_pago: { type: DataTypes.STRING(160), allowNull: true },
   notas: { type: DataTypes.TEXT, allowNull: true },
+  terminos_version: { type: DataTypes.STRING(30), allowNull: true },
+  terminos_aceptados_en: { type: DataTypes.DATE, allowNull: true },
 }, {
   tableName: 'afiliados',
   timestamps: true,

@@ -3,6 +3,8 @@ const { Op } = require('sequelize');
 const { Afiliado, AfiliadoClick, AfiliadoComision, Suscripcion, PagoSuscripcion, Plan, Usuario } = require('../models');
 const BrevoService = require('./brevo.service');
 const { logger } = require('../utils/logger');
+const terminos = require('./afiliadosTerminos');
+const parametros = require('./parametros.service');
 
 function slugCodigo(valor) {
   return String(valor || '')
@@ -105,6 +107,9 @@ class AfiliadosService {
       documento_pago: data.documento_pago,
       cuenta_pago: data.cuenta_pago,
       notas: data.notas,
+      terminos_version: data.terminos_version || null,
+      terminos_aceptados_en: data.terminos_aceptados_en || null,
+      requiere_aceptacion: data.terminos_version !== terminos.version || !data.terminos_aceptados_en,
       resumen_comisiones: resumenComisiones(data.comisiones || []),
       link: url,
       created_at: data.created_at,
@@ -126,6 +131,7 @@ class AfiliadosService {
       estado: data.estado,
       notas: data.notas,
       cliente_email: data.suscripcion?.email || null,
+      pagada_en: data.pagada_en || null,
       plan: data.suscripcion?.Plan ? data.suscripcion.Plan.nombre : null,
       created_at: data.created_at,
       updated_at: data.updated_at,
@@ -171,6 +177,61 @@ class AfiliadosService {
     return this.serializarAfiliado(afiliado, baseUrl);
   }
 
+  static async obtenerPanel(usuarioId, opciones = {}) {
+    const afiliado = await this.obtenerDeUsuario(usuarioId, opciones);
+    const calendario = await parametros.obtener('AFILIADOS_DIAS_DEPOSITO');
+    const minimo = await parametros.obtener('AFILIADOS_MINIMO_LIQUIDACION');
+    const condicionesPago = {
+      dias_deposito: calendario || null,
+      minimo_liquidacion: minimo !== null && Number.isFinite(Number(minimo)) && Number(minimo) >= 0 ? Number(minimo) : null,
+      moneda: 'PYG',
+    };
+    if (!afiliado) return { afiliado: null, terminos, condiciones_pago: condicionesPago };
+    const where = { afiliado_id: afiliado.id };
+    const [visitas, visitantes, registros, suscripciones, comisiones] = await Promise.all([
+      AfiliadoClick.count({ where }),
+      AfiliadoClick.count({ where: { ...where, ip_hash: { [Op.ne]: null } }, distinct: true, col: 'ip_hash' }),
+      Usuario.count({ where: { affiliate_id: afiliado.id } }),
+      Suscripcion.findAll({
+        where,
+        attributes: ['id', 'email', 'usuario_id', 'estado', 'periodo_fin'],
+        include: [{ model: PagoSuscripcion, as: 'pagos', attributes: ['id'], where: { estado: 'PAID' }, required: true }],
+      }),
+      AfiliadoComision.findAll({
+        where,
+        include: [{ model: Suscripcion, as: 'suscripcion', include: [Plan] }],
+        order: [['created_at', 'DESC'], ['id', 'DESC']],
+      }),
+    ]);
+    const activos = new Set(suscripciones
+      .filter(s => s.estado === 'activa' && (!s.periodo_fin || new Date(s.periodo_fin) > new Date()))
+      .map(s => String(s.email).trim().toLowerCase()));
+    const resumen = resumenComisiones(comisiones);
+    return {
+      afiliado: { ...afiliado, resumen_comisiones: resumen },
+      terminos,
+      condiciones_pago: condicionesPago,
+      metricas: {
+        visitas,
+        visitantes_estimados: visitantes,
+        registros,
+        clientes_pagados: new Set(suscripciones.map(s => String(s.email).trim().toLowerCase())).size,
+        clientes_activos: activos.size,
+      },
+      // La API personal nunca expone emails ni notas administrativas de referidos.
+      movimientos: comisiones.map(c => ({
+        id: c.id,
+        plan: c.suscripcion?.Plan?.nombre || 'Suscripcion',
+        monto_base: Number(c.monto_base),
+        comision_pct: Number(c.comision_pct),
+        monto_comision: Number(c.monto_comision),
+        estado: c.estado,
+        created_at: c.created_at,
+        pagada_en: c.pagada_en || null,
+      })),
+    };
+  }
+
   static async solicitarParaUsuario(usuarioId, datos = {}, { baseUrl } = {}) {
     await this.verificarUsuarioFundador(usuarioId);
     const usuario = await Usuario.findByPk(usuarioId);
@@ -187,8 +248,20 @@ class AfiliadosService {
       include: [{ model: AfiliadoComision, as: 'comisiones', attributes: ['estado', 'monto_comision'] }],
     });
 
+    const requiereAceptacion = !existente || existente.terminos_version !== terminos.version || !existente.terminos_aceptados_en;
+    if (requiereAceptacion && (datos.acepta_terminos !== true || datos.terminos_version !== terminos.version)) {
+      throw Object.assign(new Error('Acepta los terminos vigentes para activar tu afiliacion.'), { status: 422 });
+    }
+    const aceptacion = requiereAceptacion ? {
+      terminos_version: terminos.version,
+      terminos_aceptados_en: new Date(),
+    } : {};
+
     if (existente) {
-      const cambios = { usuario_id: usuario.id };
+      if (existente.usuario_id && existente.usuario_id !== usuario.id) {
+        throw Object.assign(new Error('Esta afiliacion pertenece a otra cuenta.'), { status: 409 });
+      }
+      const cambios = { usuario_id: usuario.id, ...aceptacion };
       if (datos.nombre !== undefined) {
         const nombre = String(datos.nombre || '').trim();
         if (!nombre) throw Object.assign(new Error('El nombre del afiliado es obligatorio.'), { status: 400 });
@@ -214,8 +287,9 @@ class AfiliadosService {
       email,
       telefono: textoONull(datos.telefono),
       codigo,
-      comision_pct: Number(datos.comision_pct ?? 40),
+      comision_pct: 10,
       estado: 'activo',
+      ...aceptacion,
       metodo_pago: textoONull(datos.metodo_pago),
       entidad_pago: textoONull(datos.entidad_pago),
       titular_pago: textoONull(datos.titular_pago),
@@ -394,6 +468,8 @@ class AfiliadosService {
     const estados = new Set(['pendiente', 'aprobada', 'pagada', 'anulada']);
     const cambios = {};
     if (datos.estado !== undefined && estados.has(datos.estado)) cambios.estado = datos.estado;
+    if (cambios.estado === 'pagada' && comision.estado !== 'pagada') cambios.pagada_en = new Date();
+    if (cambios.estado && cambios.estado !== 'pagada') cambios.pagada_en = null;
     if (datos.notas !== undefined) cambios.notas = datos.notas || null;
     await comision.update(cambios);
     const completa = await AfiliadoComision.findByPk(id, {

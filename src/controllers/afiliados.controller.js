@@ -58,7 +58,7 @@ exports.registrarClick = async (req, res) => {
 
 exports.miAfiliado = async (req, res) => {
   try {
-    res.json({ afiliado: await AfiliadosService.obtenerDeUsuario(req.usuario.id, { baseUrl: baseUrl(req) }) });
+    res.json(await AfiliadosService.obtenerPanel(req.usuario.id, { baseUrl: baseUrl(req) }));
   } catch (error) {
     if (!error.status || error.status >= 500) console.error('[Afiliados] mi afiliado:', error);
     res.status(error.status || 500).json({ message: error.message || 'No se pudo cargar tu afiliación.' });

@@ -419,6 +419,13 @@ sequelize.authenticate().then(async () => {
     process.exit(1);
   }
 
+  try {
+    await require('./migrations/20261017120000-afiliados-aceptacion-billetera').up(sequelize.getQueryInterface(), require('sequelize'));
+  } catch (error) {
+    logger.error('No se puede iniciar sin el registro de aceptacion de afiliados:', error);
+    process.exit(1);
+  }
+
   // Validar que el esquema de la BD coincide con los modelos
   try {
     await validarEsquema(sequelize);

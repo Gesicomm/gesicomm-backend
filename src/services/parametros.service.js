@@ -20,6 +20,8 @@ const DEFINICIONES = [
   { clave: 'AFILIADOS_PROGRAMA_ACTIVO', grupo: 'afiliados', secreto: false, descripcion: 'Activa o pausa el Programa de Afiliados Gesicom.' },
   { clave: 'AFILIADOS_COMISION_PCT', grupo: 'afiliados', secreto: false, descripcion: 'Porcentaje recurrente sobre suscripciones SaaS elegibles cobradas.' },
   { clave: 'AFILIADOS_REGLAS_JSON', grupo: 'afiliados', secreto: false, descripcion: 'Reglas comerciales visibles del Programa de Afiliados.' },
+  { clave: 'AFILIADOS_DIAS_DEPOSITO', grupo: 'afiliados', secreto: false, descripcion: 'Dias o periodicidad de deposito de comisiones, comunicados a los afiliados.' },
+  { clave: 'AFILIADOS_MINIMO_LIQUIDACION', grupo: 'afiliados', secreto: false, descripcion: 'Minimo de liquidacion en guaranies; vacio significa por confirmar.' },
   { clave: 'ADMIN_TELEFONO_CONTACTO', grupo: 'contacto', secreto: false, descripcion: 'Número al que escriben los comercios ante un problema de cobro o de plan. Con código de país, sin espacios (ej: 595981234567).' },
   { clave: 'ABASTECIMIENTO_NOTIFICACION_EMAIL', grupo: 'notificaciones', secreto: false, descripcion: 'Correo interno de Gesicom que recibe avisos de pedidos con abastecimiento pendiente.' },
   { clave: 'ABASTECIMIENTO_BANCO_NOMBRE', grupo: 'abastecimiento_transferencia', secreto: false, descripcion: 'Banco de la cuenta a la que las tiendas transfieren el costo de abastecimiento.' },
