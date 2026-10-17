@@ -323,6 +323,7 @@ class McpService {
     // Chequeo de CTA obligatorio para que funcione el carrito
     const tieneComprar = /data-gesicomm-comprar/.test(texto);
     const tieneAgregar = /data-gesicomm-agregar/.test(texto);
+    const tieneBotonProducto = tieneComprar || tieneAgregar;
 
     if (!tieneComprar && !tieneAgregar) {
       errores.push('Falta el botón de compra: El HTML debe contener al menos un elemento con "data-gesicomm-comprar" o "data-gesicomm-agregar" para que el visitante pueda comprar, entrar al carrito y activar el Píxel de Meta.');
@@ -341,6 +342,14 @@ class McpService {
     // Chequeo de order bump
     if (/data-gesicomm-lista=["']ofertas_bump["']/.test(texto) && !/data-gesicomm-bump/.test(texto)) {
       errores.push('La sección de Order Bump no tiene la casilla con el atributo data-gesicomm-bump.');
+    }
+
+    // Chequeo de imagen de producto: con "libertad total" de rediseño es común
+    // que la IA arme tarjetas de producto (botón de compra) sin el <img
+    // data-gesicomm-bind="imagen">. El runtime nunca toca esas imágenes —
+    // quedan sin src y el producto se ve sin foto en la landing publicada.
+    if (tieneBotonProducto && !/data-gesicomm-bind=["']imagen["']/.test(texto)) {
+      errores.push('Hay botones de compra pero ningún "data-gesicomm-bind=\\"imagen\\"" en el HTML: las fotos de los productos van a aparecer vacías. Agregá <img data-gesicomm-bind="imagen" alt=""> dentro de cada tarjeta o <template> de producto.');
     }
 
     // Chequeo de botón flotante de WhatsApp duplicado

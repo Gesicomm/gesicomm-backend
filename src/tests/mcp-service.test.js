@@ -21,6 +21,7 @@ describe('McpService - Motor Comercial y Validaciones', () => {
     test('acepta HTML que tiene data-gesicomm-comprar para carrito y píxel', () => {
       const html = `
         <div class="hero">
+          <img data-gesicomm-bind="imagen" alt="">
           <h1 data-gesicomm-bind="nombre">Producto</h1>
           <span data-gesicomm-bind="precio"></span>
           <button data-gesicomm-comprar>Comprar ahora</button>
@@ -35,6 +36,7 @@ describe('McpService - Motor Comercial y Validaciones', () => {
     test('acepta HTML que tiene data-gesicomm-agregar para catálogo', () => {
       const html = `
         <div class="card">
+          <img data-gesicomm-bind="imagen" alt="">
           <h2 data-gesicomm-bind="nombre">Item</h2>
           <button data-gesicomm-agregar>Agregar al carrito</button>
         </div>
@@ -47,6 +49,7 @@ describe('McpService - Motor Comercial y Validaciones', () => {
 
     test('advierte si se escribe lista ofertas_bump sin la casilla data-gesicomm-bump', () => {
       const html = `
+        <img data-gesicomm-bind="imagen" alt="">
         <div data-gesicomm-lista="ofertas_bump">
           <template>
             <div class="bump-card">
@@ -60,6 +63,19 @@ describe('McpService - Motor Comercial y Validaciones', () => {
 
       expect(res.valido).toBe(false);
       expect(res.errores.some(e => e.includes('data-gesicomm-bump'))).toBe(true);
+    });
+
+    test('rechaza botones de compra sin ningún data-gesicomm-bind="imagen": la foto del producto quedaría vacía', () => {
+      const html = `
+        <div class="card">
+          <h2 data-gesicomm-bind="nombre">Item</h2>
+          <button data-gesicomm-comprar>Comprar</button>
+        </div>
+      `;
+      const res = McpService.validarMotorComercial(html, 'inicio');
+
+      expect(res.valido).toBe(false);
+      expect(res.errores.some(e => e.includes('data-gesicomm-bind=\\"imagen\\"'))).toBe(true);
     });
   });
 
@@ -103,7 +119,7 @@ describe('McpService - Motor Comercial y Validaciones', () => {
       jest.spyOn(LandingSimpleService, 'buscarPropia').mockResolvedValue(mockLanding);
       jest.spyOn(LandingSimpleService, 'actualizarCodigo').mockResolvedValue({ id: 240, content: {} });
 
-      const html = '<button data-gesicomm-comprar>Comprar</button>';
+      const html = '<img data-gesicomm-bind="imagen" alt=""><button data-gesicomm-comprar>Comprar</button>';
       const res = await McpService.guardarCodigo(240, 1, 2, { vista: 'inicio', html });
 
       expect(LandingSimpleService.buscarPropia).toHaveBeenCalledWith(240, 1);
