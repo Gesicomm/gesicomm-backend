@@ -30,6 +30,10 @@ jest.mock('../../services/parametros.service', () => ({
 }));
 jest.mock('../../services/afiliados.service', () => ({
   crearComisionPorPago: jest.fn(),
+  notificarVentaAtribuidaPorPago: jest.fn().mockResolvedValue(null),
+}));
+jest.mock('../../services/authTracking.service', () => ({
+  registrarEventoConNotificacion: jest.fn().mockResolvedValue(null),
 }));
 
 function armarEscenario() {

@@ -26,6 +26,27 @@ function textoONull(valor) {
   return limpio || null;
 }
 
+function aplicaTerminosVigentes(afiliado) {
+  return afiliado.terminos_version === terminos.version && !!afiliado.terminos_aceptados_en;
+}
+
+function referidoValido(suscripcion, afiliado) {
+  const email = String(suscripcion.email || '').trim().toLowerCase();
+  return !!email && email !== String(afiliado.email || '').trim().toLowerCase()
+    && !(afiliado.usuario_id && String(suscripcion.usuario_id) === String(afiliado.usuario_id));
+}
+
+function clientesActivos(suscripciones, afiliado) {
+  const ahora = new Date();
+  return new Set(suscripciones
+    .filter(s => referidoValido(s, afiliado) && s.estado === 'activa' && (!s.periodo_fin || new Date(s.periodo_fin) > ahora))
+    .map(s => String(s.email).trim().toLowerCase())).size;
+}
+
+function porcentajeVigente(afiliado, cantidadActivos) {
+  return aplicaTerminosVigentes(afiliado) ? (cantidadActivos >= 11 ? 15 : 10) : Number(afiliado.comision_pct || 0);
+}
+
 function resumenComisiones(comisiones = []) {
   const base = {
     pendiente: 0,
@@ -203,20 +224,18 @@ class AfiliadosService {
         order: [['created_at', 'DESC'], ['id', 'DESC']],
       }),
     ]);
-    const activos = new Set(suscripciones
-      .filter(s => s.estado === 'activa' && (!s.periodo_fin || new Date(s.periodo_fin) > new Date()))
-      .map(s => String(s.email).trim().toLowerCase()));
+    const activos = clientesActivos(suscripciones, afiliado);
     const resumen = resumenComisiones(comisiones);
     return {
-      afiliado: { ...afiliado, resumen_comisiones: resumen },
+      afiliado: { ...afiliado, comision_pct: porcentajeVigente(afiliado, activos), resumen_comisiones: resumen },
       terminos,
       condiciones_pago: condicionesPago,
       metricas: {
         visitas,
         visitantes_estimados: visitantes,
         registros,
-        clientes_pagados: new Set(suscripciones.map(s => String(s.email).trim().toLowerCase())).size,
-        clientes_activos: activos.size,
+        clientes_pagados: new Set(suscripciones.filter(s => referidoValido(s, afiliado)).map(s => String(s.email).trim().toLowerCase())).size,
+        clientes_activos: activos,
       },
       // La API personal nunca expone emails ni notas administrativas de referidos.
       movimientos: comisiones.map(c => ({
@@ -361,7 +380,29 @@ class AfiliadosService {
     const afiliado = await Afiliado.findByPk(suscripcion.afiliado_id, { transaction });
     if (!afiliado || afiliado.estado !== 'activo') return null;
 
-    const pct = Number(afiliado.comision_pct || 0);
+    let cantidadActivos = 0;
+    if (aplicaTerminosVigentes(afiliado)) {
+      if (!referidoValido(suscripcion, afiliado) || !afiliado.usuario_id) return null;
+      const membresia = await Suscripcion.findOne({
+        where: {
+          usuario_id: afiliado.usuario_id,
+          estado: 'activa',
+          [Op.or]: [{ periodo_fin: null }, { periodo_fin: { [Op.gt]: new Date() } }],
+        },
+        transaction,
+      });
+      if (!membresia) return null;
+      const referidos = await Suscripcion.findAll({
+        where: { afiliado_id: afiliado.id },
+        attributes: ['email', 'usuario_id', 'estado', 'periodo_fin'],
+        include: [{ model: PagoSuscripcion, as: 'pagos', attributes: ['id'], where: { estado: 'PAID' }, required: true }],
+        transaction,
+      });
+      cantidadActivos = clientesActivos(referidos, afiliado);
+    }
+    // Cada pago conserva su porcentaje: los cambios de nivel solo afectan
+    // comisiones nuevas, nunca los importes de pagos ya registrados.
+    const pct = porcentajeVigente(afiliado, cantidadActivos);
     const base = Number(pago.monto || suscripcion.precio_pagado || 0);
     const monto = Math.round(base * (pct / 100));
 
