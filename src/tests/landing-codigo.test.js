@@ -14,6 +14,12 @@ test('Colecciones conserva título, subtítulo vacío, selección y límite al g
   expect(venta.inicio_comercial.colecciones).toEqual(colecciones);
 });
 
+test('Colecciones guarda imágenes por modo y descarta URLs inseguras', () => {
+  const imagenes = { categorias: { Cocina: 'https://cdn.test/cocina.webp', Mala: 'javascript:alert(1)' }, colecciones: { Novedades: '/uploads/novedades.webp', Vacía: '' } };
+  const venta = LandingCodigoService.limpiarVenta({ inicio: { colecciones: { imagenes } } });
+  expect(venta.inicio.colecciones.imagenes).toEqual({ categorias: { Cocina: 'https://cdn.test/cocina.webp' }, colecciones: { Novedades: '/uploads/novedades.webp' } });
+});
+
 describe('LandingCodigoService.sanitizar', () => {
 
   describe('HTML', () => {

@@ -1059,7 +1059,16 @@ function limpiarColeccionesInicio(c) {
   if (!c || typeof c !== 'object' || Array.isArray(c)) return null;
   const columnas = Number(c.columnas);
   const limite = Number(c.limite);
+  const imagenes = {};
+  for (const modo of ['categorias', 'colecciones']) {
+    const entradas = c.imagenes?.[modo];
+    if (!entradas || typeof entradas !== 'object' || Array.isArray(entradas)) continue;
+    imagenes[modo] = Object.fromEntries(Object.entries(entradas).slice(0, 50)
+      .map(([nombre, url]) => [textoCorto(nombre, 100), urlMedia(url)])
+      .filter(([nombre, url]) => nombre && url));
+  }
   return {
+    ...(Object.keys(imagenes).length ? { imagenes } : {}),
     ...(typeof c.titulo === 'string' ? { titulo: textoCorto(c.titulo, 100) } : {}),
     ...(typeof c.subtitulo === 'string' ? { subtitulo: textoCorto(c.subtitulo, 160) } : {}),
     modo: c.modo === 'colecciones' ? 'colecciones' : 'categorias',
