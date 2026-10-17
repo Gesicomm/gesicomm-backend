@@ -752,7 +752,17 @@ class ProductoService {
     if (esAdmin) camposPermitidos.push('precio_minimo');
 
     for (const campo of camposPermitidos) {
-      if (campos[campo] !== undefined) producto[campo] = campos[campo];
+      if (campos[campo] === undefined) continue;
+      // ficha_datos lo tocan varios flujos independientes (Vista producto,
+      // importación masiva, IA): un reemplazo directo borra en silencio lo
+      // que haya guardado otro flujo que no conoce esas claves (por ejemplo
+      // "presentacion", del prompt de la IA). Se combina un nivel, nunca se
+      // reemplaza entero.
+      if (campo === 'ficha_datos') {
+        producto.ficha_datos = { ...(producto.ficha_datos || {}), ...(campos.ficha_datos || {}) };
+        continue;
+      }
+      producto[campo] = campos[campo];
     }
 
     if (campos.nombre && campos.nombre !== producto.nombre) {
