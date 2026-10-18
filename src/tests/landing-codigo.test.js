@@ -686,3 +686,14 @@ describe('LandingCodigoService.limpiarVenta', () => {
     for (const valor of [0, 9, -1, 2.5, 'incorrecto']) expect(limpiar(valor).columnas).toBe(4);
   });
 });
+
+
+test('conserva logos por ficha y compartidos, incluidos todos desmarcados', () => {
+  const logo = { clave: 'visa', nombre: 'Visa', grupo: 'tarjetas', logo_url: '/visa.webp', orden: 1 };
+  const venta = LandingCodigoService.limpiarVenta({ ficha_compartida: { payment_logos: [logo] }, presentacion_productos: {
+    'producto:1': { v: 2, payment_logos: [] }, 'producto:2': { v: 2, payment_logos: [logo, null, {}] },
+  } });
+  expect(venta.ficha_compartida.payment_logos).toEqual([expect.objectContaining(logo)]);
+  expect(venta.presentacion_productos['producto:1'].payment_logos).toEqual([]);
+  expect(venta.presentacion_productos['producto:2'].payment_logos).toEqual([expect.objectContaining(logo)]);
+});

@@ -700,6 +700,23 @@ function botonFicha(b) {
   };
 }
 
+function limpiarPaymentLogos(value) {
+  return Array.isArray(value)
+    ? value
+      .filter(logo => logo && typeof logo === 'object')
+      .slice(0, 100)
+      .map(logo => ({
+        clave: textoCorto(logo.clave, 80),
+        grupo: textoCorto(logo.grupo, 60),
+        nombre: textoCorto(logo.nombre, 120),
+        logo_url: textoCorto(logo.logo_url || logo.imagen, 700),
+        imagen: textoCorto(logo.logo_url || logo.imagen, 700),
+        orden: enteroPositivo(logo.orden) || 0,
+      }))
+      .filter(logo => logo.clave && logo.nombre && logo.logo_url)
+    : null;
+}
+
 function limpiarPresentacionProducto(value) {
   const propio = campo => Object.prototype.hasOwnProperty.call(value, campo) && value[campo] !== null && value[campo] !== undefined;
   // v: 2 = el panel manda SOLO los textos que el comercio tocó, y uno vacío
@@ -753,6 +770,7 @@ function limpiarPresentacionProducto(value) {
   }
   if (Array.isArray(value.botones_pago)) salida.botones_pago = listaFicha(value.botones_pago, 4, botonFicha);
   if (Array.isArray(value.botones_contacto)) salida.botones_contacto = listaFicha(value.botones_contacto, 4, botonFicha);
+  if (Array.isArray(value.payment_logos)) salida.payment_logos = limpiarPaymentLogos(value.payment_logos);
   if (Array.isArray(value.metodos_pago)) {
     salida.metodos_pago = listaFicha(value.metodos_pago, 8, m => {
       const texto = textoCorto(m.texto || m.label, 40);
@@ -1172,20 +1190,7 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
   const max = Number(reco.max);
   const briefComercial = limpiarBriefComercial(venta.brief_comercial);
   const tipo = TIPOS_VENTA.includes(venta.tipo) ? venta.tipo : 'catalogo';
-  const paymentLogos = Array.isArray(venta.payment_logos)
-    ? venta.payment_logos
-      .filter(logo => logo && typeof logo === 'object')
-      .slice(0, 100)
-      .map(logo => ({
-        clave: textoCorto(logo.clave, 80),
-        grupo: textoCorto(logo.grupo, 60),
-        nombre: textoCorto(logo.nombre, 120),
-        logo_url: textoCorto(logo.logo_url || logo.imagen, 700),
-        imagen: textoCorto(logo.logo_url || logo.imagen, 700),
-        orden: enteroPositivo(logo.orden) || 0,
-      }))
-      .filter(logo => logo.clave && logo.nombre && logo.logo_url)
-    : null;
+  const paymentLogos = limpiarPaymentLogos(venta.payment_logos);
   return {
     configurado: true,
     tipo,
