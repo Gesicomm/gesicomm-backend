@@ -697,3 +697,14 @@ test('conserva logos por ficha y compartidos, incluidos todos desmarcados', () =
   expect(venta.presentacion_productos['producto:1'].payment_logos).toEqual([]);
   expect(venta.presentacion_productos['producto:2'].payment_logos).toEqual([expect.objectContaining(logo)]);
 });
+
+
+test('conserva imagen del método personalizado y descarta protocolos inválidos', () => {
+  const venta = LandingCodigoService.limpiarVenta({ ficha_compartida: { metodos_pago: [
+    { texto: 'Giros Tigo', logo_url: 'https://cdn.test/tigo.png' },
+    { texto: 'Inválido', logo_url: 'javascript:alert(1)' },
+  ] } });
+  expect(venta.ficha_compartida.metodos_pago).toEqual([
+    { texto: 'Giros Tigo', logo_url: 'https://cdn.test/tigo.png' }, { texto: 'Inválido' },
+  ]);
+});

@@ -774,7 +774,9 @@ function limpiarPresentacionProducto(value) {
   if (Array.isArray(value.metodos_pago)) {
     salida.metodos_pago = listaFicha(value.metodos_pago, 8, m => {
       const texto = textoCorto(m.texto || m.label, 40);
-      return texto ? { texto } : null;
+      const logo = textoCorto(m.logo_url, 700);
+      const logo_url = /^(https?:\/\/|\/(?!\/))/i.test(logo || '') ? logo : '';
+      return texto ? { texto, ...(logo_url ? { logo_url } : {}) } : null;
     });
   }
   if (Array.isArray(value.incluye_pedido)) {
