@@ -333,6 +333,16 @@ describe('Runtime de Gesicomm en el HTML', () => {
 });
 
 describe('LandingCodigoService.limpiarVenta', () => {
+  it('conserva los contenidos compartidos de la ficha, sin aceptar precios de venta ni campos inválidos', () => {
+    const venta = LandingCodigoService.limpiarVenta({ ficha_compartida: {
+      ficha_bloques: { incluye: false, confianza: true, '<script>': false, precio: 'no' },
+      confianza: [{ titulo: 'Compra protegida', texto: 'Atención directa', icono: '✓' }],
+      titulo_comercial: 'No se debe copiar', precio: 1,
+    } });
+    expect(venta.ficha_compartida).toEqual({ v: 2, titulo_comercial: 'No se debe copiar', ficha_bloques: { incluye: false, confianza: true }, confianza: [{ titulo: 'Compra protegida', texto: 'Atención directa', icono: '✓' }] });
+    expect(LandingCodigoService.limpiarVenta({ ficha_compartida: { confianza: [] } }).ficha_compartida.confianza).toEqual([]);
+  });
+
   it('guarda galerías propias y conserva la lista vacía sin aceptar URLs inseguras', () => {
     const venta = LandingCodigoService.limpiarVenta({ presentacion_productos: {
       'producto:10': { imagenes_landing: ['https://cdn.test/foto.webp', 'javascript:alert(1)', '//externo.test/foto', '/uploads/foto.jpg', 'https://cdn.test/foto.webp'] },

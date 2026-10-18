@@ -1211,10 +1211,13 @@ LandingCodigoService.limpiarVenta = function limpiarVenta(venta) {
     // Por paquete (oferta 'normal'): la etiqueta que muestra la ficha
     // ("Más elegido", "Mayor ahorro"…) y cuál se destaca (arranca elegido).
     paquetes: limpiarPaquetes(venta.paquetes),
+    ...(venta.ficha_compartida && typeof venta.ficha_compartida === 'object' && !Array.isArray(venta.ficha_compartida) ? {
+      ficha_compartida: limpiarPresentacionProducto({ ...venta.ficha_compartida, v: 2 }),
+    } : {}),
     ...(venta.presentacion_productos && typeof venta.presentacion_productos === 'object' ? {
       presentacion_productos: Object.fromEntries(Object.entries(venta.presentacion_productos)
         .filter(([key, value]) => /^(producto|combo):[1-9]\d*$/.test(key) && value && typeof value === 'object')
-        .slice(0, 500).map(([key, value]) => [key, limpiarPresentacionProducto(value)])),
+        .map(([key, value]) => [key, limpiarPresentacionProducto(value)])),
     } : {}),
     ...(venta.catalogo_filtros && typeof venta.catalogo_filtros === 'object' ? {
       catalogo_filtros: Object.fromEntries(['buscador', 'categoria', 'marca', 'etiqueta', 'precio', 'disponibilidad', 'orden']

@@ -3884,7 +3884,8 @@ class LandingService {
 
   static maxDescuentoBotonLanding(landing, landingItem) {
     const venta = landing?.content?.venta || {};
-    const fuente = venta.presentacion_productos?.[`${landingItem?.tipo}:${landingItem?.referencia_id}`] || {};
+    const fuente = { ...(landingItem?.tipo === 'producto' ? venta.ficha_compartida : {}),
+      ...venta.presentacion_productos?.[`${landingItem?.tipo}:${landingItem?.referencia_id}`] };
     const valores = [
       fuente.cta_descuento_pct,
       ...(Array.isArray(fuente.botones_pago) ? fuente.botones_pago.map(b => b?.descuento_pct) : []),

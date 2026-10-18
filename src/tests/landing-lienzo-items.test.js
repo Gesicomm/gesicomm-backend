@@ -27,6 +27,13 @@ for (const m of [
 
 const { Op } = require('sequelize');
 const LandingService = require('../services/landing.service');
+test('el checkout respeta los descuentos de la ficha compartida y sus excepciones individuales', () => {
+  const landing = { content: { venta: { ficha_compartida: { cta_descuento_pct: '12', botones_pago: [{ descuento_pct: 8 }] },
+    presentacion_productos: { 'producto:2': { cta_descuento_pct: '4', botones_pago: [] } } } } };
+  expect(LandingService.maxDescuentoBotonLanding(landing, { tipo: 'producto', referencia_id: 1 })).toBe(12);
+  expect(LandingService.maxDescuentoBotonLanding(landing, { tipo: 'producto', referencia_id: 2 })).toBe(4);
+  expect(LandingService.maxDescuentoBotonLanding(landing, { tipo: 'combo', referencia_id: 1 })).toBe(0);
+});
 
 const ADMIN = 1;
 const DUENO = 20;
