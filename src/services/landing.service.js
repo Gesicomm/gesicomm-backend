@@ -3780,7 +3780,8 @@ class LandingService {
    * de la tienda (nunca de otro inquilino), activos y a la venta.
    *
    * @param {{producto?: number[], combo?: number[], slugs?: string[]}|null} acotar
-   *   Para el checkout: solo lo que pidió el carrito. null = hasta el tope.
+   *   Para el checkout: solo lo que pidió el carrito. null = todos los IDs
+   *   vendibles; primeraPaginaLienzo recorta la hidratación pesada después.
    */
   static async itemsSegunReglaCodigo(landing, tienda, acotar = null) {
     const venta = landing.content?.venta || {};
@@ -3805,7 +3806,6 @@ class LandingService {
         ? [{ model: Categoria, as: 'categoria', attributes: ['nombre'], where: { nombre: { [Op.in]: categorias } }, required: true }]
         : [],
       order: [['created_at', 'DESC']],
-      limit: acotar ? undefined : MAX_ITEMS_POR_LANDING,
     });
     const items = productos.map((p, idx) => ({
       tipo: 'producto', referencia_id: p.id, precio_ancla: null, etiqueta: null,
@@ -3815,7 +3815,6 @@ class LandingService {
       const combos = await ProductoCombo.findAll({
         where: { inquilino_id, estado: 'ACTIVO', ...visibles.combo, ...(acotar ? { id: { [Op.in]: acotar.combo } } : {}) },
         attributes: ['id', 'created_at'],
-        limit: acotar ? undefined : MAX_ITEMS_POR_LANDING,
       });
       combos.forEach(c => items.push({
         tipo: 'combo', referencia_id: c.id, precio_ancla: null, etiqueta: null,

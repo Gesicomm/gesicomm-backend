@@ -51,9 +51,10 @@ beforeEach(() => {
   // Sin `where.id`: es itemsSegunReglaCodigo evaluando la regla contra TODO
   // el catálogo de la tienda (no tiene (ni debe tener) límite). Con
   // `where.id`: es una consulta acotada a un lote de ids puntual.
-  Producto.findAll.mockImplementation(async ({ where }) => {
+  Producto.findAll.mockImplementation(async ({ where, limit }) => {
     const ids = where?.id?.[Op.in];
-    return ids ? productos.filter(p => ids.includes(p.id)) : productos;
+    const lista = ids ? productos.filter(p => ids.includes(p.id)) : productos;
+    return limit ? lista.slice(0, limit) : lista;
   });
   jest.spyOn(Service, 'whereVisibleEnTienda').mockResolvedValue({});
 });
@@ -83,4 +84,20 @@ test('"vender todo el catálogo" con miles de productos no hidrata el catálogo 
 test('la ficha de un producto fuera de la primera página sigue completa', async () => {
   const res = await Service.obtenerPublica(tienda, null, false, { asegurarContentId: 'prod-3630' });
   expect(res.catalogo_items.some(i => i.content_id === 'prod-3630')).toBe(true);
+});
+
+test('Colecciones conserva una categoría elegida fuera de los primeros 40 productos y su imagen guardada', async () => {
+  const imagen = 'https://cdn.example.com/coleccion-final.webp';
+  Landing.findOne.mockResolvedValue({ ...landing, content: { venta: {
+    ...landing.content.venta,
+    inicio: { colecciones: { modo: 'categorias', items: ['Final'], limite: 4,
+      imagenes: { categorias: { Final: imagen } } } },
+  } } });
+  const res = await Service.obtenerPublica(tienda, null);
+  expect(res.categorias_catalogo).toContainEqual(expect.objectContaining({ nombre: 'Final', cantidad: 100 }));
+  expect(res.content.venta.inicio.colecciones.imagenes.categorias.Final).toBe(imagen);
+  expect(res.content.catalogo.total).toBe(TOTAL_PRODUCTOS);
+  const consultaIds = Producto.findAll.mock.calls.find(([opciones]) => !opciones.where?.id);
+  expect(consultaIds[0].limit).toBeUndefined();
+  expect(ProductoVariante.findAll.mock.calls[0][0].where.producto_id[Op.in].length).toBeLessThan(40);
 });
