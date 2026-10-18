@@ -4,7 +4,7 @@ const { verificarToken } = require('../middleware/autenticacion');
 const service = require('../services/speedbox/service');
 const router = express.Router();
 router.use(verificarToken);
-router.use(require('express-rate-limit')({ windowMs: 15 * 60 * 1000, max: 60,
+router.use(require('express-rate-limit')({ windowMs: 15 * 60 * 1000, max: 300,
   message: { message: 'Demasiadas operaciones RAHA. Intentá más tarde.' } }));
 router.param('id', (req, res, next) => {
   if (!Number.isSafeInteger(Number(req.params.id)) || Number(req.params.id) <= 0) return res.status(400).json({ message: 'ID de pedido invalido.' });
@@ -29,6 +29,10 @@ function publicBaseFromRequest(req) {
   return `${proto}://${host}`;
 }
 router.get('/', handle(req => service.status(req.usuario.id, { publicBaseUrl: publicBaseFromRequest(req), tiendaId: req.usuario.tiendaId })));
+router.post('/pedidos/list', handle(req => service.listarPedidosPaginados(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));
+router.post('/importes/list', handle(req => service.listarImportesPaginados(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));
+router.post('/costos-reposicion/list', handle(req => service.listarCostosReposicionPaginados(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));
+router.post('/movimientos/list', handle(req => service.listarMovimientosPaginados(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));
 router.put('/', handle(req => service.configure(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));
 router.post('/store', handle(req => service.registerStore(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));
 router.post('/spec', handle(req => service.verifySpec(req.usuario.id, req.body, { tiendaId: req.usuario.tiendaId })));

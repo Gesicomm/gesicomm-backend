@@ -1,6 +1,6 @@
 'use strict';
-const { adjuntarIdentificadores } = require('../pedidoIdentificador.service');
-const { Op } = require('sequelize');
+const { adjuntarIdentificadores, numeroPedidoVisible, filtroNumeroPedidoVisible } = require('../pedidoIdentificador.service');
+const { Op, Sequelize } = require('sequelize');
 const { z } = require('zod');
 const { sequelize, Tienda, Envio, EnvioItem, EnvioItemComponente, Producto, ProductoVariante,
   Deposito, SpeedboxTienda, SpeedboxPedido, SpeedboxEvento, SolicitudAbastecimiento } = require('../../models');
@@ -324,6 +324,356 @@ async function status(usuarioId, options = {}) {
     checks: { spec: Boolean(connection?.spec_verified_at), store: Boolean(connection?.tienda_id),
       order: Boolean(connection?.order_verified_at) || orderVerified > 0,
       updates: Boolean(connection?.updates_verified_at), webhook: Boolean(connection?.webhook_verified_at) } };
+}
+
+async function listarPedidosPaginados(usuarioId, input = {}, options = {}) {
+  const page = Math.max(1, parseInt(input.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(input.limit, 10) || 10));
+  const offset = (page - 1) * limit;
+
+  const where = { usuario_id: usuarioId };
+
+  if (input.ambiente && ['sandbox', 'production'].includes(input.ambiente)) {
+    where.environment = input.ambiente;
+  }
+  if (input.estado && typeof input.estado === 'string' && input.estado.trim()) {
+    where.estado = input.estado.trim();
+  }
+  if (input.status && typeof input.status === 'string' && input.status.trim()) {
+    where.status = input.status.trim();
+  }
+  if (input.remote_http_status !== undefined && input.remote_http_status !== null && String(input.remote_http_status).trim() !== '') {
+    const code = Number(input.remote_http_status);
+    if (!isNaN(code)) where.remote_http_status = code;
+  }
+
+  const search = typeof input.search === 'string' ? input.search.trim() : '';
+  if (search) {
+    const matchingEnvios = await Envio.findAll({
+      where: {
+        usuario_id: usuarioId,
+        [Op.and]: [filtroNumeroPedidoVisible(search)],
+      },
+      attributes: ['id'],
+      limit: 100,
+      raw: true,
+    });
+    const envioIds = matchingEnvios.map(e => e.id);
+
+    const orConditions = [
+      { external_order_id: { [Op.iLike]: `%${search}%` } },
+      { order_id: { [Op.iLike]: `%${search}%` } },
+      { error: { [Op.iLike]: `%${search}%` } },
+      Sequelize.where(Sequelize.cast(Sequelize.col('SpeedboxPedido.request_payload'), 'text'), { [Op.iLike]: `%${search}%` }),
+    ];
+    if (envioIds.length > 0) {
+      orConditions.push({ envio_id: { [Op.in]: envioIds } });
+    }
+    where[Op.and] = [...(where[Op.and] || []), { [Op.or]: orConditions }];
+  }
+
+  const { count, rows } = await SpeedboxPedido.findAndCountAll({
+    where,
+    attributes: [
+      'id', 'envio_id', 'solicitud_abastecimiento_id', 'external_order_id', 'order_id',
+      'environment', 'estado', 'status', 'remote_http_status', 'error', 'request_payload', 'updated_at'
+    ],
+    include: [{
+      model: Envio,
+      as: 'envio',
+      attributes: ['id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id'],
+      required: false,
+    }],
+    order: [['updated_at', 'DESC'], ['id', 'DESC']],
+    limit,
+    offset,
+    distinct: true,
+  });
+
+  const enviosParaIdentificar = rows.map(r => r.envio).filter(Boolean);
+  const enviosIdentificados = await adjuntarIdentificadores(enviosParaIdentificar);
+  const porId = new Map(enviosIdentificados.map(e => [e.id, e]));
+
+  const items = rows.map(order => {
+    const row = trazaPedidoRaha(order);
+    const envioIdentificado = porId.get(order.envio?.id) || row.envio;
+    return {
+      id: row.id,
+      envio_id: row.envio_id,
+      solicitud_abastecimiento_id: row.solicitud_abastecimiento_id,
+      numero_pedido_visible: envioIdentificado ? (envioIdentificado.numero_pedido_visible || numeroPedidoVisible(envioIdentificado)) : (row.solicitud_abastecimiento_id ? `SOL-${row.solicitud_abastecimiento_id}` : '-'),
+      environment: row.environment,
+      raha_tienda_id: row.raha_tienda_id,
+      raha_store_name: row.raha_store_name,
+      external_order_id: row.external_order_id,
+      order_id: row.order_id,
+      estado: row.estado,
+      status: row.status,
+      remote_http_status: row.remote_http_status,
+      error: row.error,
+      updated_at: row.updated_at,
+    };
+  });
+
+  return {
+    items,
+    paginacion: {
+      page,
+      limit,
+      total: count,
+      totalPages: Math.ceil(count / limit) || 1,
+    },
+  };
+}
+
+async function listarImportesPaginados(usuarioId, input = {}, options = {}) {
+  const page = Math.max(1, parseInt(input.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(input.limit, 10) || 10));
+  const offset = (page - 1) * limit;
+
+  const where = {
+    usuario_id: usuarioId,
+    envio_id: { [Op.ne]: null },
+  };
+
+  const envioWhere = {};
+
+  if (input.pago_proveedor && typeof input.pago_proveedor === 'string' && input.pago_proveedor.trim()) {
+    const val = input.pago_proveedor.trim();
+    if (val === 'validado') {
+      envioWhere.abastecimiento_pagado_at = { [Op.ne]: null };
+    } else if (val === 'no_requiere') {
+      envioWhere.abastecimiento_pagado_at = null;
+      envioWhere.abastecimiento_estado = { [Op.or]: [null, 'no_requiere'] };
+    } else {
+      envioWhere.abastecimiento_pagado_at = null;
+      envioWhere.abastecimiento_estado = val;
+    }
+  }
+
+  if (input.cobro_cliente && typeof input.cobro_cliente === 'string' && input.cobro_cliente.trim()) {
+    const val = input.cobro_cliente.trim();
+    if (val === 'anticipado') {
+      envioWhere.pago_anticipado = true;
+    } else if (val === 'contra_entrega') {
+      envioWhere.pago_anticipado = false;
+    }
+  }
+
+  if (input.estado_financiero && typeof input.estado_financiero === 'string' && input.estado_financiero.trim()) {
+    envioWhere.estado_financiero = input.estado_financiero.trim();
+  }
+
+  const search = typeof input.search === 'string' ? input.search.trim() : '';
+  if (search) {
+    const matchingEnvios = await Envio.findAll({
+      where: {
+        usuario_id: usuarioId,
+        [Op.and]: [filtroNumeroPedidoVisible(search)],
+      },
+      attributes: ['id'],
+      limit: 100,
+      raw: true,
+    });
+    const envioIds = matchingEnvios.map(e => e.id);
+    const orConditions = [
+      { external_order_id: { [Op.iLike]: `%${search}%` } },
+      { order_id: { [Op.iLike]: `%${search}%` } },
+    ];
+    if (envioIds.length > 0) {
+      orConditions.push({ envio_id: { [Op.in]: envioIds } });
+    }
+    where[Op.and] = [...(where[Op.and] || []), { [Op.or]: orConditions }];
+  }
+
+  const { count, rows } = await SpeedboxPedido.findAndCountAll({
+    where,
+    attributes: ['id', 'envio_id', 'external_order_id', 'updated_at'],
+    include: [{
+      model: Envio,
+      as: 'envio',
+      where: Object.keys(envioWhere).length > 0 ? envioWhere : undefined,
+      attributes: [
+        'id', 'numero_pedido', 'numero_pedido_tienda', 'tienda_id', 'usuario_id',
+        'monto', 'costo_envio', 'costo_fulfillment', 'delivery_a_cargo', 'pago_anticipado',
+        'abastecimiento_estado', 'abastecimiento_costo', 'abastecimiento_pagado_at', 'estado_financiero'
+      ],
+      required: true,
+    }],
+    order: [['updated_at', 'DESC'], ['id', 'DESC']],
+    limit,
+    offset,
+    distinct: true,
+  });
+
+  const enviosParaIdentificar = rows.map(r => r.envio).filter(Boolean);
+  const enviosIdentificados = await adjuntarIdentificadores(enviosParaIdentificar);
+  const porId = new Map(enviosIdentificados.map(e => [e.id, e]));
+
+  const { desglose } = require('./finanzas');
+  const items = rows.map(order => {
+    const envioIdentificado = porId.get(order.envio?.id) || order.envio;
+    const finanzas = desglose(order.envio);
+    return {
+      id: order.id,
+      envio_id: order.envio_id,
+      numero_pedido_visible: envioIdentificado ? (envioIdentificado.numero_pedido_visible || numeroPedidoVisible(envioIdentificado)) : '-',
+      venta: finanzas.venta,
+      envio_cliente: finanzas.envio_cliente,
+      delivery_a_cargo: finanzas.delivery_a_cargo,
+      fulfillment: finanzas.fulfillment,
+      costo_abastecimiento: finanzas.costo_abastecimiento,
+      pago_proveedor: finanzas.pago_proveedor,
+      cobro_cliente: finanzas.cobro_cliente,
+      estado_financiero: finanzas.estado_financiero,
+    };
+  });
+
+  return {
+    items,
+    paginacion: {
+      page,
+      limit,
+      total: count,
+      totalPages: Math.ceil(count / limit) || 1,
+    },
+  };
+}
+
+async function listarCostosReposicionPaginados(usuarioId, input = {}, options = {}) {
+  const page = Math.max(1, parseInt(input.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(input.limit, 10) || 10));
+  const offset = (page - 1) * limit;
+
+  const where = { usuario_id: usuarioId };
+
+  if (input.estado && typeof input.estado === 'string' && input.estado.trim()) {
+    where.estado = input.estado.trim();
+  }
+
+  const search = typeof input.search === 'string' ? input.search.trim() : '';
+  if (search) {
+    const numericMatch = search.replace(/^SOL-?/i, '').trim();
+    if (/^\d+$/.test(numericMatch)) {
+      where.id = Number(numericMatch);
+    }
+  }
+
+  const { count, rows } = await SolicitudAbastecimiento.findAndCountAll({
+    where,
+    attributes: ['id', 'costo_producto', 'costo_logistico', 'estado', 'created_at'],
+    order: [['id', 'DESC']],
+    limit,
+    offset,
+  });
+
+  const items = rows.map(s => ({
+    id: s.id,
+    costo_producto: Number(s.costo_producto) || 0,
+    costo_logistico: Number(s.costo_logistico) || 0,
+    estado: s.estado,
+    created_at: s.created_at,
+  }));
+
+  return {
+    items,
+    paginacion: {
+      page,
+      limit,
+      total: count,
+      totalPages: Math.ceil(count / limit) || 1,
+    },
+  };
+}
+
+async function listarMovimientosPaginados(usuarioId, input = {}, options = {}) {
+  const page = Math.max(1, parseInt(input.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(input.limit, 10) || 10));
+  const offset = (page - 1) * limit;
+
+  const where = {
+    usuario_id: usuarioId,
+    tipo: 'wallet.transaction',
+  };
+
+  if (input.movimiento && ['credit', 'debit'].includes(input.movimiento)) {
+    where[Op.and] = [
+      ...(where[Op.and] || []),
+      Sequelize.where(Sequelize.cast(Sequelize.col('SpeedboxEvento.payload'), 'text'), { [Op.iLike]: `%"direction":"${input.movimiento}"%` }),
+    ];
+  }
+
+  if (input.concepto && typeof input.concepto === 'string' && input.concepto.trim()) {
+    const conc = input.concepto.trim();
+    if (conc === 'sin_conciliar') {
+      where.conciliacion = null;
+    } else {
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        Sequelize.where(Sequelize.cast(Sequelize.col('SpeedboxEvento.conciliacion'), 'text'), { [Op.iLike]: `%"concepto":"${conc}"%` }),
+      ];
+    }
+  }
+
+  const search = typeof input.search === 'string' ? input.search.trim() : '';
+  if (search) {
+    where[Op.and] = [
+      ...(where[Op.and] || []),
+      {
+        [Op.or]: [
+          { detalle: { [Op.iLike]: `%${search}%` } },
+          { event_key: { [Op.iLike]: `%${search}%` } },
+          { order_id: { [Op.iLike]: `%${search}%` } },
+          Sequelize.where(Sequelize.cast(Sequelize.col('SpeedboxEvento.conciliacion'), 'text'), { [Op.iLike]: `%${search}%` }),
+        ],
+      },
+    ];
+  }
+
+  const { count, rows } = await SpeedboxEvento.findAndCountAll({
+    where,
+    attributes: ['id', 'event_key', 'tipo', 'order_id', 'occurred_at', 'estado', 'detalle', 'payload', 'conciliacion'],
+    order: [['occurred_at', 'DESC'], ['id', 'DESC']],
+    limit,
+    offset,
+  });
+
+  const idsConciliados = [...new Set(rows.map(event => event.conciliacion?.envio_id).filter(Boolean))];
+  const enviosConciliados = idsConciliados.length ? await Envio.findAll({
+    where: { usuario_id: usuarioId, id: { [Op.in]: idsConciliados } },
+    attributes: ['id', 'usuario_id', 'tienda_id', 'numero_pedido', 'numero_pedido_tienda'],
+  }) : [];
+  const referenciasConciliadas = new Map((await adjuntarIdentificadores(enviosConciliados))
+    .map(pedido => [pedido.id, pedido.numero_pedido_visible]));
+
+  const items = rows.map(event => {
+    const payload = event.payload?.data || event.payload?.payload || event.payload || {};
+    const match = event.conciliacion;
+    return {
+      id: event.id,
+      event_key: event.event_key,
+      occurred_at: event.occurred_at,
+      direction: payload.direction || 'debit',
+      amount: Number(payload.amount) || 0,
+      concepto: match ? match.concepto : null,
+      solicitud_id: match?.solicitud_id || null,
+      envio_id: match?.envio_id || null,
+      numero_pedido_visible: match?.envio_id ? referenciasConciliadas.get(match.envio_id) || `Pedido ${match.envio_id}` : null,
+      detalle: match?.nota || event.detalle || 'Registrado',
+      puede_conciliar: !match && Boolean(event.event_key?.startsWith('id:')),
+      raw_payload: { data: { amount: payload.amount, direction: payload.direction } },
+    };
+  });
+
+  return {
+    items,
+    paginacion: {
+      page,
+      limit,
+      total: count,
+      totalPages: Math.ceil(count / limit) || 1,
+    },
+  };
 }
 
 const configSchema = z.object({
@@ -697,4 +1047,5 @@ async function assertCanChange(envio, changes, transaction) {
 
 module.exports = { environment, registrationUrl, productionRequestUrl, webhookUrl, queueConfirmedOrder, dispatchConfirmedOrder,
   queueSupplyRequest, dispatchSupplyRequest, connectionFor, status, configure, registerStore, verifySpec, verifyOrder,
-  verifyUpdates, sendOrder, sendSupplyRequest, runCycle, assertCanChange };
+  verifyUpdates, sendOrder, sendSupplyRequest, runCycle, assertCanChange,
+  listarPedidosPaginados, listarImportesPaginados, listarCostosReposicionPaginados, listarMovimientosPaginados };
