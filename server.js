@@ -108,6 +108,7 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
   'https://gesicomm.com',
   'https://www.gesicomm.com',
+  'https://automation.gesicomm.com',
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:3000',
@@ -232,6 +233,7 @@ app.use(limiteGlobal);
 // ============================================================
 // 5. Rutas de la API
 // ============================================================
+app.use('/api/auth/marca-personal', require('./src/routes/marcaPersonalSso'));
 app.use('/api/auth', authRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/productos', productosRoutes);
@@ -450,6 +452,9 @@ sequelize.authenticate().then(async () => {
   iniciarJobReconciliacionRecordatorios();
   iniciarJobSpeedbox();
   require('./src/services/metaFeed.service').iniciarJobMetaFeed();
+  require('./src/services/marcaPersonalQueue.service').start().catch(() => {
+    logger.warn({ evento: 'MARCA_PERSONAL_WORKER_NO_DISPONIBLE' });
+  });
   servidorHttp = app.listen(PORT, () => {
     logger.info(`Servidor Gesicomm corriendo en puerto ${PORT} [${process.env.NODE_ENV}]`);
   });
