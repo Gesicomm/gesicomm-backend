@@ -52,12 +52,29 @@ function subirComprobanteAbastecimientoMulter(req, res, next) {
   });
 }
 
-/**
- * Resuelve qué producto(s) y cuántas unidades físicas hay que descontar del
- * stock para UN EnvioItem: si tiene oferta_id, la receta sale de los
- * componentes de esa oferta (multiplicados por la cantidad del ítem); si
- * no, es el caso simple de siempre (1 producto × cantidad).
- */
+// El modal necesita el snapshot confirmado y la receta para pedidos pendientes.
+function incluirContenidoItem() {
+  return [
+    { model: ProductoVariante, as: 'Variante', attributes: ['id', 'nombre'], required: false },
+    {
+      model: EnvioItemComponente, as: 'componentes_vendidos', required: false,
+      attributes: ['id', 'producto_id', 'variante_id', 'cantidad', 'cantidad_devuelta_vendible', 'cantidad_devuelta_danada', 'cantidad_perdida'],
+      include: [{ model: Producto, as: 'producto', attributes: ['id', 'nombre'] }],
+    },
+    {
+      model: Oferta, required: false, attributes: ['id', 'tipo_contenido'],
+      include: [{
+        model: OfertaComponente, as: 'componentes', attributes: ['id', 'producto_id', 'variante_id', 'cantidad'],
+        include: [
+          { model: Producto, as: 'producto', attributes: ['id', 'nombre'] },
+          { model: ProductoVariante, as: 'variante', attributes: ['id', 'nombre'], required: false },
+        ],
+      }],
+    },
+  ];
+}
+
+/** Resuelve las unidades físicas a descontar para una línea del pedido. */
 async function resolverReceta(item, t) {
   const cantidadItem = Number(item.cantidad ?? 1);
   if (!Number.isSafeInteger(cantidadItem) || cantidadItem <= 0) throw Object.assign(new Error('La cantidad debe ser un entero positivo.'), { status: 400 });
@@ -1406,7 +1423,7 @@ exports.listEnvios = async (req, res) => {
       where,
       include: [
         { model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] },
-        { model: EnvioItem, as: 'items', include: [{ model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo'] }] }
+        { model: EnvioItem, as: 'items', include: [{ model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo'] }, ...incluirContenidoItem()] }
       ],
       order: [['id', 'DESC']]
     });
@@ -1624,11 +1641,8 @@ exports.listEnviosPaginados = async (req, res) => {
           attributes: ['id', 'ejecutar_en', 'estado', 'nota', 'version', 'fase_id'],
         },
         {
-          model: EnvioItem, as: 'items', attributes: ['id', 'producto_id', 'nombre_producto', 'cantidad', 'precio_unitario', 'subtotal', 'oferta_id', 'oferta_nombre', 'origen_venta'],
-          include: [{
-            model: EnvioItemComponente, as: 'componentes_vendidos',
-            attributes: ['id', 'producto_id', 'cantidad', 'cantidad_devuelta_vendible', 'cantidad_devuelta_danada', 'cantidad_perdida'],
-          }],
+          model: EnvioItem, as: 'items', attributes: ['id', 'producto_id', 'variante_id', 'componente_variante_id', 'nombre_producto', 'cantidad', 'precio_unitario', 'precio_normal', 'subtotal', 'oferta_id', 'oferta_codigo', 'oferta_nombre', 'origen_venta'],
+          include: incluirContenidoItem(),
         },
         // Solo para la bandeja de abastecimiento: adónde el admin le manda
         // de vuelta la mercadería al usuario que la vendió (no confundir
@@ -2065,7 +2079,7 @@ exports.updateEstado = async (req, res) => {
       return res.status(404).json({ error: 'Envío no encontrado' });
     }
 
-    await require('../services/speedbox/service').assertCanChange(bloqueo, { estado, courier_id }, t);
+    await require('../services/speedbox/service').assertCanChange(bloqueo, { estado, courier_id, items }, t);
 
     const envio = await Envio.findOne({
       where: filtro,
@@ -2078,19 +2092,20 @@ exports.updateEstado = async (req, res) => {
     }
 
     const updateData = {};
-    // WhatsApp permite elegir los productos al confirmar, antes de reservar
-    // stock. Se conserva el contacto y su historial en la misma transacción.
+    // Los pedidos pendientes permiten corregir productos antes de reservar
+    // stock. El importe y el historial se actualizan en la misma transacción.
     const esWhatsapp = String(envio.origen || '').toUpperCase().includes('WHATSAPP');
     if (envio.es_lead && estado && !['Pendiente', 'EnSeguimiento', 'Cancelado', 'Confirmado'].includes(estado)) {
       throw Object.assign(new Error('Convertí el lead en pedido antes de iniciar su logística.'), { status: 400 });
     }
     if (items !== undefined) {
-      if (!esWhatsapp || !['Pendiente', 'EnSeguimiento'].includes(envio.estado) || envio.stock_descontado) {
-        throw Object.assign(new Error('Solo se pueden elegir productos de WhatsApp antes de confirmar y reservar stock.'), { status: 400 });
+      if (!['Pendiente', 'EnSeguimiento'].includes(envio.estado) || envio.stock_descontado) {
+        throw Object.assign(new Error('Solo se pueden modificar productos de pedidos pendientes antes de confirmar y reservar stock.'), { status: 400 });
       }
       if (!Array.isArray(items) || items.length > 80 || items.some(it => !it || !Number.isSafeInteger(Number(it.producto_id)) || Number(it.producto_id) <= 0 || !Number.isSafeInteger(Number(it.cantidad)) || Number(it.cantidad) <= 0 || !Number.isFinite(Number(it.precio_unitario)) || Number(it.precio_unitario) < 0 || (it.oferta_id && (!Number.isSafeInteger(Number(it.oferta_id)) || Number(it.oferta_id) <= 0)) || (it.variante_id && (!Number.isSafeInteger(Number(it.variante_id)) || Number(it.variante_id) <= 0)))) {
-        throw Object.assign(new Error('Revisá los productos, cantidades y precios del lead.'), { status: 400 });
+        throw Object.assign(new Error('Revisá los productos, cantidades y precios del pedido.'), { status: 400 });
       }
+      if (!items.length && !envio.es_lead && !esWhatsapp) throw Object.assign(new Error('El pedido debe tener al menos un producto. Para quitarlo completo, cancelá el pedido.'), { status: 400 });
       const ids = [...new Set(items.map(it => Number(it.producto_id)))];
       const productos = ids.length ? await Producto.findAll({ where: { id: { [Op.in]: ids }, inquilino_id: req.usuario.tenantId }, transaction: t }) : [];
       if (productos.length !== ids.length) throw Object.assign(new Error('Hay productos que no pertenecen a esta cuenta.'), { status: 400 });
@@ -2107,17 +2122,24 @@ exports.updateEstado = async (req, res) => {
       const ofertaPorId = new Map(ofertas.map(o => [Number(o.id), o]));
       if (items.some(it => it.oferta_id && Number(ofertaPorId.get(Number(it.oferta_id))?.producto_ancla_id) !== Number(it.producto_id))) throw Object.assign(new Error('Oferta inválida para el producto.'), { status: 400 });
       const porId = new Map(productos.map(p => [Number(p.id), p]));
+      const anterioresPorId = new Map((envio.items || []).map(it => [Number(it.id), it]));
       if ((envio.items || []).length) await EnvioItem.destroy({ where: { envio_id: envio.id }, transaction: t });
-      envio.items = await EnvioItem.bulkCreate(items.map(it => ({
+      envio.items = await EnvioItem.bulkCreate(items.map(it => {
+        const anterior = anterioresPorId.get(Number(it.id));
+        const mismaPresentacion = anterior && Number(anterior.producto_id) === Number(it.producto_id) && Number(anterior.oferta_id || 0) === Number(it.oferta_id || 0);
+        return {
         envio_id: envio.id, producto_id: Number(it.producto_id), nombre_producto: porId.get(Number(it.producto_id)).nombre,
         variante_id: Number(it.variante_id) || null,
         oferta_id: Number(it.oferta_id) || null,
-        oferta_codigo: ofertaPorId.get(Number(it.oferta_id))?.codigo || null,
-        oferta_nombre: ofertaPorId.get(Number(it.oferta_id))?.nombre || null,
+        oferta_codigo: (mismaPresentacion ? anterior.oferta_codigo : null) || ofertaPorId.get(Number(it.oferta_id))?.codigo || null,
+        oferta_nombre: (mismaPresentacion ? anterior.oferta_nombre : null) || ofertaPorId.get(Number(it.oferta_id))?.nombre || null,
+        componente_variante_id: mismaPresentacion ? anterior.componente_variante_id || null : null,
+        origen_venta: (mismaPresentacion ? anterior.origen_venta : null) || ofertaPorId.get(Number(it.oferta_id))?.estrategia || 'normal',
+        precio_normal: mismaPresentacion ? anterior.precio_normal : null,
         cantidad: Number(it.cantidad), precio_unitario: Number(it.precio_unitario), subtotal: Number(it.cantidad) * Number(it.precio_unitario),
-      })), { transaction: t });
+      }; }), { transaction: t });
       await registrarLeadsDeCampana({ envioId: envio.id, usuarioId: envio.usuario_id, inquilinoId: req.usuario.tenantId, origen: envio.origen, items: envio.items, transaction: t });
-      await registrarHistorial(envio.id, usuario_id, items.length ? 'Productos agregados al lead de WhatsApp' : 'Consulta general actualizada', t);
+      await registrarHistorial(envio.id, usuario_id, items.length ? `Productos del pedido actualizados: ${envio.items.map(it => `${it.cantidad} × ${it.nombre_producto}`).join('; ')}` : 'Consulta general actualizada', t);
     }
     if (lead_tipo_manual !== undefined) {
       if (lead_tipo_manual !== null && !['organico', 'campana'].includes(lead_tipo_manual)) throw Object.assign(new Error('Tipo de lead inválido.'), { status: 400 });
@@ -2515,7 +2537,7 @@ exports.actualizarPrecioItem = async (req, res) => {
       await t.rollback();
       const sinCambios = await Envio.findOne({
         where: { id: bloqueo.id },
-        include: [{ model: EnvioItem, as: 'items' }, { model: Courier }],
+        include: [{ model: EnvioItem, as: 'items', include: incluirContenidoItem() }, { model: Courier }],
       });
       return res.json(await decorarEnvioConIdentificador(sinCambios));
     }
@@ -2537,7 +2559,7 @@ exports.actualizarPrecioItem = async (req, res) => {
 
     const result = await Envio.findOne({
       where: { id: bloqueo.id },
-      include: [{ model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] }, { model: EnvioItem, as: 'items' }],
+      include: [{ model: Courier, attributes: ['id', 'nombre', 'telefono', 'vehiculo'] }, { model: EnvioItem, as: 'items', include: incluirContenidoItem() }],
     });
     res.json(await decorarEnvioConIdentificador(result));
   } catch (error) {

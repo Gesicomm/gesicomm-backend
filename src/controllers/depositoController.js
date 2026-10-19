@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Deposito, Envio } = require('../models');
+const { Deposito, Envio, RahaEnvioStock } = require('../models');
 const DepositoCourierService = require('../services/depositoCourier.service');
 const { envolverControlador } = require('../utils/asyncHandler');
 
@@ -201,10 +201,13 @@ exports.eliminar = async (req, res) => {
     const deposito = await Deposito.findOne({ where });
     if (!deposito) return res.status(404).json({ error: 'Depósito no encontrado' });
 
-    const usosHistoricos = await Envio.count({ where: { deposito_destino_id: deposito.id } });
-    if (usosHistoricos > 0) {
+    const [usosHistoricos, enviosRaha] = await Promise.all([
+      Envio.count({ where: { deposito_destino_id: deposito.id } }),
+      RahaEnvioStock.count({ where: { deposito_origen_id: deposito.id } }),
+    ]);
+    if (usosHistoricos > 0 || enviosRaha > 0) {
       await deposito.update({ activo: false });
-      return res.json({ success: true, message: 'El depósito tiene abastecimientos asociados: se marcó como inactivo en lugar de eliminarse.', deposito });
+      return res.json({ success: true, message: 'El depósito tiene movimientos asociados: se marcó como inactivo en lugar de eliminarse.', deposito });
     }
 
     await deposito.destroy();

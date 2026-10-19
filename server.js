@@ -283,6 +283,7 @@ app.use('/api/config/payment-gateways', paymentGatewaysRoutes);
 // interceptar sus rutas anidadas.
 app.use('/api/config', configRoutes);
 app.use('/api/afiliados', afiliadosRoutes);
+app.use('/api/partner', require('./src/routes/partner'));
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/brevo', brevoRoutes);
 app.use('/api/integraciones/speedbox', require('./src/routes/speedbox'));
@@ -395,6 +396,8 @@ sequelize.authenticate().then(async () => {
   try {
     await require('./migrations/20261003010000-raha-solicitudes').up(sequelize.getQueryInterface(), require('sequelize'));
     await require('./migrations/20261013100000-raha-portal-usuarios').up(sequelize.getQueryInterface(), require('sequelize'));
+    await require('./migrations/20261019140000-raha-operaciones').up(sequelize.getQueryInterface());
+    await require('./migrations/20261019160000-raha-envios-estados-logisticos').up(sequelize.getQueryInterface());
   } catch (error) {
     logger.error('No se puede iniciar sin las tablas de solicitudes Raha:', error);
     process.exit(1);
@@ -423,6 +426,13 @@ sequelize.authenticate().then(async () => {
     await require('./migrations/20261017120000-afiliados-aceptacion-billetera').up(sequelize.getQueryInterface(), require('sequelize'));
   } catch (error) {
     logger.error('No se puede iniciar sin el registro de aceptacion de afiliados:', error);
+    process.exit(1);
+  }
+
+  try {
+    await require('./migrations/20261019120000-partner-certificado').up(sequelize.getQueryInterface());
+  } catch (error) {
+    logger.error('No se puede iniciar sin las solicitudes de Partner Certificado:', error);
     process.exit(1);
   }
 

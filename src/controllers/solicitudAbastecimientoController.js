@@ -12,6 +12,7 @@ exports.cotizar = async (req, res) => {
     }
     const cotizacion = await SolicitudAbastecimientoService.cotizar({
       usuario_id: req.usuario.id,
+      tiendaId: req.usuario.tiendaId,
       producto_id,
       variante_id: variante_id || null,
       cantidad,
@@ -35,6 +36,7 @@ exports.crear = async (req, res) => {
     }
     const solicitud = await SolicitudAbastecimientoService.crear({
       usuario_id: req.usuario.id,
+      tiendaId: req.usuario.tiendaId,
       producto_id,
       variante_id: variante_id || null,
       cantidad,
@@ -49,15 +51,17 @@ exports.crear = async (req, res) => {
 
 exports.listar = async (req, res) => {
   try {
-    const { estado, texto, tipoLogistica, page, limit } = req.query;
+    const { estado, texto, tipoLogistica, page, limit, vista, depositoId, desde, hasta, ordenar } = req.query;
     const solicitudes = await SolicitudAbastecimientoService.listar({
       usuario_id: req.usuario.id,
       esAdmin: esAdmin(req),
+      tiendaId: req.usuario.tiendaId,
       estado,
       texto,
       tipoLogistica,
       page,
       limit,
+      vista, depositoId, desde, hasta, ordenar,
     });
     return res.json(solicitudes);
   } catch (error) {
@@ -70,6 +74,7 @@ exports.obtener = async (req, res) => {
     const solicitud = await SolicitudAbastecimientoService.obtener(req.params.id, {
       usuario_id: req.usuario.id,
       esAdmin: esAdmin(req),
+      tiendaId: req.usuario.tiendaId,
     });
     return res.json(solicitud);
   } catch (error) {
@@ -139,6 +144,7 @@ exports.confirmarRecepcion = async (req, res) => {
     const solicitud = await SolicitudAbastecimientoService.confirmarRecepcionPropia({
       solicitud_id: req.params.id,
       usuario_id: req.usuario.id,
+      tiendaId: req.usuario.tiendaId,
     });
     return res.json(solicitud);
   } catch (error) {

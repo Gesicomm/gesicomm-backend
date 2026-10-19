@@ -630,7 +630,11 @@ class PrecioUsuarioService {
 
     const { Producto, ProductoCombo, ProductoComboItem, ProductoComboImagen, ProductoImagen, PrecioUsuario, Marca, Proveedor } = require('../models');
 
-    const [productos, combos, categoriasUnicasData, proveedoresUnicasData, marcasUnicasData] = await Promise.all([
+    // Los IDs de la página ya están resueltos: las opciones y la galería
+    // de productos pueden cargarse junto con sus fichas y filtros. Esperar
+    // la hidratación de los modelos agregaba otra ida y vuelta a la BD.
+    // Los combos sí necesitan conocer sus componentes antes de pedir fotos.
+    const [productos, combos, categoriasUnicasData, proveedoresUnicasData, marcasUnicasData, imagenesProductos, idsConOpciones] = await Promise.all([
       idsProductos.length ? Producto.findAll({
         where: {
           id: { [require('sequelize').Op.in]: idsProductos },
@@ -721,7 +725,13 @@ class PrecioUsuarioService {
         ${provFilter}
         ${stockFilter}
         ORDER BY m.nombre ASC
-      `, { replacements, type: sequelize.QueryTypes.SELECT })
+      `, { replacements, type: sequelize.QueryTypes.SELECT }),
+      !idsCombos.length && idsProductos.length ? ProductoImagen.findAll({
+        where: { producto_id: { [Op.in]: idsProductos } },
+        attributes: ['producto_id', 'url', 'variante_id'],
+        order: [['es_principal', 'DESC'], ['orden', 'ASC']],
+      }) : [],
+      this.idsConOpciones(idsProductos.map(id => ({ id })), inquilino_id),
     ]);
 
     const categoriasUnicas = categoriasUnicasData ? categoriasUnicasData.map(c => c.nombre) : [];
@@ -786,8 +796,8 @@ class PrecioUsuarioService {
     // producto y, si TODAS están atadas a una variante, se usan igual —
     // mejor mostrar algo que una galería vacía.
     const galeriaMap = new Map();
-    const [imagenes, categoriasPersonalizadas, preciosComponentes, idsConOpciones] = await Promise.all([
-      idsParaImagen.length ? ProductoImagen.findAll({
+    const [imagenes, categoriasPersonalizadas, preciosComponentes] = await Promise.all([
+      !idsCombos.length ? imagenesProductos : idsParaImagen.length ? ProductoImagen.findAll({
         where: { producto_id: { [Op.in]: [...new Set(idsParaImagen)] } },
         attributes: ['producto_id', 'url', 'variante_id'],
         order: [['es_principal', 'DESC'], ['orden', 'ASC']],
@@ -799,7 +809,6 @@ class PrecioUsuarioService {
         where: { usuario_id, tipo: 'producto', referencia_id: { [Op.in]: idsProductosEnCombosSinPrecio } },
         attributes: ['referencia_id', 'precio'],
       }) : [],
-      this.idsConOpciones(productos, inquilino_id),
     ]);
     const mapaCategoriasPersonalizadas = new Map(categoriasPersonalizadas.map(c => [Number(c.id), c]));
     preciosComponentes.forEach(p => mapaPrecios.set(`producto:${p.referencia_id}`, parseFloat(p.precio)));

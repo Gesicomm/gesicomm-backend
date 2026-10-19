@@ -5,6 +5,7 @@ const { enviarExpediente } = require('../services/raha/dossier');
 const { verificarToken } = require('../middleware/autenticacion');
 const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 const service = require('../services/raha/service');
+const operaciones = require('../services/raha/operaciones');
 const router = express.Router();
 router.use(verificarToken);
 router.use(resolverTiendaActiva);
@@ -18,6 +19,13 @@ const handle = fn => async (req, res, next) => { try { await fn(req, res); } cat
 const json = fn => handle(async (req, res) => res.json(await fn(req)));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: require('../services/raha/storage').MAX_SIZE, files: 1, fields: 2, fieldSize: 100 } }).single('archivo');
 router.get('/', json(req => service.status(req.usuario)));
+router.get('/operaciones/destinos', json(() => operaciones.destinos()));
+router.get('/operaciones/origenes', json(req => operaciones.origenes(req.usuario)));
+router.post('/operaciones/stock', json(req => operaciones.stock(req.usuario, req.body || {})));
+router.post('/operaciones/envios/listado', json(req => operaciones.listarEnvios(req.usuario, req.body || {})));
+router.post('/operaciones/envios', json(req => operaciones.crearEnvio(req.usuario, req.body)));
+router.get('/operaciones/envios/:id', json(req => operaciones.detalleEnvio(req.usuario, Number(req.params.id))));
+router.post('/operaciones/envios/:id/resolver', json(req => operaciones.resolverEnvio(req.usuario, Number(req.params.id), req.body)));
 router.put('/', json(req => service.save(req.usuario, req.body)));
 router.post('/enviar', json(req => service.submit(req.usuario, req.body)));
 router.post('/documentos', (req, res, next) => upload(req, res, error => error ? res.status(400).json({ message: 'Archivo invalido. Maximo 8 MB, un archivo por envio.' }) : next()),

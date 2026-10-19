@@ -1,6 +1,6 @@
 'use strict';
 
-const { Transaction, Op } = require('sequelize');
+const { Transaction, Op, where: sqlWhere } = require('sequelize');
 const {
   sequelize, SolicitudAbastecimiento, HistorialSolicitudAbastecimiento,
   Producto, ProductoVariante, Deposito, Usuario, Rol,
@@ -20,6 +20,7 @@ function cantidadValida(cantidad) {
 }
 const { costoParaComerciante, esProductoCargadoPorAdmin } = require('../controllers/envioController');
 const RahaService = require('./raha/service');
+const SeguimientoRaha = require('./abastecimiento/seguimientoRaha');
 
 const TEXTOS = {
   pendiente_pago: 'Solicitud creada, pendiente de pago.',
@@ -46,8 +47,9 @@ class SolicitudAbastecimientoService {
   }
 
   /** Cotiza el costo logístico de traer `cantidad` unidades a un depósito propio. */
-  static async cotizarLogisticaPropia(usuario_id, depositoId, cantidad) {
-    const deposito = await Deposito.findOne({ where: { id: depositoId, usuario_id, activo: true } });
+  static async cotizarLogisticaPropia(usuario_id, depositoId, cantidad, tiendaId) {
+    const deposito = await Deposito.findOne({ where: { id: depositoId, usuario_id, activo: true,
+      ...(tiendaId ? { tienda_id: tiendaId } : {}) } });
     if (!deposito) throw errorHttp('El depósito indicado no existe o está inactivo.');
 
     const centros = await ProveedorLogisticoService.centrosActivos();
@@ -75,7 +77,7 @@ class SolicitudAbastecimientoService {
   }
 
   /** Cotización completa que ve el comercio antes de confirmar la solicitud. */
-  static async cotizar({ usuario_id, producto_id, variante_id, cantidad, tipoLogistica, depositoId }) {
+  static async cotizar({ usuario_id, producto_id, variante_id, cantidad, tipoLogistica, depositoId, tiendaId }) {
     const prod = await Producto.findByPk(producto_id, {
       include: [{ model: Usuario, as: 'Creador', include: [Rol] }],
     });
@@ -99,7 +101,7 @@ class SolicitudAbastecimientoService {
       return { costoProducto, costoLogistico: 0, total: costoProducto, cubierto: true, proveedor: 'Red Gesicomm', tiempo: null };
     }
     if (tipoLogistica === 'PROPIA') {
-      const logistica = await this.cotizarLogisticaPropia(usuario_id, depositoId, cant);
+      const logistica = await this.cotizarLogisticaPropia(usuario_id, depositoId, cant, tiendaId);
       if (!logistica.cubierto) return { costoProducto, costoLogistico: 0, total: costoProducto, cubierto: false, mensaje: logistica.mensaje };
       return {
         costoProducto,
@@ -114,14 +116,14 @@ class SolicitudAbastecimientoService {
   }
 
   /** Crea la solicitud ya con la cotización resuelta (mismo cálculo de `cotizar`, snapshot). */
-  static async crear({ usuario_id, producto_id, variante_id, cantidad, tipoLogistica, depositoId }) {
+  static async crear({ usuario_id, producto_id, variante_id, cantidad, tipoLogistica, depositoId, tiendaId }) {
     const cant = cantidadValida(cantidad);
     if (variante_id) {
       const variante = await ProductoVariante.findOne({ where: { id: variante_id, producto_id } });
       if (!variante) throw errorHttp('La variante indicada no pertenece a este producto.');
     }
 
-    const cotizacion = await this.cotizar({ usuario_id, producto_id, variante_id, cantidad: cant, tipoLogistica, depositoId });
+    const cotizacion = await this.cotizar({ usuario_id, producto_id, variante_id, cantidad: cant, tipoLogistica, depositoId, tiendaId });
     if (!cotizacion.cubierto) {
       throw errorHttp(cotizacion.mensaje || 'No hay cobertura logística para este destino.');
     }
@@ -136,18 +138,20 @@ class SolicitudAbastecimientoService {
         deposito_destino_id: tipoLogistica === 'PROPIA' ? depositoId : null,
         costo_producto: cotizacion.costoProducto,
         costo_logistico: cotizacion.costoLogistico,
-        estado: 'pendiente_pago',
+        estado: tipoLogistica === 'PROPIA' ? 'solicitado_raha' : 'pendiente_pago',
       }, { transaction: t });
 
-      await this.registrarHistorial(solicitud.id, usuario_id, 'pendiente_pago', TEXTOS.pendiente_pago, t);
+      await this.registrarHistorial(solicitud.id, usuario_id, solicitud.estado,
+        tipoLogistica === 'PROPIA' ? 'Abastecimiento RAHA solicitado. Pago contra entrega, sin comprobante.' : TEXTOS.pendiente_pago, t);
       await require('./speedbox/service').queueSupplyRequest(solicitud, t);
       return solicitud;
     });
   }
 
-  static async obtener(solicitud_id, { usuario_id, esAdmin } = {}) {
+  static async obtener(solicitud_id, { usuario_id, esAdmin, tiendaId } = {}) {
     const where = { id: solicitud_id };
     if (!esAdmin) where.usuario_id = usuario_id;
+    if (!esAdmin && tiendaId) where[Op.or] = [{ tipo_logistica: 'GESICOMM' }, { '$depositoDestino.tienda_id$': tiendaId }];
     const solicitud = await SolicitudAbastecimiento.findOne({
       where,
       include: [
@@ -157,11 +161,15 @@ class SolicitudAbastecimientoService {
         { model: Deposito, as: 'depositoDestino', attributes: ['id', 'nombre', 'ciudad', 'direccion', 'persona_contacto', 'telefono_contacto'] },
         { model: Deposito, as: 'centroGesicomm', attributes: ['id', 'nombre', 'ciudad', 'direccion', 'persona_contacto', 'telefono_contacto'] },
         { model: HistorialSolicitudAbastecimiento, as: 'historial', order: [['created_at', 'ASC']] },
+        SeguimientoRaha.incluirPedido(),
       ],
     });
     if (!solicitud) throw errorHttp('Solicitud no encontrada.', 404);
-    const salida = solicitud.toJSON();
-    salida.datos_transferencia = await this.obtenerDatosTransferencia(salida);
+    const [salida] = await SeguimientoRaha.enriquecer([solicitud.toJSON()], { tiendaId: esAdmin ? null : tiendaId });
+    if (salida.es_raha) {
+      salida.historial_raha = await SeguimientoRaha.historial(salida);
+      salida.historial = (salida.historial || []).sort((anterior, siguiente) => new Date(anterior.created_at) - new Date(siguiente.created_at));
+    } else salida.datos_transferencia = await this.obtenerDatosTransferencia(salida);
     return salida;
   }
 
@@ -203,26 +211,44 @@ class SolicitudAbastecimientoService {
   }
 
   static async listar({
-    usuario_id, esAdmin, estado, texto, tipoLogistica, page, limit,
+    usuario_id, esAdmin, estado, texto, tipoLogistica, page, limit, vista, depositoId, desde, hasta, ordenar, tiendaId,
   } = {}) {
     const where = {};
     if (!esAdmin) where.usuario_id = usuario_id;
-    if (estado && estado !== 'TODOS') where.estado = estado;
-    if (tipoLogistica && tipoLogistica !== 'TODOS') where.tipo_logistica = tipoLogistica;
+    if (vista === 'raha') {
+      where.tipo_logistica = 'PROPIA';
+      if (!esAdmin && tiendaId) where['$depositoDestino.tienda_id$'] = tiendaId;
+      if (estado && estado !== 'TODOS') where[Op.and] = [sqlWhere(SeguimientoRaha.estadoConsulta(), estado)];
+    } else if (estado && estado !== 'TODOS') where.estado = estado;
+    if (vista !== 'raha' && tipoLogistica && tipoLogistica !== 'TODOS') where.tipo_logistica = tipoLogistica;
+    if (depositoId) where.deposito_destino_id = cantidadValida(depositoId);
+    if (desde || hasta) {
+      where.created_at = {};
+      for (const [fecha, operador, hora] of [[desde, Op.gte, '00:00:00'], [hasta, Op.lte, '23:59:59.999']]) {
+        if (!fecha) continue;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || !Number.isFinite(Date.parse(fecha)) || new Date(fecha).toISOString().slice(0, 10) !== fecha) throw errorHttp('Fecha inválida.');
+        where.created_at[operador] = new Date(`${fecha}T${hora}-03:00`);
+      }
+      if (desde && hasta && desde > hasta) throw errorHttp('La fecha inicial debe ser anterior a la final.');
+    }
     if (texto) {
       const q = String(texto).trim();
       const condiciones = [
         { '$producto.nombre$': { [Op.iLike]: `%${q}%` } },
+        { '$producto.sku$': { [Op.iLike]: `%${q}%` } },
+        { '$variante.sku_variante$': { [Op.iLike]: `%${q}%` } },
+        { '$pedidoRaha.order_id$': { [Op.iLike]: `%${q}%` } },
         { '$variante.nombre$': { [Op.iLike]: `%${q}%` } },
         { '$depositoDestino.nombre$': { [Op.iLike]: `%${q}%` } },
         { '$centroGesicomm.nombre$': { [Op.iLike]: `%${q}%` } },
       ];
-      const id = Number(q.replace(/\D/g, ''));
-      if (id) condiciones.push({ id });
+      const id = /^#?\d+$/.test(q) ? Number(q.replace('#', '')) : null;
+      if (Number.isSafeInteger(id) && id > 0 && id <= 2147483647) condiciones.push({ id });
       where[Op.or] = condiciones;
     }
 
     const include = [
+      SeguimientoRaha.incluirPedido(),
       { model: Usuario, attributes: ['id', 'nombre', 'correo_electronico'] },
       { model: Producto, as: 'producto', attributes: ['id', 'nombre', 'sku'] },
       { model: ProductoVariante, as: 'variante', attributes: ['id', 'nombre', 'sku_variante'] },
@@ -231,12 +257,12 @@ class SolicitudAbastecimientoService {
     ];
 
     const paginar = page != null || limit != null;
-    const limitNum = Math.max(1, Math.min(100, Number(limit) || 20));
-    const pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const consulta = {
       where,
       include,
-      order: [['created_at', 'DESC']],
+      order: [['created_at', ordenar === 'antiguos' ? 'ASC' : 'DESC'], ['id', ordenar === 'antiguos' ? 'ASC' : 'DESC']],
       distinct: true,
       subQuery: false,
     };
@@ -249,13 +275,15 @@ class SolicitudAbastecimientoService {
       ? await SolicitudAbastecimiento.findAndCountAll(consulta)
       : { rows: await SolicitudAbastecimiento.findAll(consulta), count: null };
 
-    const solicitudes = resultado.rows.map((s) => s.toJSON());
+    const filas = resultado.rows.map((solicitud) => solicitud.toJSON());
+    const solicitudes = vista === 'raha' ? await SeguimientoRaha.enriquecer(filas, { tiendaId: esAdmin ? null : tiendaId }) : filas.map(SeguimientoRaha.presentar);
 
     if (!paginar) return solicitudes;
     return {
       total: resultado.count,
       pagina: pageNum,
-      total_paginas: Math.ceil(resultado.count / limitNum),
+      total_paginas: Math.max(1, Math.ceil(resultado.count / limitNum)),
+      limit: limitNum,
       solicitudes,
     };
   }
@@ -267,6 +295,7 @@ class SolicitudAbastecimientoService {
       if (actor === ACTORES.USUARIO && solicitud.usuario_id !== usuario_id) {
         throw errorHttp('No autorizado.', 403);
       }
+      if (solicitud.tipo_logistica === 'PROPIA') throw errorHttp('El abastecimiento RAHA se paga contra entrega y su estado se actualiza desde RAHA.', 409);
 
       validarTransicion(solicitud.estado, actor, nuevoEstado, solicitud.tipo_logistica);
 
@@ -280,6 +309,7 @@ class SolicitudAbastecimientoService {
   static async subirComprobante({ solicitud_id, usuario_id, fileData }) {
     const solicitud = await SolicitudAbastecimiento.findOne({ where: { id: solicitud_id, usuario_id } });
     if (!solicitud) throw errorHttp('Solicitud no encontrada.', 404);
+    if (solicitud.tipo_logistica === 'PROPIA') throw errorHttp('El abastecimiento RAHA se paga contra entrega. No requiere comprobante.', 409);
     if (!['pendiente_pago', 'pago_rechazado'].includes(solicitud.estado)) {
       throw errorHttp('El comprobante solo puede subirse mientras el pago está pendiente o fue rechazado.');
     }
@@ -360,13 +390,22 @@ class SolicitudAbastecimientoService {
    *     específico, y pueda detectar pedidos mezclados con otro origen.
    *     Nunca compite con el número de arriba ni lo duplica.
    */
-  static async confirmarRecepcionPropia({ solicitud_id, usuario_id }) {
+  static async confirmarRecepcionPropia({ solicitud_id, usuario_id, tiendaId }) {
     return sequelize.transaction(async (t) => {
       const solicitud = await SolicitudAbastecimiento.findOne({
         where: { id: solicitud_id, usuario_id }, transaction: t, lock: Transaction.LOCK.UPDATE,
       });
       if (!solicitud) throw errorHttp('Solicitud no encontrada.', 404);
-      validarTransicion(solicitud.estado, ACTORES.USUARIO, 'recibido_en_deposito_cliente', solicitud.tipo_logistica);
+      if (tiendaId && !await Deposito.findOne({ where: { id: solicitud.deposito_destino_id, usuario_id, tienda_id: tiendaId }, transaction: t })) {
+        throw errorHttp('Solicitud no encontrada en esta tienda.', 404);
+      }
+      if (solicitud.estado === 'recibido_en_deposito_cliente') return solicitud;
+      const { SpeedboxPedido } = require('../models');
+      const pedido = await SpeedboxPedido.findOne({ where: { solicitud_abastecimiento_id: solicitud.id,
+        usuario_id, environment: require('./speedbox/service').environment() }, transaction: t });
+      if (solicitud.tipo_logistica === 'PROPIA') {
+        if (pedido?.status !== 'entregado') throw errorHttp('RAHA debe confirmar la entrega antes de acreditar el stock.', 409);
+      } else validarTransicion(solicitud.estado, ACTORES.USUARIO, 'recibido_en_deposito_cliente', solicitud.tipo_logistica);
 
       const prod = await Producto.findByPk(solicitud.producto_id, { transaction: t, lock: Transaction.LOCK.UPDATE });
       if (!prod) throw errorHttp('Producto no encontrado.', 404);

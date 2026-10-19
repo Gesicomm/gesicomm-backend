@@ -53,6 +53,12 @@ RahaSolicitud.belongsTo(Usuario, { as: 'solicitante', foreignKey: 'usuario_id', 
 RahaSolicitud.hasMany(RahaDocumento, { as: 'documentos', foreignKey: 'solicitud_id', onDelete: 'CASCADE' });
 RahaDocumento.belongsTo(RahaSolicitud, { foreignKey: 'solicitud_id' });
 const RahaPortalUsuario = require('./RahaPortalUsuario');
+const RahaDestino = require('./RahaDestino');
+const RahaEnvioStock = require('./RahaEnvioStock');
+RahaEnvioStock.belongsTo(Tienda, { as: 'tienda', foreignKey: 'tienda_id' });
+RahaEnvioStock.belongsTo(Usuario, { as: 'comercio', foreignKey: 'usuario_id' });
+RahaEnvioStock.belongsTo(Deposito, { as: 'depositoOrigen', foreignKey: 'deposito_origen_id' });
+RahaEnvioStock.belongsTo(RahaDestino, { as: 'destino', foreignKey: 'destino_raha_id' });
 const IntegracionCredencial = require('./IntegracionCredencial');
 const IntegracionProducto = require('./IntegracionProducto');
 const IntegracionEvento = require('./IntegracionEvento');
@@ -179,6 +185,7 @@ DeliveryZonaTarifa.belongsTo(Pais, { as: 'pais_catalogo', foreignKey: 'pais_id' 
 // Depósitos propios del comercio (RF Gestión de Depósitos)
 Usuario.hasMany(Deposito, { as: 'depositos', foreignKey: 'usuario_id', onDelete: 'CASCADE' });
 Deposito.belongsTo(Usuario, { foreignKey: 'usuario_id' });
+Deposito.belongsTo(Tienda, { as: 'tienda', foreignKey: 'tienda_id' });
 
 // Desde qué depósito puede despachar cada courier (motor de fulfillment,
 // Fase 2). La tarifa no vive en esta relación: pertenece al courier y su
@@ -261,6 +268,7 @@ SolicitudAbastecimiento.belongsTo(Deposito, { as: 'depositoDestino', foreignKey:
 SolicitudAbastecimiento.belongsTo(Deposito, { as: 'centroGesicomm', foreignKey: 'centro_gesicomm_id' });
 SolicitudAbastecimiento.hasMany(HistorialSolicitudAbastecimiento, { as: 'historial', foreignKey: 'solicitud_id', onDelete: 'CASCADE' });
 SpeedboxPedido.belongsTo(SolicitudAbastecimiento, { as: 'solicitudAbastecimiento', foreignKey: 'solicitud_abastecimiento_id' });
+SolicitudAbastecimiento.hasOne(SpeedboxPedido, { as: 'pedidoRaha', foreignKey: 'solicitud_abastecimiento_id' });
 HistorialSolicitudAbastecimiento.belongsTo(SolicitudAbastecimiento, { foreignKey: 'solicitud_id' });
 HistorialSolicitudAbastecimiento.belongsTo(Usuario, { foreignKey: 'usuario_id' });
 
@@ -889,6 +897,8 @@ module.exports = {
   RahaSolicitud,
   RahaDocumento,
   RahaPortalUsuario,
+  RahaDestino,
+  RahaEnvioStock,
   IntegracionCredencial,
   IntegracionProducto,
   IntegracionEvento,

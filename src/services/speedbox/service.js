@@ -1033,10 +1033,14 @@ async function assertCanChange(envio, changes, transaction) {
     && String(changes.estado) !== String(envio.estado);
   const quiereCambiarCourier = changes.courier_id !== undefined
     && String(changes.courier_id) !== String(envio.courier_id);
-  if (!quiereCambiarEstado && !quiereCambiarCourier && !changes.delete) return;
+  const quiereCambiarProductos = changes.items !== undefined;
+  if (!quiereCambiarEstado && !quiereCambiarCourier && !changes.delete && !quiereCambiarProductos) return;
   const mapping = await SpeedboxPedido.findOne({ where: { envio_id: envio.id,
     estado: { [Op.in]: ['enviando', 'enviado', 'incierto'] } }, transaction });
   if (!mapping) return;
+  if (quiereCambiarProductos) {
+    fail('Este pedido ya se envió a RAHA. Conciliá el cambio con el proveedor antes de modificar sus productos.', 409);
+  }
   if (quiereCambiarEstado) {
     fail('Este pedido ya se envió a RAHA. Su estado logístico se actualiza únicamente desde RAHA.', 409);
   }

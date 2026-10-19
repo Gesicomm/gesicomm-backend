@@ -5,6 +5,7 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const service = require('../services/raha/service');
+const operaciones = require('../services/raha/operaciones');
 const { enviarExpediente } = require('../services/raha/dossier');
 const router = express.Router();
 router.use((req, res, next) => { res.set('Cache-Control', 'private, no-store'); next(); });
@@ -28,6 +29,14 @@ async function autenticar(req, res, next) {
 router.use(autenticar);
 router.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 600, standardHeaders: true, legacyHeaders: false, message: { message: 'Demasiadas operaciones. Intenta mas tarde.' } }));
 router.get('/me', (req, res) => res.json({ usuario: req.rahaUsuario }));
+router.post('/operaciones/abastecimientos', json(req => operaciones.abastecimientos(req.body || {})));
+router.get('/operaciones/abastecimientos/:id', json(req => operaciones.detalleAbastecimiento(Number(req.params.id))));
+router.get('/operaciones/destinos', json(() => operaciones.destinos(true)));
+router.post('/operaciones/destinos', json(req => operaciones.guardarDestino(req.rahaUsuario, req.body)));
+router.put('/operaciones/destinos/:id', json(req => operaciones.guardarDestino(req.rahaUsuario, req.body, Number(req.params.id))));
+router.post('/operaciones/envios/listado', json(req => operaciones.listarEnvios(req.rahaUsuario, req.body || {}, true)));
+router.get('/operaciones/envios/:id', json(req => operaciones.detalleEnvio(req.rahaUsuario, Number(req.params.id), true)));
+router.post('/operaciones/envios/:id/resolver', json(req => operaciones.resolverEnvio(req.rahaUsuario, Number(req.params.id), req.body, true)));
 // Filtros dinamicos por body (POST), segun la convencion del proyecto.
 router.post('/solicitudes', json(req => service.portalList(req.body || {})));
 router.get('/solicitudes/:id', json(req => service.portalDetail(Number(req.params.id))));
