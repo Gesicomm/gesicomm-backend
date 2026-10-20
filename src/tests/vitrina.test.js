@@ -69,6 +69,27 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     LandingItem.destroy.mockReset();
   });
 
+  test('adelanta galerías y opciones mientras se carga el detalle, sin duplicar consultas', async () => {
+    sequelize.query.mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([{ id: 10, tipo: 'producto', nombre: 'Adaptador', precio_efectivo: '100000' }])
+      .mockResolvedValue([]);
+    let terminarDetalle;
+    Producto.findAll.mockImplementationOnce(() => new Promise(resolve => { terminarDetalle = resolve; }));
+    ProductoImagen.findAll.mockResolvedValueOnce([{ producto_id: 10, url: 'https://cdn.test/foto.webp', variante_id: null }]);
+    const { ProductoVariante } = require('../models');
+    ProductoVariante.findAll.mockResolvedValueOnce([{ producto_id: 10 }]);
+    const pendiente = PrecioUsuarioService.listarCatalogoPaginado(42, 1, { tipo: 'producto' });
+    // Llega a la etapa de enriquecimiento pero el detalle sigue en vuelo.
+    await new Promise(resolve => setImmediate(resolve));
+    expect(ProductoImagen.findAll).toHaveBeenCalledTimes(1);
+    expect(ProductoVariante.findAll).toHaveBeenCalledTimes(1);
+    terminarDetalle([{ id: 10, nombre: 'Adaptador', precio_base: '100000', precio_minimo: null, creado_por: 42 }]);
+    const respuesta = await pendiente;
+    expect(respuesta.items[0]).toMatchObject({ imagen: 'https://cdn.test/foto.webp', tiene_opciones: true });
+    expect(ProductoImagen.findAll).toHaveBeenCalledTimes(1);
+    expect(ProductoVariante.findAll).toHaveBeenCalledTimes(1);
+  });
+
   test('las páginas grandes conservan la portada sin hidratar productos ni galerías', async () => {
     sequelize.query.mockResolvedValueOnce([{ total: 3 }]).mockResolvedValueOnce([
       { id: 10, tipo: 'producto', nombre: 'Producto', precio_efectivo: '100000', imagen: 'https://cdn.test/producto.webp' },

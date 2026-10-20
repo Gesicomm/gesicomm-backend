@@ -668,8 +668,42 @@ describe('LandingCodigoService.limpiarVenta', () => {
       inicio: { productos_categoria: { activo: true, titulo: 'Productos', items: ['adelfit', 'combo-1'], limite: 99 } },
     });
     expect(v.inicio.productos_categoria).toEqual({
-      activo: true, titulo: 'Productos', kicker: '', subtitulo: '', items: ['adelfit', 'combo-1'], limite: 8, columnas: 4, formato: 'filas',
+      activo: true, mostrar_combos: true, titulo: 'Productos', kicker: '', subtitulo: '', items: ['adelfit', 'combo-1'], limite: 8, columnas: 4, formato: 'filas',
     });
+  });
+  it('conserva la opción de ocultar combos en Productos', () => {
+    const venta = LandingCodigoService.limpiarVenta({ inicio: { productos_categoria: { mostrar_combos: false } } });
+    expect(venta.inicio.productos_categoria.mostrar_combos).toBe(false);
+  });
+  it('guarda la edición por bloques del combo y descarta claves y estructuras ajenas', () => {
+    const propia = { hero: { titulo: '', partes: { galeria: false }, contador: { activo: false, horas: 2 } },
+      incluye: { activo: false }, faq: { items: [{ pregunta: '¿Qué trae?', respuesta: 'El kit.' }] },
+      _orden: ['faq', 'hero', 'inventado', 'hero'], _orden_hero: ['compra', 'precio', 'inventado'], _visibilidad: { pie: false, ajeno: true },
+      precio: 1, inventado: { titulo: 'No guardar' } };
+    const v = LandingCodigoService.limpiarVenta({ presentacion_productos: { 'combo:99': { v: 2, ficha_combo: propia } } });
+    expect(v.presentacion_productos['combo:99'].ficha_combo).toEqual({
+      hero: propia.hero, incluye: propia.incluye, faq: propia.faq, _orden: ['faq', 'hero'], _orden_hero: ['compra', 'precio'], _visibilidad: { pie: false },
+    });
+  });
+  it('conserva checks de textos y globales del combo, y elimina el cierre de venta anterior', () => {
+    const v = LandingCodigoService.limpiarVenta({ presentacion_productos: { 'combo:99': { v: 2, ficha_combo: {
+      hero: { rotulo_combo: 'Kit completo', partes: { titulo: false, rotulo_combo: false } },
+      incluye: { partes: { titulo: false, eyebrow: false, cantidad: false } },
+      _visibilidad: { anuncios: false, encabezado_tienda: false, pie: false },
+      cta_final: { activo: true },
+    } } } });
+    expect(v.presentacion_productos['combo:99'].ficha_combo).toEqual({
+      hero: { rotulo_combo: 'Kit completo', partes: { titulo: false, rotulo_combo: false } },
+      incluye: { partes: { titulo: false, eyebrow: false, cantidad: false } },
+      _visibilidad: { anuncios: false, encabezado_tienda: false, pie: false },
+    });
+  });
+  it('conserva los campos vaciados y checks de cada producto incluido sin recortar su identificador', () => {
+    const ficha_combo = { incluye: { eyebrow: '', titulo: '', productos: [{ id: 5432, nombre: '', imagen: '',
+      beneficios: ['Antiadherente', 'Lavable'], beneficios_visibles: [false, true], partes: { nombre: false, imagen: false, beneficio: true } }] },
+      faq: { items: [{ pregunta: '¿Qué incluye?', respuesta: '', partes: { respuesta: false } }] } };
+    const v = LandingCodigoService.limpiarVenta({ presentacion_productos: { 'combo:99': { v: 2, ficha_combo } } });
+    expect(v.presentacion_productos['combo:99'].ficha_combo).toEqual(ficha_combo);
   });
   it('guarda el carrusel y mantiene filas para configuraciones anteriores o inválidas', () => {
     const limpiar = formato => LandingCodigoService.limpiarVenta({

@@ -126,3 +126,48 @@ test('elegir productos no habilita retroceder explícitamente de seguimiento a p
   expect(t.rollback).toHaveBeenCalled();
   expect(t.commit).not.toHaveBeenCalled();
 });
+
+test('reduce una cantidad web pendiente sin confirmar y recalcula el importe', async () => {
+  Object.assign(lead, { origen: 'WEB', es_lead: false, costo_envio: 15000, items: [{ id: 5, producto_id: 10, cantidad: 2, precio_unitario: 615858 }] });
+  const r = res();
+  await controller.updateEstado(req({ monto: 1, items: [{ id: 5, producto_id: 10, cantidad: 1, precio_unitario: 615858 }] }), r);
+  expect(r.status).not.toHaveBeenCalled();
+  expect(lead.estado).toBe('Pendiente');
+  expect(lead.monto).toBe(630858);
+  expect(lead.items).toEqual([expect.objectContaining({ cantidad: 1, subtotal: 615858 })]);
+  expect(require('../../services/speedbox/service').queueConfirmedOrder).not.toHaveBeenCalled();
+  expect(t.commit).toHaveBeenCalled();
+});
+
+test('quita una línea y conserva la presentación y el origen comercial de la restante', async () => {
+  Object.assign(lead, { origen: 'WEB', es_lead: false, items: [
+    { id: 5, producto_id: 10, oferta_id: 9, oferta_nombre: 'Pack comprado', oferta_codigo: 'PACK-2', origen_venta: 'order_bump', componente_variante_id: 3, precio_normal: 100000 },
+    { id: 6, producto_id: 11, cantidad: 2 },
+  ] });
+  models.Oferta.findAll.mockResolvedValueOnce([{ id: 9, producto_ancla_id: 10, nombre: 'Nombre editado', estrategia: 'normal' }]);
+  const r = res();
+  await controller.updateEstado(req({ items: [{ id: 5, producto_id: 10, oferta_id: 9, cantidad: 1, precio_unitario: 90000 }] }), r);
+  expect(r.status).not.toHaveBeenCalled();
+  expect(lead.items).toEqual([expect.objectContaining({ producto_id: 10, cantidad: 1, oferta_nombre: 'Pack comprado', origen_venta: 'order_bump', componente_variante_id: 3, precio_normal: 100000 })]);
+  expect(lead.monto).toBe(90000);
+  expect(models.EnvioItem.destroy).toHaveBeenCalledWith({ where: { envio_id: 100 }, transaction: t });
+});
+
+test.each([{ estado: 'Confirmado' }, { estado: 'Pendiente', stock_descontado: true }])('rechaza cambios de productos comprometidos: %j', async restricciones => {
+  Object.assign(lead, { origen: 'WEB', ...restricciones });
+  const r = res();
+  await controller.updateEstado(req({ items: [{ producto_id: 10, cantidad: 1, precio_unitario: 50000 }] }), r);
+  expect(r.status).toHaveBeenCalledWith(400);
+  expect(models.EnvioItem.destroy).not.toHaveBeenCalled();
+  expect(t.rollback).toHaveBeenCalled();
+});
+
+test('rechaza vaciar un pedido web y cantidades inválidas antes de borrar sus líneas', async () => {
+  Object.assign(lead, { origen: 'WEB', es_lead: false });
+  for (const items of [[], [{ producto_id: 10, cantidad: 0, precio_unitario: 50000 }], [{ producto_id: 10, cantidad: 1.5, precio_unitario: 50000 }]]) {
+    const r = res();
+    await controller.updateEstado(req({ items }), r);
+    expect(r.status).toHaveBeenCalledWith(400);
+  }
+  expect(models.EnvioItem.destroy).not.toHaveBeenCalled();
+});

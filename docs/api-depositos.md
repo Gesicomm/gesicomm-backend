@@ -1,5 +1,42 @@
 # API de Depósitos
 
+## Abastecimientos RAHA del comercio
+
+La cabecera de **Mis depósitos** enlaza a `/mis-abastecimientos`. El detalle
+de cada pedido está en `/mis-abastecimientos/:id`.
+
+`GET /api/solicitudes-abastecimiento?vista=raha` lista solicitudes con destino
+a depósito propio. Admite `texto` (producto, SKU, variante, depósito, ID local
+o número RAHA), `estado` remoto, `depositoId`, `desde`/`hasta` (`YYYY-MM-DD`,
+fechas inclusivas de Asunción), `ordenar` (`recientes` o `antiguos`), `page` y
+`limit` (1–100). Aplica el usuario autenticado y la tienda activa antes de
+paginar. Devuelve `solicitudes`, `total`, `pagina`, `total_paginas` y `limit`.
+
+Cada fila incluye `pedidoRaha` (identificador y estado remoto del ambiente
+activo), `estado_seguimiento`, `modalidad_pago`, `precio_unitario`,
+`stock_acreditado`, `inventario` (disponible/reservado en destino) y
+`ventas_producto.unidades`. Las ventas son unidades físicas de pedidos
+entregados de ese producto/variante, incluyendo componentes de ofertas y
+descontando devoluciones/pérdidas registradas; no se atribuyen a un lote.
+Se consultan todos los depósitos y fechas de la tienda activa. El stock es
+el saldo actual, no la cantidad remanente de la solicitud.
+
+Estados remotos conocidos: `pendiente_confirmacion`, `cargado`, `en_camino`,
+`entregado`, `devuelto`. Los estados locales de integración se muestran como
+`pendiente_envio` o `requiere_revision` cuando aún no existe estado remoto.
+El detalle agrega `historial_raha`, obtenido de eventos procesados del
+pedido, usuario y ambiente correctos, sin exponer sus payloads internos.
+
+Las nuevas solicitudes RAHA se crean con estado local `solicitado_raha`, pago contra entrega y se encolan
+sin validación de transferencia. Los endpoints de comprobantes y cambios
+manuales de estado rechazan estas solicitudes. Las solicitudes antiguas
+con destino a un centro Gesicomm conservan su flujo de transferencia.
+
+`POST /api/solicitudes-abastecimiento/:id/confirmar-recepcion` exige que RAHA
+haya informado `entregado`, verifica propietario y tienda, y acredita el
+stock bajo bloqueo transaccional. Repetir una recepción ya confirmada no
+vuelve a acreditar unidades.
+
 Módulo de depósitos propios del comercio + integración con la modalidad
 logística del abastecimiento Gesicomm. Backend: `src/controllers/depositoController.js`,
 `src/routes/depositoRoutes.js` (montado en `/api/depositos`) y las

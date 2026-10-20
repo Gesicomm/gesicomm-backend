@@ -14,6 +14,7 @@ jest.mock('../models', () => new Proxy({
   Envio: { create: (...a) => mockEnvioCreate(...a) },
 }, { get: (obj, k) => (k in obj ? obj[k] : {}) }));
 jest.mock('../utils/historial', () => ({ registrarHistorial: jest.fn() }));
+jest.mock('../services/metaCampanaLeads.service', () => ({ registrarLeadsDeCampana: jest.fn().mockResolvedValue(undefined) }));
 jest.mock('../utils/logger', () => ({ logger: { error: jest.fn(), warn: jest.fn(), info: jest.fn() } }));
 jest.mock('../services/payments/paymentService', () => ({
   getPublicGateways: jest.fn().mockResolvedValue([{ provider: 'pagopar' }]),
@@ -59,6 +60,23 @@ beforeEach(() => {
 });
 
 describe('LandingService.crearCheckout — tracking de Meta', () => {
+  it.each(['efectivo', 'contra_entrega', undefined])('retira el descuento anticipado al cobrar con %s aunque el cliente lo mande', async (metodo) => {
+    await LandingService.crearCheckout(tienda, 'tienda', datos({ payment_method: metodo,
+      items: [{ content_id: 'producto-7', cantidad: 2, descuento_boton_pct: 10 }],
+    }), contexto);
+    expect(LandingService.resolverCarrito).toHaveBeenCalledWith(tienda, 'tienda', [
+      { content_id: 'producto-7', cantidad: 2, descuento_boton_pct: 0 },
+    ], true);
+  });
+
+  it('con PagoPar conserva el porcentaje para validarlo contra la configuración del comercio', async () => {
+    await LandingService.crearCheckout(tienda, 'tienda', datos({ payment_method: 'pagopar',
+      items: [{ content_id: 'producto-7', cantidad: 2, descuento_boton_pct: 10 }],
+    }), contexto);
+    expect(LandingService.resolverCarrito).toHaveBeenCalledWith(tienda, 'tienda', [
+      { content_id: 'producto-7', cantidad: 2, descuento_boton_pct: 10 },
+    ], true);
+  });
   it('con PagoPar guarda el navegador y los productos para el Purchase diferido', async () => {
     const r = await LandingService.crearCheckout(tienda, 'tienda', datos({ payment_method: 'pagopar' }), contexto);
     expect(r.numero_pedido_tienda).toBe(1);

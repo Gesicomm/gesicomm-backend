@@ -25,6 +25,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   Envio.findAll.mockResolvedValue([]);
   SpeedboxPedido.findAll.mockResolvedValue([]);
+  Envio.count.mockImplementation(async options => options?.group ? [] : 0);
 });
 
 test.each([

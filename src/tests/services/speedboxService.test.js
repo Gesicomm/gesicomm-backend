@@ -141,6 +141,10 @@ it('does not allow manual logistics state changes on a remote order', async () =
   models.SpeedboxPedido.findOne.mockResolvedValue(mapping);
   await expect(service.assertCanChange(envio, { estado: 'Preparado' }, {})).rejects.toMatchObject({ status: 409 });
 });
+it('blocks product changes on a pending order already submitted to RAHA', async () => {
+  models.SpeedboxPedido.findOne.mockResolvedValue(mapping);
+  await expect(service.assertCanChange({ ...envio, estado: 'Pendiente' }, { items: [] }, {})).rejects.toMatchObject({ status: 409 });
+});
 it('allows payment edits and the same courier on a remote order', async () => {
   models.SpeedboxPedido.findOne.mockResolvedValue(mapping);
   await expect(service.assertCanChange(envio, { courier_id: 2 }, {})).resolves.toBeUndefined();

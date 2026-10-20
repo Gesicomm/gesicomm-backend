@@ -47,7 +47,7 @@ class PrecioUsuarioMasivoService {
       LIMIT 1
     `;
     const base = `
-      SELECT 'producto' AS tipo, p.id, p.id AS producto_id, p.sku, p.nombre, p.creado_por, p.created_at,
+      SELECT 'producto' AS tipo, p.id, p.id AS producto_id, p.sku, p.nombre, p.descripcion_corta AS descripcion, p.creado_por, p.created_at,
         cat.nombre AS categoria, pr.nombre AS proveedor,
         CASE WHEN p.creado_por = :usuario_id AND p.precio_costo IS NOT NULL
           THEN p.precio_costo ELSE p.precio_base END AS costo,
@@ -61,7 +61,7 @@ class PrecioUsuarioMasivoService {
       WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
       ${PrecioUsuarioService.visibilidadCatalogoSql(esAdmin)}
       UNION ALL
-      SELECT 'combo' AS tipo, c.id, c.producto_id, NULL AS sku, c.nombre, c.creado_por, c.created_at,
+      SELECT 'combo' AS tipo, c.id, c.producto_id, NULL AS sku, c.nombre, c.descripcion, c.creado_por, c.created_at,
         cat.nombre AS categoria, pr.nombre AS proveedor, c.precio_total AS costo,
         c.precio_total AS precio_base, c.precio_minimo, pu.precio AS precio_usuario,
         COALESCE(pu.precio, c.precio_total) AS precio_actual
@@ -132,7 +132,7 @@ class PrecioUsuarioMasivoService {
 
   static fila(f) {
     return {
-      tipo: f.tipo, id: Number(f.id), sku: f.sku, nombre: f.nombre,
+      tipo: f.tipo, id: Number(f.id), sku: f.sku, nombre: f.nombre, descripcion: f.descripcion ?? null,
       categoria: f.categoria, proveedor: f.proveedor,
       // Precio configurado en Mi catálogo, igual que el editor individual.
       costo: numero(f.costo), precio_minimo: numero(f.precio_minimo), precio_actual: numero(f.precio_actual),
@@ -162,26 +162,93 @@ class PrecioUsuarioMasivoService {
       || porProducto.get(Number(f.producto_id ?? f.id)) || null]));
   }
 
+  // Galería completa (no solo la miniatura): usada por la exportación a CSV,
+  // que pide "imágenes" en plural. Mismas tablas que imagenes(), pero sin
+  // DISTINCT ON, así que agrupa todas las filas por producto/combo.
+  static async imagenesTodas(filas, inquilino_id) {
+    const productos = [...new Set(filas.map(f => Number(f.producto_id ?? (f.tipo === 'producto' ? f.id : null))).filter(Boolean))];
+    const combos = filas.filter(f => f.tipo === 'combo').map(f => Number(f.id));
+    const [fotosProductos, fotosCombos] = await Promise.all([
+      productos.length ? sequelize.query(`
+        SELECT producto_id, url, storage_key
+        FROM producto_imagenes WHERE inquilino_id = :inquilino_id AND producto_id IN (:productos)
+        ORDER BY producto_id, (variante_id IS NOT NULL) ASC, es_principal DESC, orden ASC, id ASC
+      `, { replacements: { inquilino_id, productos }, type: sequelize.QueryTypes.SELECT }) : [],
+      combos.length ? sequelize.query(`
+        SELECT combo_id, url, storage_key
+        FROM producto_combo_imagenes WHERE inquilino_id = :inquilino_id AND combo_id IN (:combos)
+        ORDER BY combo_id, es_principal DESC, orden ASC, id ASC
+      `, { replacements: { inquilino_id, combos }, type: sequelize.QueryTypes.SELECT }) : [],
+    ]);
+    const agrupar = (filas, clavePk) => {
+      const mapa = new Map();
+      filas.forEach(f => {
+        const id = Number(f[clavePk]);
+        if (!mapa.has(id)) mapa.set(id, []);
+        mapa.get(id).push(ImagenService.serializar(f).url);
+      });
+      return mapa;
+    };
+    const porProducto = agrupar(fotosProductos, 'producto_id');
+    const porCombo = agrupar(fotosCombos, 'combo_id');
+    return new Map(filas.map(f => {
+      const urls = f.tipo === 'combo'
+        ? (porCombo.get(Number(f.id)) || porProducto.get(Number(f.producto_id)) || [])
+        : (porProducto.get(Number(f.id)) || []);
+      return [clave(f), urls];
+    }));
+  }
+
   static async buscar(usuario_id, inquilino_id, esAdmin, body = {}, tiendaId = null) {
     const page = Number(body.page ?? 1), limit = Number(body.limit ?? 25);
-    if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-      throw errorValidacion('La paginación no es válida (máximo 100 filas por página).');
+    const detalle = body.detalle === true;
+    // La pantalla interactiva (Cambiar precios) se queda en 100: es lo que
+    // necesita su tabla paginada. La exportación a CSV pide de a más para
+    // no tener que ir y volver 35 veces por 3500 productos.
+    const limiteMax = detalle ? 500 : 100;
+    if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > limiteMax) {
+      throw errorValidacion(`La paginación no es válida (máximo ${limiteMax} filas por página).`);
     }
     const { sql, replacements } = this.consulta(usuario_id, inquilino_id, esAdmin, body, null, tiendaId);
     const ordenes = { nombre: 'nombre ASC', recientes: 'created_at DESC', 'precio-asc': 'precio_actual ASC', 'precio-desc': 'precio_actual DESC' };
     const orden = Object.hasOwn(ordenes, body.orden || 'nombre') ? ordenes[body.orden || 'nombre'] : null;
     if (!orden) throw errorValidacion('Orden inválido.');
+    // El total y las listas de categoría/proveedor no cambian entre páginas:
+    // la exportación solo las necesita una vez, en la primera página. A
+    // partir de la segunda nos ahorramos 3 consultas por página.
+    const necesitaMetadata = !detalle || page === 1;
     const [cuenta, filas, categorias, proveedores] = await Promise.all([
-      sequelize.query(`SELECT COUNT(*) AS total FROM (${sql}) f`, { replacements, type: sequelize.QueryTypes.SELECT }),
+      necesitaMetadata
+        ? sequelize.query(`SELECT COUNT(*) AS total FROM (${sql}) f`, { replacements, type: sequelize.QueryTypes.SELECT })
+        : Promise.resolve([{ total: null }]),
       sequelize.query(`${sql} ORDER BY ${orden}, tipo ASC, id ASC LIMIT :limit OFFSET :offset`, {
         replacements: { ...replacements, limit, offset: (page - 1) * limit }, type: sequelize.QueryTypes.SELECT,
       }),
-      sequelize.query(`SELECT DISTINCT categoria AS nombre FROM (${sql}) f WHERE categoria IS NOT NULL ORDER BY categoria`, { replacements, type: sequelize.QueryTypes.SELECT }),
-      sequelize.query(`SELECT DISTINCT proveedor AS nombre FROM (${sql}) f WHERE proveedor IS NOT NULL ORDER BY proveedor`, { replacements, type: sequelize.QueryTypes.SELECT }),
+      necesitaMetadata
+        ? sequelize.query(`SELECT DISTINCT categoria AS nombre FROM (${sql}) f WHERE categoria IS NOT NULL ORDER BY categoria`, { replacements, type: sequelize.QueryTypes.SELECT })
+        : Promise.resolve([]),
+      necesitaMetadata
+        ? sequelize.query(`SELECT DISTINCT proveedor AS nombre FROM (${sql}) f WHERE proveedor IS NOT NULL ORDER BY proveedor`, { replacements, type: sequelize.QueryTypes.SELECT })
+        : Promise.resolve([]),
     ]);
-    const total = Number(cuenta[0]?.total || 0);
-    const fotos = await this.imagenes(filas, inquilino_id);
-    return { items: filas.map(f => ({ ...this.fila(f), imagen: fotos.get(clave(f)) })), total, page, totalPages: Math.ceil(total / limit), categorias: categorias.map(c => c.nombre), proveedores: proveedores.map(p => p.nombre) };
+    const total = cuenta[0]?.total != null ? Number(cuenta[0].total) : null;
+    // La exportación a CSV (detalle) necesita la galería completa, no la
+    // miniatura, así que nos saltamos imagenes() (2 consultas) ahí y
+    // imagenesTodas() (también 2 consultas) en la pantalla interactiva, que
+    // nunca pide más de una foto por fila.
+    const [fotos, galerias] = await Promise.all([
+      detalle ? null : this.imagenes(filas, inquilino_id),
+      detalle ? this.imagenesTodas(filas, inquilino_id) : null,
+    ]);
+    return {
+      items: filas.map(f => ({
+        ...this.fila(f),
+        ...(fotos ? { imagen: fotos.get(clave(f)) } : {}),
+        ...(galerias ? { imagenes: galerias.get(clave(f)) || [] } : {}),
+      })),
+      total, page, totalPages: total != null ? Math.ceil(total / limit) : null,
+      categorias: categorias.map(c => c.nombre), proveedores: proveedores.map(p => p.nombre),
+    };
   }
 
   static async actualizar(usuario_id, inquilino_id, esAdmin, body = {}, tiendaId = null) {

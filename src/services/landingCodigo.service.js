@@ -1,4 +1,5 @@
 'use strict';
+const limpiarFichaCombo = require('../utils/fichaComboPresentacion');
 
 /**
  * Sanitizador del modo "Lienzo en blanco" — la landing que el comercio
@@ -728,6 +729,23 @@ function limpiarPresentacionProducto(value) {
   // que escribían '' en todos) vacío sigue siendo "sin tocar".
   const v2 = value.v === 2;
   const salida = v2 ? { v: 2 } : {};
+  if (value.codigo_bloques && typeof value.codigo_bloques === 'object' && !Array.isArray(value.codigo_bloques)) {
+    salida.codigo_bloques = {};
+    for (const [clave, codigo] of Object.entries(value.codigo_bloques).slice(0, 40)) {
+      if (!/^[a-z_0-9]{1,50}$/.test(clave) || ['__proto__', 'prototype', 'constructor'].includes(clave) || !codigo || typeof codigo !== 'object' || typeof codigo.html !== 'string') continue;
+      const html = codigo.html, css = String(codigo.css || ''), js = String(codigo.js || '');
+      const errores = [
+        ...LandingCodigoService.revisarSintaxisJs(`(function(bloque,datos){\n${js}\n})`),
+        ...LandingCodigoService.revisarJs(js), ...LandingCodigoService.revisarEventosInline(html),
+      ];
+      if (Buffer.byteLength(html) > MAX_HTML || Buffer.byteLength(css) > MAX_CSS || Buffer.byteLength(js) > MAX_JS) errores.push(`El código del bloque ${clave} supera el tamaño permitido.`);
+      if (errores.length) { const error = new Error(`No se pudo guardar el bloque ${clave}.`); error.errores = errores; throw error; }
+      salida.codigo_bloques[clave] = { html: LandingCodigoService.limpiarHtml(html).html, css: LandingCodigoService.limpiarCss(css).css, js };
+    }
+  }
+  if (value.ficha_combo && typeof value.ficha_combo === 'object' && !Array.isArray(value.ficha_combo)) {
+    salida.ficha_combo = limpiarFichaCombo(value.ficha_combo);
+  }
   for (const [campo, max] of TEXTOS_FICHA) {
     if (propio(campo) && typeof value[campo] === 'string') salida[campo] = textoCorto(value[campo], max);
   }
@@ -1065,6 +1083,7 @@ function limpiarProductosCategoria(pc) {
   const limite = Number(pc.limite);
   return {
     activo: pc.activo === true,
+    mostrar_combos: pc.mostrar_combos !== false,
     titulo: textoCorto(pc.titulo, 100),
     kicker: textoCorto(pc.kicker, 40),
     subtitulo: textoCorto(pc.subtitulo, 160),

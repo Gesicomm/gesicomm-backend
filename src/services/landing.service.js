@@ -1991,6 +1991,9 @@ class LandingService {
       .filter(v => v.info);
 
     const elegidos = new Set(vendibles.slice(0, PRIMERA_PAGINA_LIENZO).map(v => v.item));
+    // Los combos deben estar disponibles para el bloque y su pestaña en Inicio,
+    // aunque los productos llenen por completo la primera página del catálogo.
+    vendibles.filter(v => v.item.tipo === 'combo').forEach(v => elegidos.add(v.item));
     const referidos = new Set(this.contentIdsReferidosLienzo(landing.content, asegurarContentId ? [asegurarContentId] : []));
     // `producto-ID` vale aunque el producto tenga slug (así llega principal_id).
     vendibles.forEach((v) => {
@@ -4282,7 +4285,12 @@ class LandingService {
     // comercio nunca veía la referencia de entrega ni el horario pedido.
     const notasCliente = String(datosCliente?.notas || '').trim().slice(0, 500) || null;
 
-    const { landing, itemsResueltos } = await this.resolverCarrito(tienda, slug, items, true);
+    // Un carrito viejo o un cliente modificado no puede conservar el descuento
+    // de pago anticipado al confirmar con pago contra entrega.
+    const itemsSegunPago = Array.isArray(items) && datosCliente?.payment_method !== 'pagopar'
+      ? items.map(item => ({ ...item, descuento_boton_pct: 0 }))
+      : items;
+    const { landing, itemsResueltos } = await this.resolverCarrito(tienda, slug, itemsSegunPago, true);
 
     const subtotal = itemsResueltos.reduce((s, i) => s + i.subtotal, 0);
 

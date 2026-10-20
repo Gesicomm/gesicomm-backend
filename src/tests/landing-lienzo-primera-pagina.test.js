@@ -148,7 +148,7 @@ describe('primeraPaginaLienzo', () => {
     const items = [...Array.from({ length: 120 }, (_, i) => item(i + 1)), { tipo: 'combo', referencia_id: 9, orden: 999, mostrar_en_inicio: true }];
     mockProductoFindAll.mockResolvedValue(items.filter(i => i.tipo === 'producto').map(i => producto(i.referencia_id)));
     mockComboFindAll.mockResolvedValue([{ id: 9, producto_padre: { id: 77, categoria: { nombre: 'Packs' } } }]);
-    const res = await LandingService.primeraPaginaLienzo({ content: { venta: { destacados: ['combo-9'] } } }, items);
+    const res = await LandingService.primeraPaginaLienzo({ content: {} }, items);
     expect(res.items.at(-1)).toMatchObject({ tipo: 'combo', referencia_id: 9 });
     expect(res.categorias.find(c => c.nombre === 'Packs')).toMatchObject({ cantidad: 1 });
     expect(res.total).toBe(121);

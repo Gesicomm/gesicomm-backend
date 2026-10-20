@@ -6,6 +6,7 @@ const request = require('supertest');
 jest.mock('../models', () => ({
   Deposito: { findOne: jest.fn(), findAndCountAll: jest.fn() },
   Envio: { count: jest.fn() },
+  RahaEnvioStock: { count: jest.fn() },
 }));
 
 jest.mock('../services/depositoCourier.service', () => ({
@@ -13,7 +14,7 @@ jest.mock('../services/depositoCourier.service', () => ({
   reemplazar: jest.fn(),
 }));
 
-const { Deposito } = require('../models');
+const { Deposito, Envio, RahaEnvioStock } = require('../models');
 const depositoController = require('../controllers/depositoController');
 
 function appConUsuario() {
@@ -119,6 +120,17 @@ describe('depositoController: aislamiento por tienda', () => {
     await request(appConTienda({ id: 7, tiendaId: null })).post('/depositos/listado').send({});
 
     expect(Deposito.findAndCountAll.mock.calls[0][0].where).toEqual({ usuario_id: 7 });
+  });
+
+  test('preserva el origen de una solicitud RAHA desactivándolo en lugar de eliminarlo', async () => {
+    const deposito = { id: 10, update: jest.fn(), destroy: jest.fn() };
+    Deposito.findOne.mockResolvedValue(deposito);
+    Envio.count.mockResolvedValue(0);
+    RahaEnvioStock.count.mockResolvedValue(1);
+    const res = await request(appConTienda({ id: 7, tiendaId: 3 })).delete('/depositos/10');
+    expect(res.status).toBe(200);
+    expect(deposito.update).toHaveBeenCalledWith({ activo: false });
+    expect(deposito.destroy).not.toHaveBeenCalled();
   });
 
   test.each([
