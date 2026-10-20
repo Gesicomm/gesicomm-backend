@@ -1122,7 +1122,7 @@ class PrecioUsuarioService {
     colecciones.sort((a, b) => a.localeCompare(b, 'es'));
     const filaDe = new Map(filas.map(f => [`${f.tipo}:${Number(f.referencia_id)}`, f]));
     const enContador = new Set(urgencia.activo && Array.isArray(urgencia.productos) ? urgencia.productos.map(String) : []);
-    const contadorVigente = urgencia.fin_at && new Date(urgencia.fin_at).getTime() > Date.now();
+    const contadorVigente = urgencia.renovar_cada_visita === true || (urgencia.fin_at && new Date(urgencia.fin_at).getTime() > Date.now());
     const porItem = new Map();
     for (const item of items) {
       const clave = `${item.tipo}:${item.id}`;

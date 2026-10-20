@@ -425,7 +425,7 @@ describe('LandingCodigoService.limpiarVenta', () => {
     expect(v.checkout_recomendados).toEqual({
       activo: true, items: ['air-fryer'], max: 4, titulo: 'Antes de irte', kicker: 'Sumá', subtitulo: '', cta_texto: 'Agregar', precio_antes: { 'air-fryer': 150000 },
     });
-    expect(v.urgencia).toEqual({ activo: true, fin_at: '2030-01-01T00:00:00.000Z', producto_id: null, productos: ['air-fryer'], titulo: 'Ofertas', texto: 'Se terminan', cta_texto: 'Ver todos', estado: 'demo' });
+    expect(v.urgencia).toEqual({ renovar_cada_visita: false, duracion_horas: 2, duracion_minutos: 0, duracion_segundos: 0, activo: true, fin_at: '2030-01-01T00:00:00.000Z', producto_id: null, productos: ['air-fryer'], titulo: 'Ofertas', texto: 'Se terminan', cta_texto: 'Ver todos', estado: 'demo' });
   });
   it('arma la configuración campo por campo y descarta lo que no está en la lista blanca', () => {
     const v = LandingCodigoService.limpiarVenta({
@@ -707,4 +707,19 @@ test('conserva imagen del método personalizado y descarta protocolos inválidos
   expect(venta.ficha_compartida.metodos_pago).toEqual([
     { texto: 'Giros Tigo', logo_url: 'https://cdn.test/tigo.png' }, { texto: 'Inválido' },
   ]);
+});
+
+
+test('conserva la renovación y una duración de solo minutos y segundos al guardar', () => {
+  const venta = LandingCodigoService.limpiarVenta({ urgencia: {
+    activo: true, renovar_cada_visita: true, duracion_horas: 0, duracion_minutos: 3, duracion_segundos: 15,
+  } });
+  expect(venta.urgencia).toMatchObject({ renovar_cada_visita: true, duracion_horas: 0, duracion_minutos: 3, duracion_segundos: 15 });
+});
+
+test('limita las unidades de duración y exige booleano para renovar', () => {
+  const venta = LandingCodigoService.limpiarVenta({ urgencia: {
+    renovar_cada_visita: 'true', duracion_horas: -1, duracion_minutos: 80, duracion_segundos: 12.9,
+  } });
+  expect(venta.urgencia).toMatchObject({ renovar_cada_visita: false, duracion_horas: 0, duracion_minutos: 59, duracion_segundos: 12 });
 });

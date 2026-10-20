@@ -560,7 +560,7 @@ class LandingSimpleService {
     // Si el bloque no está completo (sin fin_at, sin items), se ignora el
     // intento de confirmar: no hay nada que confirmar todavía.
     if (payload.confirmaciones && typeof payload.confirmaciones === 'object' && content.venta) {
-      if (payload.confirmaciones.urgencia === true && content.venta.urgencia?.activo && content.venta.urgencia?.fin_at) {
+      if (payload.confirmaciones.urgencia === true && content.venta.urgencia?.activo && (content.venta.urgencia?.fin_at || content.venta.urgencia?.renovar_cada_visita)) {
         content.venta = { ...content.venta, urgencia: { ...content.venta.urgencia, estado: 'confirmado' } };
       }
       if (payload.confirmaciones.prueba_social === true && content.venta.prueba_social?.activo && content.venta.prueba_social?.items?.length) {

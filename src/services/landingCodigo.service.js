@@ -633,6 +633,10 @@ function limpiarUrgencia(urgencia) {
   return {
     activo: urgencia.activo === true,
     fin_at: fechaValidaISO(urgencia.fin_at),
+    renovar_cada_visita: urgencia.renovar_cada_visita === true,
+    duracion_horas: Math.min(999, Math.max(0, Math.floor(Number(urgencia.duracion_horas ?? 2) || 0))),
+    duracion_minutos: Math.min(59, Math.max(0, Math.floor(Number(urgencia.duracion_minutos) || 0))),
+    duracion_segundos: Math.min(59, Math.max(0, Math.floor(Number(urgencia.duracion_segundos) || 0))),
     producto_id: contentId(urgencia.producto_id || urgencia.content_id),
     // Varios productos en oferta y los textos del bloque del Inicio: el panel
     // los manda desde siempre y se descartaban al guardar.

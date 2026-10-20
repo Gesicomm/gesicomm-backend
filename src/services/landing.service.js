@@ -17,6 +17,7 @@
  */
 
 const crypto = require('crypto');
+const { quitarOfertaFlashVencida } = require('../utils/ofertaFlash');
 const { porcentajeDescuento } = require('../utils/porcentajeDescuento');
 const { Op } = require('sequelize');
 const slugify = require('slugify');
@@ -2894,6 +2895,7 @@ class LandingService {
     // Catálogo completo (/catalogo) siempre muestra TODOS los items de la
     // landing — el comercio puede agregar productos que aparezcan solo ahí
     // desde el picker, sin que se cuelen en el home.
+    itemsDto.forEach(item => quitarOfertaFlashVencida(landing.content?.venta?.urgencia, item));
     const itemsHomeDto = itemsDto.filter(i => i.mostrar_en_inicio);
     // Los templates rígidos (Fitness/Beauty/Tech/Básico) no usan el
     // constructor de secciones (LandingSeccion) — el render lo decide el
@@ -3342,6 +3344,7 @@ class LandingService {
     const categoriasDisponibles = [...new Set(listado.map(i => i.categoria).filter(Boolean))].sort();
     const normalizarFiltro = t => String(t || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
     const etiquetasDe = i => String(i.etiqueta || '').split(',').map(t => t.trim()).filter(Boolean);
+    listado.forEach(item => quitarOfertaFlashVencida(landing.content?.venta?.urgencia, item));
     const itemEnOferta = i => Number(i.precio_antes || 0) > Number(i.precio || 0);
     const tieneEtiqueta = (i, buscada) => {
       const normalizada = normalizarFiltro(buscada);

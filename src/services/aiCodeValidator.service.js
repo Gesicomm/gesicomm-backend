@@ -430,7 +430,7 @@ class AICodeValidator {
     const pendientes = [];
     if (/data-gesicomm-countdown(?!-parte)/.test(texto)) {
       const u = venta?.urgencia;
-      if (!u?.activo || !u?.fin_at || u?.estado !== 'confirmado') pendientes.push('urgencia');
+      if (!u?.activo || !(u?.fin_at || u?.renovar_cada_visita === true) || u?.estado !== 'confirmado') pendientes.push('urgencia');
     }
     if (/data-gesicomm-lista=["']estadisticas["']/.test(texto)) {
       const p = venta?.prueba_social;
