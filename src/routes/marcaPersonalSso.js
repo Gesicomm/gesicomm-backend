@@ -14,7 +14,7 @@ router.use((req, res, next) => {
   next();
 });
 router.use(verificarToken);
-router.use(rateLimit({ windowMs: 60000, max: 30, standardHeaders: true, legacyHeaders: false }));
+router.use(rateLimit({ windowMs: 60000, max: 30, keyGenerator:req=>String(req.usuario.id), standardHeaders: true, legacyHeaders: false }));
 function handle(operation) {
   return async (req, res) => {
     try { res.json(await operation(req.usuario.id)); }
