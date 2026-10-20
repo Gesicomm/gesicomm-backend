@@ -111,7 +111,7 @@ async function manejarSolicitudPublica(req, res) {
     // obtenerPublica). Leerlo a secas tiraba 500 — título "Error" en el
     // preview de WhatsApp/Facebook — en toda landing sin imagen OG propia.
     const items = resultado.items ?? resultado.catalogo_items ?? [];
-    const imagenRelativa = seo.og_imagen || items.find(i => i.imagen)?.imagen || null;
+    const imagenRelativa = seo.og_imagen || resultado.tienda?.compartir_imagen || items.find(i => i.imagen)?.imagen || null;
     // Las imágenes de R2 ya vienen absolutas; solo una ruta propia
     // (/uploads legacy) necesita el host adelante.
     const imagenAbsoluta = imagenRelativa
