@@ -26,4 +26,13 @@ function handle(operation) {
 }
 router.post('/session', handle(service.openSession));
 router.get('/status', handle(service.status));
+const links=require('../services/marcaPersonalLinks.service');
+for(const method of ['get','put'])router[method]('/commercial-links',async(req,res)=>{
+  try{
+    res.json(await(method==='get'?links.read(req.usuario.id,req.query.account_id):links.write(req.usuario.id,req.query.account_id,req.body)));
+  }catch(error){
+    const status=[400,401,403,409].includes(error.status)?error.status:503;
+    res.status(status).json({message:error.status?error.message:'No pudimos guardar o cargar los enlaces. Reintentá.'});
+  }
+});
 module.exports = router;

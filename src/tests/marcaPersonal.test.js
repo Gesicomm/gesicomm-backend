@@ -3,6 +3,13 @@ const { createClient } = require('../services/marcaPersonal.client');
 const userId = '0d5c3fcf-05e1-4f5a-a889-222222222222';
 const managed = { id:userId, email:'gesicom-41@sso.gesicomm.com', app_metadata:{gesicom_source:'gesicomm-production',gesicom_user_id:'41'} };
 const config = {url:'https://project.supabase.co',key:'server-secret'};
+test('los enlaces sólo se pueden editar con membresía y permisos vigentes en esa marca',async()=>{
+ const link={supabase_user_id:userId,account_id:'marca-a'};
+ const fetchImpl=stub([[link],[{account_id:'marca-a'}],[{id:'marca-a'}],[{role:'content',module_access:['crm']}]]);
+ expect(await createClient({...config,fetchImpl}).accountAccess(41,'marca-a')).toBe(true);
+ const denied=stub([[link],[],[{id:'marca-b'}],[{role:'content',module_access:['crm']}]]);
+ expect(await createClient({...config,fetchImpl:denied}).accountAccess(41,'marca-b')).toBe(false);
+});
 function stub(responses) {
   return jest.fn(async () => {
     const value = responses.shift();

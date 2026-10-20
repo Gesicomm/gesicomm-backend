@@ -44,6 +44,18 @@ function createClient({ url, key, fetchImpl = fetch }) {
   }
   return {
     getLink,
+    async accountAccess(id, account) {
+      const link=await getLink(id);
+      if(!link)return false;
+      const uid=encodeURIComponent(link.supabase_user_id),aid=encodeURIComponent(account);
+      const [members,accounts,profiles]=await Promise.all([
+        request('/rest/v1/t2e_account_memberships?user_id=eq.'+uid+'&account_id=eq.'+aid+'&select=account_id'),
+        request('/rest/v1/t2e_funnel_accounts?id=eq.'+aid+'&active=eq.true&select=id'),
+        request('/rest/v1/t2e_profiles?id=eq.'+uid+'&active=eq.true&deleted_at=is.null&select=module_access,role'),
+      ]);
+      const profile=profiles[0];
+      return !!(members.length&&accounts.length&&profile&&(profile.role==='admin'||profile.module_access?.some(module=>['funnels','crm'].includes(module))));
+    },
     async provision({ id, nombre, email, enabled }) {
       if (!Number.isSafeInteger(Number(id)) || Number(id) <= 0) throw new MarcaPersonalError('Usuario inválido.', 400);
       let remoteId = (await getLink(id))?.supabase_user_id;
