@@ -136,6 +136,35 @@ class ImagenService {
   }
 
   /**
+   * Imagen para tarjetas de Open Graph. Se entrega siempre en 1200×630 px:
+   * es el formato 1.91:1 recomendado por WhatsApp, Facebook y LinkedIn.
+   */
+  static async procesarImagenCompartirParaR2(fileData, keyPrefix) {
+    const tmpPath = fileData.path;
+    try {
+      const buffer = await fs.promises.readFile(tmpPath);
+      const salida = await sharp(buffer)
+        .rotate()
+        .resize(1200, 630, { fit: 'cover', position: 'centre' })
+        .webp({ quality: 86 })
+        .toBuffer();
+      const storageKey = `${keyPrefix}/${crypto.randomUUID()}.webp`;
+      const result = await R2Service.uploadObject({
+        key: storageKey,
+        body: salida,
+        contentType: 'image/webp',
+        cacheControl: IMMUTABLE_CACHE_CONTROL,
+        contentLength: salida.length,
+      });
+      await this.borrarArchivoSeguro(tmpPath);
+      return { url: result.url, storage_key: storageKey };
+    } catch (err) {
+      await this.borrarArchivoSeguro(tmpPath);
+      throw err;
+    }
+  }
+
+  /**
    * Núcleo del procesamiento (trim + resize + webp + subida), sin tocar
    * disco ni el original — lo comparten procesarArchivoParaR2() (sube
    * desde multer) y reprocesar() (relee el original ya guardado en R2).

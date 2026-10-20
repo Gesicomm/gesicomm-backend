@@ -120,6 +120,16 @@ const Tienda = sequelize.define('Tienda', {
     comment: 'URL pública del favicon (PNG 192x192 en R2).',
   },
   favicon_imagen_storage_key: { type: DataTypes.STRING(700), allowNull: true },
+  // --- Imagen al compartir: fallback de Open Graph para la portada de la
+  // tienda. Se procesa a 1200x630, la proporción que usan WhatsApp, Meta y
+  // LinkedIn para tarjetas grandes. Cada landing aún puede tener su propia
+  // imagen SEO, que tiene prioridad. ---
+  compartir_imagen: {
+    type: DataTypes.STRING(700),
+    allowNull: true,
+    comment: 'URL pública de la miniatura Open Graph de la tienda (WebP 1200x630 en R2).',
+  },
+  compartir_imagen_storage_key: { type: DataTypes.STRING(700), allowNull: true },
   // --- Contacto base ---
   whatsapp: {
     type: DataTypes.STRING(20),

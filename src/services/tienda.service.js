@@ -336,6 +336,22 @@ class TiendaService {
     return { tienda: await this.obtener(tienda_id, usuario_id), anterior };
   }
 
+  /** Imagen general que usan las tarjetas al compartir la portada. */
+  static async actualizarImagenCompartir(tienda_id, usuario_id, imagenData) {
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
+    if (!tienda) throw new Error('Todavía no tenés una tienda creada.');
+
+    const anterior = tienda.compartir_imagen
+      ? { url: tienda.compartir_imagen, storage_key: tienda.compartir_imagen_storage_key }
+      : null;
+
+    tienda.compartir_imagen = imagenData ? imagenData.url : null;
+    tienda.compartir_imagen_storage_key = imagenData ? imagenData.storage_key : null;
+    await tienda.save();
+
+    return { tienda: await this.obtener(tienda_id, usuario_id), anterior };
+  }
+
   static async verificarDisponibilidadSubdominio(sub, tienda_id = null) {
     if (!sub) return { valido: false, disponible: false, motivo: 'Ingresá un subdominio.' };
     const { valido, motivo } = validarFormatoSubdominio(sub);

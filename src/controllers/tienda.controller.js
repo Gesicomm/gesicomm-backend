@@ -264,6 +264,30 @@ async function eliminarFavicon(req, res) {
   }
 }
 
+async function subirImagenCompartir(req, res) {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
+    const tiendaId = exigirTiendaActiva(req);
+    const imagenData = await ImagenService.procesarImagenCompartirParaR2(req.file, `tiendas/compartir/${tiendaId}`);
+    const { tienda, anterior } = await TiendaService.actualizarImagenCompartir(tiendaId, req.usuario.id, imagenData);
+    if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
+    return res.status(201).json(tienda);
+  } catch (err) {
+    await ImagenService.borrarArchivoSeguro(req.file?.path);
+    return manejarError(res, err, 'Error al subir la imagen para compartir.');
+  }
+}
+
+async function eliminarImagenCompartir(req, res) {
+  try {
+    const { tienda, anterior } = await TiendaService.actualizarImagenCompartir(exigirTiendaActiva(req), req.usuario.id, null);
+    if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
+    return res.json(tienda);
+  } catch (err) {
+    return manejarError(res, err, 'Error al quitar la imagen para compartir.');
+  }
+}
+
 async function guardarTipografia(req, res) {
   try {
     const typography = await TypographyService.guardarConfigTienda(exigirTiendaActiva(req), req.usuario.id, req.body || {});
@@ -299,5 +323,6 @@ module.exports = {
   obtenerFulfillment, listarDepositosFulfillment, guardarFulfillment,
   subirLogo, eliminarLogo,
   subirFavicon, eliminarFavicon,
+  subirImagenCompartir, eliminarImagenCompartir,
   guardarTipografia, subirFuente, eliminarFuente,
 };

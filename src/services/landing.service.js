@@ -3011,6 +3011,8 @@ class LandingService {
         logo_imagen: tienda.logo_imagen || null,
         // Ícono de la pestaña; null = el front cae al logo.
         favicon_imagen: tienda.favicon_imagen || null,
+        // Fallback para la tarjeta al compartir la portada de la tienda.
+        compartir_imagen: tienda.compartir_imagen || null,
         // Branding de Mi Tienda tal cual: la landing HTML (lienzo en blanco)
         // arranca con estos colores (ver --tienda-* en construirDocumentoCodigo).
         colores: coloresDeTienda(tienda),
@@ -3083,7 +3085,7 @@ class LandingService {
         keywords: landing.seo_keywords || null,
         // Sin imagen OG propia, usa el banner — casi siempre es la imagen
         // más representativa que ya cargó la usuaria para esta landing.
-        og_imagen: landing.seo_og_imagen || landing.banner_imagen || null,
+        og_imagen: landing.seo_og_imagen || landing.banner_imagen || tienda.compartir_imagen || null,
       },
       // Solo lo que necesita el navegador para inicializar pixels y
       // decidir si vale la pena llamar a /eventos — nunca meta_access_token
