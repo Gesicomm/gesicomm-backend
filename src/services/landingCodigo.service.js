@@ -948,7 +948,9 @@ function limpiarEncabezadoInicio(e) {
   return {
     mostrar_logo: e.mostrar_logo !== false,
     mostrar_nombre: e.mostrar_nombre !== false,
-    logo_tamano: numeroEntre(e.logo_tamano, 28, 76, 76),
+    // Mismo rango que el slider del editor y el runtime (28–128). Con tope
+    // en 76 el logo "volvía a la mitad" al recargar.
+    logo_tamano: numeroEntre(e.logo_tamano, 28, 128, 76),
     logo_rotacion: numeroEntre(e.logo_rotacion, -180, 180, 0),
     logo_posicion: e.logo_posicion === 'centro' ? 'centro' : 'izquierda',
     variante: VARIANTES_ENCABEZADO.includes(e.variante) ? e.variante : 'normal',

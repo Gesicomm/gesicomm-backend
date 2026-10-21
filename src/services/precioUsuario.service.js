@@ -582,14 +582,16 @@ class PrecioUsuarioService {
     replacements.limit = limite;
     replacements.offset = parseInt(offset);
 
-    const [countResult, paginatedItems, administradoresIds] = await Promise.all([
-      sequelize.query(countQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
-      sequelize.query(dataQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
-      this.obtenerIdsAdministradores(inquilino_id),
-    ]);
-    const total = parseInt(countResult[0]?.total || 0);
-
     if (liviano) {
+      // La carga masiva (editor de la tienda, "seleccionar todo") casi
+      // siempre trae el catálogo entero en una página: si vino incompleta,
+      // el total es offset + filas y el COUNT — que repite la consulta
+      // entera — sobra. El VPS tiene un solo núcleo útil.
+      const paginatedItems = await sequelize.query(dataQuery, { replacements, type: sequelize.QueryTypes.SELECT });
+      // Página vacía más allá del final: ahí sí hace falta contar.
+      const total = paginatedItems.length < limite && (paginatedItems.length > 0 || offset === 0)
+        ? offset + paginatedItems.length
+        : parseInt((await sequelize.query(countQuery, { replacements, type: sequelize.QueryTypes.SELECT }))[0]?.total || 0);
       return {
         items: paginatedItems.map(it => ({
           id: it.id,
@@ -610,6 +612,13 @@ class PrecioUsuarioService {
         marcas: [],
       };
     }
+
+    const [countResult, paginatedItems, administradoresIds] = await Promise.all([
+      sequelize.query(countQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
+      sequelize.query(dataQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
+      this.obtenerIdsAdministradores(inquilino_id),
+    ]);
+    const total = parseInt(countResult[0]?.total || 0);
 
     const visibilidadProductoPaginado = this.combinarVisibilidadProducto(
       this.visibilidadCatalogoWhere(usuario_id, esAdmin, miosOnly, administradoresIds),

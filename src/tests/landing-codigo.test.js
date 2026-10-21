@@ -609,6 +609,9 @@ describe('LandingCodigoService.limpiarVenta', () => {
     // Sin encabezado en el payload no se inventa uno: el runtime usa sus defaults.
     expect(LandingCodigoService.limpiarVenta({ inicio: { menu_categorias: true } }).inicio).not.toHaveProperty('encabezado');
     expect(LandingCodigoService.limpiarVenta({ inicio: { encabezado: { logo_tamano: null } } }).inicio.encabezado.logo_tamano).toBe(76);
+    // El slider llega a 128: antes el backend lo recortaba a 76 al guardar.
+    expect(LandingCodigoService.limpiarVenta({ inicio: { encabezado: { logo_tamano: 128 } } }).inicio.encabezado.logo_tamano).toBe(128);
+    expect(LandingCodigoService.limpiarVenta({ inicio: { encabezado: { logo_tamano: 500 } } }).inicio.encabezado.logo_tamano).toBe(128);
   });
 
   it('testimonios del Inicio: persiste textos, items y el bloque en el orden', () => {

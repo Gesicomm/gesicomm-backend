@@ -91,7 +91,8 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
   });
 
   test('las páginas grandes conservan la portada sin hidratar productos ni galerías', async () => {
-    sequelize.query.mockResolvedValueOnce([{ total: 3 }]).mockResolvedValueOnce([
+    // Página incompleta: no hace falta el COUNT, la única consulta es la de datos.
+    sequelize.query.mockResolvedValueOnce([
       { id: 10, tipo: 'producto', nombre: 'Producto', precio_efectivo: '100000', imagen: 'https://cdn.test/producto.webp' },
       { id: 20, tipo: 'combo', nombre: 'Combo', precio_efectivo: '200000', imagen: 'https://cdn.test/combo.webp' },
       { id: 30, tipo: 'producto', nombre: 'Sin foto', precio_efectivo: '50000' },
@@ -102,15 +103,17 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     expect(resultado.items.map(i => i.imagen)).toEqual(['https://cdn.test/producto.webp', 'https://cdn.test/combo.webp', null]);
     expect(Producto.findAll).not.toHaveBeenCalled();
     expect(ProductoImagen.findAll).not.toHaveBeenCalled();
-    const sql = sequelize.query.mock.calls[1][0];
+    expect(sequelize.query).toHaveBeenCalledTimes(1);
+    expect(resultado.total).toBe(3);
+    const sql = sequelize.query.mock.calls[0][0];
     expect(sql).toContain('pi.producto_id = p.id AND pi.inquilino_id = :inquilino_id');
     expect(sql).toContain('ci.combo_id = c.id AND ci.inquilino_id = :inquilino_id');
     expect(sql).toContain('COALESCE(');
-    expect(sequelize.query.mock.calls[1][1].replacements.tienda_id).toBe(69);
+    expect(sequelize.query.mock.calls[0][1].replacements.tienda_id).toBe(69);
   });
 
   test('el catálogo del editor conserva el identificador público y la categoría en páginas grandes', async () => {
-    sequelize.query.mockResolvedValueOnce([{ total: 3630 }]).mockResolvedValueOnce([
+    sequelize.query.mockResolvedValueOnce([
       { id: 10, tipo: 'producto', slug: 'abridor-de-vino', nombre: 'Abridor', categoria_id: 8, categoria: 'Cocina', precio_efectivo: '100000' },
       { id: 20, tipo: 'combo', slug: null, nombre: 'Pack', categoria_id: 8, categoria: 'Cocina', precio_efectivo: '200000' },
     ]);
@@ -121,7 +124,7 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     // Ambos deben coincidir con el catálogo completo que carga el editor.
     expect(resultado.items[0]).toMatchObject({ slug: 'abridor-de-vino', categoria_id: 8, categoria: 'Cocina' });
     expect(resultado.items[1]).toMatchObject({ slug: null, categoria_id: 8, categoria: 'Cocina' });
-    const sql = sequelize.query.mock.calls[1][0];
+    const sql = sequelize.query.mock.calls[0][0];
     expect(sql).toContain('p.slug');
     expect(sql).toContain('NULL::text AS slug');
     expect(sql).toContain('cat.nombre');
@@ -180,24 +183,27 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
   });
 
   test('acota la paginación y desempata productos con nombres repetidos', async () => {
-    sequelize.query.mockResolvedValueOnce([{ total: 0 }]).mockResolvedValue([]);
+    sequelize.query.mockResolvedValue([]);
     const data = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { page: -2, limit: 20000 });
     expect(data.page).toBe(1);
-    expect(sequelize.query.mock.calls[1][1].replacements).toMatchObject({ limit: 10000, offset: 0 });
-    expect(sequelize.query.mock.calls[1][0]).toContain('ORDER BY nombre ASC, tipo ASC, id ASC');
+    expect(data.total).toBe(0);
+    expect(sequelize.query.mock.calls[0][1].replacements).toMatchObject({ limit: 10000, offset: 0 });
+    expect(sequelize.query.mock.calls[0][0]).toContain('ORDER BY nombre ASC, tipo ASC, id ASC');
   });
 
   test('"seleccionar todo" (limit grande) se salta el enriquecimiento pesado — ver OOM del 2026-10-16', async () => {
+    // Página llena: puede haber más filas, así que recién ahí se cuenta.
     sequelize.query
-      .mockResolvedValueOnce([{ total: 3630 }]) // countQuery
       .mockResolvedValueOnce(Array.from({ length: 3630 }, (_, i) => ({
         id: i + 1, tipo: 'producto', nombre: `Producto ${i + 1}`, creado_por: 42, precio_efectivo: '1000',
-      }))); // dataQuery
+      }))) // dataQuery
+      .mockResolvedValueOnce([{ total: 3631 }]); // countQuery
 
     const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { limit: 3630 });
 
-    expect(resultado.total).toBe(3630);
+    expect(resultado.total).toBe(3631);
     expect(resultado.items).toHaveLength(3630);
+    expect(sequelize.query.mock.calls[1][0]).toMatch(/^SELECT COUNT\(\*\)/);
     expect(resultado.items[0]).toEqual({ id: 1, tipo: 'producto', slug: null, nombre: 'Producto 1', categoria_id: null, categoria: null, creado_por: 42, precio_efectivo: 1000, imagen: null });
     // Nada de Sequelize con includes anidados (categoría/marca/proveedor/imágenes/combos) para esta selección masiva.
     expect(Producto.findAll).not.toHaveBeenCalled();
@@ -207,7 +213,6 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
 
   test('liviano: true fuerza el modo liviano aunque el limit sea chico', async () => {
     sequelize.query
-      .mockResolvedValueOnce([{ total: 1 }])
       .mockResolvedValueOnce([{ id: 10, tipo: 'producto', nombre: 'X', creado_por: null, precio_efectivo: '500' }]);
 
     const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { limit: 10, liviano: true });
