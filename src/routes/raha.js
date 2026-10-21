@@ -17,7 +17,8 @@ router.param('id', (req, res, next) => {
 });
 const handle = fn => async (req, res, next) => { try { await fn(req, res); } catch (error) { next(error); } };
 const json = fn => handle(async (req, res) => res.json(await fn(req)));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: require('../services/raha/storage').MAX_SIZE, files: 1, fields: 2, fieldSize: 100 } }).single('archivo');
+const { MAX_SIZE } = require('../services/raha/storage');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_SIZE, files: 1, fields: 2, fieldSize: 100 } }).single('archivo');
 router.get('/', json(req => service.status(req.usuario)));
 router.get('/operaciones/destinos', json(() => operaciones.destinos()));
 router.get('/operaciones/origenes', json(req => operaciones.origenes(req.usuario)));
@@ -28,7 +29,16 @@ router.get('/operaciones/envios/:id', json(req => operaciones.detalleEnvio(req.u
 router.post('/operaciones/envios/:id/resolver', json(req => operaciones.resolverEnvio(req.usuario, Number(req.params.id), req.body)));
 router.put('/', json(req => service.save(req.usuario, req.body)));
 router.post('/enviar', json(req => service.submit(req.usuario, req.body)));
-router.post('/documentos', (req, res, next) => upload(req, res, error => error ? res.status(400).json({ message: 'Archivo invalido. Maximo 8 MB, un archivo por envio.' }) : next()),
+router.post('/documentos', (req, res, next) => upload(req, res, error => {
+  if (!error) return next();
+  if (error.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({
+      code: 'FILE_TOO_LARGE', maxSizeBytes: MAX_SIZE,
+      message: 'El archivo es demasiado pesado. El máximo permitido es de 8 MB por documento. Reducí su tamaño o comprimilo y volvé a intentar.',
+    });
+  }
+  return res.status(400).json({ message: 'No se pudo recibir el documento. Adjuntá un solo archivo PDF, JPG, PNG o WebP de hasta 8 MB.' });
+}),
   json(req => service.upload(req.usuario, req.body.tipo, req.body.version, req.file)));
 router.delete('/documentos/:id', json(req => service.remove(req.usuario, Number(req.params.id), req.body.version)));
 router.get('/documentos/:id', handle(async (req, res) => {
