@@ -1055,7 +1055,9 @@ function limpiarConfianza(items) {
     const titulo = textoCorto(it.titulo, 60);
     const texto = textoCorto(it.texto, 120);
     if (!titulo && !texto) return null;
-    return { icono: textoCorto(it.icono, 40) || 'shield', titulo, texto };
+    // Es texto Unicode, nunca HTML. No cortar por unidades UTF-16: se
+    // partirían emojis compuestos o secuencias con tonos de piel y ZWJ.
+    return { icono: typeof it.icono === 'string' ? it.icono : '', titulo, texto };
   });
 }
 
@@ -1098,6 +1100,20 @@ function limpiarProductosCategoria(pc) {
 // qué tarjetas (categorías o colecciones = etiquetas de la landing), cuáles,
 // por fila y en total. null = nunca se configuró; el runtime lo deja como
 // siempre.
+function limpiarCombosInicio(c) {
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return null;
+  const entero = (v, max, defecto) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= max ? Number(v) : defecto;
+  const columnas = entero(c.columnas, 6, 3), filas = entero(c.filas, 8, 1);
+  return {
+    kicker: textoCorto(c.kicker, 60), titulo: textoCorto(c.titulo, 100), descripcion: textoCorto(c.descripcion, 240),
+    enlace_texto: textoCorto(c.enlace_texto, 60), pie: textoCorto(c.pie, 120),
+    modo: c.modo === 'manual' ? 'manual' : 'todos', items: [...new Set(listaDe(c.items, 48, contentId))],
+    columnas, filas, limite: entero(c.limite, 48, columnas * filas),
+    imagen_modo: 'portada',
+    mostrar_incluidos: c.mostrar_incluidos !== false, mostrar_ahorro: c.mostrar_ahorro !== false, mostrar_descripcion: c.mostrar_descripcion !== false,
+  };
+}
+
 function limpiarColeccionesInicio(c) {
   if (!c || typeof c !== 'object' || Array.isArray(c)) return null;
   const columnas = Number(c.columnas);
@@ -1140,8 +1156,10 @@ function limpiarInicio(inicio) {
     banners_intermedios: listaDe(inicio.banners_intermedios, 4, limpiarBannerInicio),
     secciones: listaDe(inicio.secciones, 8, limpiarSeccionInicio),
     bloques: limpiarBloquesInicio(inicio.bloques),
+    ...(inicio.combos && limpiarCombosInicio(inicio.combos) ? { combos: limpiarCombosInicio(inicio.combos) } : {}),
     anuncios: listaDe(inicio.anuncios, 8, limpiarAnuncioInicio),
     confianza: limpiarConfianza(inicio.confianza),
+    confianza_estilo: ['tarjetas', 'destacada'].includes(inicio.confianza_estilo) ? inicio.confianza_estilo : 'compacta',
     ...(() => {
       const encabezado = limpiarEncabezadoInicio(inicio.encabezado);
       return encabezado ? { encabezado } : {};

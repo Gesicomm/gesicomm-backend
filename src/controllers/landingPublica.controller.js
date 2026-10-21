@@ -173,6 +173,7 @@ async function obtenerPorSlug(req, res) {
           soloInicio: options.soloInicio === true || options.soloInicio === 'true',
           soloDescuento: options.soloDescuento === true || options.soloDescuento === 'true',
           soloDatos: options.soloDatos === true || options.soloDatos === 'true',
+          filtroTipo: options.filtroTipo,
           busqueda: typeof options.busqueda === 'string' ? options.busqueda : (typeof options.q === 'string' ? options.q : ''),
         })
       : await LandingService.obtenerPublica(tienda, req.params.slug || null, preview, {

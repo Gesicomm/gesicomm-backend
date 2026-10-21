@@ -7,6 +7,42 @@
 
 const LandingCodigoService = require('../services/landingCodigo.service');
 
+test.each(['compacta', 'tarjetas', 'destacada'])('Confianza conserva la variante %s y sus condiciones al guardar', estilo => {
+  const confianza = [{ icono: 'truck', titulo: 'Envíos a tu zona', texto: 'Consultá cobertura y costo.' }];
+  const venta = LandingCodigoService.limpiarVenta({ inicio: { confianza, confianza_estilo: estilo } });
+  expect(venta.inicio.confianza_estilo).toBe(estilo);
+  expect(venta.inicio_comercial.confianza_estilo).toBe(estilo);
+  expect(LandingCodigoService.limpiarVenta(venta).inicio.confianza).toEqual(confianza);
+});
+
+test('Confianza vuelve a compacta ante una variante inválida', () => {
+  expect(LandingCodigoService.limpiarVenta({ inicio: { confianza_estilo: 'invalida' } }).inicio.confianza_estilo).toBe('compacta');
+});
+
+test('Confianza conserva emojis compuestos completos y permite quitar el emoji', () => {
+  const emoji = '👩🏽‍💻👨‍👩‍👧‍👦🏳️‍🌈'.repeat(4);
+  const confianza = [{ icono: emoji, titulo: 'Atención', texto: 'Condiciones' }, { icono: '', titulo: 'Entrega', texto: '' }];
+  const venta = LandingCodigoService.limpiarVenta({ inicio: { confianza } });
+  expect(venta.inicio.confianza).toEqual(confianza);
+  expect(LandingCodigoService.limpiarVenta(venta).inicio.confianza).toEqual(confianza);
+});
+
+test('Combos del inicio conserva textos vacíos, selección, orden y distribución al guardar y volver a cargar', () => {
+  const combos = { kicker: '', titulo: 'Combos para tu casa', descripcion: 'Elegí tu pack', enlace_texto: 'Explorar combos', pie: '',
+    modo: 'manual', items: ['combo-2', 'combo-1'], columnas: 2, filas: 2, limite: 3, imagen_modo: 'portada',
+    mostrar_incluidos: true, mostrar_ahorro: false, mostrar_descripcion: true };
+  const venta = LandingCodigoService.limpiarVenta({ inicio: { combos } });
+  expect(venta.inicio.combos).toEqual(combos);
+  expect(venta.inicio_comercial.combos).toEqual(combos);
+  expect(LandingCodigoService.limpiarVenta(venta).inicio.combos).toEqual(combos);
+});
+
+test('Combos del inicio limita los controles inválidos y descarta ids y campos ajenos', () => {
+  const venta = LandingCodigoService.limpiarVenta({ inicio: { combos: { columnas: 999, filas: -5, limite: 999, items: ['combo-1', 'combo-1', 'javascript:alert(1)'], inventado: 'No guardar' } } });
+  expect(venta.inicio.combos).toMatchObject({ columnas: 3, filas: 1, limite: 3, items: ['combo-1'] });
+  expect(venta.inicio.combos).not.toHaveProperty('inventado');
+});
+
 test('Colecciones conserva título, subtítulo vacío, selección y límite al guardar', () => {
   const colecciones = { modo: 'categorias', items: ['Audio', 'Bebés'], columnas: 2, limite: 4, titulo: 'Elegí tu categoría', subtitulo: '' };
   const venta = LandingCodigoService.limpiarVenta({ inicio: { colecciones } });
@@ -517,6 +553,7 @@ describe('LandingCodigoService.limpiarVenta', () => {
       bloques: [],
       anuncios: [],
       confianza: [],
+      confianza_estilo: 'compacta',
       banners: [
         {
           id: 'banner-1', activo: true, titulo: 'Hola', subtitulo: 'Sub', etiqueta: 'Nuevo',
@@ -624,7 +661,7 @@ describe('LandingCodigoService.limpiarVenta', () => {
     ]);
   });
 
-  it('confianza: hasta 3 items con ícono por defecto si falta, descarta los vacíos', () => {
+  it('confianza: hasta 3 items, permite emoji vacío y descarta beneficios sin texto', () => {
     const v = LandingCodigoService.limpiarVenta({
       inicio: {
         confianza: [
@@ -638,8 +675,8 @@ describe('LandingCodigoService.limpiarVenta', () => {
     });
     expect(v.inicio.confianza).toEqual([
       { icono: 'truck', titulo: 'Envíos', texto: 'A todo el país' },
-      { icono: 'shield', titulo: 'Sin ícono', texto: '' },
-      { icono: 'shield', titulo: 'Tercero', texto: 'Este sí entra' },
+      { icono: '', titulo: 'Sin ícono', texto: '' },
+      { icono: '', titulo: 'Tercero', texto: 'Este sí entra' },
     ]);
   });
 

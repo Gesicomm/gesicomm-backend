@@ -18,7 +18,7 @@ jest.mock('../services/paymentLogo.service', () => ({ resolverParaLanding: jest.
 jest.mock('../services/payments/paymentService', () => ({ getPublicGateways: jest.fn().mockResolvedValue([]) }));
 jest.mock('../services/imagen.service', () => ({ serializar: imagen => imagen }));
 
-const { Landing, LandingItem, Producto, ProductoImagen, ProductoVariante, Tienda } = require('../models');
+const { Landing, LandingItem, Producto, ProductoCombo, ProductoImagen, ProductoVariante, Tienda } = require('../models');
 const Service = require('../services/landing.service');
 const Simple = require('../services/landingSimple.service');
 
@@ -42,6 +42,16 @@ beforeEach(() => {
 });
 
 afterEach(() => jest.restoreAllMocks());
+
+test('filtra solo combos antes de contar y paginar, aunque haya 4000 productos individuales', async () => {
+  const combos = [1, 2].map(id => ({ id, slug: `combo-${id}`, nombre: `Combo ${id}`, precio_total: 90000, producto_padre: productos[0] }));
+  Landing.findOne.mockResolvedValue({ ...landing, items: [...items, ...combos.map(c => ({ tipo: 'combo', referencia_id: c.id, mostrar_en_inicio: true }))] });
+  ProductoCombo.findAll.mockResolvedValue(combos);
+  const res = await Service.obtenerCatalogoPublico(tienda, null, false, { filtroTipo: 'combo', pagina: 2, porPagina: 1 });
+  expect(res.paginacion).toMatchObject({ total: 2, totalPaginas: 2, pagina: 2 });
+  expect(res.catalogo_items).toHaveLength(1);
+  expect(res.catalogo_items[0]).toMatchObject({ tipo: 'combo', content_id: 'combo-2' });
+});
 
 test('la portada anuncia 4000 y solo carga 25 fichas completas; la ficha 4000 sigue accesible', async () => {
   const res = await Service.obtenerPublica(tienda, null);

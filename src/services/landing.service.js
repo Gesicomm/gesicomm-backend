@@ -1923,6 +1923,7 @@ class LandingService {
     lista(venta.destacados).forEach(sumar);
     lista(inicio.secciones).forEach(s => lista(s?.productos).forEach(sumar));
     lista(inicio.productos_categoria?.items).forEach(sumar);
+    lista(inicio.combos?.items).forEach(sumar);
     [venta.urgencia?.producto_id, venta.prueba_social?.producto_id].forEach(sumar);
     lista(venta.urgencia?.productos).forEach(sumar);
     lista(venta.recomendados?.items).forEach(sumar);
@@ -3178,6 +3179,7 @@ class LandingService {
       busqueda = '',
       soloInicio = false,
       soloDescuento = false,
+      filtroTipo = '',
       soloDatos = false,
     } = opciones;
 
@@ -3379,6 +3381,7 @@ class LandingService {
     const termino = sinTildes(String(busqueda || '').trim().slice(0, 80));
 
     const filtrado = listado.filter(i => {
+      if (['combo', 'producto'].includes(filtroTipo) && i.tipo !== filtroTipo) return false;
       if (soloInicio && !i.mostrar_en_inicio) return false;
       if (termino && !sinTildes(`${i.nombre} ${i.categoria || ''} ${i.marca || ''} ${i.etiqueta || ''}`).includes(termino)) return false;
       if (min !== null && i.precio < min) return false;
