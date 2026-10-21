@@ -111,10 +111,8 @@ async function catalogoEnvio(actor, tienda, depositoId, { texto = '', limit = 10
       ORDER BY (imagen.variante_id = v.id) DESC NULLS LAST, imagen.es_principal DESC, imagen.orden, imagen.id
       LIMIT 1
     ) foto ON TRUE
-    WHERE p.activo AND p.inquilino_id = :inquilinoId AND (
-      (p.creado_por = :usuarioId AND p.tienda_id = :tiendaId) OR (p.creado_por IS NULL AND (p.tienda_id IS NULL OR p.tienda_id = :tiendaId)) OR
-      EXISTS (SELECT 1 FROM usuarios u JOIN roles r ON r.id = u.rol_id
-        WHERE u.id = p.creado_por AND u.inquilino_id = :inquilinoId AND r.nombre = 'administrador'))
+    WHERE p.activo AND p.inquilino_id = :inquilinoId
+      AND p.creado_por = :usuarioId AND p.tienda_id = :tiendaId
       AND (v.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM producto_variantes existente WHERE existente.producto_id = p.id))
       AND (:texto = '' OR p.nombre ILIKE :patron OR p.sku ILIKE :patron OR v.nombre ILIKE :patron OR v.sku_variante ILIKE :patron)
       ${items ? `AND EXISTS (SELECT 1 FROM jsonb_to_recordset(CAST(:items AS jsonb)) AS seleccionado(producto_id int, variante_id int)
@@ -151,7 +149,8 @@ async function crearEnvio(actor, input) {
     const { registros: existencias } = await catalogoEnvio(actor, tienda, origen.id, { items: datos.items }, transaction);
     const items = datos.items.map(item => {
       const existencia = existencias.find(fila => fila.producto_id === item.producto_id && (fila.variante_id || null) === item.variante_id);
-      if (!existencia || (existencia.stock_registrado && Number(existencia.disponible) < item.cantidad)) fail('Stock insuficiente o producto no disponible en el depósito de origen. Actualizá la selección.', 409);
+      if (!existencia) fail('Producto no disponible. Solo podés enviar productos propios de esta tienda. Actualizá la selección.', 409);
+      if (existencia.stock_registrado && Number(existencia.disponible) < item.cantidad) fail('Stock insuficiente en el depósito de origen. Actualizá la selección.', 409);
       return { ...item, nombre: existencia.producto.nombre, sku: existencia.variante?.sku_variante || existencia.producto.sku || '',
         variante: existencia.variante?.nombre || '', stock_registrado: existencia.stock_registrado,
         imagen_url: existencia.producto.imagen_url || null };

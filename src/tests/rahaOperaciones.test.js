@@ -148,7 +148,23 @@ test('el catálogo pagina en servidor conservando el aislamiento de tienda, prop
   const [consulta, opciones] = models.sequelize.query.mock.calls[0];
   expect(consulta).toContain('p.inquilino_id = :inquilinoId');
   expect(consulta).toContain('p.creado_por = :usuarioId AND p.tienda_id = :tiendaId');
+  expect(consulta).not.toContain('p.creado_por IS NULL');
+  expect(consulta).not.toContain('p.tienda_id IS NULL');
+  expect(consulta).not.toContain("r.nombre = 'administrador'");
   expect(opciones.replacements).toMatchObject({ usuarioId: 7, tiendaId: 11, inquilinoId: 2, depositoId: 6, limite: 10, desplazamiento: 10, texto: 'Termo\\%' });
+});
+
+test('confirmar el envío vuelve a exigir productos propios y rechaza una selección ajena sin guardarla', async () => {
+  catalogo([]);
+  await expect(operaciones.crearEnvio(actor, datos)).rejects.toMatchObject({
+    status: 409, message: expect.stringContaining('Solo podés enviar productos propios de esta tienda'),
+  });
+  const [consulta, opciones] = models.sequelize.query.mock.calls.find(([sql]) => sql.includes('WITH catalogo'));
+  expect(consulta).toContain('AND p.creado_por = :usuarioId AND p.tienda_id = :tiendaId');
+  expect(consulta).not.toContain('p.creado_por IS NULL');
+  expect(consulta).not.toContain("r.nombre = 'administrador'");
+  expect(opciones.replacements).toMatchObject({ usuarioId: 7, tiendaId: 11, inquilinoId: 2 });
+  expect(models.RahaEnvioStock.create).not.toHaveBeenCalled();
 });
 
 test('RAHA solo consulta abastecimientos vinculados a la integración y no recibe payloads privados', async () => {
