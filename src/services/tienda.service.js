@@ -85,10 +85,56 @@ class TiendaService {
   static async listarPorUsuario(usuario_id) {
     const tiendas = await Tienda.findAll({
       where: { usuario_id },
-      attributes: ['id', 'nombre', 'subdominio', 'logo_imagen'],
+      attributes: ['id', 'nombre', 'subdominio', 'logo_imagen', 'activo'],
       order: [['id', 'ASC']],
     });
     return tiendas.map(t => t.toJSON());
+  }
+
+  // La administración sigue disponible para atender pedidos y reactivar.
+  // Las rutas públicas ya verifican Tienda.activo antes de servir o vender.
+  static async cambiarEstado(tienda_id, usuario_id, activo) {
+    if (typeof activo !== 'boolean') {
+      const err = new Error('activo debe ser verdadero o falso.');
+      err.status = 400;
+      throw err;
+    }
+    const tienda = await Tienda.findOne({ where: { id: tienda_id, usuario_id } });
+    if (!tienda) {
+      const err = new Error('Esa tienda no existe o no te pertenece.');
+      err.status = 404;
+      throw err;
+    }
+    tienda.activo = activo;
+    await tienda.save();
+    return { id: tienda.id, activo: tienda.activo };
+  }
+
+  static async eliminar(tienda_id, usuario_id, nombreConfirmacion) {
+    // Solo tiendas vacías: nunca borrar en cascada historial del comercio.
+    return Tienda.sequelize.transaction({ isolationLevel: 'SERIALIZABLE' }, async transaction => {
+      const tienda = await Tienda.findOne({
+        where: { id: tienda_id, usuario_id }, transaction, lock: transaction.LOCK.UPDATE,
+      });
+      const fallo = (message, status) => Object.assign(new Error(message), { status });
+      if (!tienda) throw fallo('Esa tienda no existe o no te pertenece.', 404);
+      if (tienda.activo) throw fallo('Inactivá la tienda antes de eliminarla.', 409);
+      if (typeof nombreConfirmacion !== 'string' || nombreConfirmacion !== tienda.nombre) {
+        throw fallo('Escribí el nombre exacto de la tienda para confirmar.', 400);
+      }
+      for (const modelo of Object.values(Tienda.sequelize.models)) {
+        if (modelo === Tienda) continue;
+        const atributos = modelo.getAttributes();
+        // Speedbox también tiene un tienda_id externo de texto: no es nuestro ID.
+        const campo = atributos.gesicom_tienda_id ? 'gesicom_tienda_id'
+          : ['INTEGER', 'BIGINT'].includes(atributos.tienda_id?.type?.key) ? 'tienda_id' : null;
+        if (campo && await modelo.count({ where: { [campo]: tienda.id }, transaction, paranoid: false })) {
+          throw fallo('Esta tienda tiene datos asociados y no se puede eliminar. Podés mantenerla inactiva para conservar su historial.', 409);
+        }
+      }
+      await tienda.destroy({ transaction });
+      return { id: tienda.id };
+    });
   }
 
   static async obtener(tienda_id, usuario_id) {
