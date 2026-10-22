@@ -7,6 +7,7 @@ module.exports = sequelize.define('ImportacionSolicitud', {
   tienda_id: { type: DataTypes.INTEGER, allowNull: false },
   inquilino_id: { type: DataTypes.INTEGER, allowNull: false },
   producto_url: { type: DataTypes.STRING(2000), allowNull: false },
+  pais_origen: { type: DataTypes.STRING(100), allowNull: true },
   cantidad: { type: DataTypes.INTEGER, allowNull: false },
   transporte: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'conveniente' },
   observaciones: { type: DataTypes.TEXT, allowNull: false, defaultValue: '' },

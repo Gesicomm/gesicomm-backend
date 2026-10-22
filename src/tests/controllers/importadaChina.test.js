@@ -46,8 +46,25 @@ test('guarda la solicitud con cuenta, tienda, fecha y estado antes de confirmar 
   expect(avisos[0].mensaje).toContain('Color azul');
 });
 
-test.each(['http://www.alibaba.com/p', 'https://alibaba.com.ejemplo.com/p', 'https://falsoalibaba.com/p', 'https://example.com/p', 'javascript:alert(1)', 'https://usuario:clave@alibaba.com/p', 'https://alibaba.com:8080/p', ''])('rechaza enlaces que no sean HTTPS de Alibaba: %s', async producto_url => {
+test.each(['http://www.alibaba.com/p', 'javascript:alert(1)', 'https://usuario:clave@alibaba.com/p', 'https://alibaba.com:8080/p', 'https://localhost/p', ''])('rechaza enlaces inválidos o sin HTTPS: %s', async producto_url => {
   expect((await request(app).post('/solicitudes').send({ ...datos, producto_url })).status).toBe(400);
+  expect(ImportacionSolicitud.create).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['Brasil', 'https://proveedor.com.br/produto', 'terrestre'],
+  ['Estados Unidos', 'https://supplier.com/product', 'aereo'],
+  ['China', 'https://www.alibaba.com/product-detail/Test.html', 'maritimo'],
+  ['Alemania', 'https://anbieter.de/produkt', 'conveniente'],
+])('registra abastecimiento desde %s y lo incluye en el aviso', async (pais_origen, producto_url, transporte) => {
+  const res = await request(app).post('/solicitudes').send({ ...datos, pais_origen, producto_url, transporte });
+  expect(res.status).toBe(201);
+  expect(ImportacionSolicitud.create.mock.calls[0][0]).toMatchObject({ pais_origen, producto_url, transporte });
+  expect(Notificacion.bulkCreate.mock.calls[0][0][0].mensaje).toContain(`País de origen: ${pais_origen}`);
+});
+
+test.each(['', 'a'.repeat(101), 25])('rechaza países de origen inválidos: %j', async pais_origen => {
+  expect((await request(app).post('/solicitudes').send({ ...datos, pais_origen })).status).toBe(400);
   expect(ImportacionSolicitud.create).not.toHaveBeenCalled();
 });
 

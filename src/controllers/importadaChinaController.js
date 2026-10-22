@@ -8,19 +8,20 @@ const { envolverControlador } = require('../utils/asyncHandler');
 function errorSolicitud(message, status = 400) { return Object.assign(new Error(message), { status }); }
 function validarDatos(body = {}) {
   let url;
-  try { url = new URL(String(body.producto_url || '').trim()); } catch { throw errorSolicitud('Ingresá un enlace válido de Alibaba.'); }
-  if (url.protocol !== 'https:' || !(url.hostname === 'alibaba.com' || url.hostname.endsWith('.alibaba.com')) || url.username || url.password || url.port || url.href.length > 2000) throw errorSolicitud('Usá un enlace HTTPS de un dominio oficial de Alibaba (alibaba.com).');
+  try { url = new URL(String(body.producto_url || '').trim()); } catch { throw errorSolicitud('Ingresá un enlace válido del producto o proveedor.'); }
+  if (url.protocol !== 'https:' || !url.hostname.includes('.') || url.username || url.password || url.port || url.href.length > 2000) throw errorSolicitud('Usá un enlace HTTPS del producto o proveedor, sin usuario, contraseña ni puerto personalizado.');
   url.hash = '';
   if (!['number', 'string'].includes(typeof body.cantidad)) throw errorSolicitud('La cantidad debe ser un número entero positivo.');
   const cantidad = Number(body.cantidad);
   if (!Number.isInteger(cantidad) || cantidad <= 0 || cantidad > 2147483647) throw errorSolicitud('La cantidad debe ser un número entero positivo.');
   const transporte = body.transporte ?? 'conveniente';
-  if (!['conveniente', 'aereo', 'maritimo'].includes(transporte)) throw errorSolicitud('Seleccioná un método de transporte válido.');
+  if (!['conveniente', 'terrestre', 'aereo', 'maritimo'].includes(transporte)) throw errorSolicitud('Seleccioná un método de transporte válido.');
+  if (body.pais_origen != null && (typeof body.pais_origen !== 'string' || !body.pais_origen.trim() || body.pais_origen.trim().length > 100)) throw errorSolicitud('Indicá un país de origen de hasta 100 caracteres.');
   if (body.observaciones != null && typeof body.observaciones !== 'string') throw errorSolicitud('Las observaciones deben ser texto.');
   const observaciones = (body.observaciones || '').trim();
   if (observaciones.length > 2000) throw errorSolicitud('Las observaciones pueden tener hasta 2000 caracteres.');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.clave_idempotencia || '')) throw errorSolicitud('No se pudo identificar el envío. Recargá la página e intentá nuevamente.');
-  return { producto_url: url.toString(), cantidad, transporte, observaciones };
+  return { producto_url: url.toString(), cantidad, transporte, observaciones, ...(body.pais_origen != null ? { pais_origen: body.pais_origen.trim() } : {}) };
 }
 function responder(res, solicitud, duplicada = false) {
   return res.status(duplicada ? 200 : 201).json({ ok: true, duplicada, solicitud: { id: solicitud.id, estado: solicitud.estado, created_at: solicitud.created_at } });
@@ -46,11 +47,11 @@ async function solicitar(req, res) {
   try {
     const solicitud = await sequelize.transaction(async transaction => {
       const nueva = await ImportacionSolicitud.create({ ...where, ...datos, inquilino_id: usuario.inquilino_id, estado: 'Pendiente de cotización', huella }, { transaction });
-      const transporte = { conveniente: 'Opción más conveniente', aereo: 'Transporte aéreo', maritimo: 'Transporte marítimo' }[datos.transporte];
+      const transporte = { conveniente: 'Opción más conveniente', terrestre: 'Transporte terrestre', aereo: 'Transporte aéreo', maritimo: 'Transporte marítimo' }[datos.transporte];
       await Notificacion.bulkCreate(adminIds.map(usuario_id => ({
         usuario_id, tipo: 'IMPORTADA_CHINA_SOLICITUD', entidad_tipo: 'importada_china_solicitud', entidad_id: nueva.id,
-        titulo: `Presupuesto de importación #${nueva.id} · ${tienda.nombre}`,
-        mensaje: `Producto: ${datos.producto_url}\nTienda: ${tienda.nombre} (${usuario.nombre || `Usuario #${usuario.id}`})\nEstado: Pendiente de cotización\nCantidad: ${datos.cantidad} unidades\nTransporte: ${transporte}\nObservaciones: ${datos.observaciones || 'Sin observaciones'}`,
+        titulo: `Proveete con Gesicom · Solicitud #${nueva.id} · ${tienda.nombre}`,
+        mensaje: `Producto: ${datos.producto_url}\nTienda: ${tienda.nombre} (${usuario.nombre || `Usuario #${usuario.id}`})\nEstado: Pendiente de cotización\nPaís de origen: ${datos.pais_origen || 'Sin especificar'}\nCantidad: ${datos.cantidad} unidades\nTransporte: ${transporte}\nObservaciones: ${datos.observaciones || 'Sin observaciones'}`,
       })), { transaction });
       return nueva;
     });
