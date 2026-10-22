@@ -20,7 +20,7 @@
 
 const path = require('path');
 const multer = require('multer');
-const { Tienda } = require('../models');
+const { Tienda, Usuario } = require('../models');
 const LandingSimpleService = require('../services/landingSimple.service');
 const ImagenService = require('../services/imagen.service');
 const AuthTracking = require('../services/authTracking.service');
@@ -299,7 +299,8 @@ async function detalle(req, res) {
     const tienda = await resolverTiendaPropia(req, res);
     if (!tienda) return;
     const landing = await LandingSimpleService.obtener(req.params.id, tienda.id);
-    return res.json(landing);
+    const usuario = await Usuario.findByPk(req.usuario.id, { attributes: ['contenido_ia_aceptado_en'] });
+    return res.json({ ...landing, contenido_ia_aceptado: !!usuario?.contenido_ia_aceptado_en });
   } catch (err) {
     return manejarError(res, err, 'Error al obtener la landing.');
   }
@@ -333,6 +334,7 @@ async function cambiarEstado(req, res) {
     if (!tienda) return;
     const landing = await LandingSimpleService.cambiarEstado(req.params.id, tienda.id, !!req.body.activo, {
       aceptarContenidoIA: req.body?.aceptar_contenido_ia === true,
+      usuarioId: req.usuario.id,
     });
     return res.json(landing);
   } catch (err) {

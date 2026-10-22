@@ -17,7 +17,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate, Testimonio, Producto, Tienda } = require('../models');
+const { Landing, LandingItem, Faq, LandingBeneficio, LandingTemplate, Testimonio, Producto, Tienda, Usuario } = require('../models');
 const LandingService = require('./landing.service');
 const StockPorTienda = require('./stockPorTienda.service');
 const LandingCodigoService = require('./landingCodigo.service');
@@ -733,8 +733,11 @@ class LandingSimpleService {
 
   static async cambiarEstado(id, tienda_id, activo, opciones = {}) {
     const landing = await this.buscarPropia(id, tienda_id);
+    const usuario = opciones.usuarioId
+      ? await Usuario.findByPk(opciones.usuarioId, { attributes: ['id', 'contenido_ia_aceptado_en'] })
+      : null;
 
-    if (activo && opciones.aceptarContenidoIA !== true) {
+    if (activo && !usuario?.contenido_ia_aceptado_en && opciones.aceptarContenidoIA !== true) {
       const htmls = [
         landing.content?.codigo?.html,
         landing.content?.vistas?.producto?.html,
@@ -773,9 +776,16 @@ class LandingSimpleService {
       }
     }
 
+    if (activo && opciones.aceptarContenidoIA === true && usuario && !usuario.contenido_ia_aceptado_en) {
+      const aceptadoEn = new Date();
+      await Usuario.update({ contenido_ia_aceptado_en: aceptadoEn }, {
+        where: { id: usuario.id, contenido_ia_aceptado_en: null },
+      });
+      usuario.contenido_ia_aceptado_en = aceptadoEn;
+    }
     landing.activo = !!activo;
     await landing.save();
-    return landing.toJSON();
+    return { ...landing.toJSON(), ...(usuario ? { contenido_ia_aceptado: !!usuario.contenido_ia_aceptado_en } : {}) };
   }
 
   /**

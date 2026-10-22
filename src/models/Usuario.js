@@ -92,6 +92,11 @@ const Usuario = sequelize.define('Usuario', {
     allowNull: true,
     comment: 'Timestamp de expiración del enlace de recuperación de contraseña.',
   },
+  contenido_ia_aceptado_en: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Aceptación única del aviso de publicación de contenido generado con IA.',
+  },
 }, {
   tableName: 'usuarios',
   timestamps: true,
