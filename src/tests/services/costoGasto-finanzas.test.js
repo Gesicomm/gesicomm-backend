@@ -85,3 +85,30 @@ describe('reglas financieras de CostoGastoService', () => {
     });
   });
 });
+
+// El Dashboard General y el reporte de Facturación e IVA usan esta misma
+// función (utils/ivaPedido). Antes calculaban monto × 10% siempre.
+describe('IVA: una sola regla para todo el sistema', () => {
+  const { calcularIvaFacturadoEnvio: ivaUtil } = require('../../utils/ivaPedido');
+
+  it('Finanzas y el util son la misma función', () => {
+    expect(calcularIvaFacturadoEnvio).toBe(ivaUtil);
+  });
+
+  it('un pedido de Gs. 350.000 con IVA incluido tiene Gs. 31.818 de IVA, no 35.000', () => {
+    expect(ivaUtil({
+      quiere_factura: true, monto: 350000, costo_envio: 0, delivery_a_cargo: 'cliente', cupon_descuento: 0,
+      items: [{ cantidad: 1, subtotal: 350000, Producto: { impuestos_incluidos: true } }],
+    })).toBe(31818);
+  });
+
+  it('mezcla de productos con y sin IVA incluido', () => {
+    expect(ivaUtil({
+      quiere_factura: true, monto: 210000, costo_envio: 0, delivery_a_cargo: 'cliente', cupon_descuento: 0,
+      items: [
+        { cantidad: 1, subtotal: 110000, Producto: { impuestos_incluidos: true } },
+        { cantidad: 1, subtotal: 100000, Producto: { impuestos_incluidos: false } },
+      ],
+    })).toBe(20000);
+  });
+});

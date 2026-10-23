@@ -2,6 +2,8 @@ const { Op, fn, col, literal } = require('sequelize');
 const { Envio, EnvioItem, EnvioItemComponente, Producto, Oferta, Usuario, ProductoVariante, MetodoPago, Courier } = require('../models');
 const { ESTADOS_ANALITICA } = require('../utils/analyticsConstants');
 const { resolverRangoFechas } = require('../utils/rangoFechas');
+const { calcularIvaFacturadoEnvio } = require('../utils/ivaPedido');
+const { cobroTotalCliente, comisionDelPedido } = require('../utils/contabilidadPedido');
 const { adjuntarIdentificadores, filtroNumeroPedidoVisible, sqlReferenciaPedido } = require('./pedidoIdentificador.service');
 
 class ReporteService {
@@ -20,6 +22,9 @@ class ReporteService {
     // tienda_id llega desde el route handler (req.usuario.tiendaId, nunca del
     // body sin validar) — cada tienda ve solo sus propios pedidos.
     if (tienda_id) whereEnvio.tienda_id = tienda_id;
+    // Un lead es un contacto sin compra: el Resumen ya no lo cuenta como
+    // pedido, y los reportes tienen que dar los mismos números.
+    whereEnvio.es_lead = false;
     if (fecha_desde && fecha_hasta) {
       whereEnvio.fecha = { [Op.between]: [fecha_desde, fecha_hasta] };
     }
@@ -27,6 +32,17 @@ class ReporteService {
     if (metodo_pago && metodo_pago !== 'TODOS') whereEnvio.metodo_pago = metodo_pago;
     if (canal_venta_id && canal_venta_id !== 'TODOS') whereEnvio.canal_venta_id = canal_venta_id;
     if (ciudad) whereEnvio.ciudad = { [Op.iLike]: `%${ciudad}%` };
+    // Confirmador, courier y producto se mostraban como filtros en todos los
+    // reportes pero casi ninguno los aplicaba. Se resuelven acá para todos.
+    const { confirmador, courierId, courier_id, producto_id } = filtros;
+    const courier = courier_id ?? courierId;
+    if (confirmador && confirmador !== 'TODOS') whereEnvio.confirmador = confirmador;
+    if (courier && courier !== 'TODOS') whereEnvio.courier_id = courier === 'null' ? null : courier;
+    if (producto_id && producto_id !== 'TODOS' && /^\d+$/.test(String(producto_id))) {
+      whereEnvio.id = {
+        [Op.in]: literal(`(SELECT envio_id FROM envio_items WHERE producto_id = ${Number(producto_id)})`),
+      };
+    }
     if (buscador) {
       whereEnvio[Op.or] = [
         { cliente: { [Op.iLike]: `%${buscador}%` } },
@@ -470,20 +486,28 @@ class ReporteService {
       order: [['id', 'DESC']]
     });
 
-    const dataTransformada = rows.map(r => {
-      const e = r.toJSON();
-      const pct = Number(e.comision_pct_aplicada) || 0;
-      const costo_comision = Math.round(e.monto * (pct / 100));
-      return {
-        ...e,
-        costo_comision,
-        precio_neto: e.monto - costo_comision
-      };
-    });
-
+    // La pasarela cobra su % sobre TODO lo que pagó el cliente: en el
+    // checkout de la landing el delivery va fuera del `monto`, así que la
+    // comisión sobre el monto pelado quedaba corta (utils/contabilidadPedido).
     const kpisRaw = await Envio.findAll({
       where: whereEnvio,
-      attributes: ['monto', 'comision_pct_aplicada', 'metodo_pago']
+      attributes: ['id', 'monto', 'comision_pct_aplicada', 'metodo_pago', 'costo_envio', 'cupon_descuento', 'delivery_a_cargo'],
+      include: [{ model: EnvioItem, as: 'items', attributes: ['id', 'cantidad', 'subtotal', 'precio_unitario'] }],
+    });
+    const porEnvio = new Map(kpisRaw.map(r => {
+      const e = r.toJSON ? r.toJSON() : r;
+      return [e.id, { cobrado: Math.round(cobroTotalCliente(e)), comision: Math.round(comisionDelPedido(e)) }];
+    }));
+
+    const dataTransformada = rows.map(r => {
+      const e = r.toJSON();
+      const { cobrado, comision } = porEnvio.get(e.id) || { cobrado: Number(e.monto) || 0, comision: 0 };
+      return {
+        ...e,
+        monto_cobrado: cobrado,
+        costo_comision: comision,
+        precio_neto: cobrado - comision
+      };
     });
     
     let totalFacturado = 0;
@@ -491,9 +515,7 @@ class ReporteService {
     const metodos = {};
     
     kpisRaw.forEach(e => {
-      const monto = Number(e.monto) || 0;
-      const comision = Number(e.comision_pct_aplicada) || 0;
-      const costo = Math.round(monto * (comision / 100));
+      const { cobrado: monto, comision: costo } = porEnvio.get(e.id) || { cobrado: 0, comision: 0 };
       const mPago = e.metodo_pago || 'No especificado';
       
       totalFacturado += monto;
@@ -525,12 +547,18 @@ class ReporteService {
     const finalCourierId = courierId || courier_id;
     const { desde, hasta } = resolverRangoFechas(filtros);
 
+    // Antes solo entraban los Entregados: una tienda con todos sus pedidos
+    // todavía en curso veía Gs. 0 aunque los clientes hubieran pedido
+    // factura. Ahora entra todo pedido con factura que no se cayó, y los
+    // KPI separan lo ya entregado (a facturar) de lo que sigue en curso.
     const whereEnvio = {
       usuario_id: usuario_id,
       quiere_factura: true,
-      estado: ESTADOS_ANALITICA.EXITOSOS,
+      es_lead: false,
+      estado: { [Op.notIn]: ESTADOS_ANALITICA.FALLIDOS },
       ...(tienda_id ? { tienda_id } : {}),
     };
+    if (filtros.estado && filtros.estado !== 'TODOS') whereEnvio.estado = filtros.estado;
     
     if (desde && hasta) {
       whereEnvio.fecha = { [Op.between]: [desde, hasta] };
@@ -558,27 +586,44 @@ class ReporteService {
       order: [['id', 'DESC']]
     });
 
-    const dataTransformada = rows.map(r => {
-      const e = r.toJSON();
-      const iva = Math.round(e.monto * 0.10); 
-      return {
-        ...e,
-        iva
-      };
-    });
-
+    // IVA con la misma regla que Control Financiero y el Dashboard General
+    // (utils/ivaPedido): respeta "Precio incluye IVA" de cada producto.
     const kpisRaw = await Envio.findAll({
       where: whereEnvio,
-      attributes: ['monto']
+      attributes: ['id', 'monto', 'estado', 'quiere_factura', 'costo_envio', 'cupon_descuento', 'delivery_a_cargo'],
+      include: [{
+        model: EnvioItem,
+        as: 'items',
+        attributes: ['id', 'cantidad', 'subtotal', 'precio_unitario'],
+        include: [{ model: Producto, attributes: ['id', 'impuestos_incluidos'] }],
+      }],
+    });
+    const ivaPorEnvio = new Map(kpisRaw.map(e => [e.id, calcularIvaFacturadoEnvio(e.toJSON ? e.toJSON() : e)]));
+
+    const dataTransformada = rows.map(r => {
+      const e = r.toJSON();
+      return { ...e, iva: ivaPorEnvio.get(e.id) ?? 0 };
     });
     
     let totalSujeto = 0;
     let totalIva = 0;
+    let pedidosEntregados = 0;
+    let enCursoMonto = 0;
+    let enCursoIva = 0;
+    let pedidosEnCurso = 0;
     
     kpisRaw.forEach(e => {
       const monto = Number(e.monto) || 0;
-      totalSujeto += monto;
-      totalIva += Math.round(monto * 0.10);
+      const iva = ivaPorEnvio.get(e.id) || 0;
+      if (ESTADOS_ANALITICA.EXITOSOS.includes(e.estado)) {
+        totalSujeto += monto;
+        totalIva += iva;
+        pedidosEntregados++;
+      } else {
+        enCursoMonto += monto;
+        enCursoIva += iva;
+        pedidosEnCurso++;
+      }
     });
 
     return {
@@ -588,7 +633,11 @@ class ReporteService {
       data: await adjuntarIdentificadores(dataTransformada),
       kpis: {
         total_sujeto_iva: totalSujeto,
-        total_iva: totalIva
+        total_iva: totalIva,
+        pedidos_entregados: pedidosEntregados,
+        en_curso_monto: enCursoMonto,
+        en_curso_iva: enCursoIva,
+        pedidos_en_curso: pedidosEnCurso
       }
     };
   }
@@ -939,6 +988,19 @@ class ReporteService {
     `;
   }
 
+  /**
+   * Calificación de un cliente por su historial completo en la tienda.
+   * Una devolución justificada (la culpa no fue del cliente) no lo
+   * penaliza; una injustificada sí, aunque también haya recibido otros
+   * pedidos: es la que el comercio quiere ver antes de despachar otro.
+   */
+  static _calificarCliente(h) {
+    if (h.devoluciones_injustificadas > 0) return 'problematico';
+    if (h.entregados >= 2) return 'recurrente';
+    if (h.entregados === 1) return 'bueno';
+    return 'sin_entregas';
+  }
+
   static async obtenerReporteClientes(usuario_id, pagina = 1, limite = 50, filtros = {}) {
     const offset = (pagina - 1) * limite;
     let whereEnvio = { usuario_id };
@@ -946,108 +1008,104 @@ class ReporteService {
 
     const clienteKeyLiteral = literal(this.getClienteKeySql());
 
-    // 1. Actividad del período
+    // 1. Quiénes hicieron al menos un pedido en el período. Antes la tabla
+    // solo listaba a los que ya tenían un pedido Entregado, así que una
+    // tienda con pedidos en curso veía la tabla vacía.
     const enviosPeriodo = await Envio.findAll({
       where: whereEnvio,
-      attributes: [
-        [clienteKeyLiteral, 'cliente_key'],
-        'estado'
-      ],
+      attributes: [[clienteKeyLiteral, 'cliente_key']],
       raw: true
     });
+    const clientesPeriodo = new Set(enviosPeriodo.map(e => e.cliente_key));
 
-    const clientesConPedido = new Set();
-    const clientesCompradores = new Set();
-    const mapNombres = {};
-
-    enviosPeriodo.forEach(e => {
-      clientesConPedido.add(e.cliente_key);
-      if (ESTADOS_ANALITICA.EXITOSOS.includes(e.estado)) {
-        clientesCompradores.add(e.cliente_key);
-      }
-    });
-
-    if (clientesCompradores.size === 0) {
-      return {
-        total: 0, paginas: 1, actual: pagina, data: [],
-        kpis: {
-          clientes_con_pedido: clientesConPedido.size,
-          clientes_compradores: 0,
-          tasa_conversion_pedido: 0,
-          clientes_recurrentes: 0
-        }
-      };
+    const kpisVacios = {
+      clientes_con_pedido: 0, clientes_compradores: 0, tasa_conversion_pedido: 0,
+      clientes_recurrentes: 0, clientes_problematicos: 0, clientes_sin_entregas: 0,
+    };
+    if (clientesPeriodo.size === 0) {
+      return { total: 0, paginas: 1, actual: pagina, data: [], kpis: kpisVacios };
     }
 
-    // Nombres recientes de los compradores del periodo
-    const enviosNombres = await Envio.findAll({
-      where: { ...whereEnvio, estado: ESTADOS_ANALITICA.EXITOSOS },
-      attributes: [[clienteKeyLiteral, 'cliente_key'], 'cliente', 'telefono'],
-      raw: true,
-      order: [['fecha', 'DESC']]
-    });
-    enviosNombres.forEach(e => {
-      if (!mapNombres[e.cliente_key]) {
-        mapNombres[e.cliente_key] = { nombre: e.cliente, telefono: e.telefono };
-      }
-    });
+    // 2. Historial completo de esos clientes en la tienda (hasta el fin del
+    // período): la reputación no se reinicia cada mes.
+    const whereHistorial = { usuario_id, es_lead: false };
+    if (filtros.tienda_id) whereHistorial.tienda_id = filtros.tienda_id;
+    if (filtros.fecha_hasta) whereHistorial.fecha = { [Op.lte]: filtros.fecha_hasta };
 
-    // 2. Historial hasta fecha_hasta de esos clientes
-    let whereHistorial = { usuario_id, estado: ESTADOS_ANALITICA.EXITOSOS };
-    if (filtros.fecha_hasta) {
-      whereHistorial.fecha = { [Op.lte]: filtros.fecha_hasta };
-    }
-
-    // Traemos todo el historial de exitosos para esos cliente_keys
-    // Como SQL IN no es fácil con un REGEXP_REPLACE sobre miles de keys, 
-    // calculamos los totales por cliente_key en la BD y luego filtramos en JS.
-    const historicosAgrupados = await Envio.findAll({
+    const exitosos = ESTADOS_ANALITICA.EXITOSOS.map(e => `'${e}'`).join(',');
+    const historicos = await Envio.findAll({
       where: whereHistorial,
       attributes: [
         [clienteKeyLiteral, 'cliente_key'],
-        [fn('COUNT', col('id')), 'pedidos_exitosos'],
-        [fn('SUM', col('monto')), 'total_comprado'],
-        [fn('MAX', col('fecha')), 'ultima_compra']
+        [fn('COUNT', col('id')), 'pedidos_totales'],
+        [literal(`COUNT(*) FILTER (WHERE "Envio"."estado" IN (${exitosos}))`), 'entregados'],
+        [literal(`COUNT(*) FILTER (WHERE "Envio"."estado" = 'Devuelto' OR "Envio"."motivo_devolucion" IS NOT NULL)`), 'devueltos'],
+        [literal(`COUNT(*) FILTER (WHERE "Envio"."motivo_devolucion" = 'justificada')`), 'devoluciones_justificadas'],
+        [literal(`COUNT(*) FILTER (WHERE "Envio"."motivo_devolucion" = 'injustificada')`), 'devoluciones_injustificadas'],
+        [literal(`COUNT(*) FILTER (WHERE "Envio"."estado" IN ('Cancelado','Rechazado'))`), 'cancelados'],
+        [literal(`COALESCE(SUM("Envio"."monto") FILTER (WHERE "Envio"."estado" IN (${exitosos})), 0)`), 'total_comprado'],
+        [literal(`MAX("Envio"."fecha") FILTER (WHERE "Envio"."estado" IN (${exitosos}))`), 'ultima_compra'],
+        [fn('MAX', col('fecha')), 'ultimo_pedido'],
       ],
       group: [clienteKeyLiteral],
       raw: true
     });
 
-    let clientes_recurrentes = 0;
-    const arrayData = [];
-
-    historicosAgrupados.forEach(h => {
-      if (clientesCompradores.has(h.cliente_key)) {
-        const pedExit = parseInt(h.pedidos_exitosos) || 0;
-        const totComp = parseInt(h.total_comprado) || 0;
-        if (pedExit >= 2) clientes_recurrentes++;
-        
-        arrayData.push({
-          cliente_key: h.cliente_key,
-          nombre: mapNombres[h.cliente_key]?.nombre || 'Desconocido',
-          telefono: mapNombres[h.cliente_key]?.telefono || '-',
-          pedidos_exitosos: pedExit,
-          total_comprado: totComp,
-          ticket_promedio: pedExit > 0 ? Math.round(totComp / pedExit) : 0,
-          ultima_compra: h.ultima_compra
-        });
-      }
+    // Nombre y teléfono del pedido más reciente de cada cliente.
+    const enviosNombres = await Envio.findAll({
+      where: whereEnvio,
+      attributes: [[clienteKeyLiteral, 'cliente_key'], 'cliente', 'telefono'],
+      raw: true,
+      order: [['fecha', 'DESC'], ['id', 'DESC']]
+    });
+    const mapNombres = {};
+    enviosNombres.forEach(e => {
+      if (!mapNombres[e.cliente_key]) mapNombres[e.cliente_key] = { nombre: e.cliente, telefono: e.telefono };
     });
 
-    arrayData.sort((a, b) => b.total_comprado - a.total_comprado);
-    const paginated = arrayData.slice(offset, offset + limite);
+    const kpis = { ...kpisVacios, clientes_con_pedido: clientesPeriodo.size };
+    const todos = [];
+    historicos.forEach(h => {
+      if (!clientesPeriodo.has(h.cliente_key)) return;
+      const fila = {
+        cliente_key: h.cliente_key,
+        nombre: mapNombres[h.cliente_key]?.nombre || 'Sin nombre',
+        telefono: mapNombres[h.cliente_key]?.telefono || '-',
+        pedidos_totales: parseInt(h.pedidos_totales, 10) || 0,
+        entregados: parseInt(h.entregados, 10) || 0,
+        devueltos: parseInt(h.devueltos, 10) || 0,
+        devoluciones_justificadas: parseInt(h.devoluciones_justificadas, 10) || 0,
+        devoluciones_injustificadas: parseInt(h.devoluciones_injustificadas, 10) || 0,
+        cancelados: parseInt(h.cancelados, 10) || 0,
+        total_comprado: Number(h.total_comprado) || 0,
+        ultima_compra: h.ultima_compra,
+        ultimo_pedido: h.ultimo_pedido,
+      };
+      fila.ticket_promedio = fila.entregados > 0 ? Math.round(fila.total_comprado / fila.entregados) : 0;
+      fila.calificacion = this._calificarCliente(fila);
+      if (fila.entregados > 0) kpis.clientes_compradores++;
+      if (fila.calificacion === 'recurrente') kpis.clientes_recurrentes++;
+      if (fila.calificacion === 'problematico') kpis.clientes_problematicos++;
+      if (fila.calificacion === 'sin_entregas') kpis.clientes_sin_entregas++;
+      todos.push(fila);
+    });
+    kpis.tasa_conversion_pedido = kpis.clientes_con_pedido > 0
+      ? (kpis.clientes_compradores / kpis.clientes_con_pedido) * 100 : 0;
+
+    const CALIFICACIONES = { buenos: ['bueno', 'recurrente'], problematicos: ['problematico'], sin_entregas: ['sin_entregas'] };
+    const filtrados = CALIFICACIONES[filtros.calificacion]
+      ? todos.filter(f => CALIFICACIONES[filtros.calificacion].includes(f.calificacion))
+      : todos;
+    filtrados.sort((a, b) => b.total_comprado - a.total_comprado
+      || b.pedidos_totales - a.pedidos_totales
+      || String(b.ultimo_pedido).localeCompare(String(a.ultimo_pedido)));
 
     return {
-      total: arrayData.length,
-      paginas: Math.ceil(arrayData.length / limite) || 1,
+      total: filtrados.length,
+      paginas: Math.ceil(filtrados.length / limite) || 1,
       actual: pagina,
-      data: paginated,
-      kpis: {
-        clientes_con_pedido: clientesConPedido.size,
-        clientes_compradores: clientesCompradores.size,
-        tasa_conversion_pedido: clientesConPedido.size > 0 ? (clientesCompradores.size / clientesConPedido.size) * 100 : 0,
-        clientes_recurrentes
-      }
+      data: filtrados.slice(offset, offset + limite),
+      kpis
     };
   }
 

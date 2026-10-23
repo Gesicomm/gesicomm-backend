@@ -322,20 +322,26 @@ describe('obtenerReporteComisiones', () => {
 });
 
 describe('obtenerReporteFacturacion', () => {
-  it('calcula el IVA del 10% por pedido y en total', async () => {
+  it('extrae el IVA del 10% cuando el precio lo incluye y lo separa por estado', async () => {
+    // Sin líneas cargadas se asume precio con IVA incluido (lo normal en
+    // Paraguay): el IVA es monto / 11, no monto × 10% (utils/ivaPedido).
     const pedidos = [
-      { id: 5, monto: 300000, ruc: '80012345-6', razon_social: 'ACME', estado: 'Entregado' },
-      { id: 6, monto: 55555, ruc: null, razon_social: null, estado: 'Entregado' },
+      { id: 5, monto: 330000, quiere_factura: true, ruc: '80012345-6', razon_social: 'ACME', estado: 'Entregado' },
+      { id: 6, monto: 55555, quiere_factura: true, ruc: null, razon_social: null, estado: 'Entregado' },
+      { id: 7, monto: 110000, quiere_factura: true, ruc: null, razon_social: null, estado: 'Pendiente' },
     ];
-    Envio.findAndCountAll.mockResolvedValue({ count: 2, rows: pedidos.map(instancia) });
+    Envio.findAndCountAll.mockResolvedValue({ count: 3, rows: pedidos.map(instancia) });
     Envio.findAll.mockResolvedValue(pedidos);
 
     const reporte = await ReporteService.obtenerReporteFacturacion(USUARIO, 1, 10, PERIODO);
 
     expect(reporte.data[0]).toMatchObject({ id: 5, iva: 30000 });
     // Guaraníes no tienen decimales: el IVA se redondea.
-    expect(reporte.data[1].iva).toBe(5556);
+    expect(reporte.data[1].iva).toBe(5050);
 
-    expect(reporte.kpis).toMatchObject({ total_sujeto_iva: 355555, total_iva: 35556 });
+    expect(reporte.kpis).toMatchObject({
+      total_sujeto_iva: 385555, total_iva: 35050, pedidos_entregados: 2,
+      en_curso_monto: 110000, en_curso_iva: 10000, pedidos_en_curso: 1,
+    });
   });
 });

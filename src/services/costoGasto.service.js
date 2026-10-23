@@ -19,6 +19,8 @@ const {
 const MetaReportesService = require('./metaReportes.service');
 const MetaCampanaGastosService = require('./metaCampanaGastos.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
+const { calcularIvaFacturadoEnvio } = require('../utils/ivaPedido');
+const { costoEnvioNeto, comisionDelPedido, costoPedidoFallido } = require('../utils/contabilidadPedido');
 const { METRIC_TERMS } = require('../utils/metricGlossary');
 
 function hoyISO() {
@@ -100,30 +102,6 @@ const INCLUDES_DETALLE = [
 
 const TIPOS_MOVIMIENTO = ['ingreso', 'costo', 'gasto'];
 const TIPOS_EGRESO = ['costo', 'gasto'];
-
-function ivaDesdeImporte(importe, impuestosIncluidos = true) {
-  const n = Number(importe) || 0;
-  if (n <= 0) return 0;
-  return impuestosIncluidos === false ? n * 0.10 : n - (n / 1.10);
-}
-
-function calcularIvaFacturadoEnvio(envio) {
-  if (!envio?.quiere_factura) return 0;
-  const items = envio.items || [];
-  const ventaProducto = montoNumero(desgloseDelivery(envio).venta_producto);
-  const sumaSubtotales = items.reduce(
-    (acc, item) => acc + montoNumero(item.subtotal || ((Number(item.precio_unitario) || 0) * (Number(item.cantidad) || 1))),
-    0
-  );
-  if (!items.length || !sumaSubtotales) return Math.round(ivaDesdeImporte(ventaProducto, true));
-
-  return Math.round(items.reduce((acc, item) => {
-    const subtotal = montoNumero(item.subtotal || ((Number(item.precio_unitario) || 0) * (Number(item.cantidad) || 1)));
-    const importeItem = ventaProducto * (subtotal / sumaSubtotales);
-    const impuestosIncluidos = item.Producto?.impuestos_incluidos ?? true;
-    return acc + ivaDesdeImporte(importeItem, impuestosIncluidos);
-  }, 0));
-}
 
 function dineroEnManoCourier(envio) {
   const custodia = envio.MetodoPago ? envio.MetodoPago.custodia_cobro : 'negocio';
@@ -557,7 +535,7 @@ class CostoGastoService {
         attributes: [
           'id', 'fecha', 'cliente', 'monto', 'costo_envio', 'estado', 'origen',
           'canal_venta_id', 'comision_pct_aplicada', 'quiere_factura', 'estado_financiero',
-          'delivery_a_cargo', 'cupon_descuento',
+          'delivery_a_cargo', 'cupon_descuento', 'cargo_perdida_courier',
         ],
         include: [
           { model: CanalVenta, as: 'canal_venta', attributes: ['id', 'nombre', 'slug'], required: false },
@@ -571,7 +549,7 @@ class CostoGastoService {
               {
                 model: EnvioItemComponente,
                 as: 'componentes_vendidos',
-                attributes: ['cantidad', 'costo_unitario'],
+                attributes: ['cantidad', 'costo_unitario', 'cantidad_perdida', 'cantidad_devuelta_danada'],
                 required: false,
               },
             ],
@@ -605,9 +583,15 @@ class CostoGastoService {
     ]);
 
     const entregados = envios.filter(e => normalizarTexto(e.estado) === 'entregado');
-    const devoluciones = envios
-      .filter(e => ['devuelto', 'perdido'].includes(normalizarTexto(e.estado)))
+    // Lo que se habría vendido en pedidos devueltos/perdidos. Es solo
+    // informativo: esos pedidos nunca entraron en Ventas (solo cuentan los
+    // Entregados), así que restarlos de los ingresos los descontaba dos
+    // veces. Lo que sí cuesta un pedido fallido (el viaje del courier y la
+    // mercadería perdida) va como costo en `pedidosFallidos`.
+    const fallidosDelPeriodo = envios.filter(e => ['devuelto', 'perdido'].includes(normalizarTexto(e.estado)));
+    const devoluciones = fallidosDelPeriodo
       .reduce((acc, e) => acc + montoNumero(desgloseDelivery(e).venta_producto), 0);
+    const pedidosFallidos = envios.reduce((acc, e) => acc + costoPedidoFallido(e).total, 0);
 
     const ingresosPorCanal = { web: 0, whatsapp: 0, organico: 0 };
     let ventasTotales = 0;
@@ -631,8 +615,9 @@ class CostoGastoService {
       cobrosReales += Math.max(0, cobroTotalCliente - retenidoCourier);
       courierPorRendir += Math.max(0, saldoCourier);
       courierPorPagar += Math.max(0, -saldoCourier);
-      comisionesPasarela += Math.round(cobroTotalCliente * ((Number(envio.comision_pct_aplicada) || 0) / 100));
-      logistica += montoNumero(desglose.envio_absorbido);
+      // Mismas reglas que el Dashboard General (utils/contabilidadPedido).
+      comisionesPasarela += Math.round(comisionDelPedido(envio));
+      logistica += montoNumero(costoEnvioNeto(envio));
       if (!retenidoCourier) salidasLogistica += montoNumero(desglose.envio_pagado);
       ivaFacturado += calcularIvaFacturadoEnvio(envio);
 
@@ -671,12 +656,18 @@ class CostoGastoService {
     };
 
     const totalOtrosIngresos = sumarImporte(ingresosManuales);
-    const ingresosNetos = ventasTotales + totalOtrosIngresos - devoluciones;
+    const ingresosNetos = ventasTotales + totalOtrosIngresos;
+    // El IVA de las ventas facturadas no es plata del negocio: se cobra y se
+    // le paga a Hacienda. Antes solo figuraba como pasivo y la utilidad lo
+    // contaba como ganancia; el Dashboard General sí lo restaba, así que las
+    // dos pantallas daban utilidades distintas para el mismo período.
     const costosVariables = [
       { id: 'costo_productos_vendidos', label: 'Costo de productos vendidos', valor: montoNumero(costoProductosVendidos) },
       { id: 'publicidad_meta_ads', label: 'Publicidad Meta Ads', valor: montoNumero(metaAds) },
       { id: 'comisiones_pasarela', label: 'Comisiones de pasarela', valor: montoNumero(comisionesPasarela) },
-      { id: 'envios_logistica', label: 'Envíos/logística', valor: montoNumero(logistica) },
+      { id: 'envios_logistica', label: 'Envíos a tu cargo', valor: montoNumero(logistica) },
+      { id: 'iva_ventas', label: 'IVA de ventas facturadas', valor: montoNumero(ivaFacturado) },
+      { id: 'pedidos_fallidos', label: 'Pedidos devueltos o perdidos', valor: montoNumero(pedidosFallidos) },
       ...agruparPorCategoria(variableManual, 'costo_variable'),
     ];
     const gastosFijos = agruparPorCategoria(fijoManual, 'gasto_fijo');
