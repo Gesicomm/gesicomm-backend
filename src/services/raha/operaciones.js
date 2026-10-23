@@ -129,7 +129,7 @@ async function catalogoEnvio(actor, tienda, depositoId, { texto = '', limit = 10
 async function crearEnvio(actor, input) {
   const datos = parse(envioSchema, input);
   const tienda = await tiendaActor(actor);
-  if (!await require('./service').conexionAprobada(actor.id)) fail('Necesitás la conexión con RAHA aprobada para solicitar un envío.', 409);
+  if (!await require('./service').conexionAprobada(actor.tiendaId)) fail('Necesitás la conexión con RAHA aprobada para solicitar un envío.', 409);
   datos.items.sort((anterior, siguiente) => anterior.producto_id - siguiente.producto_id || (anterior.variante_id || 0) - (siguiente.variante_id || 0));
   const claves = datos.items.map(item => `${item.producto_id}:${item.variante_id || 0}`);
   if (new Set(claves).size !== claves.length) fail('No repitas el mismo producto y variante en la solicitud.');

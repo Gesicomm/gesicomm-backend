@@ -56,6 +56,24 @@ test('Colecciones guarda imágenes por modo y descarta URLs inseguras', () => {
   expect(venta.inicio.colecciones.imagenes).toEqual({ categorias: { Cocina: 'https://cdn.test/cocina.webp' }, colecciones: { Novedades: '/uploads/novedades.webp' } });
 });
 
+test('Colecciones conserva tamaños al guardar y limita valores fuera de rango', () => {
+  const venta = LandingCodigoService.limpiarVenta({ inicio: { colecciones: { tipografia: { titulo: 40, subtitulo: 22, css: 'no guardar' } } } });
+  expect(venta.inicio.colecciones.tipografia).toEqual({ titulo: 40, subtitulo: 22 });
+  expect(LandingCodigoService.limpiarVenta(venta).inicio.colecciones.tipografia).toEqual({ titulo: 40, subtitulo: 22 });
+  const invalida = LandingCodigoService.limpiarVenta({ inicio: { colecciones: { tipografia: { titulo: 999, subtitulo: -10 } } } });
+  expect(invalida.inicio.colecciones.tipografia).toEqual({ titulo: 56, subtitulo: 14 });
+});
+
+test('Barra de anuncios conserva altura y comportamiento sin alterar los anuncios', () => {
+  const entrada = { inicio: { anuncios: [{ texto: 'Envíos a todo el país', icono: 'truck' }], barra_anuncios: { altura: 64, posicion: 'fija' } } };
+  const venta = LandingCodigoService.limpiarVenta(entrada);
+  expect(venta.inicio.barra_anuncios).toEqual({ altura: 64, posicion: 'fija' });
+  expect(LandingCodigoService.limpiarVenta(venta).inicio.barra_anuncios).toEqual(venta.inicio.barra_anuncios);
+  expect(venta.inicio.anuncios).toEqual(entrada.inicio.anuncios);
+  expect(LandingCodigoService.limpiarVenta({ inicio: { barra_anuncios: { altura: 999, posicion: 'inventada' } } }).inicio.barra_anuncios).toEqual({ altura: 96, posicion: 'fluida' });
+  expect(LandingCodigoService.limpiarVenta({ inicio: { anuncios: [] } }).inicio).not.toHaveProperty('barra_anuncios');
+});
+
 describe('LandingCodigoService.sanitizar', () => {
 
   describe('HTML', () => {

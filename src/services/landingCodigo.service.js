@@ -1129,6 +1129,10 @@ function limpiarColeccionesInicio(c) {
       .filter(([nombre, url]) => nombre && url));
   }
   return {
+    ...(c.tipografia && typeof c.tipografia === 'object' && !Array.isArray(c.tipografia) ? { tipografia: {
+      titulo: Math.max(20, Math.min(56, Number(c.tipografia.titulo) || 32)),
+      subtitulo: Math.max(14, Math.min(24, Number(c.tipografia.subtitulo) || 18)),
+    } } : {}),
     ...(Object.keys(imagenes).length ? { imagenes } : {}),
     ...(typeof c.titulo === 'string' ? { titulo: textoCorto(c.titulo, 100) } : {}),
     ...(typeof c.subtitulo === 'string' ? { subtitulo: textoCorto(c.subtitulo, 160) } : {}),
@@ -1160,6 +1164,10 @@ function limpiarInicio(inicio) {
     bloques: limpiarBloquesInicio(inicio.bloques),
     ...(inicio.combos && limpiarCombosInicio(inicio.combos) ? { combos: limpiarCombosInicio(inicio.combos) } : {}),
     anuncios: listaDe(inicio.anuncios, 8, limpiarAnuncioInicio),
+    ...(inicio.barra_anuncios && typeof inicio.barra_anuncios === 'object' && !Array.isArray(inicio.barra_anuncios) ? { barra_anuncios: {
+      altura: Math.max(32, Math.min(96, Number(inicio.barra_anuncios.altura) || 38)),
+      posicion: inicio.barra_anuncios.posicion === 'fija' ? 'fija' : 'fluida',
+    } } : {}),
     confianza: limpiarConfianza(inicio.confianza),
     confianza_estilo: ['tarjetas', 'destacada'].includes(inicio.confianza_estilo) ? inicio.confianza_estilo : 'compacta',
     ...(() => {

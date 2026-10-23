@@ -32,6 +32,10 @@ async function port() {
   return result;
 }
 async function step(name, action) {
+  // RAHA_E2E_SOLO=14 corre solo la preparación (01-04) y ese paso.
+  if (process.env.RAHA_E2E_SOLO && !/^0[1-4] /.test(name) && !name.startsWith(`${process.env.RAHA_E2E_SOLO} `)) {
+    report.steps.push({ name, status: 'skipped' }); console.log(`SKIP ${name}`); return;
+  }
   const start = Date.now();
   try {
     const evidence = await action();
@@ -363,6 +367,91 @@ async function main() {
     const secondRows = await merchantRequest('post', 'stock', { deposito_origen_id: secondDepot.id, limit: 100 });
     assert(!secondRows.registros.some(row => row.producto_id === declared.id));
     return { other_store_depot_denied: true, private_products_isolated: true, inactive_variants_excluded: true };
+  });
+  await step('14 Connection request per store, heavy documents and replacement after sending', async () => {
+    const [secondStore] = await models.Tienda.findOrCreate({ where: { usuario_id: user.id, subdominio: 'segunda-raha-e2e' },
+      defaults: { inquilino_id: tenant.id, nombre: 'Segunda tienda E2E' } });
+    await request(merchant, 'post', 'auth/seleccionar-tienda', { tienda_id: secondStore.id });
+    // Archivos pesados de verdad: un PDF de 7,5 MB y un PNG de ruido (incomprimible) de ~7,6 MB.
+    const pdf = (bytes, marca) => Buffer.concat([Buffer.from(`%PDF-1.4\n% ${marca}\n`), crypto.randomBytes(bytes), Buffer.from('\n%%EOF\n')]);
+    const rucPdf = pdf(Math.floor(7.5 * 1024 * 1024), 'ruc');
+    const cedulaPng = await require('sharp')(crypto.randomBytes(1800 * 1400 * 3), { raw: { width: 1800, height: 1400, channels: 3 } }).png({ compressionLevel: 0 }).toBuffer();
+    assert(cedulaPng.length > 7 * 1024 * 1024 && cedulaPng.length <= 8 * 1024 * 1024, `PNG de prueba: ${cedulaPng.length} bytes`);
+    const cedulaNueva = pdf(6 * 1024 * 1024, 'cedula nueva');
+    const merchantRaha = (method, endpoint = '', data, expected) => request(merchant, method, `integraciones/raha${endpoint}`, data, expected);
+    // La segunda tienda arranca su propio trámite: no hereda la aprobación de la primera.
+    const propia = await merchantRaha('get');
+    assert.equal(propia.tienda_id, secondStore.id);
+    assert.equal(propia.estado, 'borrador');
+    await merchantRequest('post', 'envios', { deposito_origen_id: origin.id, destino_raha_id: destination.id,
+      solicitud_key: crypto.randomUUID(), items: [{ producto_id: tracked.id, cantidad: 1 }] }, 409);
+    await merchantPage.setViewportSize({ width: 1440, height: 1000 });
+    await merchantPage.goto(`${preview}/mi-tienda`);
+    await merchantPage.getByRole('tab', { name: 'Conexión a proveedor', exact: true }).click();
+    await merchantPage.getByRole('button', { name: 'Conectarme a Rahá' }).click();
+    const campos = { 'Razón social': 'Segunda Tienda S.A.', RUC: '80099999-1', 'Nombre del representante legal': 'Ana Benítez',
+      'Cédula del representante legal': '4.567.890', Email: 'segunda@raha-e2e.test', 'Teléfono': '0981 555666', 'Dirección': 'Mcal. López 1234',
+      Ciudad: 'San Lorenzo', Departamento: 'Central', 'Actividad económica': 'Venta de artículos para el hogar',
+      'Tipo de productos que vendés': 'Termos y accesorios', 'Volumen estimado de operaciones por mes(pedidos)': '150',
+      Banco: 'Banco Itaú', 'Titular de la cuenta': 'Segunda Tienda S.A.', 'Número de cuenta': '123456789' };
+    for (const [label, valor] of Object.entries(campos)) await merchantPage.getByLabel(label, { exact: true }).fill(valor);
+    const subir = async (label, archivo) => {
+      const respuesta = merchantPage.waitForResponse(res => res.url().endsWith('/integraciones/raha/documentos') && res.request().method() === 'POST', { timeout: 60000 });
+      await merchantPage.getByLabel(`Adjuntar ${label}`, { exact: true }).setInputFiles(archivo);
+      const res = await respuesta;
+      assert.equal(res.status(), 200, `Subida de ${archivo.name}: ${await res.text()}`);
+      return res.json();
+    };
+    const t0 = Date.now();
+    await subir('Constancia de RUC', { name: 'constancia-ruc.pdf', mimeType: 'application/pdf', buffer: rucPdf });
+    const tiempoPdf = Date.now() - t0;
+    const t1 = Date.now();
+    await subir('Cédula del representante legal', { name: 'cedula-frente.png', mimeType: 'image/png', buffer: cedulaPng });
+    const tiempoPng = Date.now() - t1;
+    // Más de 8 MB: el navegador lo frena con un mensaje claro y el servidor también lo rechaza.
+    await merchantPage.getByLabel('Adjuntar Constancia de RUC', { exact: true }).setInputFiles({ name: 'muy-pesado.pdf', mimeType: 'application/pdf', buffer: pdf(8 * 1024 * 1024 + 1, 'grande') });
+    await expect(merchantPage.getByText('supera el máximo de 8 MB', { exact: false })).toBeVisible();
+    const grande = await merchant.request.post(`${api}/integraciones/raha/documentos`, { multipart: { tipo: 'ruc', version: String(propia.version),
+      archivo: { name: 'muy-pesado.pdf', mimeType: 'application/pdf', buffer: pdf(8 * 1024 * 1024 + 1, 'grande') } } });
+    assert.equal(grande.status(), 413);
+    await merchantPage.getByLabel(/Autorizo a Gesicom/).check();
+    await merchantPage.getByRole('button', { name: 'Enviar solicitud', exact: true }).click();
+    await expect(merchantPage.getByRole('status').filter({ hasText: 'Solicitud enviada a Raha' })).toBeVisible();
+    await merchantPage.screenshot({ path: path.join(artifacts, 'raha-solicitud-enviada.png'), fullPage: true });
+    // Ya enviada, Raha pide otra cédula por fuera: se reemplaza sin reabrir los datos.
+    await expect(merchantPage.getByLabel('Razón social', { exact: true })).toBeDisabled();
+    await expect(merchantPage.getByText('Reemplazar archivo')).toHaveCount(2);
+    await expect(merchantPage.getByRole('button', { name: /^Quitar / })).toHaveCount(0);
+    await subir('Cédula del representante legal', { name: 'cedula-legible.pdf', mimeType: 'application/pdf', buffer: cedulaNueva });
+    await expect(merchantPage.getByText('Documento actualizado', { exact: true })).toBeVisible();
+    await merchantPage.screenshot({ path: path.join(artifacts, 'raha-documento-reemplazado.png'), fullPage: true });
+    await merchantPage.setViewportSize({ width: 390, height: 844 });
+    await expect(merchantPage.getByText('Documento actualizado', { exact: true })).toBeVisible();
+    assert(await merchantPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Horizontal overflow: raha mobile');
+    await merchantPage.screenshot({ path: path.join(artifacts, 'raha-documento-reemplazado-mobile.png'), fullPage: true });
+    const segunda = await models.RahaSolicitud.findOne({ where: { tienda_id: secondStore.id } });
+    assert.equal(segunda.estado, 'enviada_raha');
+    assert.equal(segunda.historial.at(-1).evento, 'documento_reemplazado');
+    const docs = await models.RahaDocumento.findAll({ where: { solicitud_id: segunda.id }, order: [['tipo', 'ASC']] });
+    assert.deepEqual(docs.map(doc => [doc.tipo, doc.nombre]), [['cedula', 'cedula-legible.pdf'], ['ruc', 'constancia-ruc.pdf']]);
+    assert.equal(docs.find(doc => doc.tipo === 'ruc').size, rucPdf.length);
+    assert.equal(await models.RahaSolicitud.count({ where: { usuario_id: user.id } }), 2);
+    // La primera tienda conserva su aprobación y sus documentos, sin mezclar.
+    await request(merchant, 'post', 'auth/seleccionar-tienda', { tienda_id: store.id });
+    const primera = await merchantRaha('get');
+    assert.equal(primera.tienda_id, store.id);
+    assert.equal(primera.estado, 'aprobada');
+    assert.equal(primera.documentos.length, 0);
+    // Raha ve la cédula nueva y el botón dice "vendedor".
+    await portalPage.setViewportSize({ width: 1440, height: 1000 });
+    await portalPage.goto(`${preview}/raha/solicitudes?solicitud=${segunda.id}`);
+    await expect(portalPage.getByRole('button', { name: 'Aprobar como vendedor' })).toBeVisible();
+    await expect(portalPage.getByRole('button', { name: 'Descargar cedula-legible.pdf' })).toBeVisible();
+    await expect(portalPage.getByText('Documento actualizado', { exact: true })).toBeVisible();
+    await portalPage.screenshot({ path: path.join(artifacts, 'portal-aprobar-vendedor.png'), fullPage: true });
+    assert.deepEqual(pageErrors, []);
+    return { requests_per_store: 2, heavy_pdf_bytes: rucPdf.length, heavy_pdf_ms: tiempoPdf, heavy_png_bytes: cedulaPng.length, heavy_png_ms: tiempoPng,
+      over_limit_rejected: 413, replaced_after_sending: true };
   });
 }
 

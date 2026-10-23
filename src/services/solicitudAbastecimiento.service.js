@@ -85,7 +85,7 @@ class SolicitudAbastecimientoService {
     if (!esProductoCargadoPorAdmin(prod)) {
       throw errorHttp('Este producto es propio del comercio: el abastecimiento es solo para productos del catálogo Gesicomm.');
     }
-    if (!await RahaService.conexionAprobada(usuario_id)) {
+    if (!await RahaService.conexionAprobada(tiendaId)) {
       throw errorHttp('Necesitás tu conexión con Raha aprobada para abastecerte del catálogo Gesicomm. Completá la solicitud en Mi Tienda > Raha.', 409);
     }
 

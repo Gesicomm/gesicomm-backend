@@ -48,14 +48,14 @@ describe('cotizar — conexión Raha requerida', () => {
     Producto.findByPk.mockResolvedValue(PRODUCTO);
   });
 
-  test('rechaza si la solicitud Raha del usuario no está aprobada', async () => {
+  test('rechaza si la solicitud Raha de la tienda activa no está aprobada', async () => {
     RahaService.conexionAprobada.mockResolvedValue(false);
 
     await expect(SolicitudAbastecimientoService.cotizar({
-      usuario_id: 7, producto_id: 1, cantidad: 2, tipoLogistica: 'GESICOMM',
+      usuario_id: 7, tiendaId: 11, producto_id: 1, cantidad: 2, tipoLogistica: 'GESICOMM',
     })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('conexión con Raha') });
 
-    expect(RahaService.conexionAprobada).toHaveBeenCalledWith(7);
+    expect(RahaService.conexionAprobada).toHaveBeenCalledWith(11);
   });
 
   test('deja pasar la cotización cuando la conexión está aprobada', async () => {

@@ -15,7 +15,11 @@ const schema = z.object({
   banco: text(100), titular_cuenta: text(180), numero_cuenta: text(80), moneda: z.enum(['PYG', 'USD']).default('PYG'),
 }).strict();
 const TIPOS = ['ruc', 'cedula'];
+const NOMBRE_TIPO = { ruc: 'constancia de RUC', cedula: 'cédula del representante legal' };
 const EDITABLE = ['borrador', 'observada'];
+// Ya enviada, los datos quedan fijos pero el comercio puede reemplazar un
+// documento si Raha se lo pide por fuera (ej. una cedula ilegible).
+const DOCUMENTOS_REEMPLAZABLES = [...EDITABLE, 'en_revision', 'enviada_raha', 'aprobada'];
 function fail(message, status = 400) { throw Object.assign(new Error(message), { status }); }
 function parse(input) {
   const result = schema.safeParse(input);
@@ -27,34 +31,22 @@ async function identity(actor) {
   if (!usuario?.inquilino_id) fail('No autorizado.', 403);
   return usuario;
 }
+// Una solicitud por tienda: cada tienda presenta su propio RUC y documentos.
 async function owned(actor, transaction) {
   const usuario = await identity(actor);
-  const whereTienda = { usuario_id: actor.id, inquilino_id: usuario.inquilino_id };
-  if (actor.tiendaId) whereTienda.id = actor.tiendaId;
-  let tienda = await Tienda.findOne({
-    where: whereTienda,
-    order: [['id', 'ASC']],
+  if (!actor.tiendaId) fail('Elegí la tienda para la que vas a gestionar la conexión con Raha.', 409);
+  const tienda = await Tienda.findOne({
+    where: { id: actor.tiendaId, usuario_id: actor.id, inquilino_id: usuario.inquilino_id },
     transaction,
     ...(transaction ? { lock: transaction.LOCK.UPDATE } : {})
   });
-  if (!tienda && actor.tiendaId) {
-    tienda = await Tienda.findOne({
-      where: { usuario_id: actor.id, inquilino_id: usuario.inquilino_id },
-      order: [['id', 'ASC']],
-      transaction,
-      ...(transaction ? { lock: transaction.LOCK.UPDATE } : {})
-    });
-  }
   if (!tienda) fail('Primero debes crear tu tienda.', 404);
   const [solicitud] = await RahaSolicitud.findOrCreate({
-    where: { usuario_id: actor.id },
-    defaults: { tienda_id: tienda.id, inquilino_id: tienda.inquilino_id },
+    where: { tienda_id: tienda.id },
+    defaults: { usuario_id: actor.id, inquilino_id: tienda.inquilino_id },
     transaction
   });
-  if (solicitud.inquilino_id !== usuario.inquilino_id) fail('No autorizado.', 403);
-  if (solicitud.tienda_id !== tienda.id) {
-    await solicitud.update({ tienda_id: tienda.id }, { transaction });
-  }
+  if (solicitud.inquilino_id !== usuario.inquilino_id || Number(solicitud.usuario_id) !== Number(actor.id)) fail('No autorizado.', 403);
   if (transaction) await solicitud.reload({ transaction, lock: transaction.LOCK.UPDATE });
   return solicitud;
 }
@@ -77,9 +69,10 @@ async function serialize(solicitud, transaction) {
   return { ...solicitud.toJSON(), documentos };
 }
 async function status(actor) { return serialize(await sequelize.transaction(t => owned(actor, t))); }
-/** Si el usuario tiene la conexion con Raha aprobada (puede proveerse de su catalogo). */
-async function conexionAprobada(usuario_id) {
-  const solicitud = await RahaSolicitud.findOne({ where: { usuario_id } });
+/** Si la tienda tiene la conexion con Raha aprobada (puede proveerse de su catalogo). */
+async function conexionAprobada(tienda_id) {
+  if (!tienda_id) return false;
+  const solicitud = await RahaSolicitud.findOne({ where: { tienda_id } });
   return solicitud?.estado === 'aprobada';
 }
 async function save(actor, input) {
@@ -94,16 +87,25 @@ async function upload(actor, tipo, version, file) {
   if (!TIPOS.includes(tipo)) fail('Tipo de documento invalido.');
   let uploaded, reemplazados = [];
   try {
+    let enviada = false;
     const solicitud = await sequelize.transaction(async t => {
-      const row = await owned(actor, t); editable(row, Number(version));
+      const row = await owned(actor, t);
+      if (!DOCUMENTOS_REEMPLAZABLES.includes(row.estado)) fail('La solicitud esta finalizada y no se pueden cambiar sus documentos.', 409);
+      if (!Number.isSafeInteger(Number(version)) || Number(version) !== row.version) fail('La solicitud cambio. Actualiza antes de continuar.', 409);
       uploaded = await storage.put(file);
       // Un archivo por tipo: el nuevo reemplaza al anterior.
       reemplazados = await RahaDocumento.findAll({ where: { solicitud_id: row.id, tipo }, transaction: t });
       for (const doc of reemplazados) await doc.destroy({ transaction: t });
-      await RahaDocumento.create({ ...uploaded, solicitud_id: row.id, tipo }, { transaction: t });
-      return row.update({ version: row.version + 1 }, { transaction: t });
+      const nuevo = await RahaDocumento.create({ ...uploaded, solicitud_id: row.id, tipo }, { transaction: t });
+      enviada = !EDITABLE.includes(row.estado);
+      if (!enviada) return row.update({ version: row.version + 1 }, { transaction: t });
+      // Raha ya la estaba viendo: queda registrado en el seguimiento.
+      return row.update({ version: row.version + 1, historial: append(row, actor, row.estado, {
+        evento: 'documento_reemplazado', nota: `El comercio actualizó la ${NOMBRE_TIPO[tipo]}.`,
+        documento: { id: nuevo.id, tipo, nombre: nuevo.nombre, sha256: nuevo.sha256 } }) }, { transaction: t });
     });
     for (const doc of reemplazados) await storage.remove(doc).catch(() => logger.error({ mensaje: 'Raha: limpiar adjunto reemplazado pendiente', key: doc.storage_key }));
+    if (enviada) await notify(solicitud, actor, true, `el comercio actualizó la ${NOMBRE_TIPO[tipo]}`).catch(() => logger.error({ mensaje: 'Raha: notificacion pendiente', solicitudId: solicitud.id }));
     return serialize(solicitud);
   } catch (error) {
     if (uploaded) await storage.remove(uploaded).catch(() => logger.error({ mensaje: 'Raha: limpiar adjunto huerfano pendiente', key: uploaded.storage_key }));
@@ -122,13 +124,13 @@ async function remove(actor, id, version) {
   await storage.remove(doc).catch(() => logger.error({ mensaje: 'Raha: limpiar adjunto eliminado pendiente', key: doc.storage_key }));
   return serialize(solicitud);
 }
-async function notify(row, actor, submitted) {
+async function notify(row, actor, submitted, detalle) {
   const recipients = submitted ? await idsDeAdministradores(row.inquilino_id) : [row.usuario_id];
   await notificarEnApp(recipients, {
     tipo: `${submitted ? 'RAHA_SOLICITUD' : 'RAHA_REVISION'}_${row.version}`,
     entidad_tipo: submitted ? 'raha_solicitud_admin' : 'raha_solicitud', entidad_id: row.id,
     titulo: submitted ? 'Solicitud de conexion Raha' : 'Actualizacion de tu solicitud Raha',
-    mensaje: `Solicitud #${row.id}: ${{ enviada_raha: 'enviada a Raha', en_revision: 'en revision', observada: 'Raha pidio correcciones', aprobada: 'aprobada por Raha', rechazada: 'rechazada por Raha' }[row.estado] || row.estado}.`,
+    mensaje: `Solicitud #${row.id}: ${detalle || { enviada_raha: 'enviada a Raha', en_revision: 'en revision', observada: 'Raha pidio correcciones', aprobada: 'aprobada por Raha', rechazada: 'rechazada por Raha' }[row.estado] || row.estado}.`,
   });
 }
 function append(row, actor, estado, extra = {}) {

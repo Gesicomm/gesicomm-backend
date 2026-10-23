@@ -1,10 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const { verificarToken } = require('../middleware/autenticacion');
+const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 const ctrl = require('../controllers/solicitudAbastecimientoController');
 const { subirComprobanteAbastecimientoMulter } = require('../controllers/envioController');
 
 router.use(verificarToken);
+// La conexión con Raha se aprueba por tienda: la cotización necesita la tienda activa.
+router.use(resolverTiendaActiva);
 
 router.post('/cotizar', ctrl.cotizar);
 router.post('/', ctrl.crear);
