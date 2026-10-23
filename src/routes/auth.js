@@ -321,12 +321,17 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
 // POST /api/auth/register
 // ============================================================
 const SuscripcionService = require('../services/suscripcion.service');
+const CodigoPruebaService = require('../services/codigoPrueba.service');
 
 router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) => {
   const t = await sequelize.transaction();
 
   try {
-    const { nombre, telefono, email, password, token_suscripcion } = req.body;
+    const { nombre, telefono, email, password, token_suscripcion, codigo_prueba } = req.body;
+    if (codigo_prueba && token_suscripcion) {
+      await rollbackSeguro(t);
+      return res.status(400).json({ message: 'Usá el código de prueba o el enlace de pago, uno a la vez.' });
+    }
 
     // Alta con suscripcion paga: el flujo es elegir plan -> pagar -> recien
     // ahi registrarse, asi que el token acredita que ese correo ya pago.
@@ -410,6 +415,8 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
       }
     }
 
+    const prueba = codigo_prueba ? await CodigoPruebaService.canjear(codigo_prueba, usuarioCreado, t) : null;
+
     await t.commit();
 
     auditoria('USUARIO_CREADO', { email, ip: req.ip });
@@ -446,6 +453,7 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
       message: tokenCorreoNoCoincide
         ? 'Cuenta creada. Ojo: el enlace de pago que usaste corresponde a otro correo, así que no activamos ningún plan en esta cuenta. Si la compra es tuya, registrate con el mismo correo con el que pagaste.'
         : 'Cuenta creada. Te enviamos un código de 6 dígitos a tu correo para activarla.',
+      prueba: prueba || undefined,
       requiere_verificacion: true,
       email,
       token_correo_no_coincide: tokenCorreoNoCoincide,
@@ -456,6 +464,7 @@ router.post('/register', limiteAuth, validar(esquemaRegistro), async (req, res) 
     // "existe" de arriba no es atómico con el create, así que dos requests
     // casi simultáneas pueden pasarlo las dos. El UNIQUE de la BD ataja la
     // segunda igual — acá solo se le da un mensaje decente en vez de 500.
+    if (err.status === 400) return res.status(400).json({ message: err.message });
     if (err.name === 'SequelizeUniqueConstraintError') {
       return res.status(400).json({ message: 'El correo ya está registrado.' });
     }

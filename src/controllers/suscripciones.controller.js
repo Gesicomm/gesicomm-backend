@@ -120,8 +120,8 @@ exports.iniciarCheckout = async (req, res) => {
 /** POST /api/suscripciones/checkout-intents — fija plan y afiliado candidato. */
 exports.crearCheckoutIntent = async (req, res) => {
   try {
-    const { plan_codigo, afiliado_codigo } = req.body || {};
-    const resultado = await SuscripcionService.crearCheckoutIntent({ plan_codigo, afiliado_codigo });
+    const { plan_codigo, afiliado_codigo, ruta } = req.body || {};
+    const resultado = await SuscripcionService.crearCheckoutIntent({ plan_codigo, afiliado_codigo, ruta });
     res.status(201).json(resultado);
   } catch (error) {
     const status = error.status || 500;

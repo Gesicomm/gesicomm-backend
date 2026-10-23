@@ -112,6 +112,7 @@ const PaymentLogoVisibility = require('./PaymentLogoVisibility');
 const Plan = require('./Plan');
 const CheckoutIntent = require('./CheckoutIntent');
 const SubscriptionPurchase = require('./SubscriptionPurchase');
+const CodigoPrueba = require('./CodigoPrueba');
 const Suscripcion = require('./Suscripcion');
 const PagoSuscripcion = require('./PagoSuscripcion');
 const Parametro = require('./Parametro');
@@ -946,6 +947,7 @@ module.exports = {
   CheckoutIntent,
   SubscriptionPurchase,
   Suscripcion,
+  CodigoPrueba,
   PagoSuscripcion,
   Parametro,
   Afiliado,

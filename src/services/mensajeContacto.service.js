@@ -11,6 +11,15 @@ const { MensajeContacto } = require('../models');
  * bandeja: las consultas de privacidad y legales tienen plazos normativos
  * que cumplir y hay que poder distinguirlas de una consulta comercial.
  */
+const TIPOS_SOLICITUD = {
+  prueba: 'Gesicom · Código de prueba gratuita',
+  vendedor: 'Gesicom · Contratar un plan',
+  demo: 'Gesicom · Una demostración',
+  proveedor: 'Gesicom · Postulación de proveedor · ',
+};
+const LEGACY_PRUEBA = 'Gesicom · Cupón de prueba gratuita';
+const tipoSolicitud = (asunto) => String(asunto).startsWith(LEGACY_PRUEBA) ? 'prueba' : Object.entries(TIPOS_SOLICITUD).find(([, prefijo]) => String(asunto).startsWith(prefijo))?.[0] || 'consulta';
+
 const CORREO_CONTACTO = 'contacto@gesicomm.com';
 
 class MensajeContactoService {
@@ -37,10 +46,17 @@ class MensajeContactoService {
   }
 
   static async listar(filtros = {}) {
-    const { estado, area, page = 1, limit = 20 } = filtros;
+    const { estado, area, tipo } = filtros;
+    const page = Math.max(1, parseInt(filtros.page, 10) || 1);
+    const limit = Math.max(1, Math.min(100, parseInt(filtros.limit, 10) || 20));
     const where = {};
     if (estado) where.estado = estado;
     if (area) where.area = area;
+
+    if (Object.hasOwn(TIPOS_SOLICITUD, tipo)) {
+      where.area = 'comercial';
+      where.asunto = tipo === 'prueba' ? { [Op.or]: [{ [Op.startsWith]: TIPOS_SOLICITUD.prueba }, { [Op.startsWith]: LEGACY_PRUEBA }] } : { [Op.startsWith]: TIPOS_SOLICITUD[tipo] };
+    }
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const { rows, count } = await MensajeContacto.findAndCountAll({
@@ -62,6 +78,7 @@ class MensajeContactoService {
         email: m.email,
         empresa: m.empresa,
         asunto: m.asunto,
+        tipo: tipoSolicitud(m.asunto),
         mensaje: m.mensaje,
         recibido_en: m.created_at,
       })),

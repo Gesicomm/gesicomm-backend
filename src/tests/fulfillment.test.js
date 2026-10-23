@@ -2,8 +2,8 @@
  * fulfillment.service — cómo entrega el comercio lo que vende.
  *
  * Lo que importa verificar es que la configuración de entregas no mezcle
- * conceptos: en logística propia se elige un depósito activo del comercio,
- * pero el courier se decide en el flujo de pedidos.
+ * conceptos: la modalidad no exige elegir un depósito global. El origen
+ * del stock y el courier se deciden en el flujo de pedidos.
  */
 
 jest.mock('../models', () => {
@@ -148,6 +148,20 @@ describe('guardarConfiguracion', () => {
       .rejects.toMatchObject({ status: 400 });
   });
 
+  it.each([undefined, null])('propia guarda sin depósito global (%s) y limpia la referencia anterior', async (depositoId) => {
+    tienda().modalidad_fulfillment = 'GESICOMM';
+    tienda().deposito_fulfillment_id = 10;
+    await Fulfillment.guardarConfiguracion(COMERCIO, { modalidad: 'PROPIA', depositoId });
+    expect(tienda().modalidad_fulfillment).toBe('PROPIA');
+    expect(tienda().deposito_fulfillment_id).toBeNull();
+  });
+
+  it('sin depósitos activos propios no permite activar envíos propios', async () => {
+    __almacen.depositos = __almacen.depositos.filter((d) => d.tienda_id !== 1);
+    await expect(Fulfillment.guardarConfiguracion(COMERCIO, { modalidad: 'PROPIA' }))
+      .rejects.toMatchObject({ status: 400 });
+  });
+
   it('propia exige un depósito del comercio', async () => {
     await expect(Fulfillment.guardarConfiguracion(COMERCIO, { modalidad: 'PROPIA', depositoId: 20 }))
       .rejects.toMatchObject({ status: 400 });
@@ -180,7 +194,7 @@ describe('guardarConfiguracion', () => {
     expect(tienda().modalidad_fulfillment).toBe('PROPIA');
   });
 
-  it('al pasar a gesicomm conserva el depósito propio elegido antes', async () => {
+  it('al pasar a gesicomm elimina la referencia de depósito anterior', async () => {
     __almacen.proveedores = [{ id: 7, nombre: 'Transportadora XYZ', activo: true }];
     TarifaDelivery.resolverOpcionesDeRed.mockResolvedValue([{ proveedor_id: 7, ciudad: 'Luque', costo: 20000 }]);
 
@@ -188,12 +202,12 @@ describe('guardarConfiguracion', () => {
     await Fulfillment.guardarConfiguracion(COMERCIO, { modalidad: 'GESICOMM' });
 
     expect(tienda().modalidad_fulfillment).toBe('GESICOMM');
-    expect(tienda().deposito_fulfillment_id).toBe(10);
+    expect(tienda().deposito_fulfillment_id).toBeNull();
   });
 });
 
 describe('operadoresParaEntrega', () => {
-  it('con modalidad propia usa los couriers del depósito configurado', async () => {
+  it('con modalidad propia usa los couriers de sus depósitos', async () => {
     await Fulfillment.guardarConfiguracion(COMERCIO, { modalidad: 'PROPIA', depositoId: 10 });
 
     const operadores = await Fulfillment.operadoresParaEntrega(COMERCIO);
@@ -201,10 +215,11 @@ describe('operadoresParaEntrega', () => {
     expect(operadores.map((c) => c.nombre)).toEqual(['Mi courier']);
   });
 
-  it('con modalidad propia y sin depósito elegido no devuelve ninguno', async () => {
+  it('con modalidad propia y sin depósito elegido incluye los couriers de sus depósitos', async () => {
     const operadores = await Fulfillment.operadoresParaEntrega(COMERCIO);
 
-    expect(operadores).toEqual([]);
+    expect(operadores.map((c) => c.nombre)).toEqual(['Mi courier']);
+    expect(DepositoCourierService.couriersHabilitadosPorDeposito).toHaveBeenCalledWith([10, 11]);
   });
 
   it('con modalidad gesicomm usa proveedores de la red, no couriers', async () => {
@@ -234,12 +249,13 @@ describe('resolverOpcionesDeEntrega', () => {
     expect(TarifaDelivery.resolverOpcionesDelivery).not.toHaveBeenCalled();
   });
 
-  it('con modalidad propia y depósito configurado acota a sus couriers habilitados', async () => {
+  it('con modalidad propia ignora la referencia antigua y ofrece toda su cobertura', async () => {
     tienda().deposito_fulfillment_id = 10;
 
     await Fulfillment.resolverOpcionesDeEntrega(COMERCIO);
 
-    expect(TarifaDelivery.resolverOpcionesPorCouriers).toHaveBeenCalledWith([5], expect.anything());
+    expect(TarifaDelivery.resolverOpcionesDelivery).toHaveBeenCalledWith(COMERCIO, expect.anything());
+    expect(TarifaDelivery.resolverOpcionesPorCouriers).not.toHaveBeenCalled();
   });
 
   it('sin depósito configurado cae a la cobertura completa del comercio', async () => {

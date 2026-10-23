@@ -23,6 +23,9 @@ const solicitudEliminacionController = require('../controllers/solicitudEliminac
 const mensajeContactoController = require('../controllers/mensajeContacto.controller');
 
 const router = express.Router();
+const CodigoPruebaService = require('../services/codigoPrueba.service');
+const { asyncHandler } = require('../utils/asyncHandler');
+const soloAdmin = (req, res, next) => req.usuario?.rol === 'administrador' ? next() : res.status(403).json({ message: 'Solo administradores.' });
 
 // ============================================================
 // Rate limiting de formularios públicos
@@ -161,5 +164,23 @@ router.get(
   verificarPermiso('gestionar_solicitudes_datos'),
   mensajeContactoController.listar
 );
+
+// Los códigos de acceso son exclusivos del administrador de Gesicom.
+router.get('/admin/codigos-prueba', verificarToken, soloAdmin, asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(await CodigoPruebaService.listar());
+}));
+router.post('/admin/codigos-prueba', verificarToken, soloAdmin, validar(z.object({
+  dias: z.number().int().min(1).max(365),
+  plan_id: z.number().int().positive(),
+  email: z.string().trim().email().max(255).optional(),
+  vence_en: z.string().datetime({ offset: true }).optional(),
+})), asyncHandler(async (req, res) => {
+  res.status(201).json(await CodigoPruebaService.crear(req.body, req.usuario.id));
+}));
+router.patch('/admin/codigos-prueba/:id/desactivar', verificarToken, soloAdmin, asyncHandler(async (req, res) => {
+  if (!/^[1-9]\d*$/.test(req.params.id)) return res.status(400).json({ message: 'ID inválido.' });
+  res.json(await CodigoPruebaService.desactivar(Number(req.params.id)));
+}));
 
 module.exports = router;

@@ -247,13 +247,16 @@ class SuscripcionService {
     return this.listarPlanesAdmin();
   }
 
-  static async crearCheckoutIntent({ plan_codigo, afiliado_codigo, usuario = null }) {
+  static async crearCheckoutIntent({ plan_codigo, afiliado_codigo, ruta, usuario = null }) {
     await this.sembrarPlanesBase();
     const plan = await Plan.findOne({ where: { codigo: plan_codigo, activo: true } });
     if (!plan) {
       throw Object.assign(new Error('Ese plan no existe o ya no se ofrece.'), { status: 404 });
     }
 
+    if (ruta != null && !['fisico', 'personal', 'ambas'].includes(ruta)) throw Object.assign(new Error('Ruta de negocio inválida.'), { status: 400 });
+    if (plan.codigo.startsWith('una-ruta-') && ruta === 'ambas') throw Object.assign(new Error('Elegí una sola ruta para este plan.'), { status: 400 });
+    const rutaSeleccionada = plan.codigo.startsWith('ambas-rutas-') ? 'ambas' : (ruta || null);
     const usuarioExistente = usuario?.id ? await this.suscripcionActivaDeUsuario(usuario.id) : null;
     const afiliado = usuarioExistente ? null : await AfiliadosService.resolverActivo(afiliado_codigo);
     if (afiliado_codigo && !afiliado && !usuarioExistente) {
@@ -276,6 +279,7 @@ class SuscripcionService {
       metadata: {
         affiliate_ref_candidate: afiliado_codigo || null,
         source: 'plan_selected',
+        ruta: rutaSeleccionada,
         existing_subscription: Boolean(usuarioExistente),
       },
     });
@@ -481,6 +485,7 @@ class SuscripcionService {
         documento: documentoLimpio,
         affiliate_ref: intent.affiliate_ref,
         affiliate_id: intent.affiliate_id,
+        metadata: { ruta: intent.metadata?.ruta || null },
         monto: plan.precio,
         moneda: ['PYG', 'USD'].includes(plan.moneda) ? plan.moneda : 'PYG',
         estado: 'created',

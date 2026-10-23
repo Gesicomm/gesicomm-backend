@@ -267,7 +267,7 @@ class FulfillmentService {
 
     const cambios = { modalidad_fulfillment: valor };
 
-    if (valor === 'PROPIA') {
+    if (valor === 'PROPIA' && depositoId != null) {
       // El depósito se valida contra los de ESTA tienda: no alcanza con que
       // llegue un id en el body, ni con que sea de otra tienda de la cuenta.
       const deposito = await Deposito.findOne({
@@ -278,15 +278,21 @@ class FulfillmentService {
       }
 
       cambios.deposito_fulfillment_id = deposito.id;
-    } else {
+    } else if (valor === 'PROPIA') {
+      const deposito = await Deposito.findOne({
+        where: this.whereDepositosDeTienda(usuarioId, tienda.id),
+      });
+      if (!deposito) throw errorHttp('Necesitás tener al menos un depósito activo.');
+    } else if (valor === 'GESICOMM') {
       const disponibles = await this.proveedoresDeGesicomm();
       if (!disponibles.some((p) => p.ciudades > 0)) {
         throw errorHttp('Gesicomm todavía no tiene cobertura configurada para gestionar tus entregas.');
       }
-      // El depósito propio se conserva: si el comercio vuelve a PROPIA no
-      // tiene que volver a elegirlo.
     }
 
+    // La modalidad ya no necesita un depósito de referencia. Se admite el ID
+    // opcional de clientes anteriores, pero el checkout usa toda la cobertura.
+    if (depositoId == null) cambios.deposito_fulfillment_id = null;
     await tienda.update(cambios);
     return this.obtenerConfiguracion(usuarioId, tiendaId);
   }
@@ -301,22 +307,18 @@ class FulfillmentService {
     if (tienda.modalidad_fulfillment === 'GESICOMM') {
       return ProveedorLogisticoService.proveedoresComercialesGesicomm();
     }
-    if (!tienda.deposito_fulfillment_id) return [];
-    return DepositoCourierService.couriersHabilitados(tienda.deposito_fulfillment_id);
+    const depositos = await Deposito.findAll({
+      where: this.whereDepositosDeTienda(usuarioId, tienda.id),
+    });
+    const porDeposito = await DepositoCourierService.couriersHabilitadosPorDeposito(depositos.map((d) => d.id));
+    return [...new Map([...porDeposito.values()].flat().map((courier) => [courier.id, courier])).values()];
   }
 
   /**
    * Cobertura y costo de entrega de un comercio, resueltos por su modalidad:
    *
    *   GESICOMM → centros de la red → proveedores logísticos → cobertura → tarifa
-   *   PROPIA   → depósito configurado → couriers habilitados → cobertura → tarifa
-   *
-   * Fallback deliberado: si la modalidad es PROPIA y todavía no se eligió
-   * depósito (o el elegido se quedó sin couriers), se devuelve la cobertura
-   * completa del comercio, que es exactamente lo que el checkout hacía antes
-   * de que existiera el fulfillment. Sin esto, cualquier comercio que no haya
-   * entrado a configurar el depósito se quedaría de un día para el otro sin
-   * ninguna opción de envío — es decir, sin poder vender.
+   *   PROPIA   → cobertura completa del comercio, sin un depósito global.
    */
   static async resolverOpcionesDeEntrega(usuarioId, { paymentMethod = 'efectivo', items = [] } = {}) {
     if (!usuarioId) return [];
@@ -338,13 +340,6 @@ class FulfillmentService {
         { centroIds: centros.map((c) => c.id), proveedorIds: proveedores.map((p) => p.id) },
         { paymentMethod, items },
       );
-    }
-
-    if (tienda.deposito_fulfillment_id) {
-      const couriers = await DepositoCourierService.couriersHabilitados(tienda.deposito_fulfillment_id);
-      if (couriers.length > 0) {
-        return TarifaDelivery.resolverOpcionesPorCouriers(couriers.map((c) => c.id), { paymentMethod, items });
-      }
     }
 
     return porUsuario();

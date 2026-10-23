@@ -72,6 +72,7 @@ const esquemaRegistro = z.object({
   // estar declarado acá o Zod lo descarta (validar() reemplaza req.body por
   // resultado.data, que solo trae las claves del esquema).
   token_suscripcion: z.string().length(64).optional(),
+  codigo_prueba: z.string().trim().max(40).regex(/^[A-Za-z0-9-]*$/, { message: 'Código de prueba inválido.' }).optional(),
 });
 
 const esquemaRecuperarPassword = z.object({
