@@ -132,7 +132,10 @@ async function main() {
     precio_costo: 20000,
     activo: true,
     estado_venta: 'en_venta',
-    ficha_datos: {}
+    ficha_datos: { product_page_opiniones: [
+      { nombre: 'Cliente A', comentario: 'Excelente', calificacion: 5 },
+      { nombre: 'Cliente B', comentario: 'Muy bueno', calificacion: 4 }
+    ] }
   });
   const landing = await m.Landing.create({
     inquilino_id: tenant.id,
@@ -236,15 +239,21 @@ async function main() {
     name: /Opiniones y estrellas/
   }).click();
   await editor.getByLabel('Estrellas comerciales').fill('3.5');
+  await expect(editor.getByLabel('Texto de reseñas')).toHaveValue('4,5 de 5 · 2 opiniones');
+  await editor.getByLabel('Texto de reseñas').fill('');
+  await expect(editor.getByLabel('Texto de reseñas')).toHaveValue('');
   const frame = page.frameLocator('.product-preview-panel iframe');
   await expect(frame.locator('h1[data-gesicomm-bind="nombre"]')).toHaveText('Nombre comercial E2E');
   await expect(frame.locator('[data-gesicomm-bind="resenas_estrellas"]').first()).toHaveAttribute('aria-label', /3[,.]5/);
+  await expect(frame.locator('[data-gesicomm-bind="resenas_texto"]').first()).toBeHidden();
   const snapshot = async f => ({
     nombre: await f.locator('h1[data-gesicomm-bind="nombre"]').textContent(),
     estrellas: await f.locator('[data-gesicomm-bind="resenas_estrellas"]').first().getAttribute('aria-label'),
+    textoResenas: await f.locator('[data-gesicomm-bind="resenas_texto"]').first().evaluate(el => getComputedStyle(el).display === 'none' ? '' : el.textContent),
     color: await f.locator('body').evaluate(el => getComputedStyle(el).backgroundColor)
   });
   const preview = await snapshot(frame);
+  expect(preview.textoResenas).toBe('');
   await page.screenshot({
     path: path.join(out, 'preview-desktop.png')
   });
@@ -257,7 +266,8 @@ async function main() {
   await producto.reload();
   expect(producto.ficha_datos.presentacion).toMatchObject({
     titulo_comercial: 'Nombre comercial E2E',
-    resenas_calificacion: '3.5'
+    resenas_calificacion: '3.5',
+    resenas_texto: ''
   });
   report.steps.push({
     name: 'Edit and persist through real API',
@@ -280,6 +290,7 @@ async function main() {
     name: /Opiniones y estrellas/
   }).click();
   await expect(editor.getByLabel('Estrellas comerciales')).toHaveValue('3.5');
+  await expect(editor.getByLabel('Texto de reseñas')).toHaveValue('');
   report.steps.push({
     name: 'Reload saved product',
     passed: true
