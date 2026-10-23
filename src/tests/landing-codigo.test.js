@@ -682,6 +682,16 @@ describe('LandingCodigoService.limpiarVenta', () => {
     ]);
   });
 
+  it('anuncios conserva emojis combinados, tonos de piel y banderas al guardar y reabrir', () => {
+    const anuncios = [
+      { texto: 'Atención cercana', icono: '👩🏽‍💻✨' },
+      { texto: 'Envíos en Paraguay', icono: '🇵🇾🚚' },
+    ];
+    const venta = LandingCodigoService.limpiarVenta({ inicio: { anuncios } });
+    const reabierta = LandingCodigoService.limpiarVenta(JSON.parse(JSON.stringify(venta)));
+    expect(reabierta.inicio.anuncios).toEqual(anuncios);
+  });
+
   it('confianza: hasta 3 items, permite emoji vacío y descarta beneficios sin texto', () => {
     const v = LandingCodigoService.limpiarVenta({
       inicio: {

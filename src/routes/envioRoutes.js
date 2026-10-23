@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const envioController = require('../controllers/envioController');
+const envioTarifaController = require('../controllers/envioTarifa.controller');
 const seguimientoController = require('../controllers/envioSeguimientoController');
 const { verificarToken } = require('../middleware/autenticacion');
 const { exigirTiendaActiva } = require('../middleware/resolverTiendaActiva');
@@ -18,6 +19,7 @@ router.post('/list-paginado', envioController.listEnviosPaginados);
 router.post('/metricas-dashboard', envioController.getDashboardMetricas);
 
 // Crear un nuevo pedido/envío
+router.post('/cotizar-entrega-raha', envioTarifaController.cotizarEntregaRaha);
 router.post('/', envioController.createEnvio);
 
 // Cola admin del Camino 2 (inbound propio -> Gesicomm): pedidos vendidos

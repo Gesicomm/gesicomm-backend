@@ -15,7 +15,8 @@
     "test:integration": "jest --config test-integration/jest.config.js --runInBand --detectOpenHandles",
     "test:speedbox:e2e": "node test-speedbox/run.cjs",
     "test:raha:e2e": "node test-raha/run.cjs",
-    "preview:speedbox": "node test-speedbox/run.cjs --preview"
+    "preview:speedbox": "node test-speedbox/run.cjs --preview",
+    "test:product-preview:e2e": "node test-product-preview/run.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1131.0",

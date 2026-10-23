@@ -26,6 +26,30 @@ function errorHttp(message, status = 400) {
  * Nada acá asume que exista un solo centro.
  */
 class RedFulfillmentService {
+  /** Cotización de pedidos RAHA; no usa couriers privados del comercio. */
+  static async cotizarEntregaRaha({ ciudad, departamento, cantidad = 1, pago_anticipado = false } = {}) {
+    if (!String(ciudad || '').trim()) throw errorHttp('La ciudad es obligatoria.');
+    if (!Number.isSafeInteger(Number(cantidad)) || Number(cantidad) < 1) throw errorHttp('La cantidad debe ser un entero mayor a cero.');
+    const [centros, proveedores] = await Promise.all([
+      this.centros(true), ProveedorLogisticoService.proveedoresComercialesGesicomm(),
+    ]);
+    const proveedorIds = proveedores.filter(p => ProveedorLogisticoService.esProveedorRaha(p)).map(p => p.id);
+    if (!centros.length || !proveedorIds.length) return { cubierto: false, costo: null };
+    const alcance = { centroIds: centros.map(c => c.id), proveedorIds };
+    const items = [{ cantidad: Number(cantidad) }];
+    const [contraEntrega, anticipado] = await Promise.all([
+      TarifaDelivery.resolverOpcionesDeRed(alcance, { paymentMethod: 'efectivo', items }),
+      TarifaDelivery.resolverOpcionesDeRed(alcance, { paymentMethod: 'transferencia', items }),
+    ]);
+    const recibir = TarifaDelivery.buscarOpcion(contraEntrega, ciudad, departamento);
+    const pagarAntes = TarifaDelivery.buscarOpcion(anticipado, ciudad, departamento);
+    // Si solo se configuró una tarifa, es la tarifa única del destino. Con
+    // dos precios distintos se conserva la diferenciación por pago.
+    const opcion = pago_anticipado ? (pagarAntes || recibir) : (recibir || pagarAntes);
+    return opcion ? { cubierto: true, costo: opcion.costo, ciudad: opcion.ciudad, departamento: opcion.departamento }
+      : { cubierto: false, costo: null };
+  }
+
   /** Proveedores logísticos de la red. */
   static async proveedoresDeRed(soloActivos = true) {
     return ProveedorLogisticoService.listar({ soloActivos });

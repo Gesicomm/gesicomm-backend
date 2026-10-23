@@ -47,7 +47,7 @@ class TarifaDeliveryService {
       const max = (t.tarifa?.rango_max === null || t.tarifa?.rango_max === undefined || t.tarifa?.rango_max === '') ? Infinity : Number(t.tarifa?.rango_max);
       return cantidad >= min && cantidad <= max;
     };
-    const pagoCompatible = (t) => t.tarifa?.tipo_pago === 'Ambos' || t.tarifa?.tipo_pago === targetTipoPago;
+    const pagoCompatible = (t) => !t.tarifa?.tipo_pago || t.tarifa.tipo_pago === 'Ambos' || t.tarifa.tipo_pago === targetTipoPago;
     const capacidadCompatible = (t) => {
       if (!requerirCapacidad) return true;
       const prov = t.proveedor;

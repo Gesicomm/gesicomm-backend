@@ -157,3 +157,9 @@ describe('fallback por encomienda', () => {
     });
   });
 });
+
+test.each([null, undefined, ''])('una modalidad sin configurar (%s) no bloquea la tarifa por ciudad', async tipo_pago => {
+ __almacen.zonas = [regla({ ciudad: 'Luque', departamento: 'Central', costo: 27000, tipo_pago })];
+ expect(porCiudad(await Tarifas.resolverOpcionesDelivery(1), 'Luque').costo).toBe(27000);
+ expect(porCiudad(await Tarifas.resolverOpcionesDelivery(1,{paymentMethod:'transferencia'}), 'Luque').costo).toBe(27000);
+});
