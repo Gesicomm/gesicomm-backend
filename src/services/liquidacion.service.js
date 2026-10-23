@@ -69,8 +69,15 @@ function calcularDesglose(envios, ajuste_manual = 0) {
     const cobrado_al_cliente = monto + dv.envio_fuera_del_monto;
     const dinero_courier = (e.estado === 'Entregado' && custodia === 'courier') ? cobrado_al_cliente : 0;
 
+    // Un Perdido con cargo ya trae el servicio descontado: el cargo es
+    // "valor de lo perdido − costo de envío" (registrarPerdidaComponentes).
+    // Sumar además su costo_envio a los servicios lo descontaba dos veces y
+    // el comercio perdía el valor del envío en cada pérdida.
+    const servicioYaDescontado = e.estado === 'Perdido' && e.cargo_perdida_courier !== null && e.cargo_perdida_courier !== undefined;
+    const costo_servicio = servicioYaDescontado ? 0 : costo_envio;
+
     total_dinero_courier += dinero_courier;
-    total_costo_servicios += costo_envio;
+    total_costo_servicios += costo_servicio;
     total_cargos_perdida += cargo_perdida;
 
     return {
@@ -83,6 +90,9 @@ function calcularDesglose(envios, ajuste_manual = 0) {
       custodia_cobro: custodia,
       monto,
       costo_envio,
+      // Lo que efectivamente se le paga al courier por este pedido en la
+      // rendición (0 en un Perdido con cargo: ya está adentro del cargo).
+      costo_servicio,
       // Lo que el cliente efectivamente puso en la mano del courier, que es
       // el número que hay que poder contrastar contra el efectivo al rendir.
       cobrado_al_cliente,
@@ -194,4 +204,4 @@ async function listarPorCourier(courier_id, usuario_id) {
   });
 }
 
-module.exports = { previsualizar, confirmar, listarPorCourier };
+module.exports = { previsualizar, confirmar, listarPorCourier, calcularDesglose };

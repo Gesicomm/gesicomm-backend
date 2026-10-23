@@ -81,7 +81,7 @@ async function generarExcelReporteFinanciero({ resumen, gastos, ingresos, report
       ['Ventas WhatsApp', rv.ingresos.ventas_whatsapp, 'Gastos totales', rv.gastos.gastos_totales],
       ['Ventas orgánicas', rv.ingresos.ventas_organicas, 'Margen de contribución', rv.resultado_operativo.margen_contribucion],
       ['Otros ingresos registrados', rv.ingresos.otros_ingresos, METRIC_TERMS.utilidadNeta, rv.resultado_operativo.utilidad_operativa],
-      ['Reembolsos/devoluciones (-)', rv.ingresos.devoluciones, METRIC_TERMS.margen, `${rv.resultado_operativo.margen_neto}%`],
+      ['Ventas no concretadas (informativo)', rv.ingresos.devoluciones, METRIC_TERMS.margen, `${rv.resultado_operativo.margen_neto}%`],
       [METRIC_TERMS.ventasNetas.toUpperCase(), rv.ingresos.ingresos_netos, '', ''],
     ].forEach(row => hojaFlujo.addRow([row[0], row[1], row[2], row[3]]));
 
@@ -286,7 +286,6 @@ function generarPdfReporteFinanciero({ resumen, gastos, ingresos, reporte_visual
         { label: 'Ventas WhatsApp', valor: rv.ingresos.ventas_whatsapp },
         { label: 'Ventas orgánicas', valor: rv.ingresos.ventas_organicas },
         { label: 'Otros ingresos registrados', valor: rv.ingresos.otros_ingresos },
-        { label: 'Reembolsos/devoluciones (-)', valor: rv.ingresos.devoluciones },
       ], margenIzq, yBloques, ancho, METRIC_TERMS.ventasNetas.toUpperCase(), rv.ingresos.ingresos_netos);
       const altoGastos = dibujarListaConceptos(
         doc,

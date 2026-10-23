@@ -7,6 +7,8 @@ const { resolverRangoFechas } = require('../utils/rangoFechas');
 const MetaReportesService = require('./metaReportes.service');
 const MetaCampanaGastosService = require('./metaCampanaGastos.service');
 const { desgloseDelivery } = require('../utils/desgloseDelivery');
+const { calcularIvaFacturadoEnvio } = require('../utils/ivaPedido');
+const { costoEnvioNeto, comisionDelPedido, perdidaDeItem, costoPedidoFallido } = require('../utils/contabilidadPedido');
 
 /**
  * Servicio de Inteligencia Comercial y Analytics de Pedidos/Envíos
@@ -245,7 +247,7 @@ function getEnviosConItems(whereBase) {
         model: EnvioItem,
         as: 'items',
         include: [
-          { model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base'] },
+          { model: Producto, attributes: ['id', 'nombre', 'sku', 'precio_costo', 'precio_base', 'impuestos_incluidos'] },
           {
             model: EnvioItemComponente,
             as: 'componentes_vendidos',
@@ -269,6 +271,8 @@ function getKpisFinancieros(envios) {
   let costoComisionTotal = 0;
   let ivaFacturadoTotal = 0;
   let pedidosEntregadosCount = 0;
+  let costoLogisticoBrutoEntregados = 0;
+  const fallidos = { envio: 0, mercaderia: 0, recupero: 0, total: 0, pedidos: 0 };
 
   for (const e of envios) {
     const st = (e.estado || '').toLowerCase();
@@ -286,19 +290,18 @@ function getKpisFinancieros(envios) {
       // SIEMPRE el costo completo pagado al courier
       // (`costoLogisticoEntregados`), sin excepciones — las dos líneas son
       // independientes, cada una su propia plata, sin repartos cruzados.
+      // Envío, comisión e IVA salen de utils/contabilidadPedido e ivaPedido,
+      // las mismas reglas que Control Financiero: envío NETO (courier menos
+      // el delivery que pagó el cliente, porque Ventas netas no lo incluye),
+      // comisión sobre todo lo cobrado y IVA según "Precio incluye IVA".
       facturacionEntregada += desgloseEnvio(e).venta_producto;
-      costoLogisticoEntregados += costoEnvio;
+      costoLogisticoEntregados += costoEnvioNeto(e);
+      costoLogisticoBrutoEntregados += costoEnvio;
       pedidosEntregadosCount++;
 
-      // Comisión e IVA se calculan sobre el `monto` real del pedido, no sobre
-      // la venta de producto: la pasarela y Hacienda cobran sobre lo que
-      // efectivamente se facturó, flete incluido si estaba adentro.
-      const comisionPct = Number(e.comision_pct_aplicada || 0);
-      costoComisionTotal += monto * (comisionPct / 100);
+      costoComisionTotal += comisionDelPedido(e);
 
-      if (e.quiere_factura) {
-        ivaFacturadoTotal += monto * 0.10;
-      }
+      ivaFacturadoTotal += calcularIvaFacturadoEnvio(e);
 
       if (e.items && e.items.length > 0) {
         for (const item of e.items) {
@@ -312,6 +315,17 @@ function getKpisFinancieros(envios) {
     if (isPerdido) {
       valorPerdido += monto;
     }
+
+    // Un pedido devuelto o perdido no vende, pero cuesta: el viaje del
+    // courier y la mercadería perdida o devuelta dañada.
+    const fallido = costoPedidoFallido(e);
+    if (fallido.total !== 0 || fallido.envio > 0) {
+      fallidos.envio += fallido.envio;
+      fallidos.mercaderia += fallido.mercaderia;
+      fallidos.recupero += fallido.recupero;
+      fallidos.total += fallido.total;
+      fallidos.pedidos++;
+    }
   }
 
   const ticketPromedio = pedidosEntregadosCount > 0 ? Math.round(facturacionEntregada / pedidosEntregadosCount) : 0;
@@ -324,7 +338,7 @@ function getKpisFinancieros(envios) {
   // producto), así que acá no hay pass-through que cancelar: si el
   // cliente pagó de más para cubrir el flete, esa plata no entra a esta
   // cuenta — el flete es siempre y únicamente un costo, en su propia línea.
-  const margenBrutoEstimado = facturacionEntregada - costoMercaderiaEntregada - costoComisionTotal - ivaFacturadoTotal - costoLogisticoEntregados;
+  const margenBrutoEstimado = facturacionEntregada - costoMercaderiaEntregada - costoComisionTotal - ivaFacturadoTotal - costoLogisticoEntregados - fallidos.total;
   const pctMargenBruto = facturacionEntregada > 0 ? Number(((margenBrutoEstimado / facturacionEntregada) * 100).toFixed(1)) : 0;
 
   return {
@@ -337,7 +351,18 @@ function getKpisFinancieros(envios) {
     // ENTREGADOS; `costo_logistico_total` incluye además los que no se
     // entregaron. Se exponen los dos para que la tarjeta de Rentabilidad
     // pueda mostrar el importe que efectivamente se restó y cierre la cuenta.
-    costo_logistico_entregados: costoLogisticoEntregados,
+    // Neto: lo que el negocio puso de envío en los entregados (courier −
+    // delivery cobrado al cliente). El bruto queda para mostrar la cuenta.
+    costo_logistico_entregados: Math.round(costoLogisticoEntregados),
+    costo_logistico_bruto_entregados: Math.round(costoLogisticoBrutoEntregados),
+    delivery_cobrado_entregados: Math.round(costoLogisticoBrutoEntregados - costoLogisticoEntregados),
+    costo_pedidos_fallidos: Math.round(fallidos.total),
+    pedidos_fallidos_detalle: {
+      pedidos: fallidos.pedidos,
+      envio: Math.round(fallidos.envio),
+      mercaderia: Math.round(fallidos.mercaderia),
+      recupero: Math.round(fallidos.recupero),
+    },
     costo_logistico_por_entrega: costoLogisticoPorEntrega,
     costo_mercaderia_entregada: costoMercaderiaEntregada,
     costo_comision_total: Math.round(costoComisionTotal),
@@ -364,6 +389,7 @@ function getRentabilidadCanales(envios, gastosOperativos, canalesCatalogo = []) 
       comisiones: 0,
       logistica: 0,
       iva: 0,
+      fallidos: 0,
       operativos_atribuidos: 0,
       costos_totales: 0,
       utilidad_neta: 0,
@@ -385,6 +411,7 @@ function getRentabilidadCanales(envios, gastosOperativos, canalesCatalogo = []) 
     comisiones: 0,
     logistica: 0,
     iva: 0,
+    fallidos: 0,
     operativos_atribuidos: 0,
     costos_totales: 0,
     utilidad_neta: 0,
@@ -401,16 +428,17 @@ function getRentabilidadCanales(envios, gastosOperativos, canalesCatalogo = []) 
 
   for (const e of envios) {
     const st = (e.estado || '').toLowerCase();
-    if (st !== 'entregado') continue;
-
     const canal = resolverCanal(e);
-    const monto = Number(e.monto || 0);
-    const comisionPct = Number(e.comision_pct_aplicada || 0);
+    // Mismas reglas que la tarjeta de Rentabilidad (utils/contabilidadPedido).
+    if (st !== 'entregado') {
+      canal.fallidos += costoPedidoFallido(e).total;
+      continue;
+    }
 
     canal.ventas += Number(desgloseEnvio(e).venta_producto) || 0;
-    canal.comisiones += monto * (comisionPct / 100);
-    canal.logistica += Number(e.costo_envio || 0);
-    if (e.quiere_factura) canal.iva += monto * 0.10;
+    canal.comisiones += comisionDelPedido(e);
+    canal.logistica += costoEnvioNeto(e);
+    canal.iva += calcularIvaFacturadoEnvio(e);
 
     for (const item of e.items || []) {
       canal.costo_mercaderia += costoDeItem(item, e.usuario_id);
@@ -455,8 +483,9 @@ function getRentabilidadCanales(envios, gastosOperativos, canalesCatalogo = []) 
     c.comisiones = Math.round(c.comisiones);
     c.logistica = Math.round(c.logistica);
     c.iva = Math.round(c.iva);
+    c.fallidos = Math.round(c.fallidos);
     c.operativos_atribuidos = Math.round(c.operativos_atribuidos);
-    c.costos_totales = c.costo_mercaderia + c.publicidad + c.comisiones + c.logistica + c.iva + c.operativos_atribuidos;
+    c.costos_totales = c.costo_mercaderia + c.publicidad + c.comisiones + c.logistica + c.iva + c.fallidos + c.operativos_atribuidos;
     c.utilidad_neta = c.ventas - c.costos_totales;
     c.margen_neto = c.ventas > 0 ? Number(((c.utilidad_neta / c.ventas) * 100).toFixed(1)) : 0;
     c.roi_canal = c.costos_totales > 0 ? Number(((c.utilidad_neta / c.costos_totales) * 100).toFixed(1)) : null;
@@ -816,31 +845,8 @@ async function getComparativoPeriodo(whereBase, usuario_id, desde, hasta, produc
   };
 }
 
-/**
- * Mercadería perdida de UN EnvioItem, valorizada a lo que costó cuando se
- * vendió (el snapshot de EnvioItemComponente, nunca el precio_costo actual
- * del producto: eso cambiaría el pasado cada vez que se ajusta un costo).
- *
- * Solo cuenta lo que quedó registrado como perdido o devuelto DAÑADO. Dos
- * cosas que a propósito NO son pérdida:
- *  - `cantidad_devuelta_vendible`: vuelve al stock, se puede vender de nuevo.
- *  - que el pedido esté en estado "Perdido": el estado no implica que toda
- *    su mercadería se haya perdido, solo cuenta lo efectivamente registrado.
- *
- * Función aparte para poder probarla sin base de datos (ver los casos de
- * devolución vendible / dañada / pérdida en scripts/verificar-perdidas.js).
- */
-function perdidaDeItem(item) {
-  let unidades = 0;
-  let importe = 0;
-  for (const comp of item.componentes_vendidos || []) {
-    const perdidas = (comp.cantidad_perdida || 0) + (comp.cantidad_devuelta_danada || 0);
-    if (perdidas <= 0) continue;
-    unidades += perdidas;
-    importe += perdidas * (Number(comp.costo_unitario) || 0);
-  }
-  return { unidades, importe };
-}
+// perdidaDeItem vive en utils/contabilidadPedido (la usa también el costo
+// de pedidos fallidos). Se re-exporta abajo para scripts/verificar-perdidas.js.
 
 // 3. Ranking de Productos (¿Qué se vende, confirma y devuelve más?)
 function getProductosAnalytics(envios) {
@@ -909,9 +915,8 @@ function getProductosAnalytics(envios) {
       // El flete entra COMPLETO: siempre se le paga al courier. Cuando el
       // cliente lo cubrió, esa plata ya está sumada arriba dentro del monto
       // repartido, así que se cancela sola y la ganancia no cambia.
-      const montoFacturado = Number(e.monto || 0);
-      const comisionPedido = montoFacturado * (Number(e.comision_pct_aplicada || 0) / 100);
-      const ivaPedido = e.quiere_factura ? montoFacturado * 0.10 : 0;
+      const comisionPedido = comisionDelPedido(e);
+      const ivaPedido = calcularIvaFacturadoEnvio(e);
 
       // Comisión e IVA se reparten POR SEPARADO, no como una bolsa "costo
       // directo": el tooltip del dashboard muestra el desglose renglón por
@@ -932,12 +937,27 @@ function getProductosAnalytics(envios) {
       };
       comisionPorItem = repartir(comisionPedido);
       ivaPorItem = repartir(ivaPedido);
-      envioPorItem = repartir(Number(e.costo_envio || 0));
+      // Envío NETO (courier − delivery cobrado), igual que la tarjeta.
+      envioPorItem = repartir(costoEnvioNeto(e));
       costoDirectoPorItem = comisionPorItem.map((c, i) => c + ivaPorItem[i] + envioPorItem[i]);
       // La venta SIN el flete que venía adentro del monto. No entra en la
       // cuenta de la ganancia — se guarda solo para que el Margen Bruto
       // siga midiendo el producto puro y no se infle con el envío.
       ventaProductoPorItem = repartir(desgloseEnvio(e).venta_producto);
+    }
+
+    // Costo de un pedido devuelto o perdido (utils/contabilidadPedido): la
+    // mercadería va a la línea que se perdió; el viaje y el recupero del
+    // courier se reparten entre las líneas por subtotal. Así la suma de la
+    // tabla sigue cerrando con la tarjeta de Rentabilidad.
+    let fallidoPorItem = null;
+    const fallido = isEntregado ? null : costoPedidoFallido(e);
+    if (fallido && (fallido.total !== 0 || fallido.envio > 0) && e.items && e.items.length > 0) {
+      const subtotales = e.items.map(it => Number(it.subtotal || (it.precio_unitario * (it.cantidad || 1)) || 0));
+      const sumaSub = subtotales.reduce((a, b) => a + b, 0);
+      const comun = fallido.envio - fallido.recupero;
+      const partes = e.items.map((it, i) => (sumaSub > 0 ? (subtotales[i] / sumaSub) : 1 / e.items.length) * comun);
+      fallidoPorItem = e.items.map((it, i) => partes[i] + perdidaDeItem(it).importe);
     }
 
     if (e.items && e.items.length > 0) {
@@ -978,6 +998,9 @@ function getProductosAnalytics(envios) {
             venta_producto_total: 0,
             unidades_perdidas: 0,
             perdida: 0,
+            // Lo que costaron los pedidos devueltos/perdidos de este
+            // producto (viaje + mercadería − recupero). Entra en el Costo.
+            costo_fallidos: 0,
             canales: { WEB: 0, WHATSAPP: 0, OTROS: 0 }
           };
         }
@@ -1001,6 +1024,7 @@ function getProductosAnalytics(envios) {
           p.costo_total += costoDeItem(item, e.usuario_id);
         }
         if (isDevuelto) p.devueltos += 1;
+        if (fallidoPorItem) p.costo_fallidos += fallidoPorItem[idxItem];
 
         // Pérdida de mercadería — FUERA del `if (isEntregado)` a propósito:
         // un pedido que se perdió o se devolvió dañado nunca llega a
@@ -1328,15 +1352,15 @@ async function getCouriersAnalytics(whereBase, usuario_id) {
 async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
   const envios = await Envio.findAll({
     where: whereBase,
-    attributes: ['id', 'fecha', 'dispatchedAt', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura'],
+    attributes: ['id', 'fecha', 'dispatchedAt', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura', 'cupon_descuento', 'delivery_a_cargo', 'cargo_perdida_courier'],
     include: [
       {
         model: EnvioItem,
         as: 'items',
-        attributes: ['id', 'cantidad', 'producto_id'],
+        attributes: ['id', 'cantidad', 'producto_id', 'subtotal', 'precio_unitario'],
         include: [
-          { model: Producto, attributes: ['id', 'precio_costo', 'precio_base'] },
-          { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
+          { model: Producto, attributes: ['id', 'precio_costo', 'precio_base', 'impuestos_incluidos'] },
+          { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario', 'cantidad_perdida', 'cantidad_devuelta_danada'] },
         ],
       }
     ]
@@ -1359,24 +1383,24 @@ async function getTimelineTendencias(whereBase, fechaDesde, fechaHasta) {
     if (['confirmado', 'preparado', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st)) t.confirmados += 1;
     if (st === 'entregado') {
       t.entregados += 1;
-      const monto = Number(e.monto || 0);
-      const costoEnvioOrden = Number(e.costo_envio || 0);
-      const comisionPct = Number(e.comision_pct_aplicada || 0);
-      const costoComision = monto * (comisionPct / 100);
-      const iva = e.quiere_factura ? monto * 0.10 : 0;
+      const venta = Number(desgloseEnvio(e).venta_producto) || 0;
       let costoMercaderia = 0;
       if (e.items && e.items.length > 0) {
         for (const item of e.items) costoMercaderia += costoDeItem(item, e.usuario_id);
       }
-      // MISMA fórmula que getKpisFinancieros: la venta del día es el `monto`
-      // tal cual, y el costo resta el flete COMPLETO siempre — sin abrir
-      // por quién lo pagó. Si las dos fórmulas se separan, el gráfico
-      // dibuja una ganancia y la tarjeta muestra otra para el mismo período.
-      const costoOrden = costoMercaderia + costoComision + iva + costoEnvioOrden;
+      // MISMA fórmula que getKpisFinancieros: venta de producto, envío neto,
+      // comisión sobre lo cobrado e IVA (utils/contabilidadPedido). Antes el
+      // gráfico usaba el `monto` crudo y la tarjeta la venta de producto, y
+      // daban ganancias distintas para el mismo período.
+      const costoOrden = costoMercaderia + comisionDelPedido(e) + calcularIvaFacturadoEnvio(e) + costoEnvioNeto(e);
 
-      t.monto += monto;
+      t.monto += venta;
       t.costo += costoOrden;
-      t.ganancia += monto - costoOrden;
+      t.ganancia += venta - costoOrden;
+    } else {
+      const fallido = costoPedidoFallido(e).total;
+      t.costo += fallido;
+      t.ganancia -= fallido;
     }
     if (['devuelto', 'no entregado', 'fallido'].includes(st)) t.devueltos += 1;
     if (st === 'perdido') t.perdidos += 1;
@@ -1512,14 +1536,14 @@ async function getRankingLandings(whereRanking, desde, hasta, landingsTienda, li
   const [envios, visitas] = await Promise.all([
     Envio.findAll({
     where: whereRanking,
-    attributes: ['id', 'landing_id', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura'],
+    attributes: ['id', 'landing_id', 'estado', 'monto', 'costo_envio', 'comision_pct_aplicada', 'quiere_factura', 'cupon_descuento', 'delivery_a_cargo', 'cargo_perdida_courier'],
     include: [{
       model: EnvioItem,
       as: 'items',
-      attributes: ['id', 'cantidad'],
+      attributes: ['id', 'cantidad', 'subtotal', 'precio_unitario'],
       include: [
-        { model: Producto, attributes: ['id', 'precio_costo', 'precio_base'] },
-        { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario'] },
+        { model: Producto, attributes: ['id', 'precio_costo', 'precio_base', 'impuestos_incluidos'] },
+        { model: EnvioItemComponente, as: 'componentes_vendidos', attributes: ['cantidad', 'costo_unitario', 'cantidad_perdida', 'cantidad_devuelta_danada'] },
       ],
     }],
     }),
@@ -1562,17 +1586,20 @@ async function getRankingLandings(whereRanking, desde, hasta, landingsTienda, li
   for (const e of envios) {
     const f = fila(e.landing_id);
     f.pedidos++;
-    if ((e.estado || '').toLowerCase() !== 'entregado') continue;
+    if ((e.estado || '').toLowerCase() !== 'entregado') {
+      f.costo += costoPedidoFallido(e).total;
+      continue;
+    }
 
-    const monto = Number(e.monto || 0);
     f.entregados++;
-    // Misma regla que el resto del dashboard: la facturación es el `monto`
-    // tal cual, y el costo resta el flete COMPLETO — sin abrir por quién
-    // lo pagó, porque al courier se le paga igual.
-    f.facturacion += monto;
-    f.costo += Number(e.costo_envio || 0);
-    f.costo += monto * (Number(e.comision_pct_aplicada || 0) / 100);
-    if (e.quiere_factura) f.costo += monto * 0.10;
+    // Misma regla que la tarjeta de Rentabilidad (utils/contabilidadPedido).
+    // Antes la facturación era el `monto` y se restaba el flete completo:
+    // en el checkout de la landing el delivery va FUERA del monto, así que
+    // cada pedido restaba un envío que nunca se había sumado como ingreso.
+    f.facturacion += Number(desgloseEnvio(e).venta_producto) || 0;
+    f.costo += costoEnvioNeto(e);
+    f.costo += comisionDelPedido(e);
+    f.costo += calcularIvaFacturadoEnvio(e);
     for (const item of e.items || []) f.costo += costoDeItem(item, e.usuario_id);
   }
 
@@ -1722,16 +1749,16 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
   }
 
   // Insight 4: Desempeño de Confirmadores
-  if (confirmadores.length > 0) {
-    const topConf = confirmadores[0];
-    if (topConf.total_pedidos > 0) {
-      insights.push({
-        tipo: 'positivo',
-        icono: 'UserCheck',
-        titulo: 'Top Confirmador',
-        mensaje: `"${topConf.confirmador}" lidera el equipo con ${topConf.confirmados} pedidos confirmados (${topConf.tasa_confirmacion}% de efectividad).`,
-      });
-    }
+  // "Sin Confirmador Asignado" no es una persona: felicitarlo con 0
+  // confirmados era ruido. Solo cuenta quien confirmó algo.
+  const topConf = confirmadores.find(c => c.confirmador !== 'Sin Confirmador Asignado' && c.confirmados > 0);
+  if (topConf) {
+    insights.push({
+      tipo: 'positivo',
+      icono: 'UserCheck',
+      titulo: 'Top Confirmador',
+      mensaje: `"${topConf.confirmador}" lidera el equipo con ${topConf.confirmados} pedidos confirmados (${topConf.tasa_confirmacion}% de efectividad).`,
+    });
   }
 
   // Insight 5: Comparativa de Canales
@@ -1988,7 +2015,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
   for (const p of rankingProductos) {
     p.unidades = p.unidades_entregadas;
     p.venta = p.facturacion_total;
-    p.costo = Math.round(p.costo_total + p.costo_directo_pedido + p.costo_gasto_directo + p.costo_meta_directo + p.costo_prorrateado);
+    p.costo = Math.round(p.costo_total + p.costo_directo_pedido + p.costo_fallidos + p.costo_gasto_directo + p.costo_meta_directo + p.costo_prorrateado);
     p.ganancia = Math.round(p.venta - p.costo);
     p.perdida = Math.round(p.perdida);
     p.rentabilidad = p.venta > 0 ? Number(((p.ganancia / p.venta) * 100).toFixed(1)) : 0;
@@ -2011,6 +2038,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
       envio: Math.round(p.costo_envio),
       comision: Math.round(p.costo_comision),
       iva: Math.round(p.costo_iva),
+      pedidos_fallidos: Math.round(p.costo_fallidos),
       fijos: Math.round(p.costo_fijo_prorrateado),
       variables: Math.round(p.costo_variable_prorrateado),
       publicidad_directa: Math.round(p.costo_meta_directo),
@@ -2038,6 +2066,7 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     delete p.costo_comision;
     delete p.costo_iva;
     delete p.costo_envio;
+    delete p.costo_fallidos;
     delete p.venta_producto_total;
   }
 
@@ -2094,6 +2123,10 @@ exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = n
     Object.values(gastosOperativos.directos_por_producto).reduce((acc, v) => acc + v, 0)
   );
   kpisFinancieros.gastos_sin_clasificar = Math.round(gastosOperativos.sin_clasificar);
+  // Lo que la tarjeta de Rentabilidad resta entre la Utilidad Bruta y la
+  // Neta, renglón por renglón, para que la cuenta cierre a la vista:
+  // bruta − Meta − fijos − variables − gastos atados a producto = neta.
+  kpisFinancieros.gastos_directos_mostrados = Math.round(gastosADescontar - fijosMostrados - variablesMostrados - metaMostrado);
   kpisFinancieros.ganancia_neta_estimada = Math.round(gananciaNetaEstimada);
   kpisFinancieros.pct_margen_neto = pctMargenNeto;
 

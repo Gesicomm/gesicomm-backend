@@ -3,10 +3,30 @@ const router = express.Router();
 const ReporteService = require('../services/reporteService');
 const { verificarToken } = require('../middleware/autenticacion');
 const { exigirTiendaActiva } = require('../middleware/resolverTiendaActiva');
+const { resolverRangoFechas } = require('../utils/rangoFechas');
 
 // Todos los reportes filtran por la tienda activa; sin ella (cuenta de 2+
 // tiendas que todavía no eligió) sumarían las ventas de todas juntas.
 router.use(verificarToken, exigirTiendaActiva);
+
+// El período llega como preset ("este_mes", "mes_anterior"...) o como rango.
+// Casi todos los reportes solo filtran por fecha cuando reciben
+// fecha_desde/fecha_hasta, así que un preset suelto devolvía el historial
+// completo. Se traduce acá, una vez, con la misma regla de todos los
+// dashboards (resolverRangoFechas).
+router.use((req, _res, next) => {
+  const body = req.body || {};
+  if (body.periodo && !(body.fecha_desde && body.fecha_hasta)) {
+    // `mes` solo vale para "Por mes": el estado del filtro lo arrastra
+    // siempre y, si se pasara, ganaría sobre "Últimos 7 días" y el resto.
+    const { desde, hasta } = resolverRangoFechas({
+      ...body,
+      mes: body.periodo === 'personalizado_mes' ? body.mes : undefined,
+    });
+    req.body = { ...body, fecha_desde: desde, fecha_hasta: hasta };
+  }
+  next();
+});
 
 // POST /api/reportes/kpis
 router.post('/kpis', verificarToken, async (req, res) => {
