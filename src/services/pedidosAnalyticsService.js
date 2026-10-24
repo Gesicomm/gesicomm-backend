@@ -1721,8 +1721,8 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
     insights.push({
       tipo: 'positivo',
       icono: 'Trophy',
-      titulo: 'Producto de Alto Volumen',
-      mensaje: `"${top.nombre}" lidera la demanda con ${top.unidades_totales} unidades y una tasa de confirmación del ${top.tasa_confirmacion}%.`,
+      titulo: 'Tu producto más pedido',
+      mensaje: `"${top.nombre}": ${top.unidades_totales} unidades pedidas, y se confirma el ${top.tasa_confirmacion}% de sus pedidos.`,
     });
   }
 
@@ -1732,8 +1732,8 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
     insights.push({
       tipo: 'alerta',
       icono: 'AlertTriangle',
-      titulo: 'Oportunidad de Confirmación',
-      mensaje: `El producto "${criticoProd.nombre}" tiene una tasa de confirmación del ${criticoProd.tasa_confirmacion}%. Se sugiere revisar el speech comercial o la calidad de leads.`,
+      titulo: 'Se confirman pocos pedidos de un producto',
+      mensaje: `Solo se confirma el ${criticoProd.tasa_confirmacion}% de los pedidos de "${criticoProd.nombre}". Revisá qué se le dice al cliente al llamarlo, o de dónde vienen esos pedidos.`,
     });
   }
 
@@ -1743,8 +1743,8 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
     insights.push({
       tipo: 'critico',
       icono: 'Truck',
-      titulo: 'Alta Tasa de Devolución Logística',
-      mensaje: `El courier "${courierCritico.nombre}" registra un ${courierCritico.tasa_devolucion}% de devoluciones (${courierCritico.devueltos} pedidos), superior al umbral óptimo del 8%.`,
+      titulo: 'Un courier devuelve muchos pedidos',
+      mensaje: `A "${courierCritico.nombre}" se le devolvieron ${courierCritico.devueltos} pedidos (${courierCritico.tasa_devolucion}%). Lo normal es menos del 8%.`,
     });
   }
 
@@ -1756,8 +1756,8 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
     insights.push({
       tipo: 'positivo',
       icono: 'UserCheck',
-      titulo: 'Top Confirmador',
-      mensaje: `"${topConf.confirmador}" lidera el equipo con ${topConf.confirmados} pedidos confirmados (${topConf.tasa_confirmacion}% de efectividad).`,
+      titulo: 'Quién más confirmó',
+      mensaje: `${topConf.confirmador} confirmó ${topConf.confirmados} pedidos (el ${topConf.tasa_confirmacion}% de los que atendió).`,
     });
   }
 
@@ -1769,13 +1769,16 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
       insights.push({
         tipo: 'info',
         icono: 'TrendingUp',
-        titulo: 'Rendimiento por Canal',
-        mensaje: `El canal ${mejor} presenta un ${Math.abs(diff).toFixed(1)}% mayor tasa de confirmación.`,
+        titulo: 'Qué canal confirma más',
+        mensaje: `Los pedidos por ${mejor} se confirman ${Math.abs(diff).toFixed(1).replace('.', ',')} puntos más que los del otro canal.`,
       });
     }
   }
 
-  return insights;
+  // Primero lo que hay que resolver, después las buenas noticias: el
+  // Resumen muestra solo los primeros 4.
+  const ORDEN = { critico: 0, alerta: 1, info: 2, positivo: 3 };
+  return insights.sort((a, b) => (ORDEN[a.tipo] ?? 2) - (ORDEN[b.tipo] ?? 2));
 }
 
 // Función principal exportada
