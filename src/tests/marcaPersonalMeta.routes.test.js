@@ -3,7 +3,10 @@ jest.mock('../middleware/autenticacion', () => ({
 }));
 jest.mock('../utils/logger', () => ({ auditoria: jest.fn(), logger: { error: jest.fn() } }));
 jest.mock('../services/marcaPersonalMeta.service', () => ({
-  urlAutorizacion: jest.fn((state) => `https://www.facebook.com/v23.0/dialog/oauth?state=${state}`),
+  urlAutorizacion: jest.fn((state, tipo) => `https://www.facebook.com/v23.0/dialog/oauth?state=${state}&tipo=${tipo}`),
+  completarWhatsapp: jest.fn(),
+  numerosWhatsapp: jest.fn(async () => [{ id: '5001', numero: '+595 981 000001' }, { id: '5002', numero: '+1 555 000 0002' }]),
+  confirmarWhatsapp: jest.fn(async () => ({ conectado: '+595 981 000001', nombre: 'Mi Marca', permisos_faltantes: [] })),
   completarFacebook: jest.fn(),
   paginasDe: jest.fn(async () => [{ id: '1', nombre: 'A' }, { id: '2', nombre: 'B' }]),
   confirmarPagina: jest.fn(async () => ({ conectada: 'B', instagram: 'mimarca', permisos_faltantes: [] })),
@@ -88,5 +91,22 @@ describe('Marca Personal · rutas de conexión', () => {
   test('sin Página pendiente no se puede confirmar', async () => {
     const res = await request(app).post(BASE + '/facebook/confirmar').set('Origin', ORIGEN).send({ page_id: '2' });
     expect(res.status).toBe(409);
+  });
+
+  test('WhatsApp usa el mismo retorno, pide sus permisos y deja elegir el número', async () => {
+    service.completarWhatsapp.mockResolvedValue({ pendiente: { token: 'usuario-wa', metaUser: '900', expira: 1 } });
+    const inicio = await request(app).get(BASE + '/whatsapp/conectar').set('Origin', ORIGEN);
+    const destino = new URL(inicio.headers.location);
+    expect(destino.searchParams.get('tipo')).toBe('whatsapp');
+    const vuelta = await request(app).get(`${BASE}/facebook/callback?code=c&state=${destino.searchParams.get('state')}`).set('Origin', ORIGEN).set('Cookie', cookies(inicio));
+    expect(service.completarWhatsapp).toHaveBeenCalledWith(7, 'c');
+    expect(service.completarFacebook).not.toHaveBeenCalled();
+    const pendiente = cookies(vuelta);
+    expect(pendiente.join()).not.toContain('usuario-wa');
+    const estado = await request(app).get(BASE + '/estado').set('Origin', ORIGEN).set('Cookie', pendiente);
+    expect(estado.body.numeros_pendientes).toHaveLength(2);
+    const ok = await request(app).post(BASE + '/whatsapp/confirmar').set('Origin', ORIGEN).set('Cookie', pendiente).send({ phone_id: '5001' });
+    expect(ok.body.aviso).toEqual({ tipo: 'ok', texto: 'WhatsApp +595 981 000001 (Mi Marca) conectado.' });
+    expect(service.confirmarWhatsapp).toHaveBeenCalledWith(7, expect.objectContaining({ token: 'usuario-wa' }), '5001');
   });
 });

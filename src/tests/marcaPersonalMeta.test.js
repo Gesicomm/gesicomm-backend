@@ -23,7 +23,7 @@ function memoria() {
       const otra = filas.find((x) => x.plataforma === c.plataforma && x.external_id === c.external && x.account_id !== c.account);
       if (otra) throw Object.assign(new Error('dup'), { status: 409 });
       const i = filas.findIndex((x) => x.account_id === c.account && x.plataforma === c.plataforma);
-      const fila = { id: i >= 0 ? filas[i].id : seq++, account_id: c.account, usuario_id: c.usuario, plataforma: c.plataforma, external_id: c.external,
+      const fila = { id: i >= 0 ? filas[i].id : seq++, account_id: c.account, usuario_id: c.usuario, plataforma: c.plataforma, external_id: c.external, cuenta_id: c.cuenta ?? null,
         meta_user_id: c.metaUser, nombre: c.nombre, username: c.username, access_token: c.token, token_expira: c.expira, permisos: c.permisos, updated_at: new Date(AHORA) };
       if (i >= 0) filas[i] = fila; else filas.push(fila);
       return { id: fila.id };
@@ -198,5 +198,82 @@ describe('Marca Personal · Instagram y Facebook', () => {
     expect(r.metricas.reach).toBe(10);
     expect(r.metricas.views).toBeNull();
     await expect(svc.metricas(7, { desde: '2026-08-01', hasta: '2026-10-20' })).rejects.toThrow('30 días');
+  });
+
+  describe('WhatsApp', () => {
+    // Dos cuentas autorizadas (permisos granulares), una con dos números.
+    const respuestasWa = (extra = () => undefined) => (p, ruta, op) => {
+      const e = extra(ruta, op);
+      if (e !== undefined) return e;
+      if (ruta === 'oauth/access_token') return { access_token: 'usuario-wa', expires_in: 5184000 };
+      if (ruta === 'me') return { id: '900' };
+      if (ruta === 'debug_token') return { data: { granular_scopes: [{ scope: 'whatsapp_business_management', target_ids: ['111', '222'] }, { scope: 'whatsapp_business_messaging', target_ids: ['111'] }] } };
+      if (ruta === '111') return { id: '111', name: 'Mi Marca WA' };
+      if (ruta === '222') return { id: '222', name: 'Otra cuenta' };
+      if (ruta === '111/phone_numbers') return { data: [{ id: '5001', display_phone_number: '+595 981 000001', verified_name: 'Mi Marca' }] };
+      if (ruta === '222/phone_numbers') return { data: [{ id: '5002', display_phone_number: '+1 555 000 0002', verified_name: 'Test Number' }] };
+      if (ruta === 'me/permissions') return { data: ['whatsapp_business_management', 'whatsapp_business_messaging'].map((permission) => ({ permission, status: 'granted' })) };
+      return {};
+    };
+    const conWhatsapp = (store) => store.filas.push({ id: 70, account_id: 'marca-1', plataforma: 'whatsapp', external_id: '5001', cuenta_id: '111',
+      username: '+595 981 000001', access_token: EncryptionService.encrypt('tok-wa'), token_expira: new Date(AHORA + 30 * 86400000), updated_at: new Date(AHORA) });
+
+    test('con varios números espera la elección y solo acepta números autorizados', async () => {
+      const store = memoria();
+      const g = grafo(respuestasWa());
+      const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
+      const r = await svc.completarWhatsapp(7, 'code');
+      expect(r.pendiente).toMatchObject({ token: 'usuario-wa', metaUser: '900' });
+      expect((await svc.numerosWhatsapp(r.pendiente)).map((n) => n.id)).toEqual(['5001', '5002']);
+      await expect(svc.confirmarWhatsapp(7, r.pendiente, '9999')).rejects.toThrow('no pertenece');
+      const ok = await svc.confirmarWhatsapp(7, r.pendiente, '5001');
+      expect(ok).toMatchObject({ conectado: '+595 981 000001', permisos_faltantes: [] });
+      expect(store.filas[0]).toMatchObject({ plataforma: 'whatsapp', external_id: '5001', cuenta_id: '111', meta_user_id: '900' });
+      expect(EncryptionService.decrypt(store.filas[0].access_token)).toBe('usuario-wa');
+      // El token de la app para debug_token nunca sale del servidor ni se guarda.
+      expect(g.llamadas.find((l) => l.ruta === 'debug_token').token).toBe('fb-app|fb-secreto');
+    });
+
+    test('envía la plantilla hello_world y texto con el número conectado', async () => {
+      const store = memoria(); conWhatsapp(store);
+      const g = grafo(respuestasWa((ruta) => (ruta === '5001/messages' ? { contacts: [{ wa_id: '595981123456' }], messages: [{ id: 'wamid.1' }] } : undefined)));
+      const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
+      expect(await svc.enviarWhatsapp(7, { para: '+595 981 123-456', tipo: 'plantilla', plantilla: 'hello_world', idioma: 'en_US' }))
+        .toMatchObject({ id: 'wamid.1', para: '595981123456' });
+      expect(g.llamadas.find((l) => l.ruta === '5001/messages').json).toEqual({ messaging_product: 'whatsapp', recipient_type: 'individual', to: '595981123456', type: 'template', template: { name: 'hello_world', language: { code: 'en_US' } } });
+      await svc.enviarWhatsapp(7, { para: '595981123456', texto: 'Hola desde Gesicom' });
+      expect(g.llamadas.filter((l) => l.ruta === '5001/messages')[1].json).toMatchObject({ type: 'text', text: { body: 'Hola desde Gesicom' } });
+      await expect(svc.enviarWhatsapp(7, { para: '123', texto: 'x' })).rejects.toThrow('código de país');
+    });
+
+    test('fuera de las 24 h explica que solo se puede enviar una plantilla', async () => {
+      const store = memoria(); conWhatsapp(store);
+      const fuera = Object.assign(new Error('Re-engagement message'), { status: 400, metaCode: 131047 });
+      const svc = createService({ store, graph: grafo(respuestasWa((ruta) => (ruta === '5001/messages' ? fuera : undefined))), r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
+      await expect(svc.enviarWhatsapp(7, { para: '595981123456', texto: 'Hola' })).rejects.toThrow('plantilla aprobada');
+    });
+
+    test('lista y crea plantillas en la cuenta del número conectado', async () => {
+      const store = memoria(); conWhatsapp(store);
+      const g = grafo(respuestasWa((ruta, op) => {
+        if (ruta === '111/message_templates' && op.method === 'POST') return { id: '777', status: 'PENDING', category: 'UTILITY' };
+        if (ruta === '111/message_templates') return { data: [{ id: '1', name: 'hello_world', status: 'APPROVED', category: 'UTILITY', language: 'en_US', components: [{ type: 'BODY', text: 'Hello World' }] }] };
+        return undefined;
+      }));
+      const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
+      expect((await svc.plantillasWhatsapp(7, {})).items[0]).toMatchObject({ nombre: 'hello_world', estado: 'APPROVED', cuerpo: 'Hello World' });
+      const r = await svc.crearPlantilla(7, { nombre: 'confirmacion_turno', categoria: 'UTILITY', idioma: 'es', cuerpo: 'Tu turno quedó confirmado.', pie: 'Gesicom' });
+      expect(r).toEqual({ id: '777', estado: 'PENDING', categoria: 'UTILITY' });
+      expect(g.llamadas.find((l) => l.method === 'POST').json).toEqual({ name: 'confirmacion_turno', language: 'es', category: 'UTILITY', components: [{ type: 'BODY', text: 'Tu turno quedó confirmado.' }, { type: 'FOOTER', text: 'Gesicom' }] });
+      await expect(svc.crearPlantilla(7, { nombre: 'Con Mayúsculas', categoria: 'UTILITY', idioma: 'es', cuerpo: 'x' })).rejects.toThrow('minúsculas');
+      await expect(svc.crearPlantilla(7, { nombre: 'con_variable', categoria: 'UTILITY', idioma: 'es', cuerpo: 'Hola {{1}}' })).rejects.toThrow('sin variables');
+    });
+
+    test('un acceso vencido pide reconectar', async () => {
+      const store = memoria(); conWhatsapp(store);
+      store.filas[0].token_expira = new Date(AHORA - 1000);
+      const svc = createService({ store, graph: grafo(respuestasWa()), r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
+      await expect(svc.enviarWhatsapp(7, { para: '595981123456', texto: 'Hola' })).rejects.toThrow('venció');
+    });
   });
 });
