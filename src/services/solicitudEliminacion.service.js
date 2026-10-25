@@ -187,9 +187,14 @@ class SolicitudEliminacionService {
     const payload = this.parsearSignedRequest(signedRequest, appSecret);
     const metaUserId = String(payload.user_id);
 
-    const conexiones = await MetaIntegration.findAll({ where: { meta_user_id: metaUserId } });
+    // contexto.soloAdicionales: el callback de Instagram no toca Ads (MetaIntegration).
+    const conexiones = contexto.soloAdicionales ? [] : await MetaIntegration.findAll({ where: { meta_user_id: metaUserId } });
     if (conexiones.length > 0) {
       await MetaIntegration.destroy({ where: { meta_user_id: metaUserId } });
+    }
+    // Conexiones de Marca Personal del mismo usuario de Meta (ver marcaPersonalMeta).
+    if (contexto.borrarAdicionales) {
+      conexiones.push(...await contexto.borrarAdicionales(metaUserId));
     }
 
     const existente = await SolicitudEliminacion.findOne({
@@ -207,7 +212,7 @@ class SolicitudEliminacionService {
       estado: borradas ? 'completada' : 'recibida',
       meta_user_id: metaUserId,
       usuario_id: borradas ? conexiones[0].usuario_id : null,
-      inquilino_id: borradas ? conexiones[0].inquilino_id : null,
+      inquilino_id: borradas ? conexiones[0].inquilino_id ?? null : null,
       motivo: 'Desvinculación de la aplicación desde la configuración de Meta.',
       notas_internas: borradas
         ? `Borrado automático de ${conexiones.length} conexión(es) de Meta (ids ${conexiones.map((c) => c.id).join(', ')}).`
