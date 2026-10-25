@@ -187,8 +187,7 @@ class SolicitudEliminacionService {
     const payload = this.parsearSignedRequest(signedRequest, appSecret);
     const metaUserId = String(payload.user_id);
 
-    // contexto.soloAdicionales: el callback de Instagram no toca Ads (MetaIntegration).
-    const conexiones = contexto.soloAdicionales ? [] : await MetaIntegration.findAll({ where: { meta_user_id: metaUserId } });
+    const conexiones = await MetaIntegration.findAll({ where: { meta_user_id: metaUserId } });
     if (conexiones.length > 0) {
       await MetaIntegration.destroy({ where: { meta_user_id: metaUserId } });
     }
