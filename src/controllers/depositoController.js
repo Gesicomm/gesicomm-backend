@@ -145,6 +145,26 @@ exports.crear = async (req, res) => {
       return res.status(400).json({ error: `Faltan campos obligatorios: ${faltantes.join(', ')}` });
     }
 
+    // Mismo nombre y misma dirección en la tienda es casi siempre un doble
+    // alta (había dos "Depósito Test E2E" iguales y al cargar stock no se
+    // sabía cuál era cuál). Se avisa; si el comercio confirma, se crea.
+    if (req.body?.confirmar_duplicado !== true) {
+      const comparable = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const existentes = await Deposito.findAll({
+        where: { usuario_id, ...(req.usuario.tiendaId ? { tienda_id: req.usuario.tiendaId } : {}) },
+        attributes: ['id', 'nombre', 'direccion'],
+      });
+      const duplicado = existentes.find(d => comparable(d.nombre) === comparable(datos.nombre)
+        && comparable(d.direccion) === comparable(datos.direccion));
+      if (duplicado) {
+        return res.status(409).json({
+          error: `Ya tenés un depósito "${duplicado.nombre}" en ${duplicado.direccion}.`,
+          codigo: 'DEPOSITO_DUPLICADO',
+          deposito_id: duplicado.id,
+        });
+      }
+    }
+
     const deposito = await Deposito.create({ ...datos, usuario_id, tienda_id: req.usuario.tiendaId || null, activo: true });
     res.status(201).json(deposito);
   } catch (error) {
