@@ -28,6 +28,10 @@ router.post('/operaciones/envios', json(req => operaciones.crearEnvio(req.usuari
 router.get('/operaciones/envios/:id', json(req => operaciones.detalleEnvio(req.usuario, Number(req.params.id))));
 router.post('/operaciones/envios/:id/resolver', json(req => operaciones.resolverEnvio(req.usuario, Number(req.params.id), req.body)));
 router.put('/', json(req => service.save(req.usuario, req.body)));
+router.get('/contrato', handle(async (req, res) => {
+  const buffer = await service.contrato(req.usuario);
+  res.attachment('contrato-marco-raha.docx').type('application/vnd.openxmlformats-officedocument.wordprocessingml.document').send(buffer);
+}));
 router.post('/enviar', json(req => service.submit(req.usuario, req.body)));
 router.post('/documentos', (req, res, next) => upload(req, res, error => {
   if (!error) return next();

@@ -13,9 +13,13 @@ const schema = z.object({
   email: text(150), telefono: text(30), direccion: text(300), ciudad: text(100), departamento: text(100),
   actividad_economica: text(300), tipo_productos: text(600), operaciones_mensuales: text(10),
   banco: text(100), titular_cuenta: text(180), numero_cuenta: text(80), moneda: z.enum(['PYG', 'USD']).default('PYG'),
+  // Lo pide el Anexo II del contrato. Vacío en solicitudes anteriores al contrato.
+  tipo_cuenta: z.enum(['', 'Caja de ahorro', 'Cuenta corriente']).default(''),
 }).strict();
-const TIPOS = ['ruc', 'cedula'];
-const NOMBRE_TIPO = { ruc: 'constancia de RUC', cedula: 'cédula del representante legal' };
+const { generarContrato } = require('./contrato');
+// contrato: el contrato marco impreso, firmado y escaneado (solo PDF, va con todas sus páginas).
+const TIPOS = ['ruc', 'cedula', 'contrato'];
+const NOMBRE_TIPO = { ruc: 'la constancia de RUC', cedula: 'la cédula del representante legal', contrato: 'el contrato firmado' };
 const EDITABLE = ['borrador', 'observada'];
 // Ya enviada, los datos quedan fijos pero el comercio puede reemplazar un
 // documento si Raha se lo pide por fuera (ej. una cedula ilegible).
@@ -85,6 +89,7 @@ async function save(actor, input) {
 }
 async function upload(actor, tipo, version, file) {
   if (!TIPOS.includes(tipo)) fail('Tipo de documento invalido.');
+  if (tipo === 'contrato' && file?.mimetype !== 'application/pdf') fail('Subí el contrato firmado en un solo PDF con todas sus páginas.');
   let uploaded, reemplazados = [];
   try {
     let enviada = false;
@@ -101,11 +106,11 @@ async function upload(actor, tipo, version, file) {
       if (!enviada) return row.update({ version: row.version + 1 }, { transaction: t });
       // Raha ya la estaba viendo: queda registrado en el seguimiento.
       return row.update({ version: row.version + 1, historial: append(row, actor, row.estado, {
-        evento: 'documento_reemplazado', nota: `El comercio actualizó la ${NOMBRE_TIPO[tipo]}.`,
+        evento: 'documento_reemplazado', nota: `El comercio actualizó ${NOMBRE_TIPO[tipo]}.`,
         documento: { id: nuevo.id, tipo, nombre: nuevo.nombre, sha256: nuevo.sha256 } }) }, { transaction: t });
     });
     for (const doc of reemplazados) await storage.remove(doc).catch(() => logger.error({ mensaje: 'Raha: limpiar adjunto reemplazado pendiente', key: doc.storage_key }));
-    if (enviada) await notify(solicitud, actor, true, `el comercio actualizó la ${NOMBRE_TIPO[tipo]}`).catch(() => logger.error({ mensaje: 'Raha: notificacion pendiente', solicitudId: solicitud.id }));
+    if (enviada) await notify(solicitud, actor, true, `el comercio actualizó ${NOMBRE_TIPO[tipo]}`).catch(() => logger.error({ mensaje: 'Raha: notificacion pendiente', solicitudId: solicitud.id }));
     return serialize(solicitud);
   } catch (error) {
     if (uploaded) await storage.remove(uploaded).catch(() => logger.error({ mensaje: 'Raha: limpiar adjunto huerfano pendiente', key: uploaded.storage_key }));
@@ -149,7 +154,7 @@ async function submit(actor, input) {
     if (solicitud.estado === 'enviada_raha' && input.version === solicitud.version - 1 && require('node:util').isDeepStrictEqual(datos, solicitud.datos)) return solicitud;
     editable(solicitud, input.version);
     const docs = await RahaDocumento.findAll({ where: { solicitud_id: solicitud.id }, transaction: t });
-    for (const tipo of ['ruc', 'cedula']) if (!docs.some(d => d.tipo === tipo)) fail(`Adjunta el documento ${tipo === 'ruc' ? 'constancia de RUC' : 'cedula del representante legal'}.`);
+    for (const tipo of TIPOS) if (!docs.some(d => d.tipo === tipo)) fail(`Adjuntá ${NOMBRE_TIPO[tipo]}.`);
     // Al enviar, la solicitud queda visible directamente en el portal de Raha.
     return solicitud.update({ datos, estado: 'enviada_raha', enviado_at: new Date(), version: solicitud.version + 1,
       historial: append(solicitud, actor, 'enviada_raha', { consentimiento: true, datos, documentos: docs.map(d => ({ id: d.id, tipo: d.tipo, nombre: d.nombre, sha256: d.sha256 })) }) }, { transaction: t });
@@ -268,6 +273,11 @@ async function review(actor, id, input) {
   });
   await notify(row, actor, false).catch(() => logger.error({ mensaje: 'Raha: notificacion pendiente', solicitudId: row.id }));
   return serialize(row);
+}
+// Contrato marco completado con los datos guardados de la solicitud de la tienda.
+async function contrato(actor) {
+  const solicitud = await sequelize.transaction(t => owned(actor, t));
+  return generarContrato(solicitud.datos);
 }
 async function document(actor, id) {
   const doc = await RahaDocumento.findByPk(id);
@@ -473,7 +483,7 @@ async function updatePortalUser(actor, id, input) {
   await usuario.update({ ...resto, ...(password ? { password_hash: await bcrypt.hash(password, 10) } : {}) });
   return portalUsuarioPublico(usuario);
 }
-module.exports = { status, save, upload, remove, submit, list, review, document, detail, dossier, parse,
+module.exports = { status, save, upload, remove, submit, contrato, list, review, document, detail, dossier, parse,
   conexionAprobada,
   portalLogin, portalVerify, portalList, portalDetail, portalDocument, portalDossier, portalResolve,
   listPortalUsers, createPortalUser, updatePortalUser };
