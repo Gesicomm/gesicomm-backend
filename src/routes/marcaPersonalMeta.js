@@ -20,7 +20,7 @@ const COOKIE_OPTS = {
   sameSite: 'Lax',
   path: '/gesicom-auth/marca-personal/meta',
 };
-const COOKIES = { oauth: 'mp_meta_oauth', aviso: 'mp_meta_aviso', pendiente: 'mp_meta_fb_pendiente' };
+const COOKIES = { oauth: 'mp_meta_oauth', aviso: 'mp_meta_aviso', pendiente: 'mp_meta_fb_pendiente', whatsapp: 'mp_meta_wa_pendiente' };
 
 const sellar = (datos, minutos) => EncryptionService.encrypt(JSON.stringify({ ...datos, exp: Date.now() + minutos * 60000 }));
 function abrir(req, nombre) {
@@ -59,17 +59,27 @@ function responder(fn) {
 
 // --- Conexión ---------------------------------------------------------------
 
-// Un solo inicio de sesión de Facebook trae la Página y su Instagram vinculado.
-router.get('/facebook/conectar', async (req, res) => {
-  try {
-    const state = crypto.randomBytes(24).toString('hex');
-    const url = service.urlAutorizacion(state);
-    res.cookie(COOKIES.oauth, sellar({ usuario: req.usuario.id, state }, 10), { ...COOKIE_OPTS, maxAge: 10 * 60000 });
-    res.redirect(url);
-  } catch (error) {
-    avisar(res, req.usuario.id, 'error', error.status ? error.message : 'No se pudo iniciar la conexión.');
-    res.redirect(PANTALLA);
-  }
+// Un inicio de sesión de Facebook trae la Página y su Instagram vinculado; otro,
+// con permisos de WhatsApp, el número de WhatsApp Business. Los dos vuelven a
+// /facebook/callback (una sola URI registrada en Meta); el tipo va en la cookie.
+for (const tipo of ['facebook', 'whatsapp']) {
+  router.get(`/${tipo}/conectar`, async (req, res) => {
+    try {
+      const state = crypto.randomBytes(24).toString('hex');
+      const url = service.urlAutorizacion(state, tipo);
+      res.cookie(COOKIES.oauth, sellar({ usuario: req.usuario.id, state, tipo }, 10), { ...COOKIE_OPTS, maxAge: 10 * 60000 });
+      res.redirect(url);
+    } catch (error) {
+      avisar(res, req.usuario.id, 'error', error.status ? error.message : 'No se pudo iniciar la conexión.');
+      res.redirect(PANTALLA);
+    }
+  });
+}
+
+const avisoWhatsapp = (r) => ({
+  tipo: r.permisos_faltantes?.length ? 'aviso' : 'ok',
+  texto: `WhatsApp ${r.conectado}${r.nombre ? ' (' + r.nombre + ')' : ''} conectado.` + (r.permisos_faltantes?.length
+    ? ` Faltan permisos (${r.permisos_faltantes.join(', ')}): reconectá y aceptalos para enviar mensajes y administrar plantillas.` : ''),
 });
 
 const textoConectada = (r) => r.instagram
@@ -86,6 +96,17 @@ router.get('/facebook/callback', async (req, res) => {
     if (req.query.error) throw Object.assign(new Error('Cancelaste la autorización en Meta. No se conectó nada.'), { status: 400 });
     if (!oauth || typeof req.query.state !== 'string' || req.query.state !== oauth.state || typeof req.query.code !== 'string') {
       throw Object.assign(new Error('La autorización venció o no coincide. Volvé a intentar.'), { status: 400 });
+    }
+    if (oauth.tipo === 'whatsapp') {
+      const r = await service.completarWhatsapp(req.usuario.id, req.query.code);
+      if (r.pendiente) {
+        res.cookie(COOKIES.whatsapp, sellar({ usuario: req.usuario.id, ...r.pendiente }, 15), { ...COOKIE_OPTS, maxAge: 15 * 60000 });
+      } else {
+        auditoria('MARCA_PERSONAL_META_CONECTADO', { usuarioId: req.usuario.id, whatsapp: true });
+        const a = avisoWhatsapp(r);
+        avisar(res, req.usuario.id, a.tipo, a.texto);
+      }
+      return res.redirect(PANTALLA);
     }
     const r = await service.completarFacebook(req.usuario.id, req.query.code);
     if (r.pendiente) {
@@ -111,7 +132,13 @@ router.get('/estado', responder(async (req, res) => {
     try { paginas_pendientes = await service.paginasDe(pendiente); }
     catch { res.clearCookie(COOKIES.pendiente, COOKIE_OPTS); }
   }
-  return { ...estado, aviso: aviso ? { tipo: aviso.tipo, texto: aviso.texto } : null, paginas_pendientes };
+  let numeros_pendientes = null;
+  const wa = abrir(req, COOKIES.whatsapp);
+  if (wa) {
+    try { numeros_pendientes = await service.numerosWhatsapp(wa); }
+    catch { res.clearCookie(COOKIES.whatsapp, COOKIE_OPTS); }
+  }
+  return { ...estado, aviso: aviso ? { tipo: aviso.tipo, texto: aviso.texto } : null, paginas_pendientes, numeros_pendientes };
 }));
 
 router.post('/facebook/confirmar', responder(async (req, res) => {
@@ -125,6 +152,20 @@ router.post('/facebook/confirmar', responder(async (req, res) => {
 
 router.post('/facebook/cancelar', responder(async (req, res) => {
   res.clearCookie(COOKIES.pendiente, COOKIE_OPTS);
+  return { ok: true };
+}));
+
+router.post('/whatsapp/confirmar', responder(async (req, res) => {
+  const pendiente = abrir(req, COOKIES.whatsapp);
+  if (!pendiente) throw Object.assign(new Error('La autorización venció. Volvé a conectar WhatsApp.'), { status: 409 });
+  const r = await service.confirmarWhatsapp(req.usuario.id, pendiente, req.body?.phone_id);
+  res.clearCookie(COOKIES.whatsapp, COOKIE_OPTS);
+  auditoria('MARCA_PERSONAL_META_CONECTADO', { usuarioId: req.usuario.id, whatsapp: true });
+  return { conectado: r.conectado, aviso: avisoWhatsapp(r) };
+}));
+
+router.post('/whatsapp/cancelar', responder(async (req, res) => {
+  res.clearCookie(COOKIES.whatsapp, COOKIE_OPTS);
   return { ok: true };
 }));
 
@@ -155,6 +196,9 @@ const acciones = {
   '/instagram/mensajes/enviar': (req) => service.enviarMensaje(req.usuario.id, req.body),
   '/instagram/metricas': (req) => service.metricas(req.usuario.id, req.body),
   '/instagram/metricas-publicacion': (req) => service.metricasPublicacion(req.usuario.id, req.body),
+  '/whatsapp/enviar': (req) => service.enviarWhatsapp(req.usuario.id, req.body),
+  '/whatsapp/plantillas': (req) => service.plantillasWhatsapp(req.usuario.id, req.body),
+  '/whatsapp/plantillas/crear': (req) => service.crearPlantilla(req.usuario.id, req.body),
 };
 for (const [ruta, fn] of Object.entries(acciones)) router.post(ruta, responder(fn));
 

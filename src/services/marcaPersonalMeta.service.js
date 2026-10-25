@@ -27,6 +27,9 @@ const SCOPES = [
   'instagram_manage_messages',
   'instagram_manage_insights',
 ];
+// WhatsApp se conecta con su propio inicio de sesión: solo pide lo de WhatsApp.
+const SCOPES_WHATSAPP = ['whatsapp_business_management', 'whatsapp_business_messaging'];
+const IDIOMAS_PLANTILLA = ['es', 'es_AR', 'es_MX', 'es_ES', 'en_US', 'pt_BR'];
 
 const MEDIOS = {
   imagen: { tipos: ['image/jpeg'], max: 8 * 1024 * 1024, ext: 'jpg' },
@@ -59,7 +62,7 @@ function config() {
 function databaseStore() {
   const db = require('../config/database');
   const q = async (sql, replacements = {}) => (await db.query(sql, { replacements }))[0];
-  const COLS = 'id, account_id, usuario_id, plataforma, external_id, meta_user_id, nombre, username, access_token, token_expira, permisos, created_at, updated_at';
+  const COLS = 'id, account_id, usuario_id, plataforma, external_id, cuenta_id, meta_user_id, nombre, username, access_token, token_expira, permisos, created_at, updated_at';
   return {
     conexiones: (account) => q(`SELECT ${COLS} FROM marca_personal_meta_conexiones WHERE account_id=:account ORDER BY plataforma`, { account }),
     async conexion(account, plataforma) {
@@ -68,12 +71,12 @@ function databaseStore() {
     async guardarConexion(c) {
       try {
         return (await q(`INSERT INTO marca_personal_meta_conexiones
-          (account_id, usuario_id, plataforma, external_id, meta_user_id, nombre, username, access_token, token_expira, permisos)
-          VALUES (:account, :usuario, :plataforma, :external, :metaUser, :nombre, :username, :token, :expira, CAST(:permisos AS JSONB))
-          ON CONFLICT (account_id, plataforma) DO UPDATE SET usuario_id=EXCLUDED.usuario_id, external_id=EXCLUDED.external_id,
+          (account_id, usuario_id, plataforma, external_id, cuenta_id, meta_user_id, nombre, username, access_token, token_expira, permisos)
+          VALUES (:account, :usuario, :plataforma, :external, :cuenta, :metaUser, :nombre, :username, :token, :expira, CAST(:permisos AS JSONB))
+          ON CONFLICT (account_id, plataforma) DO UPDATE SET usuario_id=EXCLUDED.usuario_id, external_id=EXCLUDED.external_id, cuenta_id=EXCLUDED.cuenta_id,
             meta_user_id=EXCLUDED.meta_user_id, nombre=EXCLUDED.nombre, username=EXCLUDED.username, access_token=EXCLUDED.access_token,
             token_expira=EXCLUDED.token_expira, permisos=EXCLUDED.permisos, updated_at=NOW()
-          RETURNING id`, { ...c, permisos: JSON.stringify(c.permisos || []) }))[0];
+          RETURNING id`, { cuenta: null, ...c, permisos: JSON.stringify(c.permisos || []) }))[0];
       } catch (e) {
         if (e?.original?.code === '23505' || e?.parent?.code === '23505') {
           throw error('Esta cuenta ya está conectada en otra marca de Gesicom. Desconectala allí primero.', 409);
@@ -124,14 +127,18 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     if (!c) {
       throw error(plataforma === 'instagram'
         ? 'Tu Página de Facebook no tiene una cuenta profesional de Instagram vinculada. Vinculala en Meta y volvé a conectar.'
-        : 'Conectá tu Página de Facebook primero.', 409);
+        : plataforma === 'whatsapp' ? 'Conectá tu número de WhatsApp Business primero.' : 'Conectá tu Página de Facebook primero.', 409);
+    }
+    // WhatsApp usa el token de usuario de larga duración (60 días).
+    if (c.token_expira && new Date(c.token_expira).getTime() <= ahora()) {
+      throw error('El acceso venció. Volvé a conectar desde «Conexiones».', 409);
     }
     return { ...c, token: EncryptionService.decrypt(c.access_token) };
   }
 
   const publica = (c) => ({
-    id: c.id, plataforma: c.plataforma, external_id: c.external_id, nombre: c.nombre, username: c.username,
-    permisos: c.permisos || [], conectada_en: c.updated_at,
+    id: c.id, plataforma: c.plataforma, external_id: c.external_id, cuenta_id: c.cuenta_id || null, nombre: c.nombre, username: c.username,
+    permisos: c.permisos || [], conectada_en: c.updated_at, vence: c.token_expira || null,
   });
 
   async function estado(usuario) {
@@ -140,23 +147,30 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     return { conexiones: (await db().conexiones(account)).map(publica), disponible: Boolean(cfg.facebookAppId && cfg.facebookSecret) };
   }
 
-  function urlAutorizacion(state) {
+  // Facebook (Página e Instagram) y WhatsApp usan el mismo retorno; cambian los permisos.
+  function urlAutorizacion(state, tipo = 'facebook') {
     const cfg = config();
     if (!cfg.facebookAppId || !cfg.facebookSecret) throw error('La conexión con Facebook todavía no está configurada en Gesicom.', 503);
     const u = new URL(`https://www.facebook.com/${process.env.FACEBOOK_API_VERSION || 'v23.0'}/dialog/oauth`);
-    u.search = new URLSearchParams({ client_id: cfg.facebookAppId, redirect_uri: `${cfg.base}/facebook/callback`, response_type: 'code', scope: SCOPES.join(','), state }).toString();
+    const scopes = tipo === 'whatsapp' ? SCOPES_WHATSAPP : SCOPES;
+    u.search = new URLSearchParams({ client_id: cfg.facebookAppId, redirect_uri: `${cfg.base}/facebook/callback`, response_type: 'code', scope: scopes.join(','), state }).toString();
     return u.href;
+  }
+
+  async function tokenDeUsuario(code) {
+    const cfg = config();
+    const corto = await g().facebook('oauth/access_token', { params: { client_id: cfg.facebookAppId, client_secret: cfg.facebookSecret, redirect_uri: `${cfg.base}/facebook/callback`, code } });
+    const largo = await g().facebook('oauth/access_token', { params: { grant_type: 'fb_exchange_token', client_id: cfg.facebookAppId, client_secret: cfg.facebookSecret, fb_exchange_token: corto.access_token } });
+    const yo = await g().facebook('me', { token: largo.access_token, params: { fields: 'id' } });
+    return { token: largo.access_token, metaUser: String(yo.id), expira: largo.expires_in ? ahora() + Number(largo.expires_in) * 1000 : ahora() + 60 * 86400000 };
   }
 
   // Devuelve las Páginas que administra quien autorizó. Con una sola se
   // conecta directo; con varias, el usuario elige (ver confirmarPagina).
   async function completarFacebook(usuario, code) {
     await marca(usuario);
-    const cfg = config();
-    const corto = await g().facebook('oauth/access_token', { params: { client_id: cfg.facebookAppId, client_secret: cfg.facebookSecret, redirect_uri: `${cfg.base}/facebook/callback`, code } });
-    const largo = await g().facebook('oauth/access_token', { params: { grant_type: 'fb_exchange_token', client_id: cfg.facebookAppId, client_secret: cfg.facebookSecret, fb_exchange_token: corto.access_token } });
-    const yo = await g().facebook('me', { token: largo.access_token, params: { fields: 'id' } });
-    const pendiente = { token: largo.access_token, metaUser: String(yo.id) };
+    const { token, metaUser } = await tokenDeUsuario(code);
+    const pendiente = { token, metaUser };
     const paginas = await paginasDe(pendiente);
     if (paginas.length === 0) throw error('Tu usuario de Facebook no administra ninguna Página, o no la seleccionaste al autorizar.', 409);
     if (paginas.length === 1) return confirmarPagina(usuario, pendiente, paginas[0].id);
@@ -198,6 +212,121 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     if (!borrada) throw error('Conexión no encontrada.', 404);
     if (borrada.plataforma === 'facebook') await db().borrarPlataforma(account, 'instagram');
     return { desconectada: borrada.plataforma };
+  }
+
+  // --- WhatsApp (Cloud API) ---------------------------------------------------
+  // Las cuentas de WhatsApp Business autorizadas salen de los permisos
+  // granulares del token (debug_token), sin pedir business_management.
+  async function completarWhatsapp(usuario, code) {
+    await marca(usuario);
+    const pendiente = await tokenDeUsuario(code);
+    const numeros = await numerosWhatsapp(pendiente);
+    if (numeros.length === 0) throw error('No autorizaste ninguna cuenta de WhatsApp Business con números, o la cuenta todavía no tiene un número.', 409);
+    if (numeros.length === 1) return confirmarWhatsapp(usuario, pendiente, numeros[0].id);
+    return { pendiente };
+  }
+
+  async function numerosWhatsapp(pendiente) {
+    const cfg = config();
+    const debug = await g().facebook('debug_token', { token: `${cfg.facebookAppId}|${cfg.facebookSecret}`, params: { input_token: pendiente.token } });
+    const cuentas = [...new Set((debug.data?.granular_scopes || [])
+      .filter((s) => s.scope === 'whatsapp_business_management' || s.scope === 'whatsapp_business_messaging')
+      .flatMap((s) => s.target_ids || []).map(String))];
+    const numeros = [];
+    for (const waba of cuentas) {
+      const [cuenta, tel] = await Promise.all([
+        g().facebook(idMeta(waba, 'Cuenta de WhatsApp'), { token: pendiente.token, params: { fields: 'id,name' } }).catch(() => ({ id: waba, name: null })),
+        g().facebook(`${waba}/phone_numbers`, { token: pendiente.token, params: { fields: 'id,display_phone_number,verified_name,quality_rating', limit: 50 } }).catch(() => ({ data: [] })),
+      ]);
+      for (const n of tel.data || []) {
+        numeros.push({ id: String(n.id), cuenta_id: waba, cuenta: cuenta.name || waba, numero: n.display_phone_number, nombre: n.verified_name || null, calidad: n.quality_rating || null });
+      }
+    }
+    return numeros;
+  }
+
+  async function confirmarWhatsapp(usuario, pendiente, phoneId) {
+    const account = await marca(usuario);
+    const id = idMeta(phoneId, 'Número');
+    // Solo se acepta un número de las cuentas que el usuario autorizó en Meta.
+    const numero = (await numerosWhatsapp(pendiente)).find((n) => n.id === id);
+    if (!numero) throw error('Ese número no pertenece a las cuentas de WhatsApp Business que autorizaste.', 403);
+    const permisos = ((await g().facebook('me/permissions', { token: pendiente.token })).data || [])
+      .filter((p) => p.status === 'granted').map((p) => p.permission);
+    await db().guardarConexion({
+      account, usuario, plataforma: 'whatsapp', external: id, cuenta: numero.cuenta_id, metaUser: pendiente.metaUser,
+      nombre: numero.nombre || numero.cuenta, username: numero.numero,
+      token: EncryptionService.encrypt(pendiente.token), expira: new Date(pendiente.expira || ahora() + 60 * 86400000), permisos,
+    });
+    return { conectado: numero.numero, nombre: numero.nombre, permisos_faltantes: SCOPES_WHATSAPP.filter((s) => !permisos.includes(s)) };
+  }
+
+  const telefono = (v) => {
+    const s = String(v ?? '').replace(/[\s()+.-]/g, '');
+    if (!/^\d{8,15}$/.test(s)) throw error('Escribí el número con código de país, solo dígitos (por ejemplo 595981123456).');
+    return s;
+  };
+
+  // Fuera de las 24 h posteriores al último mensaje de la persona, WhatsApp
+  // solo acepta plantillas aprobadas; Meta lo informa con el código 131047.
+  async function enviarWhatsapp(usuario, body) {
+    const account = await marca(usuario);
+    const c = await conexionLista(account, 'whatsapp');
+    const para = telefono(body?.para);
+    let mensaje;
+    if (body?.tipo === 'plantilla') {
+      const nombre = String(body?.plantilla || '');
+      if (!/^[a-z0-9_]{1,512}$/.test(nombre)) throw error('Elegí una plantilla.');
+      const idioma = String(body?.idioma || '');
+      if (!/^[a-z]{2}(_[A-Z]{2})?$/.test(idioma)) throw error('Idioma de plantilla inválido.');
+      mensaje = { type: 'template', template: { name: nombre, language: { code: idioma } } };
+    } else {
+      const contenido = texto(body?.texto, 4096, 'El mensaje');
+      if (!contenido) throw error('Escribí el mensaje.');
+      mensaje = { type: 'text', text: { body: contenido } };
+    }
+    try {
+      const r = await g().facebook(`${c.external_id}/messages`, { method: 'POST', token: c.token, json: { messaging_product: 'whatsapp', recipient_type: 'individual', to: para, ...mensaje } });
+      const id = r.messages?.[0]?.id;
+      if (!id) throw error('WhatsApp no confirmó el envío. Revisá el chat antes de repetir.', 503);
+      return { id, para: r.contacts?.[0]?.wa_id || para, estado: r.messages?.[0]?.message_status || 'accepted' };
+    } catch (e) {
+      if (e.metaCode === 131047) throw error('Pasaron más de 24 horas desde el último mensaje de esa persona: WhatsApp solo permite enviarle una plantilla aprobada.', 409);
+      if (e.metaCode === 131030) throw error('Con el número de prueba de Meta solo podés escribir a destinatarios agregados en WhatsApp → Configuración de la API.', 409);
+      throw e;
+    }
+  }
+
+  async function plantillasWhatsapp(usuario, body) {
+    const account = await marca(usuario);
+    const c = await conexionLista(account, 'whatsapp');
+    if (!c.cuenta_id) throw error('Volvé a conectar WhatsApp para administrar plantillas.', 409);
+    const r = await g().facebook(`${idMeta(c.cuenta_id, 'Cuenta de WhatsApp')}/message_templates`, { token: c.token, params: { fields: 'id,name,status,category,language,components,rejected_reason', limit: 25, after: cursor(body?.after) } });
+    return {
+      items: (r.data || []).map((p) => ({
+        id: p.id, nombre: p.name, estado: p.status, categoria: p.category, idioma: p.language, motivo_rechazo: p.rejected_reason && p.rejected_reason !== 'NONE' ? p.rejected_reason : null,
+        cuerpo: (p.components || []).find((x) => x.type === 'BODY')?.text || '',
+      })),
+      ...paging(r),
+    };
+  }
+
+  // Plantillas de texto sin variables: es lo que el formulario permite crear.
+  async function crearPlantilla(usuario, body) {
+    const account = await marca(usuario);
+    const c = await conexionLista(account, 'whatsapp');
+    if (!c.cuenta_id) throw error('Volvé a conectar WhatsApp para administrar plantillas.', 409);
+    const nombre = String(body?.nombre || '').trim();
+    if (!/^[a-z0-9_]{1,512}$/.test(nombre)) throw error('El nombre va en minúsculas, números y guiones bajos (por ejemplo confirmacion_turno).');
+    if (!['UTILITY', 'MARKETING'].includes(body?.categoria)) throw error('Elegí la categoría.');
+    if (!IDIOMAS_PLANTILLA.includes(body?.idioma)) throw error('Elegí el idioma.');
+    const cuerpo = texto(body?.cuerpo, 1024, 'El texto');
+    if (!cuerpo) throw error('Escribí el texto de la plantilla.');
+    if (/\{\{/.test(cuerpo)) throw error('Esta versión crea plantillas sin variables: quitá los {{ }}.');
+    const pie = texto(body?.pie, 60, 'El pie');
+    const componentes = [{ type: 'BODY', text: cuerpo }, ...(pie ? [{ type: 'FOOTER', text: pie }] : [])];
+    const r = await g().facebook(`${idMeta(c.cuenta_id, 'Cuenta de WhatsApp')}/message_templates`, { method: 'POST', token: c.token, json: { name: nombre, language: body.idioma, category: body.categoria, components: componentes } });
+    return { id: String(r.id), estado: r.status || 'PENDING', categoria: r.category || body.categoria };
   }
 
   // Meta descarga los archivos desde una URL pública: se suben a R2 bajo un
@@ -478,10 +607,11 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
 
   return {
     estado, urlAutorizacion, completarFacebook, paginasDe, confirmarPagina, desconectar,
+    completarWhatsapp, numerosWhatsapp, confirmarWhatsapp, enviarWhatsapp, plantillasWhatsapp, crearPlantilla,
     subirMedio, publicarInstagram, avanzar, publicarFacebook, historial, publicaciones,
     comentarios, responderComentario, ocultarComentario, conversaciones, mensajes, enviarMensaje,
     metricas, metricasPublicacion, borrarPorMetaUser,
   };
 }
 
-module.exports = { createService, SCOPES, ...createService() };
+module.exports = { createService, SCOPES, SCOPES_WHATSAPP, ...createService() };
