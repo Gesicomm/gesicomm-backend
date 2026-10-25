@@ -84,6 +84,48 @@ const revocarEnMeta = async (integracion) => {
     }
 };
 
+// Conexión elegida a medias: el token ya se obtuvo pero falta que el usuario
+// elija qué portafolios conectar. Vive solo en esta cookie cifrada (AES-GCM),
+// nunca en la URL ni en la base.
+const PENDIENTE_COOKIE = 'meta_oauth_pendiente';
+const PENDIENTE_TTL_MS = 15 * 60 * 1000;
+const cookiePendienteOpts = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'Lax',
+};
+
+const leerPendiente = (req) => {
+    const crudo = req.cookies?.[PENDIENTE_COOKIE];
+    if (!crudo) return null;
+    try {
+        const p = JSON.parse(EncryptionService.decrypt(crudo));
+        if (!p?.token || !(p.expira > Date.now())) return null;
+        if (p.tenantId !== String(req.usuario.tenantId) || p.userId !== String(req.usuario.id)) return null;
+        return p;
+    } catch {
+        return null;
+    }
+};
+
+// Una fila por portafolio (inquilino + usuario + BM). Reconectar uno ya
+// guardado renueva su token en lugar de duplicarlo.
+const guardarConexion = async ({ tenantId, userId, metaUserId, token, business }) => {
+    const datos = {
+        nombre: business.name,
+        access_token: EncryptionService.encrypt(token),
+        meta_user_id: metaUserId,
+        business_name: business.name,
+        estado: 'conectado'
+    };
+    const [integracion, created] = await MetaIntegration.findOrCreate({
+        where: { inquilino_id: tenantId, usuario_id: userId, business_id: business.id },
+        defaults: datos
+    });
+    if (!created) await integracion.update(datos);
+    return integracion;
+};
+
 // GET /api/meta/connect -> Inicia el flujo OAuth
 // Query param opcional: ?mode=add_store para agregar una nueva tienda sin reemplazar la actual
 // Query param opcional: ?redirect_to= para indicar a dónde redirigir al finalizar
@@ -214,61 +256,10 @@ router.get('/callback', async (req, res) => {
             return res.redirect(`${frontendRedirect}${redirectPath}?meta_error=${encodeURIComponent('No se encontró ningún Business Manager asociado a esta cuenta de Facebook.')}`);
         }
 
-        const business = businessData.data[0];
-        const encryptedToken = EncryptionService.encrypt(longLivedToken);
-
         // ID app-scoped de quien autorizó: es lo que manda Meta en el Data
         // Deletion Callback, y sin él no se puede encontrar esta conexión.
         const metaUser = await fetchMeta(`https://graph.facebook.com/${FB_API_VERSION}/me?fields=id&access_token=${longLivedToken}`);
         const metaUserId = String(metaUser.id);
-
-        // 6. Guardar según el modo
-        if (mode === 'add_store') {
-            // Verificar que este BM no esté ya conectado para este tenant
-            const existing = await MetaIntegration.findOne({
-                where: { inquilino_id: tenantId, usuario_id: userId, business_id: business.id }
-            });
-            if (existing) {
-                res.clearCookie('meta_oauth_state');
-                res.clearCookie('meta_oauth_tenant');
-                res.clearCookie('meta_oauth_user');
-                res.clearCookie('meta_oauth_mode');
-                res.clearCookie('meta_oauth_redirect');
-                return res.redirect(`${frontendRedirect}${redirectPath}?meta_error=${encodeURIComponent('Esta tienda ya está conectada.')}`);
-            }
-            // Crear nuevo registro (sin reemplazar los existentes)
-            await MetaIntegration.create({
-                inquilino_id: tenantId,
-                usuario_id: userId,
-                nombre: business.name,
-                access_token: encryptedToken,
-                meta_user_id: metaUserId,
-                business_id: business.id,
-                business_name: business.name,
-                estado: 'conectado'
-            });
-        } else {
-            // Modo original: upsert del primer registro del tenant
-            const [integracion, created] = await MetaIntegration.findOrCreate({
-                where: { inquilino_id: tenantId, usuario_id: userId, business_id: business.id },
-                defaults: {
-                    nombre: business.name,
-                    access_token: encryptedToken,
-                    meta_user_id: metaUserId,
-                    business_name: business.name,
-                    estado: 'conectado'
-                }
-            });
-            if (!created) {
-                await integracion.update({
-                    nombre: business.name,
-                    access_token: encryptedToken,
-                    meta_user_id: metaUserId,
-                    business_name: business.name,
-                    estado: 'conectado'
-                });
-            }
-        }
 
         res.clearCookie('meta_oauth_state');
         res.clearCookie('meta_oauth_tenant');
@@ -276,9 +267,26 @@ router.get('/callback', async (req, res) => {
         res.clearCookie('meta_oauth_mode');
         res.clearCookie('meta_oauth_redirect');
 
-        auditoria('META_CONECTADO', { tenantId, businessId: business.id, mode });
+        // Con un solo portafolio no hay nada que elegir. Con varios, el token
+        // queda pendiente (cifrado, en cookie HttpOnly) hasta que el usuario
+        // elija en Configuración cuáles conectar: antes se guardaba siempre el
+        // primero que devolvía Meta.
+        if (businessData.data.length === 1) {
+            const [business] = businessData.data;
+            await guardarConexion({ tenantId, userId, metaUserId, token: longLivedToken, business });
+            auditoria('META_CONECTADO', { tenantId, businessId: business.id, mode });
+            return res.redirect(`${frontendRedirect}${redirectPath}?meta_success=true`);
+        }
 
-        return res.redirect(`${frontendRedirect}${redirectPath}?meta_success=true`);
+        res.cookie(PENDIENTE_COOKIE, EncryptionService.encrypt(JSON.stringify({
+            token: longLivedToken,
+            metaUserId,
+            tenantId: String(tenantId),
+            userId: String(userId),
+            expira: Date.now() + PENDIENTE_TTL_MS,
+        })), { ...cookiePendienteOpts, maxAge: PENDIENTE_TTL_MS });
+
+        return res.redirect(`${frontendRedirect}${redirectPath}`);
 
     } catch (err) {
         res.clearCookie('meta_oauth_state');
@@ -327,6 +335,75 @@ router.get('/stores', verificarToken, async (req, res) => {
         console.error(err);
         return res.status(500).json({ message: 'Error interno del servidor.' });
     }
+});
+
+// GET /api/meta/pendiente -> Portafolios autorizados que esperan elección
+router.get('/pendiente', verificarToken, async (req, res) => {
+    const pendiente = leerPendiente(req);
+    if (!pendiente) return res.json({ pendiente: false });
+    try {
+        const bmData = await fetchMeta(`https://graph.facebook.com/${FB_API_VERSION}/me/businesses?access_token=${pendiente.token}&fields=id,name&limit=100`);
+        const conectadas = await MetaIntegration.findAll({
+            where: { inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id, estado: 'conectado' },
+            attributes: ['business_id']
+        });
+        const yaConectados = new Set(conectadas.map((c) => String(c.business_id)));
+        return res.json({
+            pendiente: true,
+            portafolios: (bmData.data || []).map((bm) => ({
+                id: String(bm.id),
+                nombre: bm.name,
+                conectado: yaConectados.has(String(bm.id))
+            }))
+        });
+    } catch (err) {
+        console.error('Meta /pendiente Error:', err.message);
+        res.clearCookie(PENDIENTE_COOKIE, cookiePendienteOpts);
+        return res.status(502).json({ message: 'Meta no devolvió los portafolios. Volvé a conectar.' });
+    }
+});
+
+// POST /api/meta/pendiente/confirmar -> Conecta los portafolios elegidos
+router.post('/pendiente/confirmar', verificarToken, async (req, res) => {
+    const pendiente = leerPendiente(req);
+    if (!pendiente) {
+        return res.status(410).json({ message: 'La autorización venció. Volvé a conectar con Meta.' });
+    }
+    const elegidos = Array.isArray(req.body?.business_ids)
+        ? [...new Set(req.body.business_ids.map(String))]
+        : [];
+    if (elegidos.length === 0) {
+        return res.status(400).json({ message: 'Elegí al menos un portafolio.' });
+    }
+    try {
+        // Solo se aceptan portafolios que Meta confirma para este token.
+        const bmData = await fetchMeta(`https://graph.facebook.com/${FB_API_VERSION}/me/businesses?access_token=${pendiente.token}&fields=id,name&limit=100`);
+        const autorizados = new Map((bmData.data || []).map((bm) => [String(bm.id), bm]));
+        if (elegidos.some((id) => !autorizados.has(id))) {
+            return res.status(400).json({ message: 'Uno de los portafolios elegidos no está autorizado.' });
+        }
+        for (const id of elegidos) {
+            await guardarConexion({
+                tenantId: req.usuario.tenantId,
+                userId: req.usuario.id,
+                metaUserId: pendiente.metaUserId,
+                token: pendiente.token,
+                business: autorizados.get(id)
+            });
+            auditoria('META_CONECTADO', { tenantId: req.usuario.tenantId, businessId: id, mode: 'seleccion' });
+        }
+        res.clearCookie(PENDIENTE_COOKIE, cookiePendienteOpts);
+        return res.json({ conectados: elegidos.length });
+    } catch (err) {
+        console.error('Meta /pendiente/confirmar Error:', err.message);
+        return res.status(502).json({ message: 'No se pudo confirmar con Meta. Probá de nuevo.' });
+    }
+});
+
+// POST /api/meta/pendiente/cancelar -> Descarta la autorización sin guardar
+router.post('/pendiente/cancelar', verificarToken, (req, res) => {
+    res.clearCookie(PENDIENTE_COOKIE, cookiePendienteOpts);
+    return res.json({ ok: true });
 });
 
 // DELETE /api/meta/stores/:id -> Elimina una tienda específica
