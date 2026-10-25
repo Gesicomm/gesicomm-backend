@@ -1122,6 +1122,32 @@ class ReporteService {
     };
   }
 
+  /**
+   * Ficha de un cliente (módulo Clientes): sus pedidos más recientes en la
+   * tienda, con la misma clave que agrupa el reporte (teléfono normalizado).
+   * La clave llega del propio reporte; igual se valida el formato antes de
+   * usarla como parámetro.
+   */
+  static async obtenerPedidosCliente(usuario_id, cliente_key, filtros = {}) {
+    if (typeof cliente_key !== 'string' || !/^(TEL:\d{6,20}|PEDIDO:\d+)$/.test(cliente_key)) {
+      const err = new Error('Cliente inválido.');
+      err.status = 400;
+      throw err;
+    }
+    const where = { usuario_id, es_lead: false };
+    if (filtros.tienda_id) where.tienda_id = filtros.tienda_id;
+    where[Op.and] = [Envio.sequelize.where(literal(this.getClienteKeySql()), cliente_key)];
+    const envios = await Envio.findAll({
+      where,
+      attributes: ['id', 'numero_pedido', 'tienda_id', 'fecha', 'estado', 'monto', 'costo_envio', 'delivery_a_cargo',
+        'cliente', 'telefono', 'ciudad', 'departamento', 'direccion', 'metodo_pago', 'motivo_devolucion'],
+      include: [{ model: EnvioItem, as: 'items', attributes: ['id', 'nombre_producto', 'cantidad'] }],
+      order: [['fecha', 'DESC'], ['id', 'DESC']],
+      limit: 50,
+    });
+    return { pedidos: await adjuntarIdentificadores(envios) };
+  }
+
   static async obtenerReporteMetodosPago(usuario_id, pagina = 1, limite = 50, filtros = {}) {
     const offset = (pagina - 1) * limite;
     let whereEnvio = { usuario_id };
