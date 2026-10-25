@@ -29,6 +29,7 @@ jest.mock('../models', () => {
       transaction: async (fn) => fn({}),
       fn: () => 'COUNT',
       col: () => 'id',
+      literal: (sql) => ({ val: sql }),
     },
     Deposito: {
       findOne: async ({ where } = {}) => almacen.depositos.find((d) => coincide(d, where)) || null,

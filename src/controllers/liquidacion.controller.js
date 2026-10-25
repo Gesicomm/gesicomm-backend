@@ -60,6 +60,16 @@ exports.listarPorCourier = async (req, res) => {
   }
 };
 
+exports.saldosPendientes = async (req, res) => {
+  try {
+    const usuario_id = req.comercioId || req.usuario.id;
+    res.json(await liquidacionService.saldosPendientes({ usuario_id, tienda_id: req.usuario.tiendaId || null }));
+  } catch (error) {
+    console.error('Error calculando saldos pendientes de rendición:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
 // Todo lo que estos handlers no atrapen termina en el middleware de errores
 // de server.js (500 + log) en vez de tumbar el proceso. Ver src/utils/asyncHandler.js.
 envolverControlador(module.exports);

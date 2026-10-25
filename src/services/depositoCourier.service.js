@@ -53,7 +53,10 @@ class DepositoCourierService {
       DepositoCourier.findAll({ where: { deposito_id: deposito.id } }),
       DeliveryZonaTarifa.findAll({
         where: { activo: true },
-        attributes: ['courier_id', [sequelize.fn('COUNT', sequelize.col('id')), 'ciudades']],
+        // Una fila por ciudad × método de pago × rango de cantidad: contar
+        // filas daba "3 ciudades" para 2 coberturas con 3 rangos. Se cuentan
+        // coberturas distintas, igual que las tarjetas del asistente.
+        attributes: ['courier_id', [sequelize.literal(`COUNT(DISTINCT (COALESCE("tipo_cobertura", 'CIUDAD'), LOWER(COALESCE("departamento", '')), LOWER(COALESCE("ciudad", ''))))`), 'ciudades']],
         group: ['courier_id'],
         raw: true,
       }),

@@ -3228,19 +3228,38 @@ exports.conteoPorEstado = async (req, res) => {
       conteos.abastecimiento_pagado = 0;
     }
 
-    // Totales operativos sobre TODOS los pedidos que matchean los filtros
-    // activos, sin importar la pagina ni la pestana de estado seleccionada.
+    // Totales operativos de los pedidos que matchean los filtros activos y
+    // la pestaña de estado elegida (`estados_totales`, la misma lista que
+    // filtra la tabla): antes sumaban todos los estados y el "Por cobrar"
+    // no tenía nada que ver con las filas a la vista.
     // "visible a cobrar" excluye Entregado porque eso ya fue cobrado; los
     // estados terminales negativos tampoco son dinero por cobrar al cliente.
+    // Lo que paga el cliente es cobroTotalCliente (utils/contabilidadPedido):
+    // el monto más el envío que cobra POR FUERA del monto. Antes se sumaba
+    // siempre costo_envio: doble en los pedidos manuales (el flete ya viene
+    // en el monto) y de más en los web (lo absorbe el comercio).
     try {
+      const estadosTotales = Array.isArray(req.body.estados_totales)
+        ? req.body.estados_totales.filter(e => typeof e === 'string').slice(0, 30)
+        : null;
+      const whereTotales = estadosTotales?.length
+        ? { ...where, [Op.and]: [...(where[Op.and] || []), Sequelize.where(estadoConteo, { [Op.in]: estadosTotales })] }
+        : where;
+      const itemsSql = `(SELECT COALESCE(SUM(COALESCE(NULLIF(ei.subtotal, 0), ei.precio_unitario * COALESCE(NULLIF(ei.cantidad, 0), 1), 0)), 0)
+        FROM envio_items ei WHERE ei.envio_id = "Envio"."id")`;
+      const cobroSql = `(COALESCE("Envio"."monto", 0) + GREATEST(0,
+                (CASE WHEN "Envio"."delivery_a_cargo" = 'negocio' THEN 0 ELSE COALESCE("Envio"."costo_envio", 0) END)
+                - LEAST(GREATEST(COALESCE("Envio"."monto", 0) - (CASE WHEN ${itemsSql} > 0
+                    THEN ${itemsSql} - COALESCE("Envio"."cupon_descuento", 0)
+                    ELSE COALESCE("Envio"."monto", 0) END), 0), COALESCE("Envio"."costo_envio", 0))))`;
       const totalesFila = await Envio.findOne({
-        where,
+        where: whereTotales,
         include,
         attributes: [
           [
             Sequelize.literal(`COALESCE(SUM(CASE
               WHEN "Envio"."es_lead" = false AND "Envio"."estado" NOT IN ('Entregado', 'Cancelado', 'Devuelto', 'Perdido')
-              THEN COALESCE("Envio"."monto", 0) + COALESCE("Envio"."costo_envio", 0)
+              THEN ${cobroSql}
               ELSE 0
             END), 0)`),
             'total_por_cobrar',
@@ -3248,7 +3267,7 @@ exports.conteoPorEstado = async (req, res) => {
           [
             Sequelize.literal(`COALESCE(SUM(CASE
               WHEN "Envio"."estado" = 'Entregado'
-              THEN COALESCE("Envio"."monto", 0) + COALESCE("Envio"."costo_envio", 0)
+              THEN ${cobroSql}
               ELSE 0
             END), 0)`),
             'total_cobrado',

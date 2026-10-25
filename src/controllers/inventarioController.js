@@ -325,12 +325,16 @@ exports.habilitarStock = async (req, res) => {
 exports.listarStockUbicacion = async (req, res) => {
   try {
     const {
-      texto, origen, ubicacion, page = 1, limit = 20,
+      texto, origen, ubicacion, deposito_id, page = 1, limit = 20,
     } = req.body;
 
     const whereClause = {};
     if (!esAdmin(req)) {
       whereClause.usuario_id = req.usuario.id;
+    }
+    // Stock de un depósito puntual (panel "Administrar depósito").
+    if (deposito_id && /^\d+$/.test(String(deposito_id))) {
+      whereClause.deposito_id = Number(deposito_id);
     }
     if (ubicacion === 'PROPIA' || ubicacion === 'GESICOMM') {
       whereClause['$Deposito.alcance$'] = ubicacion;

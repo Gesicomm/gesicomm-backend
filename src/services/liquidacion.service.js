@@ -192,6 +192,49 @@ async function confirmar({ courier_id, fecha_desde, fecha_hasta, usuario_id, usu
   }
 }
 
+/**
+ * Qué falta rendir con cada courier, sin elegir fechas: todos los pedidos
+ * Entregado/Perdido todavía pendiente_liquidacion, agrupados por courier y
+ * con el mismo cálculo que previsualizar (calcularDesglose). Antes había
+ * que probar courier por courier para saber a quién se le debía.
+ */
+async function saldosPendientes({ usuario_id, tienda_id }) {
+  const envios = await Envio.findAll({
+    where: {
+      usuario_id,
+      ...(tienda_id ? { tienda_id } : {}),
+      courier_id: { [Op.ne]: null },
+      estado: { [Op.in]: ['Entregado', 'Perdido'] },
+      estado_financiero: 'pendiente_liquidacion',
+    },
+    include: [
+      { model: MetodoPago, attributes: ['id', 'nombre', 'custodia_cobro'] },
+      { model: EnvioItem, as: 'items', attributes: ['id', 'cantidad', 'precio_unitario', 'subtotal'] },
+      { model: Courier, attributes: ['id', 'nombre'] },
+    ],
+    order: [['dispatchedAt', 'ASC'], ['id', 'ASC']],
+  });
+  const porCourier = new Map();
+  for (const e of envios) {
+    const lista = porCourier.get(e.courier_id) || [];
+    lista.push(e);
+    porCourier.set(e.courier_id, lista);
+  }
+  return [...porCourier.entries()].map(([courier_id, lista]) => {
+    const d = calcularDesglose(lista);
+    const fechas = lista.map(e => e.dispatchedAt).filter(Boolean).map(f => new Date(f).toISOString().slice(0, 10)).sort();
+    return {
+      courier_id,
+      nombre: lista[0].Courier?.nombre || 'Courier',
+      cantidad_pedidos: d.cantidad_pedidos,
+      saldo_final: d.saldo_final,
+      mensaje_saldo: d.mensaje_saldo,
+      desde: fechas[0] || null,
+      hasta: fechas[fechas.length - 1] || null,
+    };
+  }).sort((a, b) => Math.abs(b.saldo_final) - Math.abs(a.saldo_final));
+}
+
 /** Historial de liquidaciones de un courier — ver plan sección 36. */
 async function listarPorCourier(courier_id, usuario_id) {
   return Liquidacion.findAll({
@@ -204,4 +247,4 @@ async function listarPorCourier(courier_id, usuario_id) {
   });
 }
 
-module.exports = { previsualizar, confirmar, listarPorCourier, calcularDesglose };
+module.exports = { previsualizar, confirmar, listarPorCourier, calcularDesglose, saldosPendientes };
