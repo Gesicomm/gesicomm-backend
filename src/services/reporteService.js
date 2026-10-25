@@ -978,11 +978,24 @@ class ReporteService {
   }
   // --- FASE 3: Deep-Dives ---
 
+  /**
+   * Un cliente = un teléfono, llevado a formato internacional de Paraguay
+   * (misma regla que normalizarTelefono de envioSeguimientoController).
+   * Antes solo se sacaban los no-dígitos y "+595992820631" y "0992820631"
+   * quedaban como dos clientes: el historial se partía y "Recurrente" o
+   * "Problemático" salían mal.
+   */
   static getClienteKeySql() {
+    const digitos = `REGEXP_REPLACE("Envio"."telefono", '[^0-9]', '', 'g')`;
     return `
       CASE 
-        WHEN "Envio"."telefono" IS NOT NULL AND TRIM("Envio"."telefono") != '' 
-        THEN 'TEL:' || REGEXP_REPLACE("Envio"."telefono", '[^0-9]', '', 'g')
+        WHEN "Envio"."telefono" IS NOT NULL AND ${digitos} != '' 
+        THEN 'TEL:' || CASE
+          WHEN ${digitos} LIKE '595%' THEN ${digitos}
+          WHEN ${digitos} LIKE '0%' AND LENGTH(${digitos}) >= 9 THEN '595' || SUBSTRING(${digitos} FROM 2)
+          WHEN LENGTH(${digitos}) <= 9 THEN '595' || ${digitos}
+          ELSE ${digitos}
+        END
         ELSE 'PEDIDO:' || "Envio"."id"::text
       END
     `;

@@ -69,6 +69,30 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     LandingItem.destroy.mockReset();
   });
 
+  test('cuenta los productos de la tienda sin ganancia y los filtra en SQL', async () => {
+    sequelize.query.mockImplementation(async (sql) => {
+      if (sql.includes('FROM landing_items li') && sql.includes('COUNT(*) AS total')) return [{ total: '9' }];
+      if (sql.includes('COUNT(*) as total')) return [{ total: 0 }];
+      return [];
+    });
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { filtroMargen: 'sin_ganancia' }, false, 69);
+    expect(resultado.sin_ganancia_en_tienda).toBe(9);
+    const [conteo, datos] = sequelize.query.mock.calls.map(([sql]) => sql);
+    // El filtro va en la consulta (backend), solo sobre productos.
+    expect(datos).toMatch(/COALESCE\(pu\.precio, p\.precio_base\) <=/);
+    expect(datos).not.toMatch(/producto_combos/);
+    expect(conteo).toMatch(/COALESCE\(pu\.precio, p\.precio_base\) <=/);
+    sequelize.query.mockReset();
+  });
+
+  test('no repite el conteo sin ganancia al pasar de página', async () => {
+    sequelize.query.mockResolvedValue([]);
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { page: 2 }, false, 69);
+    expect(resultado).not.toHaveProperty('sin_ganancia_en_tienda');
+    expect(sequelize.query.mock.calls.some(([sql]) => sql.includes('FROM landing_items li') && sql.includes('COUNT(*) AS total'))).toBe(false);
+    sequelize.query.mockReset();
+  });
+
   test('adelanta galerías y opciones mientras se carga el detalle, sin duplicar consultas', async () => {
     sequelize.query.mockResolvedValueOnce([{ total: 1 }])
       .mockResolvedValueOnce([{ id: 10, tipo: 'producto', nombre: 'Adaptador', precio_efectivo: '100000' }])

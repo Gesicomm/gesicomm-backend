@@ -405,7 +405,7 @@ class PrecioUsuarioService {
     const { sequelize, Categoria } = require('../models');
     const {
       page = 1, limit = 10, busqueda = '', filtroCategoria = '', filtroProveedor = '', filtroMarca = '', filtroStock = '', orden = 'nombre', tipo = 'todos',
-      solamenteMios = false, mios_solamente = false, origenCatalogo = null
+      solamenteMios = false, mios_solamente = false, origenCatalogo = null, filtroMargen = ''
     } = filtros;
     const pagina = Math.max(1, parseInt(page, 10) || 1);
     const limite = Math.min(10000, Math.max(1, parseInt(limit, 10) || 10));
@@ -481,6 +481,14 @@ class PrecioUsuarioService {
     if (filtroStock === 'con') stockFilter = 'AND COALESCE(p.cantidad_disponible, 0) > 0';
     if (filtroStock === 'sin') stockFilter = 'AND COALESCE(p.cantidad_disponible, 0) = 0';
 
+    // "Sin ganancia": se vende a lo que le cuesta al comercio o menos. Mismo
+    // costo de referencia que la tarjeta (ver costoReferencia más abajo):
+    // precio_costo en productos propios, precio_base en los del catálogo.
+    const costoReferenciaSql = `(CASE WHEN p.creado_por = :usuario_id AND p.precio_costo IS NOT NULL
+      THEN p.precio_costo ELSE p.precio_base END)`;
+    const sinGananciaSql = `COALESCE(pu.precio, p.precio_base) <= ${costoReferenciaSql}`;
+    const soloSinGanancia = filtroMargen === 'sin_ganancia';
+
     let searchFilter = '';
     if (busqueda.trim()) {
       replacements.busqueda = `%${busqueda.trim()}%`;
@@ -542,6 +550,7 @@ class PrecioUsuarioService {
       ${provFilter}
       ${marcaFilter}
       ${stockFilter}
+      ${soloSinGanancia ? `AND ${sinGananciaSql}` : ''}
       ${searchFilter.replace(/c\./g, 'p.').replace(/descripcion/g, 'descripcion_corta')}
     `;
 
@@ -568,7 +577,9 @@ class PrecioUsuarioService {
     `;
 
     let finalQuery = '';
-    if (tipo === 'producto') {
+    if (tipo === 'producto' || soloSinGanancia) {
+      // Los combos tienen otra cuenta de costo: el filtro de margen solo
+      // aplica a productos.
       finalQuery = productosSql;
     } else if (tipo === 'combo') {
       finalQuery = combosSql;
@@ -613,10 +624,30 @@ class PrecioUsuarioService {
       };
     }
 
-    const [countResult, paginatedItems, administradoresIds] = await Promise.all([
+    // Aviso de Mi catálogo: cuántos productos publicados en la tienda se
+    // venden sin ganancia, sin importar los filtros de la vista. Solo en la
+    // primera página: el número no cambia al paginar y el VPS es CPU-bound.
+    const sinGananciaQuery = tiendaId != null && pagina === 1 ? `
+      SELECT COUNT(*) AS total
+      FROM productos p
+      LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
+      WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
+        ${this.visibilidadCatalogoSql(esAdmin, false)}
+        ${tiendaFilter}
+        AND ${sinGananciaSql}
+        AND EXISTS (
+          SELECT 1 FROM landing_items li
+          WHERE li.landing_id = (${landingActualSql})
+            AND li.tipo = 'producto'
+            AND li.referencia_id = p.id
+        )
+    ` : null;
+
+    const [countResult, paginatedItems, administradoresIds, sinGananciaResult] = await Promise.all([
       sequelize.query(countQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
       sequelize.query(dataQuery, { replacements, type: sequelize.QueryTypes.SELECT }),
       this.obtenerIdsAdministradores(inquilino_id),
+      sinGananciaQuery ? sequelize.query(sinGananciaQuery, { replacements, type: sequelize.QueryTypes.SELECT }) : null,
     ]);
     const total = parseInt(countResult[0]?.total || 0);
 
@@ -937,6 +968,7 @@ class PrecioUsuarioService {
 
     return {
       ...(organizacion ? { colecciones_landing: organizacion.colecciones } : {}),
+      ...(sinGananciaResult ? { sin_ganancia_en_tienda: parseInt(sinGananciaResult[0]?.total || 0, 10) } : {}),
       items,
       total,
       page: pagina,
