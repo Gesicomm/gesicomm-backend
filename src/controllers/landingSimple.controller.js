@@ -317,6 +317,26 @@ async function actualizar(req, res) {
   }
 }
 
+async function guardarBorrador(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    return res.json(await LandingSimpleService.guardarBorrador(req.params.id, tienda.id, req.body?.datos));
+  } catch (err) {
+    return manejarError(res, err, 'Error al guardar el borrador.');
+  }
+}
+
+async function descartarBorrador(req, res) {
+  try {
+    const tienda = await resolverTiendaPropia(req, res);
+    if (!tienda) return;
+    return res.json(await LandingSimpleService.descartarBorrador(req.params.id, tienda.id));
+  } catch (err) {
+    return manejarError(res, err, 'Error al descartar el borrador.');
+  }
+}
+
 async function eliminar(req, res) {
   try {
     const tienda = await resolverTiendaPropia(req, res);
@@ -410,7 +430,7 @@ async function eliminarHeroImagen(req, res) {
 }
 
 module.exports = {
-  listar, listarPaymentLogos, crear, crearDesdeOnboarding, crearDesdeIA, regenerarConIA, actualizarBloquesVenta, crearLienzoBlanco, detalle, actualizar, eliminar, cambiarEstado,
+  listar, listarPaymentLogos, crear, crearDesdeOnboarding, crearDesdeIA, regenerarConIA, actualizarBloquesVenta, crearLienzoBlanco, detalle, actualizar, guardarBorrador, descartarBorrador, eliminar, cambiarEstado,
   subirImagenMiddleware,
   subirLogo, eliminarLogo,
   subirHeroImagen, eliminarHeroImagen,

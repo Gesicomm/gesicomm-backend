@@ -32,6 +32,9 @@ router.post('/:id/bloques-venta', ctrl.actualizarBloquesVenta);
 router.post('/lienzo-blanco', ctrl.crearLienzoBlanco);
 router.get('/:id', ctrl.detalle);
 router.put('/:id', ctrl.actualizar);
+// Borrador del editor: no cambia la tienda publicada hasta el próximo PUT.
+router.put('/:id/borrador', ctrl.guardarBorrador);
+router.delete('/:id/borrador', ctrl.descartarBorrador);
 router.delete('/:id', ctrl.eliminar);
 router.patch('/:id/estado', ctrl.cambiarEstado);
 router.post('/:id/logo', ctrl.subirImagenMiddleware, ctrl.subirLogo);

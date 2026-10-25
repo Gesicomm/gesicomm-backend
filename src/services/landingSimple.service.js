@@ -567,7 +567,12 @@ class LandingSimpleService {
         content.venta = { ...content.venta, prueba_social: { ...content.venta.prueba_social, estado: 'confirmado' } };
       }
     }
-    if (limpioInicio || vistasLibres || fichasPropias || legales || payload.venta !== undefined || payload.confirmaciones !== undefined || payload.generado_por_ia !== undefined || payload.bloques_inicio_bloqueados !== undefined) {
+    // Publicar desde el editor aplica el borrador: deja de estar pendiente.
+    // Solo con la marca explícita del editor; un guardado por MCP no debe
+    // tirar a la basura lo que el comercio dejó como borrador.
+    const limpiarBorrador = payload.limpiar_borrador === true && content.borrador !== undefined;
+    if (limpiarBorrador) delete content.borrador;
+    if (limpiarBorrador || limpioInicio || vistasLibres || fichasPropias || legales || payload.venta !== undefined || payload.confirmaciones !== undefined || payload.generado_por_ia !== undefined || payload.bloques_inicio_bloqueados !== undefined) {
       landing.content = content;
       if (typeof landing.changed === 'function') landing.changed('content', true);
     }
@@ -729,6 +734,44 @@ class LandingSimpleService {
     }
 
     return this.obtener(landing.id, tienda_id);
+  }
+
+  /**
+   * Borrador del editor del lienzo: el mismo payload que mandaría Guardar,
+   * guardado aparte en `content.borrador`. No pasa por el saneado ni toca
+   * items, logos de pago ni la caché: la tienda pública no lo lee (arma su
+   * `content` campo por campo, ver LandingService.obtenerPublica). Se sanea
+   * recién al publicarlo, por actualizar(). Vive dentro de `content` para no
+   * agregar una columna que el validador de esquema exija antes del deploy.
+   */
+  static async guardarBorrador(id, tienda_id, datos) {
+    if (!datos || typeof datos !== 'object' || Array.isArray(datos)) {
+      const err = new Error('Validación fallida.');
+      err.errores = ['El borrador llegó vacío.'];
+      throw err;
+    }
+    this.rechazarClavesEstructurales(datos);
+    const landing = await this.buscarPropia(id, tienda_id);
+    if (landing.template?.kind !== 'codigo') {
+      const err = new Error('Validación fallida.');
+      err.errores = ['El borrador solo existe en el editor de la tienda.'];
+      throw err;
+    }
+    const guardado_at = new Date().toISOString();
+    landing.content = { ...(landing.content || {}), borrador: { datos, guardado_at } };
+    if (typeof landing.changed === 'function') landing.changed('content', true);
+    await landing.save();
+    return { guardado_at };
+  }
+
+  static async descartarBorrador(id, tienda_id) {
+    const landing = await this.buscarPropia(id, tienda_id);
+    if (landing.content?.borrador === undefined) return { descartado: false };
+    const { borrador, ...resto } = landing.content;
+    landing.content = resto;
+    if (typeof landing.changed === 'function') landing.changed('content', true);
+    await landing.save();
+    return { descartado: true };
   }
 
   static async cambiarEstado(id, tienda_id, activo, opciones = {}) {
