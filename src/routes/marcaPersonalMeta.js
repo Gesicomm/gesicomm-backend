@@ -59,49 +59,47 @@ function responder(fn) {
 
 // --- Conexión ---------------------------------------------------------------
 
-for (const plataforma of ['instagram', 'facebook']) {
-  router.get(`/${plataforma}/conectar`, async (req, res) => {
-    try {
-      const state = crypto.randomBytes(24).toString('hex');
-      const url = service.urlAutorizacion(plataforma, state);
-      res.cookie(COOKIES.oauth, sellar({ usuario: req.usuario.id, plataforma, state }, 10), { ...COOKIE_OPTS, maxAge: 10 * 60000 });
-      res.redirect(url);
-    } catch (error) {
-      avisar(res, req.usuario.id, 'error', error.status ? error.message : 'No se pudo iniciar la conexión.');
-      res.redirect(PANTALLA);
-    }
-  });
-
-  router.get(`/${plataforma}/callback`, async (req, res) => {
-    const oauth = abrir(req, COOKIES.oauth);
-    res.clearCookie(COOKIES.oauth, COOKIE_OPTS);
-    try {
-      if (req.query.error) throw Object.assign(new Error('Cancelaste la autorización en Meta. No se conectó nada.'), { status: 400 });
-      if (!oauth || oauth.plataforma !== plataforma || typeof req.query.state !== 'string' || req.query.state !== oauth.state || typeof req.query.code !== 'string') {
-        throw Object.assign(new Error('La autorización venció o no coincide. Volvé a intentar.'), { status: 400 });
-      }
-      if (plataforma === 'instagram') {
-        const r = await service.completarInstagram(req.usuario.id, req.query.code);
-        auditoria('MARCA_PERSONAL_META_CONECTADO', { usuarioId: req.usuario.id, plataforma });
-        avisar(res, req.usuario.id, r.permisos_faltantes.length ? 'aviso' : 'ok', r.permisos_faltantes.length
-          ? `Instagram @${r.username} conectado, pero faltan permisos: ${r.permisos_faltantes.join(', ')}. Algunas funciones no van a estar disponibles.`
-          : `Instagram @${r.username} conectado.`);
-      } else {
-        const r = await service.completarFacebook(req.usuario.id, req.query.code);
-        if (r.pendiente) {
-          res.cookie(COOKIES.pendiente, sellar({ usuario: req.usuario.id, ...r.pendiente }, 15), { ...COOKIE_OPTS, maxAge: 15 * 60000 });
-        } else {
-          auditoria('MARCA_PERSONAL_META_CONECTADO', { usuarioId: req.usuario.id, plataforma });
-          avisar(res, req.usuario.id, 'ok', `Página «${r.conectada}» conectada.`);
-        }
-      }
-    } catch (error) {
-      if (!error.status) logger.error({ mensaje: 'Marca Personal Meta callback', plataforma, error: error.message });
-      avisar(res, req.usuario.id, 'error', error.status ? error.message : 'No pudimos completar la conexión con Meta. Reintentá.');
-    }
+// Un solo inicio de sesión de Facebook trae la Página y su Instagram vinculado.
+router.get('/facebook/conectar', async (req, res) => {
+  try {
+    const state = crypto.randomBytes(24).toString('hex');
+    const url = service.urlAutorizacion(state);
+    res.cookie(COOKIES.oauth, sellar({ usuario: req.usuario.id, state }, 10), { ...COOKIE_OPTS, maxAge: 10 * 60000 });
+    res.redirect(url);
+  } catch (error) {
+    avisar(res, req.usuario.id, 'error', error.status ? error.message : 'No se pudo iniciar la conexión.');
     res.redirect(PANTALLA);
-  });
-}
+  }
+});
+
+const textoConectada = (r) => r.instagram
+  ? `Página «${r.conectada}» e Instagram @${r.instagram} conectados.`
+  : `Página «${r.conectada}» conectada. No tiene una cuenta profesional de Instagram vinculada.`;
+const tipoAviso = (r) => (r.permisos_faltantes?.length || !r.instagram ? 'aviso' : 'ok');
+const conFaltantes = (r) => textoConectada(r) + (r.permisos_faltantes?.length
+  ? ` Faltan permisos (${r.permisos_faltantes.join(', ')}): algunas funciones no van a estar disponibles. Podés reconectar y aceptarlos.` : '');
+
+router.get('/facebook/callback', async (req, res) => {
+  const oauth = abrir(req, COOKIES.oauth);
+  res.clearCookie(COOKIES.oauth, COOKIE_OPTS);
+  try {
+    if (req.query.error) throw Object.assign(new Error('Cancelaste la autorización en Meta. No se conectó nada.'), { status: 400 });
+    if (!oauth || typeof req.query.state !== 'string' || req.query.state !== oauth.state || typeof req.query.code !== 'string') {
+      throw Object.assign(new Error('La autorización venció o no coincide. Volvé a intentar.'), { status: 400 });
+    }
+    const r = await service.completarFacebook(req.usuario.id, req.query.code);
+    if (r.pendiente) {
+      res.cookie(COOKIES.pendiente, sellar({ usuario: req.usuario.id, ...r.pendiente }, 15), { ...COOKIE_OPTS, maxAge: 15 * 60000 });
+    } else {
+      auditoria('MARCA_PERSONAL_META_CONECTADO', { usuarioId: req.usuario.id, instagram: Boolean(r.instagram) });
+      avisar(res, req.usuario.id, tipoAviso(r), conFaltantes(r));
+    }
+  } catch (error) {
+    if (!error.status) logger.error({ mensaje: 'Marca Personal Meta callback', error: error.message });
+    avisar(res, req.usuario.id, 'error', error.status ? error.message : 'No pudimos completar la conexión con Meta. Reintentá.');
+  }
+  res.redirect(PANTALLA);
+});
 
 router.get('/estado', responder(async (req, res) => {
   const estado = await service.estado(req.usuario.id);
@@ -121,8 +119,8 @@ router.post('/facebook/confirmar', responder(async (req, res) => {
   if (!pendiente) throw Object.assign(new Error('La autorización venció. Volvé a conectar Facebook.'), { status: 409 });
   const r = await service.confirmarPagina(req.usuario.id, pendiente, req.body?.page_id);
   res.clearCookie(COOKIES.pendiente, COOKIE_OPTS);
-  auditoria('MARCA_PERSONAL_META_CONECTADO', { usuarioId: req.usuario.id, plataforma: 'facebook' });
-  return r;
+  auditoria('MARCA_PERSONAL_META_CONECTADO', { usuarioId: req.usuario.id, instagram: Boolean(r.instagram) });
+  return { conectada: r.conectada, instagram: r.instagram, aviso: { tipo: tipoAviso(r), texto: conFaltantes(r) } };
 }));
 
 router.post('/facebook/cancelar', responder(async (req, res) => {
@@ -160,12 +158,4 @@ const acciones = {
 };
 for (const [ruta, fn] of Object.entries(acciones)) router.post(ruta, responder(fn));
 
-// --- Eliminación de datos (Instagram) ------------------------------------------
-// Instagram Login tiene su propio secreto y sus propias URLs de desautorización
-// y de eliminación de datos. La de Facebook es la de la app (/api/meta).
-const publico = express.Router();
-const solicitudEliminacionController = require('../controllers/solicitudEliminacion.controller');
-publico.post('/instagram/eliminacion-datos', express.urlencoded({ extended: false }), solicitudEliminacionController.metaCallbackInstagram);
-publico.post('/instagram/desautorizar', express.urlencoded({ extended: false }), solicitudEliminacionController.metaCallbackInstagram);
-
-module.exports = { router, publico };
+module.exports = router;

@@ -1,5 +1,3 @@
-process.env.INSTAGRAM_APP_ID = 'ig-app';
-process.env.INSTAGRAM_APP_SECRET = 'ig-secreto';
 process.env.FACEBOOK_APP_ID = 'fb-app';
 process.env.FACEBOOK_APP_SECRET = 'fb-secreto';
 
@@ -7,7 +5,8 @@ const { createService } = require('../services/marcaPersonalMeta.service');
 const EncryptionService = require('../utils/EncryptionService');
 
 /**
- * Instagram y Facebook de Marca Personal. Unitario: base, R2 y Graph API
+ * Instagram y Facebook de Marca Personal, con un solo login de Facebook: el
+ * Instagram es el vinculado a la Página. Unitario: base, R2 y Graph API
  * simulados en memoria; no toca la base real ni Meta.
  */
 const BASE = 'https://cdn.test/';
@@ -29,9 +28,9 @@ function memoria() {
       if (i >= 0) filas[i] = fila; else filas.push(fila);
       return { id: fila.id };
     },
-    actualizarToken: async () => {},
     borrarConexion: async (account, id) => { const i = filas.findIndex((c) => c.account_id === account && c.id === id); return i < 0 ? null : filas.splice(i, 1)[0]; },
-    borrarPorMetaUser: async (m, p) => filas.filter((c) => c.meta_user_id === m && c.plataforma === p),
+    borrarPlataforma: async (account, plataforma) => { for (let i = filas.length - 1; i >= 0; i--) if (filas[i].account_id === account && filas[i].plataforma === plataforma) filas.splice(i, 1); },
+    borrarPorMetaUser: async (m) => filas.filter((c) => c.meta_user_id === m),
     async crearPublicacion(p) { const f = { id: seq++, account_id: p.account, plataforma: p.plataforma, formato: p.formato, estado: 'procesando', medios: p.medios }; pubs.push(f); return f; },
     async actualizarPublicacion(id, cambios) { const f = pubs.find((x) => x.id === id); Object.assign(f, cambios); return f; },
     publicacion: async (account, id) => pubs.find((x) => x.account_id === account && x.id === id) || null,
@@ -53,9 +52,11 @@ function grafo(respuestas) {
 const r2 = { publicUrl: (k) => BASE + k, uploadObject: jest.fn(async ({ key }) => ({ url: BASE + key })) };
 const medio = (account, tipo = 'imagen') => ({ tipo, url: `${BASE}marca-personal/meta/${account}/2026-10/${'a'.repeat(24)}.${tipo === 'imagen' ? 'jpg' : 'mp4'}` });
 
+// Página 300 con su Instagram 1789; los dos usan el token de la Página.
 function conInstagram(store, account = 'marca-1') {
-  store.filas.push({ id: 50, account_id: account, plataforma: 'instagram', external_id: '1789', username: 'mimarca',
-    access_token: EncryptionService.encrypt('tok-ig'), token_expira: new Date(AHORA + 50 * 86400000), updated_at: new Date(AHORA) });
+  const token = EncryptionService.encrypt('tok-pagina');
+  store.filas.push({ id: 49, account_id: account, plataforma: 'facebook', external_id: '300', nombre: 'Mi Marca', access_token: token, updated_at: new Date(AHORA) });
+  store.filas.push({ id: 50, account_id: account, plataforma: 'instagram', external_id: '1789', username: 'mimarca', access_token: token, updated_at: new Date(AHORA) });
 }
 
 describe('Marca Personal · Instagram y Facebook', () => {
@@ -63,24 +64,38 @@ describe('Marca Personal · Instagram y Facebook', () => {
     const store = memoria(); conInstagram(store, 'marca-otra');
     const svc = createService({ store, graph: grafo(() => ({})), r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
     await expect(svc.publicarInstagram(7, { formato: 'imagen', medios: [medio('marca-otra')], account_id: 'marca-otra' }))
-      .rejects.toThrow('Conectá tu cuenta de Instagram primero.');
+      .rejects.toThrow('no tiene una cuenta profesional de Instagram vinculada');
   });
 
-  test('conectar Instagram guarda el token cifrado y el ID para la eliminación de datos', async () => {
+  test('un solo login de Facebook conecta la Página y su Instagram, con el token de Página cifrado', async () => {
     const store = memoria();
     const g = grafo((p, ruta) => {
-      if (ruta.includes('api.instagram.com/oauth')) return { data: [{ access_token: 'corto', user_id: '555', permissions: 'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_messages,instagram_business_manage_insights' }] };
-      if (ruta.includes('graph.instagram.com/access_token')) return { access_token: 'largo', expires_in: 5184000 };
-      if (ruta === 'me') return { user_id: '1789', username: 'mimarca', name: 'Mi Marca' };
+      if (ruta === 'oauth/access_token') return { access_token: 'usuario' };
+      if (ruta === 'me') return { id: '900' };
+      if (ruta === 'me/accounts') return { data: [{ id: '300', name: 'Mi Marca', tasks: ['CREATE_CONTENT'], instagram_business_account: { id: '1789', username: 'mimarca' } }] };
+      if (ruta === '300') return { id: '300', name: 'Mi Marca', access_token: 'token-pagina', instagram_business_account: { id: '1789', username: 'mimarca' } };
+      if (ruta === 'me/permissions') return { data: ['pages_show_list', 'instagram_basic'].map((permission) => ({ permission, status: 'granted' })) };
       return {};
     });
     const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
-    const r = await svc.completarInstagram(7, 'code');
-    expect(r).toEqual({ username: 'mimarca', permisos_faltantes: [] });
-    const [c] = store.filas;
-    expect(c).toMatchObject({ account_id: 'marca-1', plataforma: 'instagram', external_id: '1789', meta_user_id: '555' });
-    expect(c.access_token).not.toContain('largo');
-    expect(EncryptionService.decrypt(c.access_token)).toBe('largo');
+    const r = await svc.completarFacebook(7, 'code');
+    expect(r).toMatchObject({ conectada: 'Mi Marca', instagram: 'mimarca' });
+    expect(r.permisos_faltantes).toContain('instagram_content_publish');
+    expect(store.filas.map((c) => [c.plataforma, c.external_id, c.meta_user_id])).toEqual([['facebook', '300', '900'], ['instagram', '1789', '900']]);
+    for (const c of store.filas) {
+      expect(c.access_token).not.toContain('token-pagina');
+      expect(EncryptionService.decrypt(c.access_token)).toBe('token-pagina');
+    }
+    expect(g.llamadas.every((l) => l.plataforma === 'facebook')).toBe(true);
+    // La eliminación de datos borra Página e Instagram del mismo usuario de Meta.
+    expect(await svc.borrarPorMetaUser('900')).toHaveLength(2);
+  });
+
+  test('desconectar la Página quita también su Instagram', async () => {
+    const store = memoria(); conInstagram(store);
+    const svc = createService({ store, graph: grafo(() => ({})), r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
+    await svc.desconectar(7, 49);
+    expect(store.filas).toHaveLength(0);
   });
 
   test('Facebook con varias Páginas espera la elección y guarda el token de Página que da Meta', async () => {
@@ -97,7 +112,9 @@ describe('Marca Personal · Instagram y Facebook', () => {
     const r = await svc.completarFacebook(7, 'code');
     expect(r.pendiente).toEqual({ token: 'usuario', metaUser: '900' });
     expect(store.filas).toHaveLength(0);
-    await svc.confirmarPagina(7, r.pendiente, '2');
+    const conf = await svc.confirmarPagina(7, r.pendiente, '2');
+    expect(conf.instagram).toBeNull();
+    expect(store.filas).toHaveLength(1);
     expect(store.filas[0]).toMatchObject({ external_id: '2', meta_user_id: '900', permisos: ['pages_manage_posts'] });
     expect(EncryptionService.decrypt(store.filas[0].access_token)).toBe('token-pagina');
   });
@@ -114,7 +131,7 @@ describe('Marca Personal · Instagram y Facebook', () => {
     const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
     const r = await svc.publicarInstagram(7, { formato: 'imagen', texto: 'Hola', medios: [medio('marca-1')] });
     expect(r).toMatchObject({ estado: 'publicada', external_id: '777', permalink: 'https://instagram.com/p/x' });
-    expect(g.llamadas.find((l) => l.ruta === '1789/media').token).toBe('tok-ig');
+    expect(g.llamadas.find((l) => l.ruta === '1789/media').token).toBe('tok-pagina');
   });
 
   test('un reel queda procesando hasta que Instagram termina, y no se publica dos veces', async () => {
@@ -159,12 +176,12 @@ describe('Marca Personal · Instagram y Facebook', () => {
     const g = grafo((p, ruta, op) => {
       if (ruta === 'conv1') return { participants: { data: [{ username: 'mimarca', id: '1789' }, { username: 'cliente', id: '4321' }] },
         messages: { data: [{ id: 'm2', message: 'Precio?', from: { username: 'cliente', id: '4321' }, created_time: ultimo }] } };
-      if (ruta === '1789/messages') return { message_id: 'mid.1', recibido: op.json };
+      if (ruta === '300/messages') return { recipient_id: '4321', message_id: 'mid.1' };
       return {};
     });
     const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
     expect(await svc.enviarMensaje(7, { conversacion_id: 'conv1', texto: 'Hola!' })).toEqual({ id: 'mid.1' });
-    expect(g.llamadas.find((l) => l.ruta === '1789/messages').json).toEqual({ recipient: { id: '4321' }, message: { text: 'Hola!' } });
+    expect(g.llamadas.find((l) => l.ruta === '300/messages').json).toEqual({ recipient: { id: '4321' }, message: { text: 'Hola!' } });
     ultimo = new Date(AHORA - 25 * 3600000).toISOString();
     await expect(svc.enviarMensaje(7, { conversacion_id: 'conv1', texto: 'Hola' })).rejects.toThrow('24 horas');
   });

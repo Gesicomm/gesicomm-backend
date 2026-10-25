@@ -1,24 +1,32 @@
 'use strict';
 // Instagram y Facebook de Marca Personal con la app de Gesicom.
 //
-// Cada marca (account_id de T2E) tiene a lo sumo una cuenta de Instagram y una
-// Página de Facebook. La marca nunca llega desde el navegador: se resuelve con
-// el vínculo SSO del usuario. Los tokens se guardan cifrados y son de esa sola
-// cuenta, así que Meta rechaza cualquier ID (publicación, comentario,
-// conversación) que no le pertenezca: el aislamiento entre marcas no depende
-// solo de nuestros controles.
+// Un solo inicio de sesión de Facebook ("Instagram API with Facebook Login"):
+// el usuario elige la Página de su marca y Gesicom usa también la cuenta
+// profesional de Instagram vinculada a esa Página. Todo va contra
+// graph.facebook.com con el token de la Página; no hay app de Instagram aparte.
+//
+// Cada marca (account_id de T2E) tiene a lo sumo una Página y su Instagram.
+// La marca nunca llega desde el navegador: se resuelve con el vínculo SSO del
+// usuario. Los tokens se guardan cifrados y son de esa sola Página, así que
+// Meta rechaza cualquier ID (publicación, comentario, conversación) que no le
+// pertenezca: el aislamiento entre marcas no depende solo de nuestros controles.
 const crypto = require('crypto');
 const { MarcaPersonalError } = require('./marcaPersonal.client');
 const EncryptionService = require('../utils/EncryptionService');
 
-const SCOPES_INSTAGRAM = [
-  'instagram_business_basic',
-  'instagram_business_content_publish',
-  'instagram_business_manage_comments',
-  'instagram_business_manage_messages',
-  'instagram_business_manage_insights',
+const SCOPES = [
+  'pages_show_list',
+  'pages_read_engagement',
+  'pages_manage_posts',
+  // Requerido por Meta para leer y responder mensajes de Instagram con token de Página.
+  'pages_manage_metadata',
+  'instagram_basic',
+  'instagram_content_publish',
+  'instagram_manage_comments',
+  'instagram_manage_messages',
+  'instagram_manage_insights',
 ];
-const SCOPES_FACEBOOK = ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'];
 
 const MEDIOS = {
   imagen: { tipos: ['image/jpeg'], max: 8 * 1024 * 1024, ext: 'jpg' },
@@ -42,8 +50,6 @@ const cursor = (v) => (v === undefined || v === null || v === '' ? undefined
 
 function config() {
   return {
-    instagramAppId: process.env.INSTAGRAM_APP_ID,
-    instagramSecret: process.env.INSTAGRAM_APP_SECRET,
     facebookAppId: process.env.FACEBOOK_APP_ID,
     facebookSecret: process.env.FACEBOOK_APP_SECRET,
     base: (process.env.MARCA_PERSONAL_META_REDIRECT_BASE || 'https://automation.gesicomm.com/gesicom-auth/marca-personal/meta').replace(/\/$/, ''),
@@ -75,9 +81,9 @@ function databaseStore() {
         throw e;
       }
     },
-    actualizarToken: (id, token, expira) => q('UPDATE marca_personal_meta_conexiones SET access_token=:token, token_expira=:expira, updated_at=NOW() WHERE id=:id', { id, token, expira }),
     borrarConexion: async (account, id) => (await q('DELETE FROM marca_personal_meta_conexiones WHERE account_id=:account AND id=:id RETURNING id, plataforma', { account, id }))[0] || null,
-    borrarPorMetaUser: (metaUser, plataforma) => q('DELETE FROM marca_personal_meta_conexiones WHERE meta_user_id=:metaUser AND plataforma=:plataforma RETURNING id, usuario_id', { metaUser, plataforma }),
+    borrarPlataforma: (account, plataforma) => q('DELETE FROM marca_personal_meta_conexiones WHERE account_id=:account AND plataforma=:plataforma', { account, plataforma }),
+    borrarPorMetaUser: (metaUser) => q('DELETE FROM marca_personal_meta_conexiones WHERE meta_user_id=:metaUser RETURNING id, usuario_id', { metaUser }),
     async crearPublicacion(p) {
       return (await q(`INSERT INTO marca_personal_meta_publicaciones (account_id, conexion_id, usuario_id, plataforma, formato, texto, medios)
         VALUES (:account, :conexion, :usuario, :plataforma, :formato, :texto, CAST(:medios AS JSONB)) RETURNING *`, { ...p, medios: JSON.stringify(p.medios) }))[0];
@@ -111,77 +117,35 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     return link.account_id;
   }
 
-  // Instagram entrega tokens de 60 días renovables; se renuevan con margen.
+  // Instagram usa el mismo token de la Página a la que está vinculado. Los
+  // tokens de Página obtenidos con un token de usuario de larga duración no vencen.
   async function conexionLista(account, plataforma) {
     const c = await db().conexion(account, plataforma);
-    if (!c) throw error(plataforma === 'instagram' ? 'Conectá tu cuenta de Instagram primero.' : 'Conectá tu Página de Facebook primero.', 409);
-    let token = EncryptionService.decrypt(c.access_token);
-    if (plataforma === 'instagram' && c.token_expira) {
-      const vence = new Date(c.token_expira).getTime();
-      if (vence <= ahora()) throw error('El acceso a Instagram venció. Volvé a conectar la cuenta.', 409);
-      const actualizado = new Date(c.updated_at).getTime();
-      if (vence - ahora() < 10 * 86400000 && ahora() - actualizado > 86400000) {
-        try {
-          const r = await g().llamar('https://graph.instagram.com/refresh_access_token', { params: { grant_type: 'ig_refresh_token', access_token: token } });
-          token = r.access_token;
-          await db().actualizarToken(c.id, EncryptionService.encrypt(token), new Date(ahora() + Number(r.expires_in || 5184000) * 1000));
-        } catch { /* Si la renovación falla se usa el token vigente. */ }
-      }
+    if (!c) {
+      throw error(plataforma === 'instagram'
+        ? 'Tu Página de Facebook no tiene una cuenta profesional de Instagram vinculada. Vinculala en Meta y volvé a conectar.'
+        : 'Conectá tu Página de Facebook primero.', 409);
     }
-    return { ...c, token };
+    return { ...c, token: EncryptionService.decrypt(c.access_token) };
   }
 
   const publica = (c) => ({
     id: c.id, plataforma: c.plataforma, external_id: c.external_id, nombre: c.nombre, username: c.username,
-    permisos: c.permisos || [], token_expira: c.token_expira, conectada_en: c.updated_at,
+    permisos: c.permisos || [], conectada_en: c.updated_at,
   });
 
   async function estado(usuario) {
     const account = await marca(usuario);
     const cfg = config();
-    return {
-      conexiones: (await db().conexiones(account)).map(publica),
-      disponible: { instagram: Boolean(cfg.instagramAppId && cfg.instagramSecret), facebook: Boolean(cfg.facebookAppId && cfg.facebookSecret) },
-    };
+    return { conexiones: (await db().conexiones(account)).map(publica), disponible: Boolean(cfg.facebookAppId && cfg.facebookSecret) };
   }
 
-  function urlAutorizacion(plataforma, state) {
+  function urlAutorizacion(state) {
     const cfg = config();
-    if (plataforma === 'instagram') {
-      if (!cfg.instagramAppId || !cfg.instagramSecret) throw error('La conexión con Instagram todavía no está configurada en Gesicom.', 503);
-      const u = new URL('https://www.instagram.com/oauth/authorize');
-      u.search = new URLSearchParams({ client_id: cfg.instagramAppId, redirect_uri: `${cfg.base}/instagram/callback`, response_type: 'code', scope: SCOPES_INSTAGRAM.join(','), state }).toString();
-      return u.href;
-    }
     if (!cfg.facebookAppId || !cfg.facebookSecret) throw error('La conexión con Facebook todavía no está configurada en Gesicom.', 503);
     const u = new URL(`https://www.facebook.com/${process.env.FACEBOOK_API_VERSION || 'v23.0'}/dialog/oauth`);
-    u.search = new URLSearchParams({ client_id: cfg.facebookAppId, redirect_uri: `${cfg.base}/facebook/callback`, response_type: 'code', scope: SCOPES_FACEBOOK.join(','), state }).toString();
+    u.search = new URLSearchParams({ client_id: cfg.facebookAppId, redirect_uri: `${cfg.base}/facebook/callback`, response_type: 'code', scope: SCOPES.join(','), state }).toString();
     return u.href;
-  }
-
-  async function completarInstagram(usuario, code) {
-    const account = await marca(usuario);
-    const cfg = config();
-    const corto = await g().llamar('https://api.instagram.com/oauth/access_token', {
-      method: 'POST',
-      params: { client_id: cfg.instagramAppId, client_secret: cfg.instagramSecret, grant_type: 'authorization_code', redirect_uri: `${cfg.base}/instagram/callback`, code },
-    });
-    const datos = Array.isArray(corto.data) ? corto.data[0] : corto;
-    const largo = await g().llamar('https://graph.instagram.com/access_token', { params: { grant_type: 'ig_exchange_token', client_secret: cfg.instagramSecret, access_token: datos.access_token } });
-    const perfil = await g().instagram('me', { token: largo.access_token, params: { fields: 'user_id,username,name,account_type' } });
-    const permisos = String(datos.permissions || '').split(',').filter(Boolean);
-    const faltan = SCOPES_INSTAGRAM.filter((s) => permisos.length && !permisos.includes(s));
-    await db().guardarConexion({
-      account, usuario, plataforma: 'instagram',
-      external: idMeta(perfil.user_id || datos.user_id, 'Cuenta de Instagram'),
-      // Es el ID que Meta envía en la solicitud de eliminación de datos.
-      metaUser: String(datos.user_id || perfil.id),
-      nombre: perfil.name || perfil.username, username: perfil.username,
-      token: EncryptionService.encrypt(largo.access_token),
-      expira: new Date(ahora() + Number(largo.expires_in || 5184000) * 1000),
-      permisos: permisos.length ? permisos : SCOPES_INSTAGRAM,
-    });
-    return { username: perfil.username, permisos_faltantes: faltan };
   }
 
   // Devuelve las Páginas que administra quien autorizó. Con una sola se
@@ -195,37 +159,44 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const pendiente = { token: largo.access_token, metaUser: String(yo.id) };
     const paginas = await paginasDe(pendiente);
     if (paginas.length === 0) throw error('Tu usuario de Facebook no administra ninguna Página, o no la seleccionaste al autorizar.', 409);
-    if (paginas.length === 1) {
-      await confirmarPagina(usuario, pendiente, paginas[0].id);
-      return { conectada: paginas[0].nombre };
-    }
+    if (paginas.length === 1) return confirmarPagina(usuario, pendiente, paginas[0].id);
     return { pendiente };
   }
 
   async function paginasDe(pendiente) {
-    const r = await g().facebook('me/accounts', { token: pendiente.token, params: { fields: 'id,name,tasks', limit: 100 } });
-    return (r.data || []).map((p) => ({ id: String(p.id), nombre: p.name, puede_publicar: (p.tasks || []).includes('CREATE_CONTENT') }));
+    const r = await g().facebook('me/accounts', { token: pendiente.token, params: { fields: 'id,name,tasks,instagram_business_account{id,username}', limit: 100 } });
+    return (r.data || []).map((p) => ({
+      id: String(p.id), nombre: p.name, puede_publicar: (p.tasks || []).includes('CREATE_CONTENT'),
+      instagram: p.instagram_business_account?.username || null,
+    }));
   }
 
   async function confirmarPagina(usuario, pendiente, pageId) {
     const account = await marca(usuario);
     const id = idMeta(pageId, 'Página');
     // El token de Página sale de nuevo de Meta: el navegador nunca lo envía.
-    const pagina = await g().facebook(id, { token: pendiente.token, params: { fields: 'id,name,access_token,tasks' } });
+    const pagina = await g().facebook(id, { token: pendiente.token, params: { fields: 'id,name,access_token,tasks,instagram_business_account{id,username,name}' } });
     if (String(pagina.id) !== id || !pagina.access_token) throw error('Tu usuario no puede administrar esa Página.', 403);
-    const permisos = await g().facebook('me/permissions', { token: pendiente.token });
-    await db().guardarConexion({
-      account, usuario, plataforma: 'facebook', external: id, metaUser: pendiente.metaUser,
-      nombre: pagina.name, username: null, token: EncryptionService.encrypt(pagina.access_token), expira: null,
-      permisos: (permisos.data || []).filter((p) => p.status === 'granted').map((p) => p.permission),
-    });
-    return { conectada: pagina.name };
+    const permisos = ((await g().facebook('me/permissions', { token: pendiente.token })).data || [])
+      .filter((p) => p.status === 'granted').map((p) => p.permission);
+    const comun = { account, usuario, metaUser: pendiente.metaUser, token: EncryptionService.encrypt(pagina.access_token), expira: null, permisos };
+    await db().guardarConexion({ ...comun, plataforma: 'facebook', external: id, nombre: pagina.name, username: null });
+    const ig = pagina.instagram_business_account;
+    if (ig?.id) {
+      await db().guardarConexion({ ...comun, plataforma: 'instagram', external: idMeta(ig.id, 'Cuenta de Instagram'), nombre: ig.name || ig.username, username: ig.username });
+    } else {
+      // Cambió a una Página sin Instagram: no queda vinculada la cuenta anterior.
+      await db().borrarPlataforma(account, 'instagram');
+    }
+    return { conectada: pagina.name, instagram: ig?.username || null, permisos_faltantes: SCOPES.filter((s) => !permisos.includes(s)) };
   }
 
+  // Instagram depende de la Página: desconectar la Página quita los dos.
   async function desconectar(usuario, conexionId) {
     const account = await marca(usuario);
     const borrada = await db().borrarConexion(account, Number(conexionId));
     if (!borrada) throw error('Conexión no encontrada.', 404);
+    if (borrada.plataforma === 'facebook') await db().borrarPlataforma(account, 'instagram');
     return { desconectada: borrada.plataforma };
   }
 
@@ -277,14 +248,14 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
       let params;
       if (formato === 'carrusel') {
         const hijos = [];
-        for (const m of medios) hijos.push((await g().instagram(`${ig}/media`, { method: 'POST', token: c.token, params: { image_url: m.url, is_carousel_item: true } })).id);
+        for (const m of medios) hijos.push((await g().facebook(`${ig}/media`, { method: 'POST', token: c.token, params: { image_url: m.url, is_carousel_item: true } })).id);
         params = { media_type: 'CAROUSEL', children: hijos.join(','), caption };
       } else if (formato === 'reel') {
         params = { media_type: 'REELS', video_url: medios[0].url, caption, share_to_feed: true };
       } else {
         params = { image_url: medios[0].url, caption };
       }
-      const contenedor = await g().instagram(`${ig}/media`, { method: 'POST', token: c.token, params });
+      const contenedor = await g().facebook(`${ig}/media`, { method: 'POST', token: c.token, params });
       await db().actualizarPublicacion(pub.id, { contenedor_id: String(contenedor.id) });
       return avanzar(usuario, pub.id);
     } catch (e) {
@@ -301,7 +272,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     if (!pub) throw error('Publicación no encontrada.', 404);
     if (pub.estado !== 'procesando' || pub.plataforma !== 'instagram' || !pub.contenedor_id) return vistaPublicacion(pub);
     const c = await conexionLista(account, 'instagram');
-    const st = await g().instagram(pub.contenedor_id, { token: c.token, params: { fields: 'status_code,status' } });
+    const st = await g().facebook(pub.contenedor_id, { token: c.token, params: { fields: 'status_code,status' } });
     if (['ERROR', 'EXPIRED'].includes(st.status_code)) {
       return vistaPublicacion(await db().actualizarPublicacion(pub.id, { estado: 'error', error: 'Instagram no pudo procesar el archivo. Revisá formato, tamaño y duración.' }));
     }
@@ -311,14 +282,14 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     if (st.status_code !== 'FINISHED') return vistaPublicacion(pub);
     let publicado;
     try {
-      publicado = await g().instagram(`${c.external_id}/media_publish`, { method: 'POST', token: c.token, params: { creation_id: pub.contenedor_id } });
+      publicado = await g().facebook(`${c.external_id}/media_publish`, { method: 'POST', token: c.token, params: { creation_id: pub.contenedor_id } });
     } catch (e) {
       // Si la respuesta se perdió, la próxima consulta ve PUBLISHED y no se reenvía.
       if (e.status === 503) return vistaPublicacion(pub);
       return vistaPublicacion(await db().actualizarPublicacion(pub.id, { estado: 'error', error: e.message }));
     }
     let permalink = null;
-    try { permalink = (await g().instagram(String(publicado.id), { token: c.token, params: { fields: 'permalink' } })).permalink || null; } catch { /* opcional */ }
+    try { permalink = (await g().facebook(String(publicado.id), { token: c.token, params: { fields: 'permalink' } })).permalink || null; } catch { /* opcional */ }
     return vistaPublicacion(await db().actualizarPublicacion(pub.id, { estado: 'publicada', external_id: String(publicado.id), permalink, error: null }));
   }
 
@@ -366,7 +337,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const plataforma = body?.plataforma === 'facebook' ? 'facebook' : 'instagram';
     const c = await conexionLista(account, plataforma);
     if (plataforma === 'instagram') {
-      const r = await g().instagram(`${c.external_id}/media`, { token: c.token, params: { fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count', limit: 12, after: cursor(body?.after) } });
+      const r = await g().facebook(`${c.external_id}/media`, { token: c.token, params: { fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count', limit: 12, after: cursor(body?.after) } });
       return { items: r.data || [], ...paging(r) };
     }
     const r = await g().facebook(`${c.external_id}/published_posts`, { token: c.token, params: { fields: 'id,message,created_time,permalink_url,full_picture,shares,reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0)', limit: 12, after: cursor(body?.after) } });
@@ -382,7 +353,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   async function comentarios(usuario, body) {
     const account = await marca(usuario);
     const c = await conexionLista(account, 'instagram');
-    const r = await g().instagram(`${idMeta(body?.media_id, 'Publicación')}/comments`, { token: c.token, params: { fields: 'id,text,username,timestamp,hidden,like_count,replies{id,text,username,timestamp}', limit: 25, after: cursor(body?.after) } });
+    const r = await g().facebook(`${idMeta(body?.media_id, 'Publicación')}/comments`, { token: c.token, params: { fields: 'id,text,username,timestamp,hidden,like_count,replies{id,text,username,timestamp}', limit: 25, after: cursor(body?.after) } });
     return { items: r.data || [], ...paging(r) };
   }
 
@@ -391,21 +362,29 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const c = await conexionLista(account, 'instagram');
     const mensaje = texto(body?.texto, 2200, 'La respuesta');
     if (!mensaje) throw error('Escribí la respuesta.');
-    const r = await g().instagram(`${idMeta(body?.comment_id, 'Comentario')}/replies`, { method: 'POST', token: c.token, params: { message: mensaje } });
+    const r = await g().facebook(`${idMeta(body?.comment_id, 'Comentario')}/replies`, { method: 'POST', token: c.token, params: { message: mensaje } });
     return { id: String(r.id) };
   }
 
   async function ocultarComentario(usuario, body) {
     const account = await marca(usuario);
     const c = await conexionLista(account, 'instagram');
-    await g().instagram(idMeta(body?.comment_id, 'Comentario'), { method: 'POST', token: c.token, params: { hide: body?.ocultar !== false } });
+    await g().facebook(idMeta(body?.comment_id, 'Comentario'), { method: 'POST', token: c.token, params: { hide: body?.ocultar !== false } });
     return { oculto: body?.ocultar !== false };
+  }
+
+  // Los mensajes de Instagram se leen y envían por la Página vinculada
+  // (/{page-id}/conversations y /{page-id}/messages), con su token.
+  async function bandeja(account) {
+    const c = await conexionLista(account, 'instagram');
+    const pagina = await conexionLista(account, 'facebook');
+    return { ...c, pagina: pagina.external_id };
   }
 
   async function conversaciones(usuario, body) {
     const account = await marca(usuario);
-    const c = await conexionLista(account, 'instagram');
-    const r = await g().instagram('me/conversations', { token: c.token, params: { platform: 'instagram', fields: 'id,updated_time,participants', limit: 20, after: cursor(body?.after) } });
+    const c = await bandeja(account);
+    const r = await g().facebook(`${c.pagina}/conversations`, { token: c.token, params: { platform: 'instagram', fields: 'id,updated_time,participants', limit: 20, after: cursor(body?.after) } });
     return {
       items: (r.data || []).map((conv) => ({
         id: conv.id, updated_time: conv.updated_time,
@@ -418,7 +397,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   async function leerConversacion(c, conversacionId) {
     const id = String(conversacionId ?? '');
     if (!/^[A-Za-z0-9_\-=]{1,200}$/.test(id)) throw error('Conversación inválida.');
-    const r = await g().instagram(id, { token: c.token, params: { fields: 'participants,messages.limit(30){id,message,from,to,created_time}' } });
+    const r = await g().facebook(id, { token: c.token, params: { fields: 'participants,messages.limit(30){id,message,from,to,created_time}' } });
     const contacto = (r.participants?.data || []).find((p) => p.username !== c.username && String(p.id) !== c.external_id) || null;
     const mensajes = (r.messages?.data || []).map((m) => ({
       id: m.id, texto: m.message || '', created_time: m.created_time,
@@ -431,7 +410,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
 
   async function mensajes(usuario, body) {
     const account = await marca(usuario);
-    const c = await conexionLista(account, 'instagram');
+    const c = await bandeja(account);
     return leerConversacion(c, body?.conversacion_id);
   }
 
@@ -439,13 +418,13 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   // mensaje de la persona. Se comprueba con los mensajes reales, no con el navegador.
   async function enviarMensaje(usuario, body) {
     const account = await marca(usuario);
-    const c = await conexionLista(account, 'instagram');
+    const c = await bandeja(account);
     const contenido = texto(body?.texto, 1000, 'El mensaje');
     if (!contenido) throw error('Escribí el mensaje.');
     const conv = await leerConversacion(c, body?.conversacion_id);
     if (!conv.contacto?.id) throw error('No se encontró a la persona de esta conversación.', 404);
     if (!conv.ventana_abierta) throw error('Pasaron más de 24 horas desde el último mensaje de esta persona. Instagram no permite responder desde aplicaciones fuera de ese plazo.', 409);
-    const r = await g().instagram(`${c.external_id}/messages`, { method: 'POST', token: c.token, json: { recipient: { id: String(conv.contacto.id) }, message: { text: contenido } } });
+    const r = await g().facebook(`${c.pagina}/messages`, { method: 'POST', token: c.token, json: { recipient: { id: String(conv.contacto.id) }, message: { text: contenido } } });
     if (!r.message_id) throw error('Instagram no confirmó el envío. Revisá la conversación antes de repetir.', 503);
     return { id: r.message_id };
   }
@@ -462,12 +441,12 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     // Cada métrica se pide aparte: una no disponible queda en null, nunca en cero.
     await Promise.all(METRICAS_CUENTA.map(async (m) => {
       try {
-        const r = await g().instagram(`${c.external_id}/insights`, { token: c.token, params: { metric: m, period: 'day', metric_type: 'total_value', since, until } });
+        const r = await g().facebook(`${c.external_id}/insights`, { token: c.token, params: { metric: m, period: 'day', metric_type: 'total_value', since, until } });
         const v = r.data?.[0]?.total_value?.value;
         valores[m] = typeof v === 'number' ? v : null;
       } catch (e) { valores[m] = null; errores[m] = e.message; }
     }));
-    const perfil = await g().instagram(c.external_id, { token: c.token, params: { fields: 'username,followers_count,follows_count,media_count' } });
+    const perfil = await g().facebook(c.external_id, { token: c.token, params: { fields: 'username,followers_count,follows_count,media_count' } });
     return { perfil, metricas: valores, errores, desde: body.desde, hasta: body.hasta };
   }
 
@@ -478,7 +457,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const valores = {};
     await Promise.all(['reach', 'views', 'likes', 'comments', 'shares', 'saved', 'total_interactions'].map(async (m) => {
       try {
-        const r = await g().instagram(`${media}/insights`, { token: c.token, params: { metric: m } });
+        const r = await g().facebook(`${media}/insights`, { token: c.token, params: { metric: m } });
         const v = r.data?.[0]?.values?.[0]?.value ?? r.data?.[0]?.total_value?.value;
         valores[m] = typeof v === 'number' ? v : null;
       } catch { valores[m] = null; }
@@ -487,9 +466,9 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   }
 
   // Data Deletion de Meta: borra en el acto las conexiones de quien quitó la app.
-  async function borrarPorMetaUser(metaUserId, plataforma) {
+  async function borrarPorMetaUser(metaUserId) {
     try {
-      return await db().borrarPorMetaUser(String(metaUserId), plataforma);
+      return await db().borrarPorMetaUser(String(metaUserId));
     } catch (e) {
       // Antes de la migración la tabla no existe: no hay nada de Marca Personal que borrar.
       if (e?.original?.code === '42P01' || e?.parent?.code === '42P01') return [];
@@ -498,11 +477,11 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   }
 
   return {
-    estado, urlAutorizacion, completarInstagram, completarFacebook, paginasDe, confirmarPagina, desconectar,
+    estado, urlAutorizacion, completarFacebook, paginasDe, confirmarPagina, desconectar,
     subirMedio, publicarInstagram, avanzar, publicarFacebook, historial, publicaciones,
     comentarios, responderComentario, ocultarComentario, conversaciones, mensajes, enviarMensaje,
     metricas, metricasPublicacion, borrarPorMetaUser,
   };
 }
 
-module.exports = { createService, SCOPES_INSTAGRAM, SCOPES_FACEBOOK, ...createService() };
+module.exports = { createService, SCOPES, ...createService() };
