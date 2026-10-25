@@ -94,7 +94,14 @@ async function estado(req, res) {
  * pública donde el usuario pueda ver el estado del borrado, y el código el
  * identificador con el que se la consulta.
  */
-async function metaCallback(req, res) {
+// Facebook firma con el secreto de la app; Instagram Login, con el suyo. Cada
+// uno borra además las conexiones de Marca Personal de su plataforma.
+const marcaPersonalMeta = () => require('../services/marcaPersonalMeta.service');
+const metaCallback = crearMetaCallback({ secreto: 'FACEBOOK_APP_SECRET', plataforma: 'facebook' });
+const metaCallbackInstagram = crearMetaCallback({ secreto: 'INSTAGRAM_APP_SECRET', plataforma: 'instagram', soloAdicionales: true });
+
+function crearMetaCallback({ secreto, plataforma, soloAdicionales = false }) {
+  return async (req, res) => {
   const signedRequest = req.body?.signed_request;
 
   if (!signedRequest) {
@@ -104,8 +111,12 @@ async function metaCallback(req, res) {
   try {
     const { codigo, meta_user_id, duplicada } = await SolicitudEliminacionService.crearDesdeMetaCallback(
       signedRequest,
-      process.env.FACEBOOK_APP_SECRET,
-      contextoDeRequest(req)
+      process.env[secreto],
+      {
+        ...contextoDeRequest(req),
+        soloAdicionales,
+        borrarAdicionales: (metaUserId) => marcaPersonalMeta().borrarPorMetaUser(metaUserId, plataforma),
+      }
     );
 
     auditoria('ELIMINACION_DATOS_SOLICITADA', {
@@ -130,6 +141,7 @@ async function metaCallback(req, res) {
       error: esErrorDeConfig ? 'Callback no disponible.' : 'signed_request inválido.',
     });
   }
+  };
 }
 
 /**
@@ -212,4 +224,4 @@ async function actualizarEstado(req, res) {
   }
 }
 
-module.exports = { solicitar, estado, metaCallback, solicitarDesdePanel, listar, actualizarEstado };
+module.exports = { solicitar, estado, metaCallback, metaCallbackInstagram, solicitarDesdePanel, listar, actualizarEstado };

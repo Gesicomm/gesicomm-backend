@@ -56,6 +56,19 @@ describe('SolicitudEliminacionService.crearDesdeMetaCallback', () => {
     expect(datos.ip_solicitante).toBe('1.2.3.4');
   });
 
+  test('Instagram de Marca Personal: borra sus conexiones sin tocar las de Ads', async () => {
+    const borrarAdicionales = jest.fn(async () => [{ id: 9, usuario_id: 4 }]);
+
+    await SolicitudEliminacionService.crearDesdeMetaCallback(signed, APP_SECRET, { ...contexto, soloAdicionales: true, borrarAdicionales });
+
+    expect(MetaIntegration.findAll).not.toHaveBeenCalled();
+    expect(borrarAdicionales).toHaveBeenCalledWith('555');
+    const datos = SolicitudEliminacion.create.mock.calls[0][0];
+    expect(datos.estado).toBe('completada');
+    expect(datos.usuario_id).toBe(4);
+    expect(datos.inquilino_id).toBeNull();
+  });
+
   test('con firma inválida no borra nada', async () => {
     await expect(
       SolicitudEliminacionService.crearDesdeMetaCallback(signed, 'otro-secreto', contexto)
