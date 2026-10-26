@@ -16,9 +16,14 @@ const { MarcaPersonalError } = require('./marcaPersonal.client');
 const EncryptionService = require('../utils/EncryptionService');
 const { logger } = require('../utils/logger');
 
-// Solo los permisos de Página que la app tiene pedidos en Meta. Los de Instagram de la app son
-// instagram_business_*, que el inicio de sesión de Facebook rechaza: Instagram no se vincula por acá.
-const SCOPES = ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'];
+// Instagram API with Facebook Login: la cuenta profesional se obtiene de la
+// Página y todas las operaciones usan graph.facebook.com y su Page token.
+// instagram_business_* pertenece a Instagram Login y no sirve en este flujo.
+const SCOPES = [
+  'pages_show_list', 'pages_read_engagement', 'pages_manage_posts',
+  'instagram_basic', 'instagram_content_publish', 'instagram_manage_comments',
+  'instagram_manage_insights', 'instagram_manage_messages', 'pages_manage_metadata',
+];
 // WhatsApp se conecta con su propio inicio de sesión: solo pide lo de WhatsApp.
 // business_management (pedido en la app) deja encontrar las cuentas de WhatsApp de los
 // portafolios cuando Meta no detalla en el token qué cuentas se eligieron.
@@ -119,8 +124,15 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   async function conexionLista(account, plataforma) {
     const c = await db().conexion(account, plataforma);
     if (!c) {
+      if (plataforma === 'instagram') {
+        const pagina = await db().conexion(account, 'facebook');
+        if (!pagina) throw error('Conectá tu Página de Facebook primero.', 409);
+        if (!(pagina.permisos || []).includes('instagram_basic')) {
+          throw error('Gesicom no tiene instagram_basic para consultar el Instagram de esta Página. Reconectá desde «Conexiones» y autorizá el permiso.', 409);
+        }
+      }
       throw error(plataforma === 'instagram'
-        ? 'Tu Página de Facebook no tiene una cuenta profesional de Instagram vinculada. Vinculala en Meta y volvé a conectar.'
+        ? 'Meta no devolvió una cuenta profesional de Instagram vinculada a esta Página. Revisá el acceso al activo y reconectá desde «Conexiones».'
         : plataforma === 'whatsapp' ? 'Conectá tu número de WhatsApp Business primero.' : 'Conectá tu Página de Facebook primero.', 409);
     }
     // WhatsApp usa el token de usuario de larga duración (60 días).
@@ -138,7 +150,12 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   async function estado(usuario) {
     const account = await marca(usuario);
     const cfg = config();
-    return { conexiones: (await db().conexiones(account)).map(publica), disponible: Boolean(cfg.facebookAppId && cfg.facebookSecret) };
+    const conexiones = (await db().conexiones(account)).map(publica);
+    const pagina = conexiones.find((c) => c.plataforma === 'facebook');
+    const instagram = conexiones.find((c) => c.plataforma === 'instagram');
+    const instagram_estado = instagram ? 'conectada' : !pagina ? 'sin_pagina'
+      : !pagina.permisos.includes('instagram_basic') ? 'sin_permiso' : 'no_vinculada';
+    return { conexiones, instagram_estado, disponible: Boolean(cfg.facebookAppId && cfg.facebookSecret) };
   }
 
   // Facebook (Página e Instagram) y WhatsApp usan el mismo retorno; cambian los permisos.
@@ -172,10 +189,10 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   }
 
   async function paginasDe(pendiente) {
-    const r = await g().facebook('me/accounts', { token: pendiente.token, params: { fields: 'id,name,tasks', limit: 100 } });
+    const r = await g().facebook('me/accounts', { token: pendiente.token, params: { fields: 'id,name,tasks,instagram_business_account', limit: 100 } });
     return (r.data || []).map((p) => ({
       id: String(p.id), nombre: p.name, puede_publicar: (p.tasks || []).includes('CREATE_CONTENT'),
-      instagram: p.instagram_business_account?.username || null,
+      instagram: Boolean(p.instagram_business_account?.id),
     }));
   }
 
@@ -188,16 +205,27 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     if (String(pagina.id) !== id || !pagina.access_token) throw error('Tu usuario no puede administrar esa Página.', 403);
     const permisos = ((await g().facebook('me/permissions', { token: pendiente.token })).data || [])
       .filter((p) => p.status === 'granted').map((p) => p.permission);
+    let ig = null;
+    if (permisos.includes('instagram_basic')) {
+      // Meta puede omitir el campo cuando falta acceso. Solo interpretamos su
+      // ausencia como "sin vincular" cuando instagram_basic fue concedido.
+      const vinculacion = await g().facebook(id, { token: pendiente.token, params: { fields: 'instagram_business_account' } });
+      if (vinculacion.instagram_business_account?.id) {
+        const igId = idMeta(vinculacion.instagram_business_account.id, 'Cuenta de Instagram');
+        ig = await g().facebook(igId, { token: pagina.access_token, params: { fields: 'id,username,name' } });
+      }
+    }
     const comun = { account, usuario, metaUser: pendiente.metaUser, token: EncryptionService.encrypt(pagina.access_token), expira: null, permisos };
     await db().guardarConexion({ ...comun, plataforma: 'facebook', external: id, nombre: pagina.name, username: null });
-    const ig = pagina.instagram_business_account;
     if (ig?.id) {
-      await db().guardarConexion({ ...comun, plataforma: 'instagram', external: idMeta(ig.id, 'Cuenta de Instagram'), nombre: ig.name || ig.username, username: ig.username });
+      await db().guardarConexion({ ...comun, plataforma: 'instagram', external: idMeta(ig.id, 'Cuenta de Instagram'), cuenta: id, nombre: ig.name || ig.username, username: ig.username });
     } else {
       // Cambió a una Página sin Instagram: no queda vinculada la cuenta anterior.
       await db().borrarPlataforma(account, 'instagram');
     }
-    return { conectada: pagina.name, instagram: ig?.username || null, permisos_faltantes: SCOPES.filter((s) => !permisos.includes(s)) };
+    return { conectada: pagina.name, instagram: ig?.username || null,
+      instagram_estado: ig ? 'conectada' : permisos.includes('instagram_basic') ? 'no_vinculada' : 'sin_permiso',
+      permisos_faltantes: SCOPES.filter((s) => !permisos.includes(s)) };
   }
 
   // Instagram depende de la Página: desconectar la Página quita los dos.
@@ -493,7 +521,9 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
       const r = await g().facebook(`${c.external_id}/media`, { token: c.token, params: { fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count', limit: 12, after: cursor(body?.after) } });
       return { items: r.data || [], ...paging(r) };
     }
-    const r = await g().facebook(`${c.external_id}/published_posts`, { token: c.token, params: { fields: 'id,message,created_time,permalink_url,full_picture,shares,reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0)', limit: 12, after: cursor(body?.after) } });
+    // Los resúmenes reactions/comments disparan #10 sin pages_read_user_content.
+    // El contenido y los demás campos sí funcionan con pages_read_engagement.
+    const r = await g().facebook(`${c.external_id}/published_posts`, { token: c.token, params: { fields: 'id,message,created_time,permalink_url,full_picture,shares', limit: 12, after: cursor(body?.after) } });
     return {
       items: (r.data || []).map((p) => ({
         id: p.id, message: p.message || '', created_time: p.created_time, permalink: p.permalink_url, imagen: p.full_picture || null,
@@ -607,15 +637,15 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const account = await marca(usuario);
     const c = await conexionLista(account, 'instagram');
     const media = idMeta(body?.media_id, 'Publicación');
-    const valores = {};
+    const valores = {}, errores = {};
     await Promise.all(['reach', 'views', 'likes', 'comments', 'shares', 'saved', 'total_interactions'].map(async (m) => {
       try {
         const r = await g().facebook(`${media}/insights`, { token: c.token, params: { metric: m } });
         const v = r.data?.[0]?.values?.[0]?.value ?? r.data?.[0]?.total_value?.value;
         valores[m] = typeof v === 'number' ? v : null;
-      } catch { valores[m] = null; }
+      } catch (e) { valores[m] = null; errores[m] = e.message; }
     }));
-    return { media_id: media, metricas: valores };
+    return { media_id: media, metricas: valores, errores };
   }
 
   // Data Deletion de Meta: borra en el acto las conexiones de quien quitó la app.

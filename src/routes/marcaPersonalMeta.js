@@ -98,7 +98,9 @@ const avisoWhatsapp = (r) => ({
 
 const textoConectada = (r) => r.instagram
   ? `Página «${r.conectada}» e Instagram @${r.instagram} conectados.`
-  : `Página «${r.conectada}» conectada. No tiene una cuenta profesional de Instagram vinculada.`;
+  : r.instagram_estado === 'sin_permiso'
+    ? `Página «${r.conectada}» conectada. Gesicom no tiene instagram_basic para consultar su Instagram vinculado.`
+    : `Página «${r.conectada}» conectada. Meta no devolvió una cuenta profesional de Instagram vinculada.`;
 const tipoAviso = (r) => (r.permisos_faltantes?.length || !r.instagram ? 'aviso' : 'ok');
 const conFaltantes = (r) => textoConectada(r) + (r.permisos_faltantes?.length
   ? ` Faltan permisos (${r.permisos_faltantes.join(', ')}): algunas funciones no van a estar disponibles. Podés reconectar y aceptarlos.` : '');

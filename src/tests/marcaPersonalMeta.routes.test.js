@@ -90,11 +90,18 @@ describe('Marca Personal · rutas de conexión', () => {
   });
 
   test('una Página sin Instagram vinculado lo avisa', async () => {
-    service.completarFacebook.mockResolvedValue({ conectada: 'Mi Marca', instagram: null, permisos_faltantes: [] });
+    service.completarFacebook.mockResolvedValue({ conectada: 'Mi Marca', instagram: null, instagram_estado: 'no_vinculada', permisos_faltantes: [] });
     const { vuelta } = await conectar();
     const estado = await request(app).get(BASE + '/estado').set('Origin', ORIGEN).set('Cookie', cookies(vuelta));
     expect(estado.body.aviso.tipo).toBe('aviso');
-    expect(estado.body.aviso.texto).toContain('No tiene una cuenta profesional de Instagram vinculada');
+    expect(estado.body.aviso.texto).toContain('Meta no devolvió una cuenta profesional de Instagram vinculada');
+  });
+
+  test('sin instagram_basic informa falta de permiso, no ausencia del vínculo', async () => {
+    service.completarFacebook.mockResolvedValue({ conectada: 'Mi Marca', instagram: null, instagram_estado: 'sin_permiso', permisos_faltantes: ['instagram_basic'] });
+    const { vuelta } = await conectar();
+    const estado = await request(app).get(BASE + '/estado').set('Origin', ORIGEN).set('Cookie', cookies(vuelta));
+    expect(estado.body.aviso.texto).toContain('no tiene instagram_basic para consultar');
   });
 
   test('un state distinto no conecta nada', async () => {
