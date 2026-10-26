@@ -54,5 +54,7 @@ test('recepción registra estados de entrega sin exponer el payload ni enviar me
 });
 test('suscribir requiere configuración y usa solamente el WABA de la marca',async()=>{
  const {s,graph}=setup();delete process.env.MARCA_PERSONAL_WHATSAPP_VERIFY_TOKEN;await expect(s.suscribir(7)).rejects.toMatchObject({status:503});
- process.env.MARCA_PERSONAL_WHATSAPP_VERIFY_TOKEN='verificacion-test';try{await s.suscribir(7);expect(graph.facebook).toHaveBeenCalledWith('999/subscribed_apps',{method:'POST',token:'no-exponer'});}finally{delete process.env.MARCA_PERSONAL_WHATSAPP_VERIFY_TOKEN;}
+ const old=process.env.FACEBOOK_APP_ID;process.env.FACEBOOK_APP_ID='app-test';
+ process.env.MARCA_PERSONAL_WHATSAPP_VERIFY_TOKEN='verificacion-test';graph.facebook.mockImplementation(async(path,options)=>options?.method==='POST'?{success:true}:{data:[{whatsapp_business_api_data:{id:'app-test'}}]});
+ try{await s.suscribir(7);expect(graph.facebook).toHaveBeenCalledWith('999/subscribed_apps',{method:'POST',token:'no-exponer'});expect(graph.facebook).toHaveBeenCalledWith('999/subscribed_apps',{token:'no-exponer'});}finally{delete process.env.MARCA_PERSONAL_WHATSAPP_VERIFY_TOKEN;if(old===undefined)delete process.env.FACEBOOK_APP_ID;else process.env.FACEBOOK_APP_ID=old;}
 });

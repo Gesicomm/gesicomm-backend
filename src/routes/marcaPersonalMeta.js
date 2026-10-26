@@ -91,9 +91,9 @@ for (const tipo of ['facebook', 'whatsapp']) {
 }
 
 const avisoWhatsapp = (r) => ({
-  tipo: r.permisos_faltantes?.length ? 'aviso' : 'ok',
+  tipo: r.permisos_faltantes?.length || r.recepcion?.activa===false ? 'aviso' : 'ok',
   texto: `WhatsApp ${r.conectado}${r.nombre ? ' (' + r.nombre + ')' : ''} conectado.` + (r.permisos_faltantes?.length
-    ? ` Faltan permisos (${r.permisos_faltantes.join(', ')}): reconectá y aceptalos para enviar mensajes y administrar plantillas.` : ''),
+    ? ` Faltan permisos (${r.permisos_faltantes.join(', ')}): reconectá y aceptalos para enviar mensajes y administrar plantillas.` : '')+(r.recepcion?.activa===false?' '+r.recepcion.aviso:''),
 });
 
 const textoConectada = (r) => r.instagram

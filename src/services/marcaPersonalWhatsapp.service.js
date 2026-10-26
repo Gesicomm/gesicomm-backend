@@ -40,10 +40,7 @@ function createService({store,meta,graph,ahora=()=>Date.now()}={}){
  }
  async function suscribir(usuario){
   const c=await context(usuario);
-  if(!process.env.MARCA_PERSONAL_WHATSAPP_VERIFY_TOKEN)throw fail('Falta configurar la recepción de WhatsApp en el servidor y el webhook de Meta.',503);
-  if(!/^\d{1,64}$/.test(c.cuenta_id||''))throw fail('Volvé a conectar tu número de WhatsApp Business.',409);
-  await g().facebook(c.cuenta_id+'/subscribed_apps',{method:'POST',token:c.token});
-  return {ok:true};
+  return require('./marcaPersonalWhatsapp.subscription').suscribir({graph:g(),cuenta:c.cuenta_id,token:c.token});
  }
  // Sólo se invoca después de verificar la firma del cuerpo HTTP original.
  async function recibir(payload){

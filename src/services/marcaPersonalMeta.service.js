@@ -269,7 +269,10 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
       nombre: numero.nombre || numero.cuenta, username: numero.numero,
       token: EncryptionService.encrypt(pendiente.token), expira: new Date(pendiente.expira || ahora() + 60 * 86400000), permisos,
     });
-    return { conectado: numero.numero, nombre: numero.nombre, permisos_faltantes: SCOPES_WHATSAPP.filter((s) => s.startsWith('whatsapp_') && !permisos.includes(s)) };
+    let recepcion;
+    try{await require('./marcaPersonalWhatsapp.subscription').suscribir({graph:g(),cuenta:numero.cuenta_id,token:pendiente.token});recepcion={activa:true};}
+    catch{recepcion={activa:false,aviso:'El número quedó conectado, pero no se pudo activar la recepción de respuestas. Usá «Verificar recepción» en Conexiones para reintentar.'};}
+    return { conectado: numero.numero, nombre: numero.nombre, permisos_faltantes: SCOPES_WHATSAPP.filter((s) => s.startsWith('whatsapp_') && !permisos.includes(s)),recepcion };
   }
 
   const telefono = (v) => {

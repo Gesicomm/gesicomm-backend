@@ -201,6 +201,16 @@ describe('Marca Personal · Instagram y Facebook', () => {
   });
 
   describe('WhatsApp', () => {
+    test('al conectar también activa la recepción y confirma la app suscrita',async()=>{
+      process.env.MARCA_PERSONAL_WHATSAPP_VERIFY_TOKEN='private-test';
+      const store=memoria();
+      const g=grafo(respuestasWa((ruta,op)=>{
+        if(ruta==='111/subscribed_apps')return op.method==='POST'?{success:true}:{data:[{whatsapp_business_api_data:{id:process.env.FACEBOOK_APP_ID}}]};
+      }));
+      const svc=createService({store,graph:g,r2,cuentaDe:async()=> 'marca-1',ahora:()=>AHORA});
+      try{const result=await svc.confirmarWhatsapp(7,{token:'usuario-wa',metaUser:'900'},'5001');expect(result.recepcion).toEqual({activa:true});expect(g.llamadas.some(x=>x.ruta==='111/subscribed_apps'&&x.method==='POST')).toBe(true);}
+      finally{delete process.env.MARCA_PERSONAL_WHATSAPP_VERIFY_TOKEN;}
+    });
     // Dos cuentas autorizadas (permisos granulares), una con dos números.
     const respuestasWa = (extra = () => undefined) => (p, ruta, op) => {
       const e = extra(ruta, op);
