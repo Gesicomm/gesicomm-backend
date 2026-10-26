@@ -60,6 +60,16 @@ jest.mock('../services/suscripcion.service',()=>({suscripcionActivaDeUsuario:jes
 const {Usuario} = require('../models');
 const subscriptions = require('../services/suscripcion.service');
 const service = require('../services/marcaPersonal.service');
+
+test('la validación para reutilizar sesión informa sólo la identidad y marca vinculadas',async()=>{
+ const names=['MARCA_PERSONAL_SSO_ENABLED','MARCA_PERSONAL_SUPABASE_URL','MARCA_PERSONAL_SUPABASE_SERVICE_ROLE_KEY'];
+ const previous=names.map(name=>process.env[name]);
+ const network=jest.spyOn(global,'fetch').mockResolvedValue({ok:true,json:async()=>[{supabase_user_id:userId,account_id:'marca-a'}]});
+ process.env.MARCA_PERSONAL_SSO_ENABLED='true';process.env.MARCA_PERSONAL_SUPABASE_URL=config.url;process.env.MARCA_PERSONAL_SUPABASE_SERVICE_ROLE_KEY=config.key;
+ Usuario.findByPk.mockResolvedValue({id:41,nombre:'Prueba',activo:true,email_verificado:true,Rol:{nombre:'administrador'}});subscriptions.suscripcionActivaDeUsuario.mockResolvedValue(null);
+ try{const result=await jest.requireActual('../services/marcaPersonal.service').status(41);expect(result).toEqual({user_id:userId,account_id:'marca-a'});expect(network).toHaveBeenCalledTimes(1);expect(network.mock.calls[0][1].method).toBe('GET');}
+ finally{network.mockRestore();names.forEach((name,i)=>{if(previous[i]===undefined)delete process.env[name];else process.env[name]=previous[i];});}
+});
 test.each([
   [true,true,'usuario','pago',true],
   [true,true,'usuario',null,false],

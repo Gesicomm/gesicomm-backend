@@ -42,6 +42,6 @@ async function status(id) {
     throw new MarcaPersonalError('Tu acceso de Gesicom no está activo.', 403);
   }
   const link = await remote().getLink(id);
-  return { user_id: link?.supabase_user_id || null };
+  return { user_id: link?.supabase_user_id || null, account_id: link?.account_id || null };
 }
 module.exports = { configured, remote, identity, provisionUser, openSession, status };
