@@ -14,12 +14,15 @@
 const crypto = require('crypto');
 const { MarcaPersonalError } = require('./marcaPersonal.client');
 const EncryptionService = require('../utils/EncryptionService');
+const { logger } = require('../utils/logger');
 
 // Solo los permisos de Página que la app tiene pedidos en Meta. Los de Instagram de la app son
 // instagram_business_*, que el inicio de sesión de Facebook rechaza: Instagram no se vincula por acá.
 const SCOPES = ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'];
 // WhatsApp se conecta con su propio inicio de sesión: solo pide lo de WhatsApp.
-const SCOPES_WHATSAPP = ['whatsapp_business_management', 'whatsapp_business_messaging'];
+// business_management (pedido en la app) deja encontrar las cuentas de WhatsApp de los
+// portafolios cuando Meta no detalla en el token qué cuentas se eligieron.
+const SCOPES_WHATSAPP = ['whatsapp_business_management', 'whatsapp_business_messaging', 'business_management'];
 const IDIOMAS_PLANTILLA = ['es', 'es_AR', 'es_MX', 'es_ES', 'en_US', 'pt_BR'];
 
 const MEDIOS = {
@@ -224,11 +227,20 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const cuentas = [...new Set((debug.data?.granular_scopes || [])
       .filter((s) => s.scope === 'whatsapp_business_management' || s.scope === 'whatsapp_business_messaging')
       .flatMap((s) => s.target_ids || []).map(String))];
+    if (cuentas.length === 0) {
+      const bms = await g().facebook('me/businesses', { token: pendiente.token, params: { fields: 'id', limit: 50 } }).catch(() => ({ data: [] }));
+      for (const bm of bms.data || []) {
+        for (const borde of ['owned_whatsapp_business_accounts', 'client_whatsapp_business_accounts']) {
+          const r = await g().facebook(`${idMeta(bm.id, 'Portafolio')}/${borde}`, { token: pendiente.token, params: { fields: 'id', limit: 50 } }).catch(() => ({ data: [] }));
+          for (const w of r.data || []) if (!cuentas.includes(String(w.id))) cuentas.push(String(w.id));
+        }
+      }
+    }
     const numeros = [];
     for (const waba of cuentas) {
       const [cuenta, tel] = await Promise.all([
         g().facebook(idMeta(waba, 'Cuenta de WhatsApp'), { token: pendiente.token, params: { fields: 'id,name' } }).catch(() => ({ id: waba, name: null })),
-        g().facebook(`${waba}/phone_numbers`, { token: pendiente.token, params: { fields: 'id,display_phone_number,verified_name,quality_rating', limit: 50 } }).catch(() => ({ data: [] })),
+        g().facebook(`${waba}/phone_numbers`, { token: pendiente.token, params: { fields: 'id,display_phone_number,verified_name,quality_rating', limit: 50 } }).catch((e) => { logger.error({ mensaje: 'Marca Personal WhatsApp números', waba, error: e.message }); return { data: [] }; }),
       ]);
       for (const n of tel.data || []) {
         numeros.push({ id: String(n.id), cuenta_id: waba, cuenta: cuenta.name || waba, numero: n.display_phone_number, nombre: n.verified_name || null, calidad: n.quality_rating || null });
@@ -250,7 +262,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
       nombre: numero.nombre || numero.cuenta, username: numero.numero,
       token: EncryptionService.encrypt(pendiente.token), expira: new Date(pendiente.expira || ahora() + 60 * 86400000), permisos,
     });
-    return { conectado: numero.numero, nombre: numero.nombre, permisos_faltantes: SCOPES_WHATSAPP.filter((s) => !permisos.includes(s)) };
+    return { conectado: numero.numero, nombre: numero.nombre, permisos_faltantes: SCOPES_WHATSAPP.filter((s) => s.startsWith('whatsapp_') && !permisos.includes(s)) };
   }
 
   const telefono = (v) => {

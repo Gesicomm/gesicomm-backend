@@ -234,6 +234,20 @@ describe('Marca Personal · Instagram y Facebook', () => {
       expect(g.llamadas.find((l) => l.ruta === 'debug_token').token).toBe('fb-app|fb-secreto');
     });
 
+    test('sin cuentas detalladas en el token, las busca en los portafolios', async () => {
+      const store = memoria();
+      const g = grafo(respuestasWa((ruta) => ({
+        debug_token: { data: { granular_scopes: [{ scope: 'whatsapp_business_management' }] } },
+        'me/businesses': { data: [{ id: '77' }] },
+        '77/owned_whatsapp_business_accounts': { data: [{ id: '111' }] },
+        '77/client_whatsapp_business_accounts': { data: [] },
+      })[ruta]));
+      const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
+      const r = await svc.completarWhatsapp(7, 'code');
+      expect(r).toMatchObject({ conectado: '+595 981 000001' });
+      expect(store.filas[0]).toMatchObject({ external_id: '5001', cuenta_id: '111' });
+    });
+
     test('envía la plantilla hello_world y texto con el número conectado', async () => {
       const store = memoria(); conWhatsapp(store);
       const g = grafo(respuestasWa((ruta) => (ruta === '5001/messages' ? { contacts: [{ wa_id: '595981123456' }], messages: [{ id: 'wamid.1' }] } : undefined)));
