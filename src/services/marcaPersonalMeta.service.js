@@ -180,7 +180,8 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const account = await marca(usuario);
     const id = idMeta(pageId, 'Página');
     // El token de Página sale de nuevo de Meta: el navegador nunca lo envía.
-    const pagina = await g().facebook(id, { token: pendiente.token, params: { fields: 'id,name,access_token,tasks' } });
+    // El nodo de la Página no tiene el campo tasks y Meta rechaza todo el pedido: se pide solo lo necesario.
+    const pagina = await g().facebook(id, { token: pendiente.token, params: { fields: 'id,name,access_token' } });
     if (String(pagina.id) !== id || !pagina.access_token) throw error('Tu usuario no puede administrar esa Página.', 403);
     const permisos = ((await g().facebook('me/permissions', { token: pendiente.token })).data || [])
       .filter((p) => p.status === 'granted').map((p) => p.permission);
