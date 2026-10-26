@@ -85,7 +85,7 @@ class TiendaService {
   static async listarPorUsuario(usuario_id) {
     const tiendas = await Tienda.findAll({
       where: { usuario_id },
-      attributes: ['id', 'nombre', 'subdominio', 'logo_imagen', 'activo'],
+      attributes: ['id', 'nombre', 'subdominio', 'logo_imagen', 'favicon_imagen', 'activo'],
       order: [['id', 'ASC']],
     });
     return tiendas.map(t => t.toJSON());

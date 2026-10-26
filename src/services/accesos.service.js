@@ -22,7 +22,7 @@ const hash = token => crypto.createHash('sha256').update(token).digest('hex');
 async function listarTiendas(usuarioId) {
   const membresias = await Miembro.findAll({ where: { usuario_id: usuarioId, estado: 'activo' }, attributes: ['tienda_id'] });
   return Tienda.findAll({ where: { [Op.or]: [{ usuario_id: usuarioId }, { id: membresias.map(m => m.tienda_id) }] },
-    attributes: ['id', 'nombre', 'subdominio', 'logo_imagen', 'activo', 'usuario_id'], order: [['id', 'ASC']] });
+    attributes: ['id', 'nombre', 'subdominio', 'logo_imagen', 'favicon_imagen', 'activo', 'usuario_id'], order: [['id', 'ASC']] });
 }
 async function propietario(usuario, transaction) {
   const tienda = await Tienda.findOne({ where: { id: usuario.tiendaId, usuario_id: usuario.id }, transaction });
