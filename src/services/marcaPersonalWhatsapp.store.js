@@ -28,7 +28,7 @@ function createStore(database){
    await locked(c,external,async query=>{
     // El estado pendiente puede existir antes del mensaje enviado. La transacción
     // bloquea ese registro y lo fusiona antes de asignar el identificador único.
-    const pending=await query(`DELETE FROM marca_personal_whatsapp_mensajes WHERE account_id=:account AND phone_id=:phone AND external_id=:external AND id <> :id RETURNING estado,estado_fecha`,{...scope(c),id,external});
+    const pending=await query(`DELETE FROM marca_personal_whatsapp_mensajes WHERE account_id=:account AND phone_id=:phone AND external_id=:external AND tipo='pendiente' AND id <> :id RETURNING estado,estado_fecha`,{...scope(c),id,external});
     await query(`UPDATE marca_personal_whatsapp_mensajes SET external_id=:external,estado=:estado,estado_fecha=:estadoFecha
      WHERE id=:id AND account_id=:account AND phone_id=:phone`,{...scope(c),id,external,estado:pending[0]?.estado||estado,estadoFecha:pending[0]?.estado_fecha||new Date()});
    });
