@@ -235,6 +235,7 @@
   {"method":"POST","path":"/api/meta/filters","modulos":["publicidad"],"nivel":"ver"},
   {"method":"POST","path":"/api/meta/campaign-list","modulos":["publicidad"],"nivel":"ver"},
   {"method":"POST","path":"/api/meta/campaigns","modulos":["publicidad"],"nivel":"ver"},
+  {"method":"POST","path":"/api/meta/campaign-status","modulos":["publicidad"],"nivel":"gestionar"},
   {"method":"GET","path":"/api/meta/stores","modulos":["publicidad"],"nivel":"ver"},
   {"method":"GET","path":"/api/meta/pendiente","modulos":["configuracion"],"nivel":"ver"},
   {"method":"POST","path":"/api/depositos/listado","modulos":["ecommerce","productos","depositos"],"nivel":"ver"},

@@ -173,12 +173,9 @@ router.get('/connect', verificarToken, (req, res) => {
         maxAge: 10 * 60 * 1000
     });
 
-    // Permisos mínimos: Gesicom solo LEE (nunca crea ni edita anuncios), así
-    // que ads_management no corresponde. business_management hace falta para
-    // /me/businesses y /{bm}/owned_ad_accounts, que arman el selector de BM.
-    // Si se agrega un permiso, actualizar antes la Política de Privacidad (§4.1)
-    // y Seguridad (§4.1), que los enumeran.
-    const scope = 'ads_read,business_management';
+    // ads_management permite pausar y activar campañas desde Publicidad.
+    // business_management arma el selector de portafolios y cuentas.
+    const scope = 'ads_read,ads_management,business_management';
     const authUrl = `https://www.facebook.com/${FB_API_VERSION}/dialog/oauth`
         + `?client_id=${FB_APP_ID}`
         + `&redirect_uri=${encodeURIComponent(FB_REDIRECT_URI)}`
@@ -658,6 +655,79 @@ router.post('/campaigns', verificarToken, async (req, res) => {
     } catch (err) {
         console.error('Meta /campaigns Error:', err.message);
         return res.status(500).json({ message: 'Error al obtener campañas de Meta: ' + err.message });
+    }
+});
+
+// POST /api/meta/campaign-status -> Pausa o activa una campaña del BM conectado.
+router.post('/campaign-status', verificarToken, async (req, res) => {
+    const { store_id, ad_account_id, campaign_id, status } = req.body || {};
+    if (!Number.isSafeInteger(Number(store_id)) || Number(store_id) <= 0
+        || !/^act_\d+$/.test(String(ad_account_id))
+        || !/^\d+$/.test(String(campaign_id))
+        || !['ACTIVE', 'PAUSED'].includes(status)) {
+        return res.status(400).json({ message: 'Datos de campaña inválidos.' });
+    }
+
+    try {
+        const integracion = await MetaIntegration.findOne({
+            where: {
+                id: store_id,
+                inquilino_id: req.usuario.tenantId,
+                usuario_id: (req.comercioId || req.usuario.id),
+                estado: 'conectado'
+            }
+        });
+        if (!integracion?.access_token || !integracion.business_id) {
+            return res.status(404).json({ message: 'Portafolio de Meta no conectado.' });
+        }
+
+        const accessToken = EncryptionService.decrypt(integracion.access_token);
+        const accountUrl = new URL(`https://graph.facebook.com/${FB_API_VERSION}/${ad_account_id}`);
+        accountUrl.searchParams.set('fields', 'id,business{id}');
+        accountUrl.searchParams.set('access_token', accessToken);
+        const account = await fetchMeta(accountUrl.toString());
+        if (String(account.id) !== ad_account_id || String(account.business?.id) !== String(integracion.business_id)) {
+            return res.status(403).json({ message: 'La cuenta no pertenece al portafolio conectado.' });
+        }
+
+        const campaignUrl = new URL(`https://graph.facebook.com/${FB_API_VERSION}/${campaign_id}`);
+        campaignUrl.searchParams.set('fields', 'id,account_id,status');
+        campaignUrl.searchParams.set('access_token', accessToken);
+        const campaign = await fetchMeta(campaignUrl.toString());
+        const campaignAccountId = String(campaign.account_id).replace(/^act_/, '');
+        if (String(campaign.id) !== campaign_id || `act_${campaignAccountId}` !== ad_account_id) {
+            return res.status(403).json({ message: 'La campaña no pertenece a la cuenta elegida.' });
+        }
+        if (!['ACTIVE', 'PAUSED'].includes(campaign.status)) {
+            return res.status(409).json({ message: 'Solo se pueden cambiar campañas activas o pausadas.' });
+        }
+        if (campaign.status === status) {
+            return res.json({ id: campaign_id, status });
+        }
+
+        const body = new URLSearchParams({ access_token: accessToken, status });
+        const updateRes = await fetch(`https://graph.facebook.com/${FB_API_VERSION}/${campaign_id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body
+        });
+        const result = await updateRes.json();
+        if ([10, 200].includes(result.error?.code)) {
+            return res.status(403).json({ message: 'Meta no autorizó la edición. Renová los permisos desde Configuración y volvé a intentar.' });
+        }
+        if (!updateRes.ok || result.error || result.success !== true) {
+            throw new Error(result.error?.message || 'Meta no confirmó el cambio de estado.');
+        }
+        auditoria('META_CAMPANA_ESTADO', {
+            tenantId: req.usuario.tenantId,
+            integracionId: integracion.id,
+            campaignId: campaign_id,
+            status
+        });
+        return res.json({ id: campaign_id, status });
+    } catch (err) {
+        console.error('Meta /campaign-status Error:', err.message);
+        return res.status(502).json({ message: 'Meta no pudo cambiar la campaña: ' + err.message });
     }
 });
 
