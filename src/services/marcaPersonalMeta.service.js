@@ -336,7 +336,17 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     if (/\{\{/.test(cuerpo)) throw error('Esta versión crea plantillas sin variables: quitá los {{ }}.');
     const pie = texto(body?.pie, 60, 'El pie');
     const componentes = [{ type: 'BODY', text: cuerpo }, ...(pie ? [{ type: 'FOOTER', text: pie }] : [])];
-    const r = await g().facebook(`${idMeta(c.cuenta_id, 'Cuenta de WhatsApp')}/message_templates`, { method: 'POST', token: c.token, json: { name: nombre, language: body.idioma, category: body.categoria, components: componentes } });
+    let r;
+    try {
+      r = await g().facebook(`${idMeta(c.cuenta_id, 'Cuenta de WhatsApp')}/message_templates`, { method: 'POST', token: c.token, json: { name: nombre, language: body.idioma, category: body.categoria, components: componentes } });
+    } catch (e) {
+      // El código 100 también cubre errores de campos: sólo traducir esta
+      // denegación concreta de la cuenta, sin esconder otros errores de Meta.
+      if (e.metaCode === 100 && /(?:does not have permission|no tiene permiso|not allowed).*(?:template|plantilla)/i.test(e.message)) {
+        throw error('Meta no permite crear ni actualizar plantillas en esta cuenta de WhatsApp Business. Revisá el acceso y las restricciones de la cuenta en WhatsApp Manager. Este rechazo corresponde a las plantillas, no al inicio de sesión en Gesicom.', 403);
+      }
+      throw e;
+    }
     return { id: String(r.id), estado: r.status || 'PENDING', categoria: r.category || body.categoria };
   }
 

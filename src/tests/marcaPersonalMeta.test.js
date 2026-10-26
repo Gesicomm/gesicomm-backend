@@ -283,6 +283,17 @@ describe('Marca Personal · Instagram y Facebook', () => {
       await expect(svc.crearPlantilla(7, { nombre: 'con_variable', categoria: 'UTILITY', idioma: 'es', cuerpo: 'Hola {{1}}' })).rejects.toThrow('sin variables');
     });
 
+    test('explica el rechazo específico de la cuenta al crear plantillas y conserva otros errores 100', async () => {
+      const store=memoria();conWhatsapp(store);
+      const denied=Object.assign(new Error('Meta rechazó la operación (100). This WhatsApp Business Account does not have permission to create or update templates'),{metaCode:100,status:400});
+      const g=grafo(respuestasWa((ruta,op)=>ruta==='111/message_templates'&&op.method==='POST'?denied:undefined));
+      const svc=createService({store,graph:g,r2,cuentaDe:async()=> 'marca-1',ahora:()=>AHORA});
+      const body={nombre:'confirmacion_turno',categoria:'UTILITY',idioma:'es',cuerpo:'Tu turno quedó confirmado.'};
+      await expect(svc.crearPlantilla(7,body)).rejects.toMatchObject({status:403,message:expect.stringContaining('WhatsApp Manager')});
+      denied.message='Invalid parameter: components';
+      await expect(svc.crearPlantilla(7,body)).rejects.toBe(denied);
+    });
+
     test('un acceso vencido pide reconectar', async () => {
       const store = memoria(); conWhatsapp(store);
       store.filas[0].token_expira = new Date(AHORA - 1000);
