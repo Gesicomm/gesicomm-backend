@@ -36,7 +36,7 @@ function urlRetornoPagopar(tienda) {
 
 exports.getPagoparConfig = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = req.comercioId || req.usuario.id;
     // La URL de retorno depende del dominio/subdominio de la tienda, que es
     // por tienda: se muestra la de la tienda activa, no una cualquiera.
     const tienda = req.usuario.tiendaId
@@ -73,7 +73,7 @@ exports.getPagoparConfig = async (req, res) => {
 
 exports.updatePagoparConfig = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = req.comercioId || req.usuario.id;
     const { public_key, private_key, environment, is_active } = req.body;
 
     let gateway = await PaymentGateway.findOne({
@@ -125,7 +125,7 @@ exports.updatePagoparConfig = async (req, res) => {
 
 exports.testPagoparConnection = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = req.comercioId || req.usuario.id;
     const gateway = await PaymentGateway.findOne({
       where: { usuario_id, provider: 'pagopar' }
     });
@@ -204,7 +204,7 @@ exports.testPagoparConnection = async (req, res) => {
 
 exports.listarFormasPagoPagopar = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = req.comercioId || req.usuario.id;
     const gateway = await PaymentGateway.findOne({
       where: { usuario_id, provider: 'pagopar' },
     });
@@ -247,7 +247,7 @@ exports.listarFormasPagoPagopar = async (req, res) => {
  */
 exports.consultarPedidoPagopar = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = req.comercioId || req.usuario.id;
     const { envio_id, hash_pedido } = req.body || {};
 
     if (!envio_id && !hash_pedido) {

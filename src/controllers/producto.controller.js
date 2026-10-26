@@ -27,10 +27,10 @@ async function buscar(req, res) {
     const esAdmin = req.usuario.rol === 'administrador';
     
     if (req.body.mios_solamente && !esAdmin) {
-      req.body.creado_por = req.usuario.id;
+      req.body.creado_por = (req.comercioId || req.usuario.id);
     }
     
-    const resultado = await ProductoService.buscar(req.body, inquilino_id, esAdmin, req.usuario.id, req.usuario.tiendaId || null);
+    const resultado = await ProductoService.buscar(req.body, inquilino_id, esAdmin, (req.comercioId || req.usuario.id), req.usuario.tiendaId || null);
     return res.json(resultado);
   } catch (err) {
     console.error(err);
@@ -42,7 +42,7 @@ async function crear(req, res) {
   const t = await sequelize.transaction();
   try {
     const inquilino_id = req.usuario.tenantId;
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const esAdmin = req.usuario.rol === 'administrador';
     const { variantes = [], relacionados = [] } = req.body;
 
@@ -94,7 +94,7 @@ async function detalle(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const esAdmin = req.usuario.rol === 'administrador';
-    const producto = await ProductoService.detalle(req.params.id, inquilino_id, esAdmin, req.usuario.id, req.usuario.tiendaId || null);
+    const producto = await ProductoService.detalle(req.params.id, inquilino_id, esAdmin, (req.comercioId || req.usuario.id), req.usuario.tiendaId || null);
     return res.json(producto);
   } catch (err) {
     console.error(err);
@@ -237,7 +237,7 @@ async function descuentoMasivo(req, res) {
     }
 
     const inquilino_id = req.usuario.tenantId;
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const esAdmin = req.usuario.rol === 'administrador';
     const resultado = await ProductoService.descuentoMasivo(
       ids, { pct: pctNum, finAt: pctNum != null ? new Date(fin_at).toISOString() : null },
@@ -254,7 +254,7 @@ async function actualizar(req, res) {
   const t = await sequelize.transaction();
   try {
     const inquilino_id = req.usuario.tenantId;
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const esAdmin = req.usuario.rol === 'administrador';
     
     const producto = await ProductoService.actualizar(req.params.id, req.body, inquilino_id, usuario_id, esAdmin, t, req.usuario.tiendaId || null);
@@ -302,7 +302,7 @@ async function eliminar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
     const esAdmin = req.usuario.rol === 'administrador';
-    await ProductoService.eliminar(req.params.id, inquilino_id, req.usuario.id, esAdmin, req.usuario.tiendaId || null);
+    await ProductoService.eliminar(req.params.id, inquilino_id, (req.comercioId || req.usuario.id), esAdmin, req.usuario.tiendaId || null);
     return res.json({ message: 'Producto eliminado definitivamente.' });
   } catch (err) {
     console.error(err);
@@ -321,7 +321,7 @@ async function importarShopify(req, res) {
 
     const resultado = await ImportacionShopifyService.importarShopify(req.file, {
       inquilinoId: req.usuario.tenantId,
-      usuarioId: req.usuario.id,
+      usuarioId: (req.comercioId || req.usuario.id),
       esAdmin: req.usuario.rol === 'administrador',
       tiendaId: req.usuario.tiendaId || null,
     });
@@ -336,7 +336,7 @@ async function importarShopify(req, res) {
 function contextoImportacion(req) {
   return {
     inquilinoId: req.usuario.tenantId,
-    usuarioId: req.usuario.id,
+    usuarioId: (req.comercioId || req.usuario.id),
     esAdmin: req.usuario.rol === 'administrador',
     tiendaId: req.usuario.tiendaId || null,
   };

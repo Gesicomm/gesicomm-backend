@@ -53,7 +53,7 @@ async function productoEditablePorUsuario(req, res) {
     return null;
   }
   const esAdmin = req.usuario.rol === 'administrador';
-  if (!esAdmin && producto.creado_por !== req.usuario.id) {
+  if (!esAdmin && producto.creado_por !== (req.comercioId || req.usuario.id)) {
     res.status(403).json({ message: 'No tienes permiso para modificar las imágenes de un producto que no creaste.' });
     return null;
   }

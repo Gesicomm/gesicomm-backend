@@ -21,7 +21,7 @@ function esAdministrador(req) {
 // ============================================================
 
 exports.listarPlantillas = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { activo } = req.query;
   const where = esAdministrador(req) ? {} : { usuario_id };
   if (activo !== undefined) where.activo = activo === 'true';
@@ -34,7 +34,7 @@ exports.listarPlantillas = async (req, res) => {
 };
 
 exports.obtenerPlantilla = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const plantilla = await WhatsappPlantilla.findOne({
     where: esAdministrador(req) ? { id: req.params.id } : { id: req.params.id, usuario_id },
     include: [{ model: SeguimientoEtiqueta, as: 'etiqueta' }],
@@ -44,7 +44,7 @@ exports.obtenerPlantilla = async (req, res) => {
 };
 
 exports.crearPlantilla = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { nombre, etiqueta_id, activo } = req.body;
   const mensaje = req.body.mensaje || req.body.mensaje_template;
   let codigo = req.body.codigo;
@@ -68,7 +68,7 @@ exports.crearPlantilla = async (req, res) => {
 };
 
 exports.editarPlantilla = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { nombre, codigo, etiqueta_id, activo } = req.body;
   const mensaje = req.body.mensaje || req.body.mensaje_template;
   const plantilla = await WhatsappPlantilla.findOne({
@@ -94,7 +94,7 @@ exports.editarPlantilla = async (req, res) => {
 };
 
 exports.eliminarPlantilla = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const plantilla = await WhatsappPlantilla.findOne({
     where: esAdministrador(req) ? { id: req.params.id } : { id: req.params.id, usuario_id },
   });
@@ -113,7 +113,7 @@ exports.listarVariables = async (req, res) => {
 // ============================================================
 
 exports.listarEtiquetas = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { activo } = req.query;
   const where = esAdministrador(req) ? {} : { usuario_id };
   if (activo !== undefined) where.activo = activo === 'true';
@@ -122,7 +122,7 @@ exports.listarEtiquetas = async (req, res) => {
 };
 
 exports.crearEtiqueta = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { nombre, activo, color } = req.body;
   if (!nombre) return res.status(400).json({ error: 'nombre es obligatorio' });
   let codigo = req.body.codigo;
@@ -145,7 +145,7 @@ exports.editarEtiqueta = async (req, res) => {
   const { id } = req.params;
   const { nombre, codigo, activo, color } = req.body;
   try {
-    const etiqueta = await SeguimientoEtiqueta.findOne({ where: { id, usuario_id: req.usuario.id } });
+    const etiqueta = await SeguimientoEtiqueta.findOne({ where: { id, usuario_id: (req.comercioId || req.usuario.id) } });
     if (!etiqueta) return res.status(404).json({ error: 'Etiqueta no encontrada' });
     
     if (nombre) etiqueta.nombre = nombre;
@@ -165,7 +165,7 @@ exports.editarEtiqueta = async (req, res) => {
 };
 
 exports.eliminarEtiqueta = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const etiqueta = await SeguimientoEtiqueta.findOne({
     where: esAdministrador(req) ? { id: req.params.id } : { id: req.params.id, usuario_id },
   });
@@ -179,13 +179,13 @@ exports.eliminarEtiqueta = async (req, res) => {
 // ============================================================
 
 exports.obtenerConfiguracion = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const [config] = await SeguimientoConfiguracion.findOrCreate({ where: { usuario_id }, defaults: { usuario_id } });
   res.json(config);
 };
 
 exports.actualizarConfiguracion = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { tiempos_rapidos_horas } = req.body;
   if (!Array.isArray(tiempos_rapidos_horas) || tiempos_rapidos_horas.some((h) => !Number.isFinite(Number(h)) || Number(h) <= 0)) {
     return res.status(400).json({ error: 'tiempos_rapidos_horas debe ser un array de números positivos (horas)' });

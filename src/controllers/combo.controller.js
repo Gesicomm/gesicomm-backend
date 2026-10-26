@@ -22,7 +22,7 @@ const { rollbackSeguro } = require('../utils/transaction');
 
 function contextoEconomico(req) {
   return {
-    usuario_id: req.usuario.id,
+    usuario_id: (req.comercioId || req.usuario.id),
     esAdmin: req.usuario.rol === 'administrador',
   };
 }

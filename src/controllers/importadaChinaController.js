@@ -29,7 +29,7 @@ function responder(res, solicitud, duplicada = false) {
 async function solicitar(req, res) {
   const datos = validarDatos(req.body);
   if (!req.usuario.tiendaId) throw errorSolicitud('Seleccioná la tienda para registrar tu solicitud.', 409);
-  const usuario = await Usuario.findByPk(req.usuario.id, { attributes: ['id', 'nombre', 'inquilino_id'] });
+  const usuario = await Usuario.findByPk(req.comercioId || req.usuario.id, { attributes: ['id', 'nombre', 'inquilino_id'] });
   if (!usuario) throw errorSolicitud('No se encontró el usuario autenticado.', 404);
   if (!usuario.inquilino_id) throw errorSolicitud('No se pudo identificar la cuenta del usuario.', 409);
   const tienda = await Tienda.findOne({ where: { id: req.usuario.tiendaId, usuario_id: usuario.id, inquilino_id: usuario.inquilino_id }, attributes: ['id', 'nombre'] });

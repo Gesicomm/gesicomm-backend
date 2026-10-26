@@ -3,7 +3,7 @@
 const CuponService = require('../services/cupon.service');
 
 /**
- * Cupones del comercio. Todo cuelga de req.usuario.id: un comercio solo ve
+ * Cupones del comercio. Todo cuelga de (req.comercioId || req.usuario.id): un comercio solo ve
  * y edita los suyos, sin importar qué id llegue por la URL (el service
  * filtra por usuario_id además de por id).
  */
@@ -20,7 +20,7 @@ function manejarError(res, err, defecto) {
 
 async function listar(req, res) {
   try {
-    return res.json({ cupones: await CuponService.listar(req.usuario.id) });
+    return res.json({ cupones: await CuponService.listar((req.comercioId || req.usuario.id)) });
   } catch (err) {
     return manejarError(res, err, 'Error al listar los cupones.');
   }
@@ -28,7 +28,7 @@ async function listar(req, res) {
 
 async function crear(req, res) {
   try {
-    const cupon = await CuponService.crear(req.body, req.usuario.id, req.usuario.tenantId);
+    const cupon = await CuponService.crear(req.body, (req.comercioId || req.usuario.id), req.usuario.tenantId);
     return res.status(201).json(cupon);
   } catch (err) {
     return manejarError(res, err, 'Error al crear el cupón.');
@@ -37,7 +37,7 @@ async function crear(req, res) {
 
 async function actualizar(req, res) {
   try {
-    return res.json(await CuponService.actualizar(req.params.id, req.body, req.usuario.id));
+    return res.json(await CuponService.actualizar(req.params.id, req.body, (req.comercioId || req.usuario.id)));
   } catch (err) {
     return manejarError(res, err, 'Error al actualizar el cupón.');
   }
@@ -45,7 +45,7 @@ async function actualizar(req, res) {
 
 async function eliminar(req, res) {
   try {
-    await CuponService.eliminar(req.params.id, req.usuario.id);
+    await CuponService.eliminar(req.params.id, (req.comercioId || req.usuario.id));
     return res.json({ message: 'Cupón eliminado.' });
   } catch (err) {
     return manejarError(res, err, 'Error al eliminar el cupón.');

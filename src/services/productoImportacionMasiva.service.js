@@ -362,7 +362,7 @@ async function importarMasivo(file, contexto, { aplicar = false } = {}) {
       try {
         const claveCategoria = (producto.categoria || '').toLowerCase();
         if (producto.categoria && !categorias.has(claveCategoria)) {
-          categorias.set(claveCategoria, await obtenerOCrearCategoria(producto.categoria, contexto.inquilinoId));
+          categorias.set(claveCategoria, await obtenerOCrearCategoria(producto.categoria, contexto.inquilinoId, undefined, contexto.tiendaId));
         }
         const creado = await crearProducto(producto, categorias.get(claveCategoria) || null, contexto);
         creados.push({ id: creado.id, sku: producto.sku, nombre: producto.nombre });

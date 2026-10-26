@@ -1,0 +1,130 @@
+[
+  {
+    "clave": "negocio",
+    "nombre": "Mi negocio",
+    "ruta": "/mi-tienda",
+    "icono": "Store",
+    "seccion": "VENTAS",
+    "gestionable": true
+  },
+  {
+    "clave": "depositos",
+    "nombre": "Depósitos",
+    "ruta": "/mi-tienda/depositos",
+    "icono": "MapPin",
+    "seccion": "VENTAS",
+    "gestionable": true
+  },
+  {
+    "clave": "productos",
+    "nombre": "Productos",
+    "ruta": "/mi-catalogo",
+    "icono": "Grid",
+    "seccion": "VENTAS",
+    "gestionable": true
+  },
+  {
+    "clave": "clientes",
+    "nombre": "Clientes",
+    "ruta": "/clientes",
+    "icono": "User",
+    "seccion": "VENTAS",
+    "gestionable": false
+  },
+  {
+    "clave": "ecommerce",
+    "nombre": "Mi E-commerce",
+    "ruta": "/landing",
+    "icono": "Sparkles",
+    "seccion": "MARKETING",
+    "gestionable": true
+  },
+  {
+    "clave": "publicidad",
+    "nombre": "Publicidad",
+    "ruta": "/mis-anuncios",
+    "icono": "Megaphone",
+    "seccion": "MARKETING",
+    "gestionable": true
+  },
+  {
+    "clave": "comercial",
+    "nombre": "Gestión Comercial",
+    "ruta": "/mis-pedidos",
+    "icono": "ShoppingCart",
+    "seccion": "OPERACIONES",
+    "gestionable": true
+  },
+  {
+    "clave": "logistica",
+    "nombre": "Gestión Logística",
+    "ruta": "/gestion-logistica",
+    "icono": "Truck",
+    "seccion": "OPERACIONES",
+    "gestionable": true
+  },
+  {
+    "clave": "dashboard_operativo",
+    "nombre": "Dashboard Operativo",
+    "ruta": "/dashboard-operativo",
+    "icono": "TrendingUp",
+    "seccion": "OPERACIONES",
+    "gestionable": false
+  },
+  {
+    "clave": "dashboard_general",
+    "nombre": "Dashboard General",
+    "ruta": "/mi-dashboard",
+    "icono": "LayoutDashboard",
+    "seccion": "ANÁLISIS",
+    "gestionable": false
+  },
+  {
+    "clave": "finanzas",
+    "nombre": "Control Financiero",
+    "ruta": "/finanzas/costos-gastos",
+    "icono": "Receipt",
+    "seccion": "ANÁLISIS",
+    "gestionable": true
+  },
+  {
+    "clave": "importacion",
+    "nombre": "Proveete con Gesicom",
+    "ruta": "/importada-de-china",
+    "icono": "Ship",
+    "seccion": "IMPORTACIÓN",
+    "gestionable": true
+  },
+  {
+    "clave": "afiliados",
+    "nombre": "Quiero ser afiliado",
+    "ruta": "/afiliados",
+    "icono": "BadgeDollarSign",
+    "seccion": "AFILIADOS",
+    "gestionable": true
+  },
+  {
+    "clave": "partner",
+    "nombre": "Partner certificado",
+    "ruta": "/partner-certificado",
+    "icono": "BadgeCheck",
+    "seccion": "AFILIADOS",
+    "gestionable": true
+  },
+  {
+    "clave": "academia",
+    "nombre": "Academia",
+    "ruta": "/academia",
+    "icono": "GraduationCap",
+    "seccion": "FORMACIÓN",
+    "gestionable": true
+  },
+  {
+    "clave": "configuracion",
+    "nombre": "Configuración",
+    "ruta": "/configuracion",
+    "icono": "Settings",
+    "seccion": "CONFIGURACIÓN",
+    "gestionable": true
+  }
+]

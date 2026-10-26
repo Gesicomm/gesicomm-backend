@@ -139,7 +139,7 @@ async function notify(row, actor, submitted, detalle) {
   });
 }
 function append(row, actor, estado, extra = {}) {
-  return [...row.historial, { estado, usuario_id: actor.id, ocurrido_at: new Date().toISOString(), version: row.version + 1, ...extra }];
+  return [...row.historial, { estado, usuario_id: actor.actorId || actor.id, ocurrido_at: new Date().toISOString(), version: row.version + 1, ...extra }];
 }
 async function submit(actor, input) {
   const datos = parse(input.datos);

@@ -15,7 +15,7 @@ const PrecioUsuarioService = require('../services/precioUsuario.service');
 async function catalogo(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
-    const resultado = await PrecioUsuarioService.listarCatalogo(req.usuario.id, req.usuario.tenantId, esAdmin, req.usuario.tiendaId || null);
+    const resultado = await PrecioUsuarioService.listarCatalogo((req.comercioId || req.usuario.id), req.usuario.tenantId, esAdmin, req.usuario.tiendaId || null);
     return res.json(resultado);
   } catch (err) {
     console.error('[vitrina] catalogo:', err.message);
@@ -27,7 +27,7 @@ async function catalogo(req, res) {
 async function catalogoPaginado(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
-    const resultado = await PrecioUsuarioService.listarCatalogoPaginado(req.usuario.id, req.usuario.tenantId, req.body, esAdmin, req.usuario.tiendaId || null);
+    const resultado = await PrecioUsuarioService.listarCatalogoPaginado((req.comercioId || req.usuario.id), req.usuario.tenantId, req.body, esAdmin, req.usuario.tiendaId || null);
     return res.json(resultado);
   } catch (err) {
     console.error('[vitrina] catalogoPaginado:', err.message);
@@ -39,7 +39,7 @@ async function guardarPrecioProducto(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
     const resultado = await PrecioUsuarioService.guardarPrecioProducto(
-      req.usuario.id, req.usuario.tenantId, req.params.id, req.body.precio, esAdmin, req.usuario.tiendaId || null,
+      (req.comercioId || req.usuario.id), req.usuario.tenantId, req.params.id, req.body.precio, esAdmin, req.usuario.tiendaId || null,
     );
     return res.json(resultado);
   } catch (err) {
@@ -53,7 +53,7 @@ async function categorizarProductos(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
     const resultado = await PrecioUsuarioService.categorizarProductos(
-      req.usuario.id,
+      (req.comercioId || req.usuario.id),
       req.usuario.tenantId,
       req.body,
       esAdmin,
@@ -73,7 +73,7 @@ async function despublicarLanding(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
     const resultado = await PrecioUsuarioService.despublicarDeLandingActiva(
-      req.usuario.id,
+      (req.comercioId || req.usuario.id),
       req.usuario.tenantId,
       req.body.items,
       esAdmin,
@@ -90,7 +90,7 @@ async function organizarLanding(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
     const resultado = await PrecioUsuarioService.organizarEnLandingActiva(
-      req.usuario.id,
+      (req.comercioId || req.usuario.id),
       req.usuario.tenantId,
       req.body || {},
       esAdmin,
@@ -107,7 +107,7 @@ async function guardarPrecioCombo(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
     const resultado = await PrecioUsuarioService.guardarPrecioCombo(
-      req.usuario.id, req.usuario.tenantId, req.params.id, req.body.precio, esAdmin,
+      (req.comercioId || req.usuario.id), req.usuario.tenantId, req.params.id, req.body.precio, esAdmin,
     );
     return res.json(resultado);
   } catch (err) {
@@ -121,7 +121,7 @@ async function sensibilidadProducto(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
     const resultado = await PrecioUsuarioService.analizarSensibilidadProducto(
-      req.usuario.id, req.usuario.tenantId, req.params.id, esAdmin, req.usuario.tiendaId || null,
+      (req.comercioId || req.usuario.id), req.usuario.tenantId, req.params.id, esAdmin, req.usuario.tiendaId || null,
     );
     return res.json(resultado);
   } catch (err) {
@@ -135,7 +135,7 @@ async function sensibilidadCombo(req, res) {
   try {
     const esAdmin = req.usuario.rol === 'administrador';
     const resultado = await PrecioUsuarioService.analizarSensibilidadCombo(
-      req.usuario.id, req.usuario.tenantId, req.params.id, esAdmin,
+      (req.comercioId || req.usuario.id), req.usuario.tenantId, req.params.id, esAdmin,
     );
     return res.json(resultado);
   } catch (err) {

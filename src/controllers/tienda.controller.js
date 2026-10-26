@@ -50,7 +50,7 @@ function exigirTiendaActiva(req) {
 async function obtener(req, res) {
   try {
     if (!req.usuario.tiendaId) return res.json(null);
-    const tienda = await TiendaService.obtener(req.usuario.tiendaId, req.usuario.id);
+    const tienda = await TiendaService.obtener(req.usuario.tiendaId, (req.comercioId || req.usuario.id));
     return res.json(tienda);
   } catch (err) {
     console.error('[tienda] obtener:', err.message);
@@ -60,7 +60,7 @@ async function obtener(req, res) {
 
 async function crear(req, res) {
   try {
-    const tienda = await TiendaService.crear(req.usuario.id, req.usuario.tenantId, req.body);
+    const tienda = await TiendaService.crear((req.comercioId || req.usuario.id), req.usuario.tenantId, req.body);
     if (req.body?.onboarding === true) {
       await AuthTracking.registrarEventoConNotificacion({
         tipo: 'onboarding_store_created',
@@ -93,7 +93,7 @@ async function crear(req, res) {
 
 async function actualizar(req, res) {
   try {
-    const tienda = await TiendaService.actualizar(exigirTiendaActiva(req), req.usuario.id, req.body);
+    const tienda = await TiendaService.actualizar(exigirTiendaActiva(req), (req.comercioId || req.usuario.id), req.body);
     return res.json(tienda);
   } catch (err) {
     return manejarError(res, err, 'Error al actualizar la tienda.');
@@ -112,7 +112,7 @@ async function disponibilidadSubdominio(req, res) {
 
 async function guardarDominioPropio(req, res) {
   try {
-    const resultado = await TiendaService.guardarDominioPropio(exigirTiendaActiva(req), req.usuario.id, req.body.dominio);
+    const resultado = await TiendaService.guardarDominioPropio(exigirTiendaActiva(req), (req.comercioId || req.usuario.id), req.body.dominio);
     return res.status(201).json(resultado);
   } catch (err) {
     return manejarError(res, err, 'Error al configurar el dominio propio.');
@@ -121,7 +121,7 @@ async function guardarDominioPropio(req, res) {
 
 async function estadoDominioPropio(req, res) {
   try {
-    const resultado = await TiendaService.verificarDominioPropio(exigirTiendaActiva(req), req.usuario.id);
+    const resultado = await TiendaService.verificarDominioPropio(exigirTiendaActiva(req), (req.comercioId || req.usuario.id));
     return res.json(resultado);
   } catch (err) {
     return manejarError(res, err, 'Error al verificar el dominio propio.');
@@ -134,7 +134,7 @@ async function habilitacionDominioPropio(req, res) {
       return res.status(400).json({ message: 'Falta indicar si el dominio queda habilitado.' });
     }
     const resultado = await TiendaService.cambiarHabilitacionDominioPropio(
-      exigirTiendaActiva(req), req.usuario.id, req.body.habilitado,
+      exigirTiendaActiva(req), (req.comercioId || req.usuario.id), req.body.habilitado,
     );
     return res.json(resultado);
   } catch (err) {
@@ -144,7 +144,7 @@ async function habilitacionDominioPropio(req, res) {
 
 async function eliminarDominioPropio(req, res) {
   try {
-    const tienda = await TiendaService.eliminarDominioPropio(exigirTiendaActiva(req), req.usuario.id);
+    const tienda = await TiendaService.eliminarDominioPropio(exigirTiendaActiva(req), (req.comercioId || req.usuario.id));
     return res.json(tienda);
   } catch (err) {
     return manejarError(res, err, 'Error al eliminar el dominio propio.');
@@ -165,7 +165,7 @@ async function whoisDominio(req, res) {
 /** GET /api/mi-tienda/fulfillment — modalidad actual + contexto para decidir. */
 async function obtenerFulfillment(req, res) {
   try {
-    return res.json(await FulfillmentService.obtenerConfiguracion(req.usuario.id, req.usuario.tiendaId || null));
+    return res.json(await FulfillmentService.obtenerConfiguracion((req.comercioId || req.usuario.id), req.usuario.tiendaId || null));
   } catch (err) {
     const status = err.status || 500;
     if (status >= 500) console.error('[tienda] obtenerFulfillment:', err);
@@ -176,7 +176,7 @@ async function obtenerFulfillment(req, res) {
 /** POST /api/mi-tienda/fulfillment/depositos — listado paginado para elegir depósito propio. */
 async function listarDepositosFulfillment(req, res) {
   try {
-    return res.json(await FulfillmentService.listarDepositosPropios(req.usuario.id, req.body || {}, req.usuario.tiendaId || null));
+    return res.json(await FulfillmentService.listarDepositosPropios((req.comercioId || req.usuario.id), req.body || {}, req.usuario.tiendaId || null));
   } catch (err) {
     const status = err.status || 500;
     if (status >= 500) console.error('[tienda] listarDepositosFulfillment:', err);
@@ -187,7 +187,7 @@ async function listarDepositosFulfillment(req, res) {
 /** PUT /api/mi-tienda/fulfillment — { modalidad, depositoId }. */
 async function guardarFulfillment(req, res) {
   try {
-    const resultado = await FulfillmentService.guardarConfiguracion(req.usuario.id, {
+    const resultado = await FulfillmentService.guardarConfiguracion((req.comercioId || req.usuario.id), {
       modalidad: req.body?.modalidad,
       depositoId: req.body?.depositoId,
     }, req.usuario.tiendaId || null);
@@ -221,7 +221,7 @@ async function subirLogo(req, res) {
     // Mismo tamaño que el logo de landing-simple: el header nunca lo muestra
     // más ancho que esto. WebP conserva la transparencia del PNG.
     const imagenData = await ImagenService.procesarArchivoParaR2(req.file, `tiendas/logo/${tiendaId}`, { width: 400, quality: 85 });
-    const { tienda, anterior } = await TiendaService.actualizarLogo(tiendaId, req.usuario.id, imagenData);
+    const { tienda, anterior } = await TiendaService.actualizarLogo(tiendaId, (req.comercioId || req.usuario.id), imagenData);
     if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.status(201).json(tienda);
   } catch (err) {
@@ -232,7 +232,7 @@ async function subirLogo(req, res) {
 
 async function eliminarLogo(req, res) {
   try {
-    const { tienda, anterior } = await TiendaService.actualizarLogo(exigirTiendaActiva(req), req.usuario.id, null);
+    const { tienda, anterior } = await TiendaService.actualizarLogo(exigirTiendaActiva(req), (req.comercioId || req.usuario.id), null);
     if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.json(tienda);
   } catch (err) {
@@ -245,7 +245,7 @@ async function subirFavicon(req, res) {
     if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
     const tiendaId = exigirTiendaActiva(req);
     const imagenData = await ImagenService.procesarFaviconParaR2(req.file, `tiendas/favicon/${tiendaId}`);
-    const { tienda, anterior } = await TiendaService.actualizarFavicon(tiendaId, req.usuario.id, imagenData);
+    const { tienda, anterior } = await TiendaService.actualizarFavicon(tiendaId, (req.comercioId || req.usuario.id), imagenData);
     if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.status(201).json(tienda);
   } catch (err) {
@@ -256,7 +256,7 @@ async function subirFavicon(req, res) {
 
 async function eliminarFavicon(req, res) {
   try {
-    const { tienda, anterior } = await TiendaService.actualizarFavicon(exigirTiendaActiva(req), req.usuario.id, null);
+    const { tienda, anterior } = await TiendaService.actualizarFavicon(exigirTiendaActiva(req), (req.comercioId || req.usuario.id), null);
     if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.json(tienda);
   } catch (err) {
@@ -269,7 +269,7 @@ async function subirImagenCompartir(req, res) {
     if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo.' });
     const tiendaId = exigirTiendaActiva(req);
     const imagenData = await ImagenService.procesarImagenCompartirParaR2(req.file, `tiendas/compartir/${tiendaId}`);
-    const { tienda, anterior } = await TiendaService.actualizarImagenCompartir(tiendaId, req.usuario.id, imagenData);
+    const { tienda, anterior } = await TiendaService.actualizarImagenCompartir(tiendaId, (req.comercioId || req.usuario.id), imagenData);
     if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.status(201).json(tienda);
   } catch (err) {
@@ -280,7 +280,7 @@ async function subirImagenCompartir(req, res) {
 
 async function eliminarImagenCompartir(req, res) {
   try {
-    const { tienda, anterior } = await TiendaService.actualizarImagenCompartir(exigirTiendaActiva(req), req.usuario.id, null);
+    const { tienda, anterior } = await TiendaService.actualizarImagenCompartir(exigirTiendaActiva(req), (req.comercioId || req.usuario.id), null);
     if (anterior) await ImagenService.eliminarObjetoStorage(anterior);
     return res.json(tienda);
   } catch (err) {
@@ -290,7 +290,7 @@ async function eliminarImagenCompartir(req, res) {
 
 async function guardarTipografia(req, res) {
   try {
-    const typography = await TypographyService.guardarConfigTienda(exigirTiendaActiva(req), req.usuario.id, req.body || {});
+    const typography = await TypographyService.guardarConfigTienda(exigirTiendaActiva(req), (req.comercioId || req.usuario.id), req.body || {});
     return res.json({ typography });
   } catch (err) {
     return manejarError(res, err, 'Error al guardar la tipografía.');
@@ -299,7 +299,7 @@ async function guardarTipografia(req, res) {
 
 async function subirFuente(req, res) {
   try {
-    const font = await TypographyService.subirFuente(exigirTiendaActiva(req), req.usuario.id, req.file, req.body || {});
+    const font = await TypographyService.subirFuente(exigirTiendaActiva(req), (req.comercioId || req.usuario.id), req.file, req.body || {});
     return res.status(201).json(font);
   } catch (err) {
     return manejarError(res, err, 'Error al subir la fuente.');
@@ -308,7 +308,7 @@ async function subirFuente(req, res) {
 
 async function eliminarFuente(req, res) {
   try {
-    const resultado = await TypographyService.eliminarFuente(exigirTiendaActiva(req), req.usuario.id, req.params.fontId);
+    const resultado = await TypographyService.eliminarFuente(exigirTiendaActiva(req), (req.comercioId || req.usuario.id), req.params.fontId);
     return res.json(resultado);
   } catch (err) {
     return manejarError(res, err, 'Error al eliminar la fuente.');

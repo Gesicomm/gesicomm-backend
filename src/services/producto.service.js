@@ -553,6 +553,7 @@ class ProductoService {
   }
 
   static async crear(datos, inquilino_id, usuario_id, esAdmin, transaction, tiendaId = null) {
+    await require('./categoria.service').validarAsignacion(datos.categoria_id, inquilino_id, tiendaId, transaction);
     const precioAncla = datos.precio_ancla !== undefined ? datos.precio_ancla : datos.precio_tachado;
     const {
       nombre, sku, categoria_id, marca_id, proveedor_id, tags,
@@ -737,6 +738,7 @@ class ProductoService {
       }, { transaction });
     }
 
+    await require('./categoria.service').validarAsignacion(campos.categoria_id, inquilino_id, tiendaId, transaction);
     const camposPermitidos = [
       'nombre', 'sku', 'categoria_id', 'marca_id', 'proveedor_id', 'tags',
       'descripcion_corta', 'descripcion_larga', 'faq_titulo', 'relacionados_titulo',

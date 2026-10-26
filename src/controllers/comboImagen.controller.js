@@ -33,7 +33,7 @@ async function obtenerCombo(req) {
     where: {
       id: req.params.id,
       inquilino_id: req.usuario.tenantId,
-      ...ComboService.alcance({ usuario_id: req.usuario.id, esAdmin: req.usuario.rol === 'administrador' }),
+      ...ComboService.alcance({ usuario_id: (req.comercioId || req.usuario.id), esAdmin: req.usuario.rol === 'administrador' }),
     },
   });
 }

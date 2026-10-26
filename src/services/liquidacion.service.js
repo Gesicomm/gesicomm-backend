@@ -23,10 +23,11 @@ const { desgloseDelivery } = require('../utils/desgloseDelivery');
  * pago usado tiene custodia_cobro='courier' (si se perdió en tránsito,
  * nunca se llegó a cobrar nada).
  */
-async function buscarEnviosElegibles(courier_id, fecha_desde, fecha_hasta, usuario_id, t) {
+async function buscarEnviosElegibles(courier_id, fecha_desde, fecha_hasta, usuario_id, t, tienda_id) {
   return Envio.findAll({
     where: {
       usuario_id,
+      ...(tienda_id ? { tienda_id } : {}),
       courier_id,
       estado: { [Op.in]: ['Entregado', 'Perdido'] },
       estado_financiero: 'pendiente_liquidacion',
@@ -127,8 +128,8 @@ function calcularDesglose(envios, ajuste_manual = 0) {
 }
 
 /** Previsualización — no persiste nada. */
-async function previsualizar({ courier_id, fecha_desde, fecha_hasta, usuario_id, ajuste_manual = 0 }) {
-  const envios = await buscarEnviosElegibles(courier_id, fecha_desde, fecha_hasta, usuario_id, null);
+async function previsualizar({ courier_id, fecha_desde, fecha_hasta, usuario_id, tienda_id, ajuste_manual = 0 }) {
+  const envios = await buscarEnviosElegibles(courier_id, fecha_desde, fecha_hasta, usuario_id, null, tienda_id);
   return calcularDesglose(await adjuntarIdentificadores(envios), ajuste_manual);
 }
 
@@ -138,10 +139,10 @@ async function previsualizar({ courier_id, fecha_desde, fecha_hasta, usuario_id,
  * de una única transacción — si algo falla, no queda una liquidación
  * parcial (Regla 3/4 del plan).
  */
-async function confirmar({ courier_id, fecha_desde, fecha_hasta, usuario_id, usuario_registro_id, ajuste_manual = 0, observacion = null }) {
+async function confirmar({ courier_id, fecha_desde, fecha_hasta, usuario_id, usuario_registro_id, tienda_id, ajuste_manual = 0, observacion = null }) {
   const t = await sequelize.transaction();
   try {
-    const envios = await buscarEnviosElegibles(courier_id, fecha_desde, fecha_hasta, usuario_id, t);
+    const envios = await buscarEnviosElegibles(courier_id, fecha_desde, fecha_hasta, usuario_id, t, tienda_id);
     if (envios.length === 0) {
       throw new Error('No hay pedidos pendientes de liquidación para este courier en el rango seleccionado.');
     }

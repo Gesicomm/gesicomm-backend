@@ -155,12 +155,10 @@ function enviarCookieTiendaActiva(req, res, tiendaId) {
  * Si no hay forma de decidir (0 o ≥2 sin elección) queda en null y el
  * frontend manda a /seleccionar-tienda.
  */
-async function resolverTiendaParaUsuario(usuarioId, cookieTiendaId, { respetarCookie = true } = {}) {
-  const tiendas = await Tienda.findAll({
-    where: { usuario_id: usuarioId },
-    attributes: ['id', 'nombre', 'subdominio', 'logo_imagen'],
-    order: [['id', 'ASC']],
-  });
+async function resolverTiendaParaUsuario(usuarioId, cookieTiendaId, { respetarCookie = true, rol } = {}) {
+  const tiendas = rol === 'colaborador'
+    ? await require('../services/accesos.service').listarTiendas(usuarioId)
+    : await Tienda.findAll({ where: { usuario_id: usuarioId }, attributes: ['id', 'nombre', 'subdominio', 'logo_imagen'], order: [['id', 'ASC']] });
   let tiendaId = null;
   if (tiendas.length === 1) {
     tiendaId = tiendas[0].id;
@@ -269,7 +267,7 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
     // Login nuevo: nunca se respeta la cookie de tienda recordada — con 2+
     // tiendas, el usuario tiene que elegir con cuál operar en cada inicio
     // de sesión (ver resolverTiendaParaUsuario).
-    const { tiendas, tiendaId } = await resolverTiendaParaUsuario(usuario.id, cookieTiendaId, { respetarCookie: false });
+    const { tiendas, tiendaId } = await resolverTiendaParaUsuario(usuario.id, cookieTiendaId, { respetarCookie: false, rol: usuario.Rol?.nombre });
 
     const payload = {
       id: usuario.id,
@@ -729,7 +727,7 @@ router.post('/refresh', async (req, res) => {
     // El refresh token solo lleva {id}: la tienda activa no viaja ahí, se
     // reconstruye leyendo la cookie tiendaActivaId (ver resolverTiendaParaUsuario).
     const cookieTiendaId = req.cookies?.[TIENDA_ACTIVA_COOKIE] || null;
-    const { tiendaId } = await resolverTiendaParaUsuario(usuario.id, cookieTiendaId);
+    const { tiendaId } = await resolverTiendaParaUsuario(usuario.id, cookieTiendaId, { rol: usuario.Rol?.nombre });
 
     const nuevoPayload = {
       id: usuario.id,
@@ -777,6 +775,8 @@ router.get('/me', verificarToken, asyncHandler(async (req, res) => {
     permisos: req.usuario.permisos,
     tenantId: req.usuario.tenantId,
     tiendaId: req.usuario.tiendaId,
+    accesos: req.usuario.accesos || null,
+    propietarioId: req.usuario.propietarioId || null,
   });
 }));
 
@@ -955,10 +955,9 @@ router.post('/seleccionar-tienda', verificarToken, asyncHandler(async (req, res)
   const tiendaId = Number(req.body?.tienda_id);
   if (!tiendaId) return res.status(400).json({ message: 'Falta indicar la tienda.' });
 
-  const tienda = await Tienda.findOne({
-    where: { id: tiendaId, usuario_id: req.usuario.id },
-    attributes: ['id', 'nombre', 'subdominio', 'logo_imagen'],
-  });
+  const tienda = req.usuario.rol === 'colaborador'
+    ? (await require('../services/accesos.service').listarTiendas(req.usuario.id)).find(t => t.id === tiendaId)
+    : await Tienda.findOne({ where: { id: tiendaId, usuario_id: req.usuario.id }, attributes: ['id', 'nombre', 'subdominio', 'logo_imagen'] });
   if (!tienda) return res.status(404).json({ message: 'Esa tienda no existe o no te pertenece.' });
 
   const nuevoPayload = {

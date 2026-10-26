@@ -162,12 +162,12 @@ class PrecioUsuarioService {
     return { [Op.and]: condiciones };
   }
 
-  static async buscarOCrearCategoria(nombre, inquilino_id, parent_id = null, transaction = null) {
+  static async buscarOCrearCategoria(nombre, inquilino_id, parent_id = null, transaction = null, tiendaId = null) {
     const limpio = typeof nombre === 'string' ? nombre.trim() : '';
     if (!limpio) throw new Error('El nombre de la categoría es requerido.');
 
     const existente = await Categoria.findOne({
-      where: { inquilino_id, parent_id: parent_id || null, nombre: { [Op.iLike]: limpio } },
+      where: { inquilino_id, tienda_id: tiendaId, parent_id: parent_id || null, nombre: { [Op.iLike]: limpio } },
       transaction,
     });
     if (existente) {
@@ -179,8 +179,8 @@ class PrecioUsuarioService {
     }
 
     const CategoriaService = require('./categoria.service');
-    const slug = await CategoriaService.generarSlugUnico(limpio, inquilino_id);
-    return Categoria.create({ inquilino_id, parent_id: parent_id || null, nombre: limpio, slug }, { transaction });
+    const slug = await CategoriaService.generarSlugUnico(limpio, inquilino_id, null, transaction);
+    return Categoria.create({ inquilino_id, tienda_id: tiendaId, parent_id: parent_id || null, nombre: limpio, slug }, { transaction });
   }
 
   static async listarCatalogo(usuario_id, inquilino_id, esAdmin = false, tiendaId = null) {
@@ -246,8 +246,9 @@ class PrecioUsuarioService {
       PrecioUsuario.findAll({ where: { usuario_id } }),
     ]);
 
+    const asignaciones = tiendaId ? await require('../models/CategoriaAsignacionTienda').findAll({ where: { tienda_id: tiendaId } }) : [];
     const mapaPrecios = new Map(precios.map(p => [`${p.tipo}:${p.referencia_id}`, parseFloat(p.precio)]));
-    const categoriaIdsPersonalizadas = [...new Set(precios.map(p => p.categoria_id).filter(Boolean))];
+    const categoriaIdsPersonalizadas = [...new Set(asignaciones.map(p => p.categoria_id).filter(Boolean))];
     const categoriasPersonalizadas = categoriaIdsPersonalizadas.length
       ? await Categoria.findAll({ where: { id: { [Op.in]: categoriaIdsPersonalizadas }, inquilino_id }, attributes: ['id', 'nombre', 'parent_id'] })
       : [];
@@ -317,7 +318,7 @@ class PrecioUsuarioService {
     const idsConOpciones = await this.idsConOpciones(productos, inquilino_id);
     const productosDto = productos.map(p => {
       const precioUsuario = mapaPrecios.has(`producto:${p.id}`) ? mapaPrecios.get(`producto:${p.id}`) : null;
-      const precioRegistro = precios.find(pr => pr.tipo === 'producto' && Number(pr.referencia_id) === Number(p.id));
+      const precioRegistro = asignaciones.find(pr => pr.tipo === 'producto' && Number(pr.referencia_id) === Number(p.id));
       const categoriaPersonalizada = precioRegistro?.categoria_id ? mapaCategoriasPersonalizadas.get(Number(precioRegistro.categoria_id)) : null;
       const precioBase = parseFloat(p.precio_base);
       return {
@@ -350,7 +351,7 @@ class PrecioUsuarioService {
 
     const combosDto = combos.map(c => {
       const precioUsuario = mapaPrecios.has(`combo:${c.id}`) ? mapaPrecios.get(`combo:${c.id}`) : null;
-      const precioRegistro = precios.find(pr => pr.tipo === 'combo' && Number(pr.referencia_id) === Number(c.id));
+      const precioRegistro = asignaciones.find(pr => pr.tipo === 'combo' && Number(pr.referencia_id) === Number(c.id));
       const categoriaPersonalizada = precioRegistro?.categoria_id ? mapaCategoriasPersonalizadas.get(Number(precioRegistro.categoria_id)) : null;
       const precioBase = parseFloat(c.precio_total);
       const padre = c.producto_padre;
@@ -425,7 +426,7 @@ class PrecioUsuarioService {
     // El editor identifica los productos por slug y aplica reglas por nombre
     // de categoría. La carga masiva debe conservarlos igual que la de 10.
     const categoriaLivianaSql = `(SELECT cat.nombre FROM categorias cat
-      WHERE cat.id = COALESCE(pu.categoria_id, p.categoria_id)
+      WHERE cat.id = COALESCE(ct.categoria_id, p.categoria_id)
         AND cat.inquilino_id = :inquilino_id LIMIT 1)`;
     // El editor también pide páginas grandes. Conservar una portada mediante
     // subconsultas indexadas, sin hidratar miles de modelos y sus asociaciones.
@@ -439,7 +440,7 @@ class PrecioUsuarioService {
        ORDER BY ci.es_principal DESC, ci.orden ASC, ci.id ASC LIMIT 1),
       ${portadaProductoSql})`;
 
-    const replacements = { usuario_id, inquilino_id };
+    const replacements = { usuario_id, inquilino_id, tienda_categoria: tiendaId || null };
     if (tiendaId != null) replacements.tienda_id = tiendaId;
 
     const miosOnly = Boolean(solamenteMios || mios_solamente);
@@ -455,10 +456,10 @@ class PrecioUsuarioService {
     // Filtro de categoría
     let catFilter = '';
     if (filtroCategoria) {
-      const cat = await Categoria.findOne({ where: { nombre: filtroCategoria, inquilino_id } });
-      if (cat) {
-        replacements.categoria_id = cat.id;
-        catFilter = 'AND COALESCE(pu.categoria_id, p.categoria_id) = :categoria_id';
+      const cats = await Categoria.findAll({ where: { nombre: filtroCategoria, ...require('./categoria.service').alcance(inquilino_id, tiendaId, esAdmin) } });
+      if (cats.length) {
+        replacements.categoria_ids = cats.map(c => c.id);
+        catFilter = 'AND COALESCE(ct.categoria_id, p.categoria_id) IN (:categoria_ids)';
       } else {
         return { items: [], total: 0, page: 1, totalPages: 0, categorias: [] };
       }
@@ -565,12 +566,13 @@ class PrecioUsuarioService {
       : '';
 
     const productosSql = `
-      SELECT p.id, 'producto' as tipo, p.slug, p.nombre, p.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, p.creado_por,
-        pu.precio as precio_usuario, pu.categoria_id as categoria_personalizada_id,
+      SELECT p.id, 'producto' as tipo, p.slug, p.nombre, p.created_at, COALESCE(ct.categoria_id, p.categoria_id) as categoria_id, p.creado_por,
+        pu.precio as precio_usuario, ct.categoria_id as categoria_personalizada_id,
         COALESCE(pu.precio, p.precio_base) as precio_efectivo
         ${liviano ? `, ${portadaProductoSql} AS imagen, ${categoriaLivianaSql} AS categoria` : ''}
       FROM productos p
       LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
+      LEFT JOIN categoria_asignaciones_tienda ct ON ct.tipo = 'producto' AND ct.referencia_id = p.id AND ct.tienda_id = :tienda_categoria
       WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
       ${creadorFilter}
       ${tiendaFilter}
@@ -585,13 +587,14 @@ class PrecioUsuarioService {
 
     const combosSql = `
       /* p.categoria_id, c.creado_por */
-      SELECT c.id, 'combo' as tipo, NULL::text AS slug, c.nombre, c.created_at, COALESCE(pu.categoria_id, p.categoria_id) as categoria_id, c.creado_por,
-        pu.precio as precio_usuario, pu.categoria_id as categoria_personalizada_id,
+      SELECT c.id, 'combo' as tipo, NULL::text AS slug, c.nombre, c.created_at, COALESCE(ct.categoria_id, p.categoria_id) as categoria_id, c.creado_por,
+        pu.precio as precio_usuario, ct.categoria_id as categoria_personalizada_id,
         COALESCE(pu.precio, c.precio_total) as precio_efectivo
         ${liviano ? `, ${portadaComboSql} AS imagen, ${categoriaLivianaSql} AS categoria` : ''}
       FROM producto_combos c
       INNER JOIN productos p ON c.producto_id = p.id AND p.inquilino_id = :inquilino_id AND p.activo = true
       LEFT JOIN precios_usuario pu ON pu.tipo = 'combo' AND pu.referencia_id = c.id AND pu.usuario_id = :usuario_id
+      LEFT JOIN categoria_asignaciones_tienda ct ON ct.tipo = 'combo' AND ct.referencia_id = c.id AND ct.tienda_id = :tienda_categoria
       WHERE c.inquilino_id = :inquilino_id AND c.estado = 'ACTIVO'
       ${this.visibilidadComboSql(esAdmin, miosOnly)}
       ${gesicomOnly ? 'AND c.creado_por IS DISTINCT FROM :usuario_id' : ''}
@@ -660,6 +663,7 @@ class PrecioUsuarioService {
       SELECT COUNT(*) AS total
       FROM productos p
       LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
+      LEFT JOIN categoria_asignaciones_tienda ct ON ct.tipo = 'producto' AND ct.referencia_id = p.id AND ct.tienda_id = :tienda_categoria
       WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
         ${this.visibilidadCatalogoSql(esAdmin, false)}
         ${tiendaFilter}
@@ -758,7 +762,8 @@ class PrecioUsuarioService {
         SELECT DISTINCT c.nombre 
         FROM productos p
         LEFT JOIN precios_usuario pu ON pu.tipo = 'producto' AND pu.referencia_id = p.id AND pu.usuario_id = :usuario_id
-        INNER JOIN categorias c ON COALESCE(pu.categoria_id, p.categoria_id) = c.id 
+      LEFT JOIN categoria_asignaciones_tienda ct ON ct.tipo = 'producto' AND ct.referencia_id = p.id AND ct.tienda_id = :tienda_categoria
+        INNER JOIN categorias c ON COALESCE(ct.categoria_id, p.categoria_id) = c.id
         WHERE p.inquilino_id = :inquilino_id AND p.activo = true AND p.estado_venta = 'en_venta'
         ${creadorFilter}
         ${tiendaFilter}
@@ -1300,6 +1305,7 @@ class PrecioUsuarioService {
   }
 
   static async categorizarProductos(usuario_id, inquilino_id, payload = {}, esAdmin = false, tiendaId = null) {
+    if (!tiendaId) throw Object.assign(new Error('Seleccioná una tienda para asignar categorías.'), {status:409});
     const { producto_ids = [], categoria_nombre, subcategoria_nombre } = payload;
     const ids = [...new Set((producto_ids || []).map(Number).filter(Boolean))];
     if (!ids.length) throw new Error('Seleccioná al menos un producto.');
@@ -1328,30 +1334,14 @@ class PrecioUsuarioService {
     }
 
     return require('../models').sequelize.transaction(async (transaction) => {
-      const categoria = await this.buscarOCrearCategoria(nombreCategoria, inquilino_id, null, transaction);
+      const categoria = await this.buscarOCrearCategoria(nombreCategoria, inquilino_id, null, transaction, tiendaId);
       const categoriaFinal = nombreSubcategoria
-        ? await this.buscarOCrearCategoria(nombreSubcategoria, inquilino_id, categoria.id, transaction)
+        ? await this.buscarOCrearCategoria(nombreSubcategoria, inquilino_id, categoria.id, transaction, tiendaId)
         : categoria;
 
+      const Asignacion = require('../models/CategoriaAsignacionTienda');
       for (const producto of productos) {
-        const precioBase = parseFloat(producto.precio_base) || 0;
-        const [registro] = await PrecioUsuario.findOrCreate({
-          where: { usuario_id, tipo: 'producto', referencia_id: producto.id },
-          defaults: {
-            usuario_id,
-            inquilino_id,
-            tipo: 'producto',
-            referencia_id: producto.id,
-            precio: precioBase,
-            categoria_id: categoriaFinal.id,
-          },
-          transaction,
-        });
-
-        if (Number(registro.categoria_id) !== Number(categoriaFinal.id)) {
-          registro.categoria_id = categoriaFinal.id;
-          await registro.save({ transaction });
-        }
+        await Asignacion.upsert({ tienda_id: tiendaId, tipo:'producto', referencia_id:producto.id, categoria_id:categoriaFinal.id }, {transaction});
       }
 
       return {

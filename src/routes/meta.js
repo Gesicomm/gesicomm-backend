@@ -101,7 +101,7 @@ const leerPendiente = (req) => {
     try {
         const p = JSON.parse(EncryptionService.decrypt(crudo));
         if (!p?.token || !(p.expira > Date.now())) return null;
-        if (p.tenantId !== String(req.usuario.tenantId) || p.userId !== String(req.usuario.id)) return null;
+        if (p.tenantId !== String(req.usuario.tenantId) || p.userId !== String((req.comercioId || req.usuario.id))) return null;
         return p;
     } catch {
         return null;
@@ -152,7 +152,7 @@ router.get('/connect', verificarToken, (req, res) => {
         maxAge: 10 * 60 * 1000
     });
 
-    res.cookie('meta_oauth_user', req.usuario.id, {
+    res.cookie('meta_oauth_user', (req.comercioId || req.usuario.id), {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'Lax',
@@ -303,7 +303,7 @@ router.get('/callback', async (req, res) => {
 router.get('/status', verificarToken, async (req, res) => {
     try {
         const integracion = await MetaIntegration.findOne({
-            where: { inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id, estado: 'conectado' },
+            where: { inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id), estado: 'conectado' },
             order: [['createdAt', 'ASC']]
         });
 
@@ -326,7 +326,7 @@ router.get('/status', verificarToken, async (req, res) => {
 router.get('/stores', verificarToken, async (req, res) => {
     try {
         const tiendas = await MetaIntegration.findAll({
-            where: { inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id },
+            where: { inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id) },
             attributes: ['id', 'nombre', 'business_id', 'business_name', 'estado', 'createdAt'],
             order: [['createdAt', 'ASC']]
         });
@@ -344,7 +344,7 @@ router.get('/pendiente', verificarToken, async (req, res) => {
     try {
         const bmData = await fetchMeta(`https://graph.facebook.com/${FB_API_VERSION}/me/businesses?access_token=${pendiente.token}&fields=id,name&limit=100`);
         const conectadas = await MetaIntegration.findAll({
-            where: { inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id, estado: 'conectado' },
+            where: { inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id), estado: 'conectado' },
             attributes: ['business_id']
         });
         const yaConectados = new Set(conectadas.map((c) => String(c.business_id)));
@@ -385,7 +385,7 @@ router.post('/pendiente/confirmar', verificarToken, async (req, res) => {
         for (const id of elegidos) {
             await guardarConexion({
                 tenantId: req.usuario.tenantId,
-                userId: req.usuario.id,
+                userId: (req.comercioId || req.usuario.id),
                 metaUserId: pendiente.metaUserId,
                 token: pendiente.token,
                 business: autorizados.get(id)
@@ -410,7 +410,7 @@ router.post('/pendiente/cancelar', verificarToken, (req, res) => {
 router.delete('/stores/:id', verificarToken, async (req, res) => {
     try {
         const integracion = await MetaIntegration.findOne({
-            where: { id: req.params.id, inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id }
+            where: { id: req.params.id, inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id) }
         });
         if (!integracion) {
             return res.status(404).json({ message: 'Tienda no encontrada.' });
@@ -432,8 +432,8 @@ router.post('/filters', verificarToken, async (req, res) => {
 
         // Buscar la tienda específica o la primera activa del tenant
         const whereClause = store_id
-            ? { id: store_id, inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id, estado: 'conectado' }
-            : { inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id, estado: 'conectado' };
+            ? { id: store_id, inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id), estado: 'conectado' }
+            : { inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id), estado: 'conectado' };
 
         const integracion = await MetaIntegration.findOne({
             where: whereClause,
@@ -487,8 +487,8 @@ router.post('/campaign-list', verificarToken, async (req, res) => {
         if (!ad_account_id) return res.json({ campaigns: [] });
 
         const whereClause = store_id
-            ? { id: store_id, inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id, estado: 'conectado' }
-            : { inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id, estado: 'conectado' };
+            ? { id: store_id, inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id), estado: 'conectado' }
+            : { inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id), estado: 'conectado' };
 
         const integracion = await MetaIntegration.findOne({
             where: whereClause,
@@ -525,8 +525,8 @@ router.post('/campaigns', verificarToken, async (req, res) => {
         const { ad_account_id, date_start, date_end, cursor, status, campaign_id, store_id } = req.body;
 
         const whereClause = store_id
-            ? { id: store_id, inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id, estado: 'conectado' }
-            : { inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id, estado: 'conectado' };
+            ? { id: store_id, inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id), estado: 'conectado' }
+            : { inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id), estado: 'conectado' };
 
         const integracion = await MetaIntegration.findOne({
             where: whereClause,
@@ -665,7 +665,7 @@ router.post('/campaigns', verificarToken, async (req, res) => {
 router.post('/disconnect', verificarToken, async (req, res) => {
     try {
         const integracion = await MetaIntegration.findOne({
-            where: { inquilino_id: req.usuario.tenantId, usuario_id: req.usuario.id }
+            where: { inquilino_id: req.usuario.tenantId, usuario_id: (req.comercioId || req.usuario.id) }
         });
 
         if (!integracion) {

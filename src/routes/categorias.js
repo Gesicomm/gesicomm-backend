@@ -7,6 +7,7 @@ const { verificarToken } = require('../middleware/autenticacion');
 const ctrl = require('../controllers/categoria.controller');
 
 router.use(verificarToken);
+router.use(require('../middleware/resolverTiendaActiva').exigirTiendaActiva);
 
 router.post('/buscar', ctrl.buscar);
 router.post('/', ctrl.crear);

@@ -6,33 +6,33 @@ const CategoriaService = require('../services/categoria.service');
 async function buscar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const result = await CategoriaService.buscar(req.body, inquilino_id);
+    const result = await CategoriaService.buscar(req.body, inquilino_id, req.usuario.tiendaId, req.usuario.rol === 'administrador');
     return res.json(result);
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ message: 'Error al obtener categorías.' });
+    return res.status(err.status || 500).json({ message: 'Error al obtener categorías.' });
   }
 }
 
 async function crear(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const categoria = await CategoriaService.crear(req.body, inquilino_id);
+    const categoria = await CategoriaService.crear(req.body, inquilino_id, req.usuario.tiendaId, req.usuario.rol === 'administrador');
     return res.status(201).json(categoria);
   } catch (err) {
     console.error(err);
-    return res.status(err.message.includes('requerido') ? 400 : 500).json({ message: err.message || 'Error al crear categoría.' });
+    return res.status(err.status || (err.message.includes('requerido') ? 400 : 500)).json({ message: err.message || 'Error al crear categoría.' });
   }
 }
 
 async function detalle(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const categoria = await CategoriaService.detalle(req.params.id, inquilino_id);
+    const categoria = await CategoriaService.detalle(req.params.id, inquilino_id, req.usuario.tiendaId, req.usuario.rol === 'administrador');
     return res.json(categoria);
   } catch (err) {
     console.error(err);
-    const status = err.message.includes('no encontrada') ? 404 : 500;
+    const status = err.status || (err.message.includes('no encontrada') ? 404 : 500);
     return res.status(status).json({ message: err.message || 'Error al obtener categoría.' });
   }
 }
@@ -40,7 +40,7 @@ async function detalle(req, res) {
 async function actualizar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    const categoria = await CategoriaService.actualizar(req.params.id, req.body, inquilino_id);
+    const categoria = await CategoriaService.actualizar(req.params.id, req.body, inquilino_id, req.usuario.tiendaId, req.usuario.rol === 'administrador');
     return res.json(categoria);
   } catch (err) {
     console.error(err);
@@ -52,7 +52,7 @@ async function actualizar(req, res) {
 async function eliminar(req, res) {
   try {
     const inquilino_id = req.usuario.tenantId;
-    await CategoriaService.eliminar(req.params.id, inquilino_id);
+    await CategoriaService.eliminar(req.params.id, inquilino_id, req.usuario.tiendaId, req.usuario.rol === 'administrador');
     return res.json({ message: 'Categoría dada de baja correctamente.' });
   } catch (err) {
     console.error(err);

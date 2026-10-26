@@ -1068,7 +1068,7 @@ function esAdministrador(req) {
 
 function whereEnviosDeUsuario(req) {
   if (esAdministrador(req)) return {};
-  const where = { usuario_id: req.usuario.id };
+  const where = { usuario_id: (req.comercioId || req.usuario.id) };
   // Cada tienda ve solo sus propios pedidos. tiendaId falta solo en el caso
   // borde de una cuenta sin ninguna tienda creada todavía (ver
   // resolverTiendaActiva) — ahí no hay nada que filtrar.
@@ -1081,7 +1081,7 @@ function whereEnviosDeUsuario(req) {
 // un pedido de otra de sus tiendas aunque conozca el id.
 function filtroEnvioPropio(req, extra = {}) {
   if (esAdministrador(req)) return extra;
-  const where = { ...extra, usuario_id: req.usuario.id };
+  const where = { ...extra, usuario_id: (req.comercioId || req.usuario.id) };
   if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
   return where;
 }
@@ -1393,7 +1393,7 @@ function resumenAccionesSiguientes(envios) {
 
 exports.listEnvios = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     // La regla del proyecto: endpoints con filtros dinámicos son POST y leen de req.body
     const { fecha_desde, fecha_hasta, estado, confirmador, courier_id, origen } = req.body;
 
@@ -1442,7 +1442,7 @@ exports.listEnvios = async (req, res) => {
  */
 exports.listEnviosPaginados = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const {
       page = 1,
       limit = 10,
@@ -1705,7 +1705,7 @@ exports.listEnviosPaginados = async (req, res) => {
 exports.createEnvio = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const {
       fecha,
       hora,
@@ -1946,9 +1946,9 @@ exports.createEnvio = async (req, res) => {
       await descontarStockYSnapshot(nuevoEnvio.items || [], t, usuario_id, { origenPreferidoId: origen_preferido_id, tiendaId: nuevoEnvio.tienda_id });
       await nuevoEnvio.update({ stock_descontado: true }, { transaction: t });
       await require('../services/speedbox/service').queueConfirmedOrder(nuevoEnvio, t);
-      await registrarHistorial(nuevoEnvio.id, usuario_id, 'Pedido creado manualmente (Confirmado)', t);
+      await registrarHistorial(nuevoEnvio.id, req.usuario.id, 'Pedido creado manualmente (Confirmado)', t);
     } else {
-      await registrarHistorial(nuevoEnvio.id, usuario_id, `Pedido creado manualmente (${nuevoEnvio.estado})`, t);
+      await registrarHistorial(nuevoEnvio.id, req.usuario.id, `Pedido creado manualmente (${nuevoEnvio.estado})`, t);
     }
 
     await t.commit();
@@ -2033,7 +2033,7 @@ exports.actualizarLeadTipoManual = async (req, res) => {
 exports.updateEstado = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const usuario_id = req.usuario?.id || req.usuario?.tenantId || 0;
+    const usuario_id = req.comercioId || req.usuario?.id || req.usuario?.tenantId || 0;
     const { id } = req.params;
     const {
       estado, courier_id, proveedor_logistico_id, estado_comercial, estado_logistico,
@@ -2139,7 +2139,7 @@ exports.updateEstado = async (req, res) => {
         cantidad: Number(it.cantidad), precio_unitario: Number(it.precio_unitario), subtotal: Number(it.cantidad) * Number(it.precio_unitario),
       }; }), { transaction: t });
       await registrarLeadsDeCampana({ envioId: envio.id, usuarioId: envio.usuario_id, inquilinoId: req.usuario.tenantId, origen: envio.origen, items: envio.items, transaction: t });
-      await registrarHistorial(envio.id, usuario_id, items.length ? `Productos del pedido actualizados: ${envio.items.map(it => `${it.cantidad} × ${it.nombre_producto}`).join('; ')}` : 'Consulta general actualizada', t);
+      await registrarHistorial(envio.id, req.usuario.id, items.length ? `Productos del pedido actualizados: ${envio.items.map(it => `${it.cantidad} × ${it.nombre_producto}`).join('; ')}` : 'Consulta general actualizada', t);
     }
     if (lead_tipo_manual !== undefined) {
       if (lead_tipo_manual !== null && !['organico', 'campana'].includes(lead_tipo_manual)) throw Object.assign(new Error('Tipo de lead inválido.'), { status: 400 });
@@ -2196,7 +2196,7 @@ exports.updateEstado = async (req, res) => {
         }, t);
         updateData.costo_envio = acumulado + costoViajeAnterior;
         if (costoViajeAnterior > 0) {
-          await registrarHistorial(envio.id, usuario_id, `Viaje en falso: Gs ${costoViajeAnterior.toLocaleString('es-PY')}`, t);
+          await registrarHistorial(envio.id, req.usuario.id, `Viaje en falso: Gs ${costoViajeAnterior.toLocaleString('es-PY')}`, t);
         }
       }
 
@@ -2303,13 +2303,13 @@ exports.updateEstado = async (req, res) => {
       // directamente — el catálogo autoritativo es Envio.estado (ver arriba).
       updateData.estado_logistico = estado;
 
-      await registrarHistorial(envio.id, usuario_id, `${envio.estado} → ${estado}`, t);
+      await registrarHistorial(envio.id, req.usuario.id, `${envio.estado} → ${estado}`, t);
       if (estado === 'Reprogramado') {
-        await registrarHistorial(envio.id, usuario_id, `Reprogramado para ${fecha_reprogramada}${motivo_reprogramacion ? ' — ' + motivo_reprogramacion : ''}`, t);
+        await registrarHistorial(envio.id, req.usuario.id, `Reprogramado para ${fecha_reprogramada}${motivo_reprogramacion ? ' — ' + motivo_reprogramacion : ''}`, t);
       }
       if (estado === 'Entregado' && updateData.metodo_pago) {
         // Reusa el lookup de arriba: no hace falta pedirlo dos veces.
-        await registrarHistorial(envio.id, usuario_id, `Método de pago: ${updateData.metodo_pago}`, t);
+        await registrarHistorial(envio.id, req.usuario.id, `Método de pago: ${updateData.metodo_pago}`, t);
       }
     }
 
@@ -2501,7 +2501,7 @@ exports.updateEstado = async (req, res) => {
 exports.actualizarPrecioItem = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { id, itemId } = req.params;
     const { precio_unitario } = req.body;
 
@@ -2579,7 +2579,7 @@ exports.actualizarPrecioItem = async (req, res) => {
  */
 exports.cotizarLogisticaAbastecimiento = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { tipoLogistica, depositoId, cantidad } = req.body || {};
 
     if (tipoLogistica === 'GESICOMM') {
@@ -2634,7 +2634,7 @@ exports.cotizarLogisticaAbastecimiento = async (req, res) => {
 
 exports.definirLogisticaAbastecimiento = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { id } = req.params;
     const { tipoLogistica, depositoId } = req.body || {};
 
@@ -2741,7 +2741,7 @@ exports.subirComprobanteAbastecimiento = async (req, res) => {
     if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
     if (!req.file) return res.status(400).json({ error: 'El comprobante de transferencia es obligatorio.' });
 
-    await AbastecimientoFlujo.subirComprobantePago({ envio, usuarioId: req.usuario.id, fileData: req.file });
+    await AbastecimientoFlujo.subirComprobantePago({ envio, usuarioId: (req.comercioId || req.usuario.id), fileData: req.file });
     return res.json(await envioAbastecimientoDecorado(envio.id));
   } catch (error) {
     return manejarErrorAbastecimiento(res, error, 'Error subiendo comprobante');
@@ -2754,7 +2754,7 @@ exports.validarPagoAbastecimiento = async (req, res) => {
     const envio = await envioParaAbastecimiento(req);
     if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
 
-    await AbastecimientoFlujo.validarPago({ envio, usuarioId: req.usuario.id });
+    await AbastecimientoFlujo.validarPago({ envio, usuarioId: (req.comercioId || req.usuario.id) });
     return res.json(await envioAbastecimientoDecorado(envio.id));
   } catch (error) {
     return manejarErrorAbastecimiento(res, error, 'Error validando pago');
@@ -2767,7 +2767,7 @@ exports.rechazarPagoAbastecimiento = async (req, res) => {
     const envio = await envioParaAbastecimiento(req);
     if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
 
-    await AbastecimientoFlujo.rechazarPago({ envio, usuarioId: req.usuario.id, motivo: req.body?.motivo });
+    await AbastecimientoFlujo.rechazarPago({ envio, usuarioId: (req.comercioId || req.usuario.id), motivo: req.body?.motivo });
     return res.json(await envioAbastecimientoDecorado(envio.id));
   } catch (error) {
     return manejarErrorAbastecimiento(res, error, 'Error rechazando pago');
@@ -2780,7 +2780,7 @@ exports.avanzarAbastecimiento = async (req, res) => {
     const envio = await envioParaAbastecimiento(req);
     if (!envio) return res.status(404).json({ error: 'Pedido no encontrado.' });
 
-    await AbastecimientoFlujo.avanzar({ envio, usuarioId: req.usuario.id });
+    await AbastecimientoFlujo.avanzar({ envio, usuarioId: (req.comercioId || req.usuario.id) });
     return res.json(await envioAbastecimientoDecorado(envio.id));
   } catch (error) {
     return manejarErrorAbastecimiento(res, error, 'Error avanzando abastecimiento');
@@ -2795,7 +2795,7 @@ exports.confirmarRecepcionAbastecimiento = async (req, res) => {
       return res.status(403).json({ error: 'Solo el comercio puede confirmar la recepción en su depósito.' });
     }
 
-    await AbastecimientoFlujo.confirmarRecepcionDeposito({ envio, usuarioId: req.usuario.id });
+    await AbastecimientoFlujo.confirmarRecepcionDeposito({ envio, usuarioId: (req.comercioId || req.usuario.id) });
     return res.json(await envioAbastecimientoDecorado(envio.id));
   } catch (error) {
     return manejarErrorAbastecimiento(res, error, 'Error confirmando recepción');
@@ -2824,7 +2824,7 @@ exports.timelineAbastecimiento = async (req, res) => {
 exports.registrarDevolucion = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { id } = req.params;
     const { items, marcar_estado, costo_intento, motivo_devolucion } = req.body;
 
@@ -2855,12 +2855,12 @@ exports.registrarDevolucion = async (req, res) => {
     }
 
     await registrarDevolucionComponentes(envio, items, t);
-    await registrarHistorial(envio.id, usuario_id, `Devolución registrada: ${items.length} producto(s)`, t);
+    await registrarHistorial(envio.id, req.usuario.id, `Devolución registrada: ${items.length} producto(s)`, t);
 
     const updateData = {};
     if (motivo_devolucion) {
       updateData.motivo_devolucion = motivo_devolucion;
-      await registrarHistorial(envio.id, usuario_id, `Devolución clasificada: ${motivo_devolucion}`, t);
+      await registrarHistorial(envio.id, req.usuario.id, `Devolución clasificada: ${motivo_devolucion}`, t);
     }
     // Igual que en updateEstado: si el pedido venía de "Reprogramado", este
     // es el momento en que recién se sabe cuánto costó ese viaje en falso.
@@ -2876,7 +2876,7 @@ exports.registrarDevolucion = async (req, res) => {
       }, t);
       updateData.costo_envio = acumulado + costoViajeAnterior;
       if (costoViajeAnterior > 0) {
-        await registrarHistorial(envio.id, usuario_id, `Viaje en falso: Gs ${costoViajeAnterior.toLocaleString('es-PY')}`, t);
+        await registrarHistorial(envio.id, req.usuario.id, `Viaje en falso: Gs ${costoViajeAnterior.toLocaleString('es-PY')}`, t);
       }
     }
     if (marcar_estado) {
@@ -2886,7 +2886,7 @@ exports.registrarDevolucion = async (req, res) => {
       }
       updateData.estado = 'Devuelto';
       updateData.estado_logistico = 'Devuelto';
-      await registrarHistorial(envio.id, usuario_id, `${envio.estado} → Devuelto`, t);
+      await registrarHistorial(envio.id, req.usuario.id, `${envio.estado} → Devuelto`, t);
       const { SpeedboxPedido, SpeedboxEvento } = require('../models');
       const mapping = await SpeedboxPedido.findOne({ where: { envio_id: envio.id, usuario_id }, transaction: t });
       if (mapping?.status === 'devuelto') await SpeedboxEvento.update({ estado: 'procesado',
@@ -2926,7 +2926,7 @@ exports.registrarDevolucion = async (req, res) => {
 exports.registrarPerdida = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { id } = req.params;
     const { items, marcar_estado, costo_intento } = req.body;
 
@@ -2953,7 +2953,7 @@ exports.registrarPerdida = async (req, res) => {
     }
 
     const cargo = await registrarPerdidaComponentes(envio, items, t);
-    await registrarHistorial(envio.id, usuario_id, `Pérdida registrada: ${items.length} producto(s), cargo Gs. ${cargo.toLocaleString('es-PY')}`, t);
+    await registrarHistorial(envio.id, req.usuario.id, `Pérdida registrada: ${items.length} producto(s), cargo Gs. ${cargo.toLocaleString('es-PY')}`, t);
 
     const updateData = {};
     // Igual que en updateEstado: si el pedido venía de "Reprogramado", este
@@ -2970,13 +2970,13 @@ exports.registrarPerdida = async (req, res) => {
       }, t);
       updateData.costo_envio = acumulado + costoViajeAnterior;
       if (costoViajeAnterior > 0) {
-        await registrarHistorial(envio.id, usuario_id, `Viaje en falso: Gs ${costoViajeAnterior.toLocaleString('es-PY')}`, t);
+        await registrarHistorial(envio.id, req.usuario.id, `Viaje en falso: Gs ${costoViajeAnterior.toLocaleString('es-PY')}`, t);
       }
     }
     if (marcar_estado) {
       updateData.estado = 'Perdido';
       updateData.estado_logistico = 'Perdido';
-      await registrarHistorial(envio.id, usuario_id, `${envio.estado} → Perdido`, t);
+      await registrarHistorial(envio.id, req.usuario.id, `${envio.estado} → Perdido`, t);
     }
     await envio.update(updateData, { transaction: t });
     await t.commit();
@@ -3017,7 +3017,7 @@ exports.resumenPedidos = async (req, res) => {
 };
 
 function alcanceSeguimiento(req) {
-  return { whereBase: whereEnviosDeUsuario(req), usuarioId: req.usuario.id, esAdmin: esAdministrador(req) };
+  return { whereBase: whereEnviosDeUsuario(req), usuarioId: (req.comercioId || req.usuario.id), esAdmin: esAdministrador(req) };
 }
 
 /**
@@ -3072,7 +3072,7 @@ exports.pendientesSeguimiento = async (req, res) => {
  */
 exports.conteoPorEstado = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const {
       pedido_id,
       envio_id,
@@ -3190,7 +3190,7 @@ exports.conteoPorEstado = async (req, res) => {
     }
 
     try {
-      const tenantId = req.usuario.id;
+      const tenantId = (req.comercioId || req.usuario.id);
       const tiendaIdFiltro = esAdministrador(req) ? null : req.usuario.tiendaId || null;
       const [vencidosFila] = await sequelize.query(`
         SELECT COUNT(DISTINCT e.id) AS cantidad
@@ -3392,7 +3392,7 @@ exports.conteoPorAbastecimiento = async (req, res) => {
  */
 exports.resumenEntregados = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { pedido_id, envio_id, fecha_desde, fecha_hasta, cliente, ciudad, courier_id, confirmador, origen, producto, producto_busqueda, metodo_pago_id, solo_abastecimiento, abastecimiento_estado } = req.body;
 
     const where = { ...whereEnviosDeUsuario(req), estado: 'Entregado' };
@@ -3505,7 +3505,7 @@ exports.resumenEntregados = async (req, res) => {
  */
 exports.dashboardGeneralPedidos = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { fecha_desde, fecha_hasta, courier_id, producto } = req.body;
 
     const where = whereEnviosDeUsuario(req);
@@ -3648,7 +3648,7 @@ exports.obtenerHistorial = async (req, res) => {
  */
 exports.getDashboardMetricas = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const filtros = req.body || {};
 
     const data = await getAnalyticsCompleto(filtros, usuario_id, req.usuario.tenantId, esAdministrador(req) ? null : req.usuario.tiendaId || null);
@@ -3662,7 +3662,7 @@ exports.getDashboardMetricas = async (req, res) => {
 exports.deleteEnvio = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { id } = req.params;
 
     if (req.usuario.rol !== 'ADMIN') {
@@ -3715,7 +3715,7 @@ exports.deleteEnvio = async (req, res) => {
     // Finalmente eliminar el pedido
     await envio.destroy({ transaction: t });
 
-    await registrarHistorial(id, usuario_id, 'Pedido eliminado permanentemente', t).catch(() => {});
+    await registrarHistorial(id, req.usuario.id, 'Pedido eliminado permanentemente', t).catch(() => {});
 
     await t.commit();
     res.json({ message: 'Pedido eliminado correctamente' });

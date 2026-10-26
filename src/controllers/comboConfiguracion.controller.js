@@ -11,7 +11,7 @@ const ComboConfiguracionService = require('../services/comboConfiguracion.servic
 
 async function obtener(req, res) {
   try {
-    const config = await ComboConfiguracionService.obtenerOCrearConPagopar(req.usuario.tenantId, req.usuario.id);
+    const config = await ComboConfiguracionService.obtenerOCrearConPagopar(req.usuario.tenantId, (req.comercioId || req.usuario.id));
     return res.json(config);
   } catch (err) {
     console.error('[combo config] obtener:', err.message);
@@ -22,7 +22,7 @@ async function obtener(req, res) {
 async function actualizar(req, res) {
   try {
     await ComboConfiguracionService.actualizar(req.usuario.tenantId, req.body);
-    const config = await ComboConfiguracionService.obtenerOCrearConPagopar(req.usuario.tenantId, req.usuario.id);
+    const config = await ComboConfiguracionService.obtenerOCrearConPagopar(req.usuario.tenantId, (req.comercioId || req.usuario.id));
     return res.json(config);
   } catch (err) {
     console.error('[combo config] actualizar:', err.message);

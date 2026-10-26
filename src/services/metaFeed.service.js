@@ -85,7 +85,7 @@ function fallo(message, status = 422) { return Object.assign(new Error(message),
 async function tiendaPrivada(usuario) {
   if (!usuario.tiendaId) throw fallo('Seleccioná una tienda primero.', 409);
   const tienda = await Tienda.findOne({ where: {
-    id: usuario.tiendaId, usuario_id: usuario.id, inquilino_id: usuario.tenantId,
+    id: usuario.tiendaId, usuario_id: usuario.propietarioId || usuario.id, inquilino_id: usuario.tenantId,
   }, include: [{ model: Usuario, attributes: ['id', 'activo'] }] });
   if (!tienda) throw fallo('Tienda no encontrada.', 404);
   return tienda;

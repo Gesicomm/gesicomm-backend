@@ -236,6 +236,7 @@ app.use(limiteGlobal);
 // ============================================================
 app.use('/api/auth/marca-personal/meta', require('./src/routes/marcaPersonalMeta'));
 app.use('/api/auth/marca-personal', require('./src/routes/marcaPersonalSso'));
+app.use('/api/personas', require('./src/routes/personas'));
 app.use('/api/auth', authRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/productos', productosRoutes);

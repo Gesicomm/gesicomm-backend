@@ -7,9 +7,9 @@ const PartnerSolicitud = require('../models/PartnerSolicitud');
 const router = express.Router();
 
 router.use(verificarToken);
-router.get('/me', asyncHandler(async (req, res) => res.json(await service.obtener(req.usuario.id))));
+router.get('/me', asyncHandler(async (req, res) => res.json(await service.obtener((req.comercioId || req.usuario.id)))));
 router.post('/me', asyncHandler(async (req, res) => {
-  const { solicitud, creada } = await service.solicitar(req.usuario.id, req.body);
+  const { solicitud, creada } = await service.solicitar((req.comercioId || req.usuario.id), req.body);
   res.status(creada ? 201 : 200).json({ solicitud });
 }));
 router.get('/solicitudes', soloAdministrador, asyncHandler(async (req, res) => {

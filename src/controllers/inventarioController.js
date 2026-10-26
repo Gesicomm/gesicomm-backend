@@ -72,7 +72,7 @@ exports.listarIngresos = async (req, res) => {
     const whereClause = {};
 
     if (!esAdmin(req)) {
-      whereClause.usuario_id = req.usuario.id;
+      whereClause.usuario_id = (req.comercioId || req.usuario.id);
     }
 
     if (estado) {
@@ -202,7 +202,7 @@ exports.obtenerIngreso = async (req, res) => {
     });
 
     if (!ingreso) return res.status(404).json({ error: 'Ingreso no encontrado' });
-    if (!esAdmin(req) && ingreso.usuario_id !== req.usuario.id) {
+    if (!esAdmin(req) && ingreso.usuario_id !== (req.comercioId || req.usuario.id)) {
       return res.status(403).json({ error: 'No autorizado' });
     }
 
@@ -223,7 +223,7 @@ exports.crearBorrador = async (req, res) => {
       return res.status(400).json({ error: 'Faltan datos obligatorios (centro y productos).' });
     }
 
-    const ingreso = await IngresoInventarioService.crearBorrador(req.usuario.id, centro_gesicomm_id, items);
+    const ingreso = await IngresoInventarioService.crearBorrador((req.comercioId || req.usuario.id), centro_gesicomm_id, items);
     return res.status(201).json(ingreso);
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message });
@@ -236,7 +236,7 @@ exports.crearBorrador = async (req, res) => {
 exports.confirmarEnvio = async (req, res) => {
   try {
     const { id } = req.params;
-    const ingreso = await IngresoInventarioService.confirmarEnvio(id, req.usuario.id);
+    const ingreso = await IngresoInventarioService.confirmarEnvio(id, (req.comercioId || req.usuario.id));
     return res.json(ingreso);
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message });
@@ -250,7 +250,7 @@ exports.marcarEnTransito = async (req, res) => {
   try {
     const { id } = req.params;
     const { transportista, numero_seguimiento, observacion } = req.body;
-    const ingreso = await IngresoInventarioService.marcarEnTransito(id, req.usuario.id, { transportista, numero_seguimiento, observacion }, esAdmin(req));
+    const ingreso = await IngresoInventarioService.marcarEnTransito(id, (req.comercioId || req.usuario.id), { transportista, numero_seguimiento, observacion }, esAdmin(req));
     return res.json(ingreso);
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message });
@@ -265,7 +265,7 @@ exports.registrarRecepcion = async (req, res) => {
   try {
     if (!esAdmin(req)) return res.status(403).json({ error: 'Solo Admin' });
     const { id } = req.params;
-    const ingreso = await IngresoInventarioService.recepcionFisica(id, req.usuario.id);
+    const ingreso = await IngresoInventarioService.recepcionFisica(id, (req.comercioId || req.usuario.id));
     return res.json(ingreso);
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message });
@@ -283,7 +283,7 @@ exports.resolverDiferencias = async (req, res) => {
     const { conteos } = req.body; // [{ item_id, cantidad_recibida, cantidad_aceptada, observacion }]
     if (!conteos || !Array.isArray(conteos)) return res.status(400).json({ error: 'Conteos inválidos' });
     
-    const ingreso = await IngresoInventarioService.resolverDiferencias(id, req.usuario.id, conteos);
+    const ingreso = await IngresoInventarioService.resolverDiferencias(id, (req.comercioId || req.usuario.id), conteos);
     return res.json(ingreso);
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message });
@@ -298,7 +298,7 @@ exports.habilitarStock = async (req, res) => {
   try {
     if (!esAdmin(req)) return res.status(403).json({ error: 'Solo Admin' });
     const { id } = req.params;
-    const ingreso = await IngresoInventarioService.habilitarStock(id, req.usuario.id);
+    const ingreso = await IngresoInventarioService.habilitarStock(id, (req.comercioId || req.usuario.id));
     return res.json(ingreso);
   } catch (error) {
     return res.status(error.status || 500).json({ error: error.message });
@@ -330,7 +330,7 @@ exports.listarStockUbicacion = async (req, res) => {
 
     const whereClause = {};
     if (!esAdmin(req)) {
-      whereClause.usuario_id = req.usuario.id;
+      whereClause.usuario_id = (req.comercioId || req.usuario.id);
     }
     // Stock de un depósito puntual (panel "Administrar depósito").
     if (deposito_id && /^\d+$/.test(String(deposito_id))) {
@@ -420,7 +420,7 @@ exports.listarStockUbicacion = async (req, res) => {
 exports.diagnosticarStockPedido = async (req, res) => {
   try {
     const { items = [], origen_preferido_id = null } = req.body || {};
-    const usuarioId = req.usuario.id;
+    const usuarioId = (req.comercioId || req.usuario.id);
     const tiendaId = req.usuario.tiendaId || null;
     const depositoWhere = { usuario_id: usuarioId, activo: true };
     if (tiendaId) depositoWhere.tienda_id = tiendaId;

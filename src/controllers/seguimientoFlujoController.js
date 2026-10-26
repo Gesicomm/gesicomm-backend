@@ -12,7 +12,7 @@ const { envolverControlador } = require('../utils/asyncHandler');
 
 function contexto(req) {
   return {
-    usuarioId: req.usuario.id,
+    usuarioId: (req.comercioId || req.usuario.id),
     esAdmin: req.usuario?.rol === 'administrador',
   };
 }
@@ -35,7 +35,7 @@ function manejarError(res, err, mensajePorDefecto) {
 exports.listar = async (req, res) => {
   // Los flujos de base tienen que estar siempre: si a la cuenta le
   // falta alguno, aparece acá ya creado.
-  await flujoService.asegurarFlujosBase({ usuarioId: req.usuario.id });
+  await flujoService.asegurarFlujosBase({ usuarioId: (req.comercioId || req.usuario.id) });
   const flujos = await flujoService.listarFlujos({
     ...contexto(req),
     soloActivos: req.query.activo === 'true',

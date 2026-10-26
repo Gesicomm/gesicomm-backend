@@ -58,7 +58,7 @@ exports.registrarClick = async (req, res) => {
 
 exports.miAfiliado = async (req, res) => {
   try {
-    res.json(await AfiliadosService.obtenerPanel(req.usuario.id, { baseUrl: baseUrl(req) }));
+    res.json(await AfiliadosService.obtenerPanel((req.comercioId || req.usuario.id), { baseUrl: baseUrl(req) }));
   } catch (error) {
     if (!error.status || error.status >= 500) console.error('[Afiliados] mi afiliado:', error);
     res.status(error.status || 500).json({ message: error.message || 'No se pudo cargar tu afiliación.' });
@@ -67,7 +67,7 @@ exports.miAfiliado = async (req, res) => {
 
 exports.solicitarMiAfiliado = async (req, res) => {
   try {
-    const afiliado = await AfiliadosService.solicitarParaUsuario(req.usuario.id, req.body || {}, { baseUrl: baseUrl(req) });
+    const afiliado = await AfiliadosService.solicitarParaUsuario((req.comercioId || req.usuario.id), req.body || {}, { baseUrl: baseUrl(req) });
     res.status(201).json({ afiliado });
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message || 'No se pudo activar tu afiliación.' });

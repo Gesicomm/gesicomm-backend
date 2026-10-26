@@ -7,6 +7,10 @@ const { resolverTiendaActiva } = require('../middleware/resolverTiendaActiva');
 const service = require('../services/raha/service');
 const operaciones = require('../services/raha/operaciones');
 const router = express.Router();
+// Business ownership is delegated explicitly; audit identity remains separate.
+const actorComercio = req => req.comercioId
+  ? { ...req.usuario, id: req.comercioId, actorId: req.usuario.id }
+  : req.usuario;
 router.use(verificarToken);
 router.use(resolverTiendaActiva);
 router.use((req, res, next) => { res.set('Cache-Control', 'private, no-store'); next(); });
@@ -19,7 +23,7 @@ const handle = fn => async (req, res, next) => { try { await fn(req, res); } cat
 const json = fn => handle(async (req, res) => res.json(await fn(req)));
 const { MAX_SIZE } = require('../services/raha/storage');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_SIZE, files: 1, fields: 2, fieldSize: 100 } }).single('archivo');
-router.get('/', json(req => service.status(req.usuario)));
+router.get('/', json(req => service.status(actorComercio(req))));
 router.get('/operaciones/destinos', json(() => operaciones.destinos()));
 router.get('/operaciones/origenes', json(req => operaciones.origenes(req.usuario)));
 router.post('/operaciones/stock', json(req => operaciones.stock(req.usuario, req.body || {})));
@@ -27,12 +31,12 @@ router.post('/operaciones/envios/listado', json(req => operaciones.listarEnvios(
 router.post('/operaciones/envios', json(req => operaciones.crearEnvio(req.usuario, req.body)));
 router.get('/operaciones/envios/:id', json(req => operaciones.detalleEnvio(req.usuario, Number(req.params.id))));
 router.post('/operaciones/envios/:id/resolver', json(req => operaciones.resolverEnvio(req.usuario, Number(req.params.id), req.body)));
-router.put('/', json(req => service.save(req.usuario, req.body)));
+router.put('/', json(req => service.save(actorComercio(req), req.body)));
 router.get('/contrato', handle(async (req, res) => {
-  const buffer = await service.contrato(req.usuario);
+  const buffer = await service.contrato(actorComercio(req));
   res.attachment('contrato-marco-raha.docx').type('application/vnd.openxmlformats-officedocument.wordprocessingml.document').send(buffer);
 }));
-router.post('/enviar', json(req => service.submit(req.usuario, req.body)));
+router.post('/enviar', json(req => service.submit(actorComercio(req), req.body)));
 router.post('/documentos', (req, res, next) => upload(req, res, error => {
   if (!error) return next();
   if (error.code === 'LIMIT_FILE_SIZE') {
@@ -43,10 +47,10 @@ router.post('/documentos', (req, res, next) => upload(req, res, error => {
   }
   return res.status(400).json({ message: 'No se pudo recibir el documento. Adjuntá un solo archivo PDF, JPG, PNG o WebP de hasta 8 MB.' });
 }),
-  json(req => service.upload(req.usuario, req.body.tipo, req.body.version, req.file)));
-router.delete('/documentos/:id', json(req => service.remove(req.usuario, Number(req.params.id), req.body.version)));
+  json(req => service.upload(actorComercio(req), req.body.tipo, req.body.version, req.file)));
+router.delete('/documentos/:id', json(req => service.remove(actorComercio(req), Number(req.params.id), req.body.version)));
 router.get('/documentos/:id', handle(async (req, res) => {
-  const { doc, buffer } = await service.document(req.usuario, Number(req.params.id));
+  const { doc, buffer } = await service.document(actorComercio(req), Number(req.params.id));
   res.set('X-Content-Type-Options', 'nosniff');
   res.attachment(doc.nombre).type(doc.mime).send(buffer);
 }));

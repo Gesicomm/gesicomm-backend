@@ -36,7 +36,7 @@ function esAdministrador(req) {
 // tienda de la misma cuenta con solo conocer el id.
 function filtroEnvio(req, id) {
   if (esAdministrador(req)) return { id };
-  const where = { id, usuario_id: req.usuario.id };
+  const where = { id, usuario_id: (req.comercioId || req.usuario.id) };
   if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
   return where;
 }
@@ -109,9 +109,9 @@ exports.flujosDelPedido = async (req, res) => {
   const envio = await cargarEnvioODevolver404(req, res, { conImagenes: true });
   if (!envio) return;
   const contextoMensaje = seleccionarProductosMensaje(envio, req.query?.producto_ids);
-  await flujoService.asegurarFlujosBase({ usuarioId: req.usuario.id });
+  await flujoService.asegurarFlujosBase({ usuarioId: (req.comercioId || req.usuario.id) });
   let flujos = await flujoService.estadoFlujosDelPedido(envio.id, {
-    usuarioId: req.usuario.id,
+    usuarioId: (req.comercioId || req.usuario.id),
     esAdmin: esAdministrador(req),
   });
   if (envio.raha_logistica?.gestionado) flujos = flujos.filter(f => !['CONFIRMACION_PEDIDO_WEB', 'VENTA_WHATSAPP', 'CONSULTA_GENERAL_WHATSAPP', 'SEGUIMIENTO_PRODUCTO_WHATSAPP'].includes(f.tipo));
@@ -163,7 +163,7 @@ exports.copiarImagenProducto = async (req, res) => {
  *    PRIMERA vez — los contactos siguientes no vuelven a mover el estado).
  */
 exports.registrarContacto = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { fase_id, plantilla_id, telefono: telefonoOverride } = req.body;
 
   try {
@@ -231,7 +231,7 @@ exports.registrarContacto = async (req, res) => {
       let transicionAutomatica = false;
       if (envio.estado === 'Pendiente' && !envio.raha_logistica?.gestionado) {
         await envio.update({ estado: 'EnSeguimiento' }, { transaction: t });
-        await registrarHistorial(envio.id, usuario_id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
+        await registrarHistorial(envio.id, req.usuario.id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
         transicionAutomatica = true;
       }
 
@@ -255,7 +255,7 @@ exports.registrarContacto = async (req, res) => {
       } else {
         detalleHistorial = 'Contacto WhatsApp — mensaje libre';
       }
-      await registrarHistorial(envio.id, usuario_id, detalleHistorial, t);
+      await registrarHistorial(envio.id, req.usuario.id, detalleHistorial, t);
 
       // Abrir WhatsApp no avanza la fase ni cumple el recordatorio: eso lo
       // hace el operador cuando marca la fase como completada (completarFase).
@@ -290,7 +290,7 @@ async function buscarFaseDeLaCuenta(req, faseId) {
       model: WhatsappFlujo,
       as: 'flujo',
       required: true,
-      where: esAdministrador(req) ? {} : { usuario_id: req.usuario.id },
+      where: esAdministrador(req) ? {} : { usuario_id: (req.comercioId || req.usuario.id) },
     }],
   });
 }
@@ -330,7 +330,7 @@ async function cumplirRecordatoriosDeLaFase(envioId, fase, t) {
  * Completar no bloquea nada: la fase se puede volver a abrir y reenviar.
  */
 exports.completarFase = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const envio = await cargarEnvioODevolver404(req, res, { conItems: true });
   if (!envio) return;
   const fase = await buscarFaseDeLaCuenta(req, req.params.faseId);
@@ -375,13 +375,13 @@ exports.completarFase = async (req, res) => {
     // realizan manualmente, incluso en flujos con acciones antiguas.
     if (envio.estado === 'Pendiente' && !envio.raha_logistica?.gestionado) {
       await envio.update({ estado: 'EnSeguimiento' }, { transaction: t });
-      await registrarHistorial(envio.id, usuario_id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
+      await registrarHistorial(envio.id, req.usuario.id, 'Pendiente → EnSeguimiento (primer contacto de WhatsApp)', t);
       transicionAutomatica = true;
     }
 
     const recordatoriosCumplidos = await cumplirRecordatoriosDeLaFase(envio.id, fase, t);
     if (!yaEstaba) {
-      await registrarHistorial(envio.id, usuario_id, `Mensaje enviado — ${fase.flujo.nombre} · Fase ${fase.orden}: ${fase.nombre} (marcado como completado)`, t);
+      await registrarHistorial(envio.id, req.usuario.id, `Mensaje enviado — ${fase.flujo.nombre} · Fase ${fase.orden}: ${fase.nombre} (marcado como completado)`, t);
     }
 
     // El próximo contacto se agenda solo, con la espera que tiene cargada la
@@ -409,7 +409,7 @@ exports.completarFase = async (req, res) => {
           fase_id: siguiente.id,
           flujo_id: siguiente.flujo_id,
         }, { transaction: t });
-        await registrarHistorial(envio.id, usuario_id, `Seguimiento programado para ${cuando.toLocaleString('es-PY')}`, t);
+        await registrarHistorial(envio.id, req.usuario.id, `Seguimiento programado para ${cuando.toLocaleString('es-PY')}`, t);
       }
     }
 
@@ -444,7 +444,7 @@ exports.completarFase = async (req, res) => {
  * No borra nada del historial; la apertura sigue registrada como abierta.
  */
 exports.descompletarFase = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const envio = await cargarEnvioODevolver404(req, res);
   if (!envio) return;
   const fase = await buscarFaseDeLaCuenta(req, req.params.faseId);
@@ -459,7 +459,7 @@ exports.descompletarFase = async (req, res) => {
     for (const contacto of completadas) {
       await contacto.update({ estado: 'ABIERTO_EN_WHATSAPP' }, { transaction: t });
     }
-    await registrarHistorial(envio.id, usuario_id, `Fase ${fase.orden}: ${fase.nombre} — se desmarcó como completada`, t);
+    await registrarHistorial(envio.id, req.usuario.id, `Fase ${fase.orden}: ${fase.nombre} — se desmarcó como completada`, t);
   });
   res.status(204).send();
 };
@@ -506,7 +506,7 @@ exports.listarEtiquetasDelPedido = async (req, res) => {
 
 /** POST /api/envios/:id/seguimiento/etiquetas — asocia manualmente una etiqueta (BE-05). Body: { etiqueta_id }. */
 exports.asociarEtiqueta = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { etiqueta_id } = req.body;
   if (!etiqueta_id) return res.status(400).json({ error: 'etiqueta_id es obligatorio' });
 
@@ -520,7 +520,7 @@ exports.asociarEtiqueta = async (req, res) => {
 
   const resultado = await sequelize.transaction(async (t) => {
     const asociacion = await aplicarEtiqueta(envio.id, etiqueta.id, usuario_id, 'manual', t);
-    await registrarHistorial(envio.id, usuario_id, `Etiqueta "${etiqueta.nombre}" agregada`, t);
+    await registrarHistorial(envio.id, req.usuario.id, `Etiqueta "${etiqueta.nombre}" agregada`, t);
     return asociacion;
   });
   res.status(201).json(resultado);
@@ -528,7 +528,7 @@ exports.asociarEtiqueta = async (req, res) => {
 
 /** DELETE /api/envios/:id/seguimiento/etiquetas/:etiquetaId — quita (soft) una etiqueta del pedido. */
 exports.quitarEtiqueta = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { etiquetaId } = req.params;
 
   const envio = await cargarEnvioODevolver404(req, res);
@@ -539,7 +539,7 @@ exports.quitarEtiqueta = async (req, res) => {
 
   await sequelize.transaction(async (t) => {
     await asociacion.update({ activa: false, removido_en: new Date() }, { transaction: t });
-    await registrarHistorial(envio.id, usuario_id, 'Etiqueta removida', t);
+    await registrarHistorial(envio.id, req.usuario.id, 'Etiqueta removida', t);
   });
   res.status(204).send();
 };
@@ -557,7 +557,7 @@ exports.quitarEtiqueta = async (req, res) => {
  * la clave no se toca la fase que ya tenía; con null se la quita.
  */
 exports.programarRecordatorio = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { ejecutar_en, horas, nota, fase_id } = req.body;
 
   const envio = await cargarEnvioODevolver404(req, res);
@@ -608,13 +608,13 @@ exports.programarRecordatorio = async (req, res) => {
           usuario_id, ejecutar_en: fechaEjecucion, nota: nota ?? fila.nota, version: fila.version + 1,
           ...camposFase,
         }, { transaction: t });
-        await registrarHistorial(envio.id, usuario_id, `Seguimiento reprogramado para ${fechaEjecucion.toLocaleString('es-PY')}`, t);
+        await registrarHistorial(envio.id, req.usuario.id, `Seguimiento reprogramado para ${fechaEjecucion.toLocaleString('es-PY')}`, t);
       } else {
         fila = await SeguimientoRecordatorio.create({
           envio_id: envio.id, usuario_id, ejecutar_en: fechaEjecucion, nota: nota || null,
           ...camposFase,
         }, { transaction: t });
-        await registrarHistorial(envio.id, usuario_id, `Seguimiento programado para ${fechaEjecucion.toLocaleString('es-PY')}`, t);
+        await registrarHistorial(envio.id, req.usuario.id, `Seguimiento programado para ${fechaEjecucion.toLocaleString('es-PY')}`, t);
       }
 
       // Agendar el próximo contacto resuelve el que había vencido: si no, el
@@ -654,7 +654,7 @@ async function buscarRecordatorioAbierto(envioId, recordatorioId) {
 
 /** PATCH /api/envios/:id/seguimiento/recordatorio/:recordatorioId/completar — el responsable marca el seguimiento como hecho, antes o después de que venza. */
 exports.completarRecordatorio = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { recordatorioId } = req.params;
   const envio = await cargarEnvioODevolver404(req, res);
   if (!envio) return;
@@ -664,14 +664,14 @@ exports.completarRecordatorio = async (req, res) => {
 
   await sequelize.transaction(async (t) => {
     await recordatorio.update({ estado: 'COMPLETADO', completado_en: new Date() }, { transaction: t });
-    await registrarHistorial(envio.id, usuario_id, 'Seguimiento marcado como completado', t);
+    await registrarHistorial(envio.id, req.usuario.id, 'Seguimiento marcado como completado', t);
   });
   res.json(recordatorio);
 };
 
 /** PATCH /api/envios/:id/seguimiento/recordatorio/:recordatorioId/cancelar */
 exports.cancelarRecordatorio = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { recordatorioId } = req.params;
   const envio = await cargarEnvioODevolver404(req, res);
   if (!envio) return;
@@ -681,7 +681,7 @@ exports.cancelarRecordatorio = async (req, res) => {
 
   await sequelize.transaction(async (t) => {
     await recordatorio.update({ estado: 'CANCELADO', cancelado_en: new Date() }, { transaction: t });
-    await registrarHistorial(envio.id, usuario_id, 'Seguimiento cancelado', t);
+    await registrarHistorial(envio.id, req.usuario.id, 'Seguimiento cancelado', t);
   });
   res.json(recordatorio);
 };
@@ -755,7 +755,7 @@ exports.historialSeguimiento = async (req, res) => {
 
 /** POST /api/envios/:id/seguimiento/nota - Guarda una nota libre en el historial del pedido sin agendar recordatorio. */
 exports.guardarNota = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const { nota } = req.body;
   if (!nota || !String(nota).trim()) {
     return res.status(400).json({ error: 'La nota no puede estar vacia' });
@@ -763,7 +763,7 @@ exports.guardarNota = async (req, res) => {
   const envio = await cargarEnvioODevolver404(req, res);
   if (!envio) return;
   try {
-    await registrarHistorial(envio.id, usuario_id, `Nota: ${nota.trim()}`);
+    await registrarHistorial(envio.id, req.usuario.id, `Nota: ${nota.trim()}`);
     res.status(201).json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Error al guardar nota' });

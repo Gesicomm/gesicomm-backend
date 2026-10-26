@@ -22,6 +22,7 @@ const Categoria = sequelize.define('Categoria', {
     allowNull: true,
     comment: 'Auto-referencia para subcategorías. NULL = categoría raíz.',
   },
+  tienda_id: { type: DataTypes.INTEGER, allowNull: true },
   nombre: {
     type: DataTypes.STRING(150),
     allowNull: false,

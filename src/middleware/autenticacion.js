@@ -38,6 +38,9 @@ function verificarToken(req, res, next) {
       tiendaId: payload.tiendaId ?? null, // tienda activa elegida al loguearse
     };
 
+    if (req.usuario.rol === 'colaborador') {
+      return require('./accesoColaborador').accesoColaborador(req, res, next);
+    }
     next();
   } catch (err) {
     auditoria('TOKEN_INVALIDO', { ip: req.ip, error: err.message });

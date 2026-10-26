@@ -148,23 +148,27 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     // Logística
     const isPreparado = ['preparado', 'despachado', 'en tránsito', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st) || stLog === 'preparado';
     const isDespachado = ['en tránsito', 'despachado', 'reprogramado', 'entregado', 'devuelto', 'perdido'].includes(st) || ['asignado', 'despachado', 'en tránsito', 'entregado', 'devuelto', 'perdido'].includes(stLog);
-    const isEntregado = st === 'entregado' || stLog === 'entregado';
+    // La facturación y el ticket cuentan entregas por el estado operativo
+    // del pedido. El embudo debe usar exactamente ese mismo universo.
+    const isEntregado = st === 'entregado';
     const isDevuelto = ['devuelto', 'no entregado', 'fallido'].includes(st) || stLog === 'devuelto';
     const isTransito = st === 'en tránsito' || st === 'despachado' || stLog === 'despachado' || stLog === 'en tránsito';
     const isPerdido = st === 'perdido' || stLog === 'perdido';
     const isReprogramado = st === 'reprogramado' || stLog === 'reprogramado';
 
-    if (isConfirmado) confirmados++;
-    if (isCancelado && !e.es_lead) cancelados++;
-    if (isDespachado) despachados++;
-    if (isEntregado) entregados++;
-    if (isDevuelto) devueltos++;
-    if (isTransito) enTransito++;
-    if (isPerdido) perdidos++;
-    if (isReprogramado) reprogramados++;
+    if (!e.es_lead) {
+      if (isConfirmado) confirmados++;
+      if (isCancelado) cancelados++;
+      if (isDespachado) despachados++;
+      if (isEntregado) entregados++;
+      if (isDevuelto) devueltos++;
+      if (isTransito) enTransito++;
+      if (isPerdido) perdidos++;
+      if (isReprogramado) reprogramados++;
 
-    const estadoActual = e.estado || 'Pendiente';
-    if (!e.es_lead) porEstadoActual[estadoActual] = (porEstadoActual[estadoActual] || 0) + 1;
+      const estadoActual = e.estado || 'Pendiente';
+      porEstadoActual[estadoActual] = (porEstadoActual[estadoActual] || 0) + 1;
+    }
 
     // Primero el canal asignado; si el pedido todavía no fue migrado, se
     // intenta ubicar por el `origen` de texto. El guion bajo se normaliza a
@@ -179,19 +183,22 @@ async function getResumenFunnel(whereBase, canalesCatalogo = []) {
     if (isDespachado) canal.despachados++;
     if (isEntregado) canal.entregados++;
     if (isDevuelto) canal.devueltos++;
-    // El vendedor puede corregir el cálculo automático a mano (ver
-    // lead_tipo_manual en Envio.js) — su marca gana cuando existe.
-    const esLeadCampana = e.lead_tipo_manual ? e.lead_tipo_manual === 'campana' : setConLeadCampana.has(e.id);
-    if (esLeadCampana) canal.lead_campana++;
-    else canal.lead_organico++;
-    const sub = esLeadCampana ? canal.campana : canal.organico;
-    sub.total++;
-    if (isCancelado) sub.cancelados++;
-    if (isConfirmado) sub.confirmados++;
-    if (isPreparado) sub.preparados++;
-    if (isDespachado) sub.despachados++;
-    if (isEntregado) sub.entregados++;
-    if (isDevuelto) sub.devueltos++;
+    // Solo un contacto que alguien cargó en Gestión Comercial es un lead.
+    // El checkout web puede tener un MetaCampanaLead asociado para atribuir
+    // publicidad, pero eso no convierte un clic ni un pedido web en lead.
+    if (origen.includes('WHATSAPP')) {
+      const esLeadCampana = e.lead_tipo_manual ? e.lead_tipo_manual === 'campana' : setConLeadCampana.has(e.id);
+      if (esLeadCampana) canal.lead_campana++;
+      else canal.lead_organico++;
+      const sub = esLeadCampana ? canal.campana : canal.organico;
+      sub.total++;
+      if (isCancelado) sub.cancelados++;
+      if (isConfirmado) sub.confirmados++;
+      if (isPreparado) sub.preparados++;
+      if (isDespachado) sub.despachados++;
+      if (isEntregado) sub.entregados++;
+      if (isDevuelto) sub.devueltos++;
+    }
   }
 
   const pctConfirmacion = totalCreados > 0 ? Number(((confirmados / totalCreados) * 100).toFixed(1)) : 0;
@@ -275,6 +282,8 @@ function getKpisFinancieros(envios) {
   const fallidos = { envio: 0, mercaderia: 0, recupero: 0, total: 0, pedidos: 0 };
 
   for (const e of envios) {
+    // Ventas y ticket usan los mismos pedidos reales del embudo general.
+    if (e.es_lead) continue;
     const st = (e.estado || '').toLowerCase();
     const monto = Number(e.monto || 0);
     const costoEnvio = Number(e.costo_envio || 0);
@@ -859,6 +868,10 @@ function getProductosAnalytics(envios) {
     const isEntregado = st === 'entregado';
     const isDevuelto = ['devuelto', 'no entregado', 'fallido'].includes(st);
     const canal = (e.origen || 'WEB').toUpperCase();
+    // Los contactos de WhatsApp se registran en Gestión Comercial. Los
+    // eventos Contact/Lead del pixel solo prueban un clic, no una conversación.
+    const esLeadRegistrado = canal.includes('WHATSAPP');
+    const productosLeadContados = new Set();
 
     // Reparto del monto REAL del pedido entre sus líneas.
     //
@@ -978,6 +991,9 @@ function getProductosAnalytics(envios) {
             unidades_entregadas: 0,
             confirmados: 0,
             entregados: 0,
+            leads_registrados: 0,
+            leads_confirmados: 0,
+            leads_entregados: 0,
             devueltos: 0,
             facturacion_total: 0,
             costo_total: 0,
@@ -1006,6 +1022,12 @@ function getProductosAnalytics(envios) {
         }
 
         const p = mapProds[key];
+        if (esLeadRegistrado && !productosLeadContados.has(key)) {
+          productosLeadContados.add(key);
+          p.leads_registrados += 1;
+          if (isConfirmado) p.leads_confirmados += 1;
+          if (isEntregado) p.leads_entregados += 1;
+        }
         p.total_pedidos += 1;
         p.unidades_totales += (item.cantidad || 1);
         if (isConfirmado) p.confirmados += 1;
@@ -1221,7 +1243,8 @@ async function getCouriersAnalytics(whereBase, usuario_id) {
   // falta para la rendición: sin saber quién tiene la plata cobrada, no se
   // puede decir si el courier te transfiere o vos le pagás.
   const envios = await Envio.findAll({
-    where: whereBase,
+    // "Pedidos asignados" usa el mismo universo que el Resumen de Pedidos.
+    where: { ...whereBase, es_lead: false },
     attributes: ['id', 'courier_id', 'estado', 'monto', 'costo_envio', 'cargo_perdida_courier', 'estado_financiero'],
     include: [{ model: MetodoPago, attributes: ['custodia_cobro'] }],
   });
@@ -1784,6 +1807,9 @@ function getSmartInsights(funnel, kpis, productos, confirmadores, couriers) {
 // Función principal exportada
 // Se exporta para poder verificar la regla de pérdida sin base de datos.
 exports.perdidaDeItem = perdidaDeItem;
+exports.getResumenFunnel = getResumenFunnel;
+exports.getCouriersAnalytics = getCouriersAnalytics;
+exports.getProductosAnalytics = getProductosAnalytics;
 
 exports.getAnalyticsCompleto = async (filtros = {}, usuario_id, inquilino_id = null, tienda_id = null) => {
   const { desde, hasta } = resolverRangoFechas(filtros);

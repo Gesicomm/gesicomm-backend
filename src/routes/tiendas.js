@@ -16,7 +16,9 @@ const TiendaService = require('../services/tienda.service');
 
 router.get('/mias', verificarToken, async (req, res) => {
   try {
-    const tiendas = await TiendaService.listarPorUsuario(req.usuario.id);
+    const tiendas = req.usuario.rol === 'colaborador'
+      ? (await require('../services/accesos.service').listarTiendas(req.usuario.id)).map(t => ({ ...t.toJSON(), colaborador: true }))
+      : await TiendaService.listarPorUsuario(req.usuario.id);
     return res.json(tiendas);
   } catch (err) {
     console.error('[tiendas] mias:', err.message);

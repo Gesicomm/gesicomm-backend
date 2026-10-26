@@ -95,7 +95,7 @@ class McpService {
     let categoriasDb = [];
     if (tienda?.inquilino_id) {
       categoriasDb = await Categoria.findAll({
-        where: { inquilino_id: tienda.inquilino_id, activo: true },
+        where: { ...require('./categoria.service').alcance(tienda.inquilino_id, tienda.id), activo: true },
         attributes: ['id', 'nombre', 'slug', 'parent_id'],
         order: [['nombre', 'ASC']],
       });

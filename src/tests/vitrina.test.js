@@ -187,7 +187,9 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
     expect(sql).toContain('p.slug');
     expect(sql).toContain('NULL::text AS slug');
     expect(sql).toContain('cat.nombre');
-    expect(sql).toContain('cat.id = COALESCE(pu.categoria_id, p.categoria_id)');
+    expect(sql).toContain('cat.id = COALESCE(ct.categoria_id, p.categoria_id)');
+    expect(sql).toContain('ct.tienda_id = :tienda_categoria');
+    expect(sequelize.query.mock.calls[0][1].replacements.tienda_categoria).toBe(69);
     expect(sql).toContain('cat.inquilino_id = :inquilino_id');
     expect(Producto.findAll).not.toHaveBeenCalled();
     expect(ProductoCombo.findAll).not.toHaveBeenCalled();

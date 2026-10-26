@@ -9,7 +9,7 @@ const DEFAULTS = [
 
 exports.listMetodosPago = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     let metodos = await MetodoPago.findAll({ where: { usuario_id }, order: [['orden', 'ASC'], ['id', 'ASC']] });
 
     if (metodos.length === 0) {
@@ -26,7 +26,7 @@ exports.listMetodosPago = async (req, res) => {
 
 exports.createMetodoPago = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { nombre, comision_porcentaje, es_anticipado, custodia_cobro, activo, orden } = req.body;
 
     if (!nombre || !nombre.trim()) {
@@ -55,7 +55,7 @@ exports.createMetodoPago = async (req, res) => {
 
 exports.updateMetodoPago = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { id } = req.params;
     const { nombre, comision_porcentaje, es_anticipado, custodia_cobro, activo, orden } = req.body;
 
@@ -87,7 +87,7 @@ exports.updateMetodoPago = async (req, res) => {
 
 exports.deleteMetodoPago = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { id } = req.params;
 
     const metodo = await MetodoPago.findOne({ where: { id, usuario_id } });

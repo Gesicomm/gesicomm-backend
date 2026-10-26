@@ -12,13 +12,13 @@ function validarParametrosRango(body) {
 
 exports.previsualizar = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = req.comercioId || req.usuario.id;
     const error = validarParametrosRango(req.body);
     if (error) return res.status(400).json({ error });
 
     const { courier_id, fecha_desde, fecha_hasta, ajuste_manual } = req.body;
     const resultado = await liquidacionService.previsualizar({
-      courier_id, fecha_desde, fecha_hasta, usuario_id,
+      courier_id, fecha_desde, fecha_hasta, usuario_id, tienda_id: req.usuario.tiendaId,
       ajuste_manual: ajuste_manual || 0,
     });
     res.json(resultado);
@@ -30,14 +30,14 @@ exports.previsualizar = async (req, res) => {
 
 exports.confirmar = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = req.comercioId || req.usuario.id;
     const error = validarParametrosRango(req.body);
     if (error) return res.status(400).json({ error });
 
     const { courier_id, fecha_desde, fecha_hasta, ajuste_manual, observacion } = req.body;
     const liquidacion = await liquidacionService.confirmar({
-      courier_id, fecha_desde, fecha_hasta, usuario_id,
-      usuario_registro_id: usuario_id,
+      courier_id, fecha_desde, fecha_hasta, usuario_id, tienda_id: req.usuario.tiendaId,
+      usuario_registro_id: req.usuario.id,
       ajuste_manual: ajuste_manual || 0,
       observacion: observacion || null,
     });
@@ -50,7 +50,7 @@ exports.confirmar = async (req, res) => {
 
 exports.listarPorCourier = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = req.comercioId || req.usuario.id;
     const { courier_id } = req.params;
     const liquidaciones = await liquidacionService.listarPorCourier(courier_id, usuario_id);
     res.json(liquidaciones);

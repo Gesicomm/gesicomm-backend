@@ -391,18 +391,19 @@ function nombreCategoria(row) {
   return limitar(partes[partes.length - 1] || productCategory, 150);
 }
 
-async function obtenerOCrearCategoria(nombre, inquilinoId, transaction) {
+async function obtenerOCrearCategoria(nombre, inquilinoId, transaction, tiendaId = null) {
   if (!nombre) return null;
   const baseSlug = slugify(nombre, { lower: true, strict: true }) || 'categoria';
   let slug = baseSlug;
   let contador = 1;
 
   while (true) {
-    const existente = await Categoria.findOne({ where: { inquilino_id: inquilinoId, slug }, transaction });
+    const existente = await Categoria.findOne({ where: { inquilino_id: inquilinoId, tienda_id: tiendaId, nombre }, transaction });
     if (existente) return existente.id;
+    slug = await require('./categoria.service').generarSlugUnico(nombre, inquilinoId, null, transaction);
 
     try {
-      const creada = await Categoria.create({ inquilino_id: inquilinoId, nombre, slug, activo: true }, { transaction });
+      const creada = await Categoria.create({ inquilino_id: inquilinoId, tienda_id: tiendaId, nombre, slug, activo: true }, { transaction });
       return creada.id;
     } catch (err) {
       if (!err.name?.includes('Unique')) throw err;
@@ -482,7 +483,7 @@ async function importarShopify(file, contexto) {
     const t = await sequelize.transaction();
     try {
       const contenido = estructurarContenidoShopify(principal);
-      const categoriaId = await obtenerOCrearCategoria(nombreCategoria(principal), contexto.inquilinoId, t);
+      const categoriaId = await obtenerOCrearCategoria(nombreCategoria(principal), contexto.inquilinoId, t, contexto.tiendaId);
       // El proveedor (columna "Vendor" de Shopify) se guarda como FK, no solo
       // como texto dentro de ficha_datos.shopify.vendor: si no se resuelve
       // acá, el filtro por Proveedor de Mi Catálogo nunca encuentra estos

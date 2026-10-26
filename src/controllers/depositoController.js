@@ -47,7 +47,7 @@ function validarCamposObligatorios(datos) {
  * tiendaId falta solo en una cuenta sin tiendas (ver resolverTiendaActiva).
  */
 function whereDelComercio(req, extra = {}) {
-  const where = { ...extra, usuario_id: req.usuario.id };
+  const where = { ...extra, usuario_id: (req.comercioId || req.usuario.id) };
   if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
   return where;
 }
@@ -137,7 +137,7 @@ exports.obtenerPorId = async (req, res) => {
 
 exports.crear = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const datos = normalizarPayload(req.body);
 
     const faltantes = validarCamposObligatorios(datos);
@@ -245,7 +245,7 @@ exports.eliminar = async (req, res) => {
  */
 exports.listarCouriers = async (req, res) => {
   try {
-    const resultado = await DepositoCourierService.listarPorDeposito(req.params.id, req.usuario.id, req.usuario.tiendaId);
+    const resultado = await DepositoCourierService.listarPorDeposito(req.params.id, (req.comercioId || req.usuario.id), req.usuario.tiendaId);
     res.json(resultado);
   } catch (error) {
     const status = error.status || 500;
@@ -258,7 +258,7 @@ exports.listarCouriers = async (req, res) => {
 exports.reemplazarCouriers = async (req, res) => {
   try {
     const courierIds = Array.isArray(req.body?.courierIds) ? req.body.courierIds : [];
-    const resultado = await DepositoCourierService.reemplazar(req.params.id, req.usuario.id, courierIds, req.usuario.tiendaId);
+    const resultado = await DepositoCourierService.reemplazar(req.params.id, (req.comercioId || req.usuario.id), courierIds, req.usuario.tiendaId);
     res.json(resultado);
   } catch (error) {
     const status = error.status || 500;

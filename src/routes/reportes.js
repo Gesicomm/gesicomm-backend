@@ -33,7 +33,7 @@ router.post('/kpis', verificarToken, async (req, res) => {
   try {
     // req.usuario en vez de req.user
     const filtros = { ...req.body, tienda_id: req.usuario.tiendaId || null };
-    const kpis = await ReporteService.obtenerKPIs(req.usuario.id, filtros);
+    const kpis = await ReporteService.obtenerKPIs((req.comercioId || req.usuario.id), filtros);
     res.json(kpis);
   } catch (error) {
     console.error('Error al obtener KPIs:', error);
@@ -45,7 +45,7 @@ router.post('/kpis', verificarToken, async (req, res) => {
 router.post('/evolucion-ventas', verificarToken, async (req, res) => {
   try {
     const filtros = { ...req.body, tienda_id: req.usuario.tiendaId || null };
-    const data = await ReporteService.obtenerEvolucionVentas(req.usuario.id, filtros);
+    const data = await ReporteService.obtenerEvolucionVentas((req.comercioId || req.usuario.id), filtros);
     res.json(data);
   } catch (error) {
     console.error('Error al obtener evolucion ventas:', error);
@@ -58,7 +58,7 @@ router.post('/pedidos', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerPedidos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerPedidos((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener pedidos para reporte:', error);
@@ -71,7 +71,7 @@ router.post('/items', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerItemsVendidos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerItemsVendidos((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener ítems para reporte:', error);
@@ -84,7 +84,7 @@ router.post('/comisiones', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteComisiones(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteComisiones((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener comisiones:', error);
@@ -97,7 +97,7 @@ router.post('/facturacion', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteFacturacion(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteFacturacion((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de facturacion:', error);
@@ -110,7 +110,7 @@ router.post('/productos', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteProductos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteProductos((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de productos:', error);
@@ -123,7 +123,7 @@ router.post('/confirmadores', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteConfirmadores(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteConfirmadores((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de confirmadores:', error);
@@ -136,7 +136,7 @@ router.post('/composicion', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteComposicion(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteComposicion((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de composicion:', error);
@@ -150,7 +150,7 @@ router.post('/clientes', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteClientes(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteClientes((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de clientes:', error);
@@ -163,7 +163,7 @@ router.post('/metodos-pago', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteMetodosPago(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteMetodosPago((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de metodos de pago:', error);
@@ -176,7 +176,7 @@ router.post('/fallos', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteFallos(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteFallos((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de fallos:', error);
@@ -190,7 +190,7 @@ router.post('/geografia', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteGeografia(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteGeografia((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de geografia:', error);
@@ -203,7 +203,7 @@ router.post('/logistica', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteLogistica(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteLogistica((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de logistica:', error);
@@ -216,7 +216,7 @@ router.post('/cross-selling', verificarToken, async (req, res) => {
   try {
     const { pagina = 1, limite = 50, ...filtros } = req.body;
     filtros.tienda_id = req.usuario.tiendaId || null;
-    const datos = await ReporteService.obtenerReporteCrossSelling(req.usuario.id, parseInt(pagina), parseInt(limite), filtros);
+    const datos = await ReporteService.obtenerReporteCrossSelling((req.comercioId || req.usuario.id), parseInt(pagina), parseInt(limite), filtros);
     res.json(datos);
   } catch (error) {
     console.error('Error al obtener reporte de cross-selling:', error);

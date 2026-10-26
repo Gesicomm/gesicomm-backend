@@ -106,7 +106,7 @@ function normalizarZonaDelivery(t, usuarioId, couriersPermitidos) {
 
 exports.listCouriers = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id; // Asumiendo autenticación por token en req.user
+    const usuario_id = (req.comercioId || req.usuario.id); // Asumiendo autenticación por token en req.user
     const where = { usuario_id };
     if (req.usuario.tiendaId) where.tienda_id = req.usuario.tiendaId;
     const couriers = await Courier.findAll({
@@ -122,7 +122,7 @@ exports.listCouriers = async (req, res) => {
 };
 
 exports.getAccesoCourier = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const courier = await courierDelUsuario(req.params.id, usuario_id, req.usuario.tiendaId);
   if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
@@ -134,7 +134,7 @@ exports.getAccesoCourier = async (req, res) => {
 };
 
 exports.createAccesoCourier = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const courier = await courierDelUsuario(req.params.id, usuario_id, req.usuario.tiendaId);
   if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
@@ -167,7 +167,7 @@ exports.createAccesoCourier = async (req, res) => {
 };
 
 exports.updatePasswordAccesoCourier = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const courier = await courierDelUsuario(req.params.id, usuario_id, req.usuario.tiendaId);
   if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
@@ -185,7 +185,7 @@ exports.updatePasswordAccesoCourier = async (req, res) => {
 };
 
 exports.updateEstadoAccesoCourier = async (req, res) => {
-  const usuario_id = req.usuario.id;
+  const usuario_id = (req.comercioId || req.usuario.id);
   const courier = await courierDelUsuario(req.params.id, usuario_id, req.usuario.tiendaId);
   if (!courier) return res.status(404).json({ error: 'Courier no encontrado' });
 
@@ -198,7 +198,7 @@ exports.updateEstadoAccesoCourier = async (req, res) => {
 
 exports.createCourier = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { nombre, telefono, vehiculo, activo } = req.body;
 
     const courier = await Courier.create({
@@ -220,7 +220,7 @@ exports.createCourier = async (req, res) => {
 
 exports.updateCourier = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { id } = req.params;
     const { nombre, telefono, vehiculo, activo } = req.body;
 
@@ -246,7 +246,7 @@ exports.updateCourier = async (req, res) => {
 
 exports.deleteCourier = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const { id } = req.params;
 
     const where = { id, usuario_id };
@@ -264,7 +264,7 @@ exports.deleteCourier = async (req, res) => {
 
 exports.listZonasDelivery = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     res.json(await zonasDelUsuario(usuario_id, req.usuario.tiendaId));
   } catch (error) {
     console.error('Error listing delivery zones:', error);
@@ -301,7 +301,7 @@ exports.catalogoGeografico = async (req, res) => {
  */
 exports.replaceZonasDelivery = async (req, res) => {
   try {
-    const usuario_id = req.usuario.id;
+    const usuario_id = (req.comercioId || req.usuario.id);
     const tiendaId = req.usuario.tiendaId;
     const zonas = Array.isArray(req.body?.zonas) ? req.body.zonas : [];
     const whereCouriers = { usuario_id };

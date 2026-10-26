@@ -93,7 +93,7 @@ async function resolverTiendaPropia(req, res) {
     res.status(409).json({ message: 'Seleccioná una tienda antes de armar una landing.', codigo: 'TIENDA_NO_SELECCIONADA' });
     return null;
   }
-  const tienda = await Tienda.findOne({ where: { id: req.usuario.tiendaId, usuario_id: req.usuario.id } });
+  const tienda = await Tienda.findOne({ where: { id: req.usuario.tiendaId, usuario_id: (req.comercioId || req.usuario.id) } });
   if (!tienda) {
     res.status(409).json({ message: 'Todavía no tenés una tienda creada. Creála antes de armar una landing.' });
     return null;
