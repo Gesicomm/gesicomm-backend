@@ -11,6 +11,7 @@ const { verificarToken } = require('../middleware/autenticacion');
 const EncryptionService = require('../utils/EncryptionService');
 const { auditoria, logger } = require('../utils/logger');
 const service = require('../services/marcaPersonalMeta.service');
+const whatsapp = require('../services/marcaPersonalWhatsapp.service');
 
 const ORIGEN = 'https://automation.gesicomm.com';
 const PANTALLA = '/gesicomm-redes.html';
@@ -209,7 +210,10 @@ const acciones = {
   '/instagram/mensajes/enviar': (req) => service.enviarMensaje(req.usuario.id, req.body),
   '/instagram/metricas': (req) => service.metricas(req.usuario.id, req.body),
   '/instagram/metricas-publicacion': (req) => service.metricasPublicacion(req.usuario.id, req.body),
-  '/whatsapp/enviar': (req) => service.enviarWhatsapp(req.usuario.id, req.body),
+  '/whatsapp/enviar': (req) => whatsapp.enviar(req.usuario.id, req.body),
+  '/whatsapp/conversaciones': (req) => whatsapp.conversaciones(req.usuario.id, req.body),
+  '/whatsapp/mensajes': (req) => whatsapp.mensajes(req.usuario.id, req.body),
+  '/whatsapp/recepcion': (req) => whatsapp.suscribir(req.usuario.id),
   '/whatsapp/plantillas': (req) => service.plantillasWhatsapp(req.usuario.id, req.body),
   '/whatsapp/plantillas/crear': (req) => service.crearPlantilla(req.usuario.id, req.body),
 };

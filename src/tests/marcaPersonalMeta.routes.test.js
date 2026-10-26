@@ -3,6 +3,7 @@ jest.mock('../middleware/autenticacion', () => ({
   verificarToken: (req, res, next) => (req.get('x-sin-sesion') ? res.status(401).json({ message: 'No autenticado.' }) : (req.usuario = { id: 7 }, next())),
 }));
 jest.mock('../utils/logger', () => ({ auditoria: jest.fn(), logger: { error: jest.fn() } }));
+jest.mock('../services/marcaPersonalWhatsapp.service',()=>({conversaciones:jest.fn(async()=>({items:[]})),mensajes:jest.fn(async()=>({items:[]})),enviar:jest.fn(async()=>({id:'demo',guardado:true})),suscribir:jest.fn(async()=>({ok:true}))}));
 jest.mock('../services/marcaPersonalMeta.service', () => ({
   urlAutorizacion: jest.fn((state, tipo) => `https://www.facebook.com/v23.0/dialog/oauth?state=${state}&tipo=${tipo}`),
   completarWhatsapp: jest.fn(),
@@ -41,6 +42,16 @@ async function conectar(code = 'c1', stateOverride) {
 
 describe('Marca Personal · rutas de conexión', () => {
   beforeEach(() => jest.clearAllMocks());
+
+  test('la bandeja requiere sesión y origen propio y usa siempre la identidad autenticada',async()=>{
+    const wa=require('../services/marcaPersonalWhatsapp.service');
+    for(const path of ['/whatsapp/conversaciones','/whatsapp/mensajes','/whatsapp/enviar']){
+      expect((await request(app).post(BASE+path).set('Origin',ORIGEN).set('x-sin-sesion','1').send({})).status).toBe(401);
+      expect((await request(app).post(BASE+path).set('Origin','https://ajeno.test').send({})).status).toBe(403);
+    }
+    expect((await request(app).post(BASE+'/whatsapp/conversaciones').set('Origin',ORIGEN).send({usuario_id:999})).status).toBe(200);
+    expect(wa.conversaciones).toHaveBeenCalledWith(7,{usuario_id:999});
+  });
 
   test('la vuelta de Meta conecta aunque el navegador no mande la sesión', async () => {
     service.completarFacebook.mockResolvedValueOnce({ conectada: 'Mi Marca', instagram: null, permisos_faltantes: [] });

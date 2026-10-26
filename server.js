@@ -174,6 +174,7 @@ app.use((req, res, next) => (
 // ============================================================
 // 3. Parsers
 // ============================================================
+app.use('/api/webhooks/marca-personal/whatsapp', require('./src/routes/marcaPersonalWhatsappWebhook'));
 // El lienzo en blanco manda el HTML/CSS/JS entero de una landing en el
 // body — con 10kb no entra ni una página chica. Se declara ANTES del
 // parser global: body-parser marca req._body al parsear, así que el de

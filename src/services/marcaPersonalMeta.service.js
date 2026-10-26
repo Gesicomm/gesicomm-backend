@@ -617,6 +617,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   }
 
   return {
+    async contextoWhatsapp(usuario){const account=await marca(usuario);return {...await conexionLista(account,'whatsapp'),account};},
     estado, urlAutorizacion, completarFacebook, paginasDe, confirmarPagina, desconectar,
     completarWhatsapp, numerosWhatsapp, confirmarWhatsapp, enviarWhatsapp, plantillasWhatsapp, crearPlantilla,
     subirMedio, publicarInstagram, avanzar, publicarFacebook, historial, publicaciones,
