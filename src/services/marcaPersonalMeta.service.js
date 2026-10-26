@@ -227,14 +227,21 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const cuentas = [...new Set((debug.data?.granular_scopes || [])
       .filter((s) => s.scope === 'whatsapp_business_management' || s.scope === 'whatsapp_business_messaging')
       .flatMap((s) => s.target_ids || []).map(String))];
+    const fallos = [];
+    let portafolios = 0;
     if (cuentas.length === 0) {
-      const bms = await g().facebook('me/businesses', { token: pendiente.token, params: { fields: 'id', limit: 50 } }).catch(() => ({ data: [] }));
+      const bms = await g().facebook('me/businesses', { token: pendiente.token, params: { fields: 'id', limit: 50 } }).catch((e) => { fallos.push(e.message); return { data: [] }; });
+      portafolios = (bms.data || []).length;
       for (const bm of bms.data || []) {
         for (const borde of ['owned_whatsapp_business_accounts', 'client_whatsapp_business_accounts']) {
-          const r = await g().facebook(`${idMeta(bm.id, 'Portafolio')}/${borde}`, { token: pendiente.token, params: { fields: 'id', limit: 50 } }).catch(() => ({ data: [] }));
+          const r = await g().facebook(`${idMeta(bm.id, 'Portafolio')}/${borde}`, { token: pendiente.token, params: { fields: 'id', limit: 50 } }).catch((e) => { fallos.push(e.message); return { data: [] }; });
           for (const w of r.data || []) if (!cuentas.includes(String(w.id))) cuentas.push(String(w.id));
         }
       }
+    }
+    if (cuentas.length === 0) {
+      // Sin ids ni tokens: qué permisos concedió Meta y por qué no apareció ninguna cuenta.
+      logger.error({ mensaje: 'Marca Personal WhatsApp sin cuentas', permisos: (debug.data?.granular_scopes || []).map((s) => `${s.scope}:${(s.target_ids || []).length}`), portafolios, fallos });
     }
     const numeros = [];
     for (const waba of cuentas) {
