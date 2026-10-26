@@ -1139,7 +1139,9 @@ class ReporteService {
     where[Op.and] = [Envio.sequelize.where(literal(this.getClienteKeySql()), cliente_key)];
     const envios = await Envio.findAll({
       where,
-      attributes: ['id', 'numero_pedido', 'tienda_id', 'fecha', 'estado', 'monto', 'costo_envio', 'delivery_a_cargo',
+      // numero_pedido_tienda y usuario_id: sin ellos adjuntarIdentificadores
+      // no puede armar "SOM-1047" y la ficha mostraba "—" en cada pedido.
+      attributes: ['id', 'numero_pedido', 'numero_pedido_tienda', 'usuario_id', 'tienda_id', 'fecha', 'estado', 'monto', 'costo_envio', 'delivery_a_cargo',
         'cliente', 'telefono', 'ciudad', 'departamento', 'direccion', 'metodo_pago', 'motivo_devolucion'],
       include: [{ model: EnvioItem, as: 'items', attributes: ['id', 'nombre_producto', 'cantidad'] }],
       order: [['fecha', 'DESC'], ['id', 'DESC']],

@@ -71,17 +71,52 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
 
   test('cuenta los productos de la tienda sin ganancia y los filtra en SQL', async () => {
     sequelize.query.mockImplementation(async (sql) => {
-      if (sql.includes('FROM landing_items li') && sql.includes('COUNT(*) AS total')) return [{ total: '9' }];
+      if (sql.includes('AS seleccion')) return [{ id: 300, seleccion: 'manual', categorias: null }];
+      if (sql.includes('COUNT(*) AS total')) return [{ total: '9' }];
       if (sql.includes('COUNT(*) as total')) return [{ total: 0 }];
       return [];
     });
     const resultado = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { filtroMargen: 'sin_ganancia' }, false, 69);
     expect(resultado.sin_ganancia_en_tienda).toBe(9);
-    const [conteo, datos] = sequelize.query.mock.calls.map(([sql]) => sql);
+    const llamadas = sequelize.query.mock.calls.map(([sql, op]) => ({ sql, op }));
+    const datos = llamadas.find(c => c.sql.includes('LIMIT :limit')).sql;
+    const conteo = llamadas.find(c => c.sql.includes('COUNT(*) AS total'));
     // El filtro va en la consulta (backend), solo sobre productos.
     expect(datos).toMatch(/COALESCE\(pu\.precio, p\.precio_base\) <=/);
     expect(datos).not.toMatch(/producto_combos/);
-    expect(conteo).toMatch(/COALESCE\(pu\.precio, p\.precio_base\) <=/);
+    // Selección manual: publicado = landing_items de la landing de la regla.
+    expect(conteo.sql).toMatch(/li\.landing_id = :landing_regla_id/);
+    expect(conteo.op.replacements.landing_regla_id).toBe(300);
+    // La regla se lee una vez, no por producto.
+    expect(llamadas.filter(c => c.sql.includes('AS seleccion'))).toHaveLength(1);
+    sequelize.query.mockReset();
+  });
+
+  test('con la regla "todos" cuenta todo lo visible de la tienda', async () => {
+    sequelize.query.mockImplementation(async (sql) => {
+      if (sql.includes('AS seleccion')) return [{ id: 300, seleccion: 'todos' }];
+      if (sql.includes('COUNT(*) AS total')) return [{ total: '3390' }];
+      if (sql.includes('COUNT(*) as total')) return [{ total: 0 }];
+      return [];
+    });
+    const r = await PrecioUsuarioService.listarCatalogoPaginado(42, 1, {}, false, 69);
+    expect(r.sin_ganancia_en_tienda).toBe(3390);
+    const conteo = sequelize.query.mock.calls.map(([sql]) => sql).find(sql => sql.includes('COUNT(*) AS total'));
+    expect(conteo).not.toMatch(/landing_items/);
+    sequelize.query.mockReset();
+  });
+
+  test('con la regla por categoría cuenta solo esas categorías', async () => {
+    sequelize.query.mockImplementation(async (sql) => {
+      if (sql.includes('AS seleccion')) return [{ id: 300, seleccion: 'categoria', categorias: ['Muebles', 'Mascotas'] }];
+      if (sql.includes('COUNT(*) AS total')) return [{ total: '2' }];
+      if (sql.includes('COUNT(*) as total')) return [{ total: 0 }];
+      return [];
+    });
+    await PrecioUsuarioService.listarCatalogoPaginado(42, 1, {}, false, 69);
+    const conteo = sequelize.query.mock.calls.find(([sql]) => sql.includes('COUNT(*) AS total'));
+    expect(conteo[0]).toMatch(/cr\.nombre IN \(:categorias_regla\)/);
+    expect(conteo[1].replacements.categorias_regla).toEqual(['Muebles', 'Mascotas']);
     sequelize.query.mockReset();
   });
 
@@ -348,15 +383,18 @@ describe('PrecioUsuarioService.listarCatalogoPaginado', () => {
   });
 
   test('En mi landing se filtra en SQL antes de paginar', async () => {
-    sequelize.query.mockResolvedValueOnce([{ total: 0 }]).mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    // Primero se lee la regla de publicación de la tienda (aviso "sin ganancia").
+    sequelize.query.mockImplementation(async (sql) => (sql.includes('COUNT(*) as total') ? [{ total: 0 }] : []));
 
     await PrecioUsuarioService.listarCatalogoPaginado(42, 1, { tipo: 'landing' }, false, 7);
 
-    const countSql = sequelize.query.mock.calls[0][0];
-    const dataSql = sequelize.query.mock.calls[1][0];
-    const categoriasSql = sequelize.query.mock.calls[2][0];
-    const proveedoresSql = sequelize.query.mock.calls[3][0];
+    // Cada consulta se identifica por su contenido, no por el orden: también
+    // corren la lectura de la regla y el conteo "sin ganancia".
+    const sqls = sequelize.query.mock.calls.map(([sql]) => sql);
+    expect(sqls[0]).toContain('AS seleccion');
+    const countSql = sqls.find(q => q.includes('COUNT(*) as total'));
+    const dataSql = sqls.find(q => q.includes('LIMIT :limit OFFSET :offset'));
+    const [categoriasSql, proveedoresSql] = sqls.filter(q => q.includes('FROM landing_items li') && q !== countSql && q !== dataSql);
 
     for (const sql of [countSql, dataSql]) {
       expect(sql).toContain('FROM landing_items li');

@@ -27,6 +27,8 @@ test('trae los pedidos del cliente en la tienda activa, sin leads', async () => 
   expect(condicion.der).toBe('TEL:595992820631');
   expect(String(condicion.izq.val)).toContain("'TEL:'");
   expect(opciones.limit).toBe(50);
+  // Sin el correlativo por tienda el número visible sale "—".
+  expect(opciones.attributes).toEqual(expect.arrayContaining(['numero_pedido_tienda', 'tienda_id']));
 });
 
 test('rechaza claves que no salen del reporte', async () => {

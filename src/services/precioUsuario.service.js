@@ -516,6 +516,35 @@ class PrecioUsuarioService {
         l.id DESC
       LIMIT 1
     `;
+    // "Publicado en la tienda" igual que la tienda pública: con la regla
+    // "todos" vende todo lo visible; con "categoria", las categorías elegidas
+    // (por nombre); con selección manual, lo que está en landing_items.
+    // Contar solo landing_items daba "1 producto" en una tienda con "todos".
+    // La regla se lee UNA vez: resolverla dentro de la consulta convertía el
+    // content de la landing (con todo su HTML) a JSON por cada producto y el
+    // catálogo tardaba 16 s.
+    const necesitaRegla = tiendaId != null && (soloSinGanancia || (pagina === 1 && !liviano));
+    let publicadoEnTiendaSql = 'FALSE';
+    if (necesitaRegla) {
+      const [regla] = await sequelize.query(
+        `SELECT l.id, l.content->'venta'->>'seleccion' AS seleccion, l.content->'venta'->'categorias' AS categorias
+         FROM landings l WHERE l.id = (${landingActualSql})`,
+        { replacements, type: sequelize.QueryTypes.SELECT },
+      );
+      if (regla?.seleccion === 'todos') {
+        publicadoEnTiendaSql = 'TRUE';
+      } else if (regla?.seleccion === 'categoria') {
+        const categoriasRegla = (Array.isArray(regla.categorias) ? regla.categorias : []).filter(c => typeof c === 'string');
+        replacements.categorias_regla = categoriasRegla.length ? categoriasRegla : ['__ninguna__'];
+        publicadoEnTiendaSql = `p.categoria_id IN (SELECT cr.id FROM categorias cr
+          WHERE cr.inquilino_id = :inquilino_id AND cr.nombre IN (:categorias_regla))`;
+      } else if (regla?.id) {
+        replacements.landing_regla_id = regla.id;
+        publicadoEnTiendaSql = `EXISTS (SELECT 1 FROM landing_items li
+          WHERE li.landing_id = :landing_regla_id AND li.tipo = 'producto' AND li.referencia_id = p.id)`;
+      }
+    }
+
     const landingProductoFilter = landingOnly
       ? `AND EXISTS (
           SELECT 1
@@ -550,7 +579,7 @@ class PrecioUsuarioService {
       ${provFilter}
       ${marcaFilter}
       ${stockFilter}
-      ${soloSinGanancia ? `AND ${sinGananciaSql}` : ''}
+      ${soloSinGanancia ? `AND ${sinGananciaSql} AND ${publicadoEnTiendaSql}` : ''}
       ${searchFilter.replace(/c\./g, 'p.').replace(/descripcion/g, 'descripcion_corta')}
     `;
 
@@ -635,12 +664,7 @@ class PrecioUsuarioService {
         ${this.visibilidadCatalogoSql(esAdmin, false)}
         ${tiendaFilter}
         AND ${sinGananciaSql}
-        AND EXISTS (
-          SELECT 1 FROM landing_items li
-          WHERE li.landing_id = (${landingActualSql})
-            AND li.tipo = 'producto'
-            AND li.referencia_id = p.id
-        )
+        AND ${publicadoEnTiendaSql}
     ` : null;
 
     const [countResult, paginatedItems, administradoresIds, sinGananciaResult] = await Promise.all([
