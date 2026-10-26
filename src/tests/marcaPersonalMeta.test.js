@@ -80,7 +80,7 @@ describe('Marca Personal · Instagram y Facebook', () => {
     const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
     const r = await svc.completarFacebook(7, 'code');
     expect(r).toMatchObject({ conectada: 'Mi Marca', instagram: 'mimarca' });
-    expect(r.permisos_faltantes).toContain('instagram_content_publish');
+    expect(r.permisos_faltantes).toEqual(['pages_read_engagement', 'pages_manage_posts']);
     expect(store.filas.map((c) => [c.plataforma, c.external_id, c.meta_user_id])).toEqual([['facebook', '300', '900'], ['instagram', '1789', '900']]);
     for (const c of store.filas) {
       expect(c.access_token).not.toContain('token-pagina');

@@ -15,18 +15,9 @@ const crypto = require('crypto');
 const { MarcaPersonalError } = require('./marcaPersonal.client');
 const EncryptionService = require('../utils/EncryptionService');
 
-const SCOPES = [
-  'pages_show_list',
-  'pages_read_engagement',
-  'pages_manage_posts',
-  // Requerido por Meta para leer y responder mensajes de Instagram con token de Página.
-  'pages_manage_metadata',
-  'instagram_basic',
-  'instagram_content_publish',
-  'instagram_manage_comments',
-  'instagram_manage_messages',
-  'instagram_manage_insights',
-];
+// Solo los permisos de Página que la app tiene pedidos en Meta. Los de Instagram de la app son
+// instagram_business_*, que el inicio de sesión de Facebook rechaza: Instagram no se vincula por acá.
+const SCOPES = ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'];
 // WhatsApp se conecta con su propio inicio de sesión: solo pide lo de WhatsApp.
 const SCOPES_WHATSAPP = ['whatsapp_business_management', 'whatsapp_business_messaging'];
 const IDIOMAS_PLANTILLA = ['es', 'es_AR', 'es_MX', 'es_ES', 'en_US', 'pt_BR'];
@@ -178,7 +169,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
   }
 
   async function paginasDe(pendiente) {
-    const r = await g().facebook('me/accounts', { token: pendiente.token, params: { fields: 'id,name,tasks,instagram_business_account{id,username}', limit: 100 } });
+    const r = await g().facebook('me/accounts', { token: pendiente.token, params: { fields: 'id,name,tasks', limit: 100 } });
     return (r.data || []).map((p) => ({
       id: String(p.id), nombre: p.name, puede_publicar: (p.tasks || []).includes('CREATE_CONTENT'),
       instagram: p.instagram_business_account?.username || null,
@@ -189,7 +180,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const account = await marca(usuario);
     const id = idMeta(pageId, 'Página');
     // El token de Página sale de nuevo de Meta: el navegador nunca lo envía.
-    const pagina = await g().facebook(id, { token: pendiente.token, params: { fields: 'id,name,access_token,tasks,instagram_business_account{id,username,name}' } });
+    const pagina = await g().facebook(id, { token: pendiente.token, params: { fields: 'id,name,access_token,tasks' } });
     if (String(pagina.id) !== id || !pagina.access_token) throw error('Tu usuario no puede administrar esa Página.', 403);
     const permisos = ((await g().facebook('me/permissions', { token: pendiente.token })).data || [])
       .filter((p) => p.status === 'granted').map((p) => p.permission);
