@@ -1,5 +1,6 @@
 jest.mock('../middleware/autenticacion', () => ({
-  verificarToken: (req, _res, next) => { req.usuario = { id: 7 }; next(); },
+  // x-sin-sesion simula la vuelta desde facebook.com, sin la cookie de sesión.
+  verificarToken: (req, res, next) => (req.get('x-sin-sesion') ? res.status(401).json({ message: 'No autenticado.' }) : (req.usuario = { id: 7 }, next())),
 }));
 jest.mock('../utils/logger', () => ({ auditoria: jest.fn(), logger: { error: jest.fn() } }));
 jest.mock('../services/marcaPersonalMeta.service', () => ({
@@ -40,6 +41,23 @@ async function conectar(code = 'c1', stateOverride) {
 
 describe('Marca Personal · rutas de conexión', () => {
   beforeEach(() => jest.clearAllMocks());
+
+  test('la vuelta de Meta conecta aunque el navegador no mande la sesión', async () => {
+    service.completarFacebook.mockResolvedValueOnce({ conectada: 'Mi Marca', instagram: null, permisos_faltantes: [] });
+    const inicio = await request(app).get(BASE + '/facebook/conectar').set('Origin', ORIGEN);
+    const state = new URL(inicio.headers.location).searchParams.get('state');
+    const vuelta = await request(app).get(`${BASE}/facebook/callback?code=c&state=${state}`)
+      .set('Origin', ORIGEN).set('x-sin-sesion', '1').set('Cookie', cookies(inicio));
+    expect(vuelta.status).toBe(302);
+    expect(vuelta.headers.location).toBe('/gesicomm-redes.html');
+    expect(service.completarFacebook).toHaveBeenCalledWith(7, 'c');
+    // Sin la cookie de conexión no se usa el code ni se habla con Meta.
+    const ajena = await request(app).get(`${BASE}/facebook/callback?code=c&state=${state}`).set('Origin', ORIGEN).set('x-sin-sesion', '1');
+    expect(ajena.status).toBe(302);
+    expect(service.completarFacebook).toHaveBeenCalledTimes(1);
+    // El resto de las rutas sigue pidiendo sesión.
+    expect((await request(app).get(BASE + '/estado').set('Origin', ORIGEN).set('x-sin-sesion', '1')).status).toBe(401);
+  });
 
   test('rechaza pedidos que no vienen del proxy de Marca Personal', async () => {
     expect((await request(app).get(BASE + '/estado')).status).toBe(403);

@@ -28,7 +28,7 @@ function abrir(req, nombre) {
   if (!crudo) return null;
   try {
     const d = JSON.parse(EncryptionService.decrypt(crudo));
-    return d.exp > Date.now() && d.usuario === req.usuario.id ? d : null;
+    return d.exp > Date.now() && (!req.usuario || d.usuario === req.usuario.id) ? d : null;
   } catch { return null; }
 }
 const avisar = (res, usuario, tipo, texto) => res.cookie(COOKIES.aviso, sellar({ usuario, tipo, texto }, 5), { ...COOKIE_OPTS, maxAge: 5 * 60000 });
@@ -40,7 +40,20 @@ router.use((req, res, next) => {
   if (req.get('origin') !== ORIGEN) return res.status(403).json({ message: 'Origen no permitido.' });
   next();
 });
-router.use(verificarToken);
+// La vuelta de Meta es una navegación desde facebook.com: el navegador no manda la
+// cookie de sesión (SameSite estricta) y no hay Authorization. El usuario sale de la
+// cookie cifrada que se fijó al iniciar la conexión, ligada al state.
+router.use((req, res, next) => {
+  if (req.method !== 'GET' || req.path !== '/facebook/callback') return verificarToken(req, res, next);
+  const oauth = abrir(req, COOKIES.oauth);
+  if (!oauth) {
+    res.clearCookie(COOKIES.oauth, COOKIE_OPTS);
+    return res.redirect(PANTALLA);
+  }
+  req.usuario = { id: oauth.usuario };
+  req.oauthMeta = oauth;
+  next();
+});
 router.use(rateLimit({ windowMs: 60000, max: 90, keyGenerator: (req) => String(req.usuario.id), standardHeaders: true, legacyHeaders: false }));
 
 const subida = multer({ storage: multer.memoryStorage(), limits: { fileSize: 90 * 1024 * 1024, files: 1 } });
@@ -90,7 +103,7 @@ const conFaltantes = (r) => textoConectada(r) + (r.permisos_faltantes?.length
   ? ` Faltan permisos (${r.permisos_faltantes.join(', ')}): algunas funciones no van a estar disponibles. Podés reconectar y aceptarlos.` : '');
 
 router.get('/facebook/callback', async (req, res) => {
-  const oauth = abrir(req, COOKIES.oauth);
+  const oauth = req.oauthMeta;
   res.clearCookie(COOKIES.oauth, COOKIE_OPTS);
   try {
     if (req.query.error) throw Object.assign(new Error('Cancelaste la autorización en Meta. No se conectó nada.'), { status: 400 });
