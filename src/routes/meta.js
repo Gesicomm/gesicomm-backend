@@ -443,32 +443,24 @@ router.post('/filters', verificarToken, async (req, res) => {
 
         const accessToken = EncryptionService.decrypt(integracion.access_token);
 
-        // Portafolios (Business Managers)
-        const bmUrl = `https://graph.facebook.com/${FB_API_VERSION}/me/businesses?access_token=${accessToken}&fields=id,name`;
-        const bmData = await fetchMeta(bmUrl);
-
-        const businesses = bmData.data || [];
-
-        // Por cada BM, obtener SOLO las cuentas que le pertenecen (owned)
-        // Esto excluye cuentas compartidas en Read-Only y cuentas personales
-        const adAccounts = [];
-        for (const bm of businesses) {
-            try {
-                const ownedUrl = `https://graph.facebook.com/${FB_API_VERSION}/${bm.id}/owned_ad_accounts?access_token=${accessToken}&fields=id,name,account_status,currency&limit=50`;
-                const ownedData = await fetchMeta(ownedUrl);
-                if (ownedData.data) {
-                    ownedData.data.forEach(ad => {
-                        ad.business = { id: bm.id, name: bm.name };
-                        adAccounts.push(ad);
-                    });
-                }
-            } catch (err) {
-                console.log(`No se pudieron leer owned_ad_accounts para BM ${bm.id}:`, err.message);
-            }
+        // Cada conexión ya guarda el BM elegido. Consultar todos los BM del
+        // usuario en serie demoraba la pantalla y mostraba tiendas ajenas.
+        if (!integracion.business_id) {
+            return res.status(400).json({ message: 'La conexión no tiene un portafolio de Meta asociado. Volvé a conectarla.' });
         }
+        const business = {
+            id: String(integracion.business_id),
+            name: integracion.business_name || integracion.nombre || 'Portafolio conectado'
+        };
+        const ownedUrl = `https://graph.facebook.com/${FB_API_VERSION}/${business.id}/owned_ad_accounts?access_token=${accessToken}&fields=id,name,account_status,currency&limit=100`;
+        const ownedData = await fetchMeta(ownedUrl);
+        const adAccounts = (ownedData.data || []).map((ad) => ({
+            ...ad,
+            business: { id: business.id, name: business.name }
+        }));
 
         return res.json({
-            businesses: businesses,
+            businesses: [business],
             ad_accounts: adAccounts,
         });
     } catch (err) {
@@ -583,13 +575,12 @@ router.post('/campaigns', verificarToken, async (req, res) => {
 
         // Consultar la moneda de la cuenta para saber si el presupuesto viene multiplicado por 100 (USD) o no (PYG)
         const accUrl = `https://graph.facebook.com/${FB_API_VERSION}/${targetAdAccount}?access_token=${accessToken}&fields=currency`;
-        const accData = await fetchMeta(accUrl);
+        const [accData, campsData] = await Promise.all([fetchMeta(accUrl), fetchMeta(campsUrl)]);
         const currency = accData.currency || 'USD';
         // Monedas que Facebook NO multiplica por 100 en la API (sin centavos)
         const zeroDecimalCurrencies = ['PYG', 'CLP', 'COP', 'JPY', 'KRW', 'VND', 'IDR'];
         const divisor = zeroDecimalCurrencies.includes(currency) ? 1 : 100;
 
-        const campsData = await fetchMeta(campsUrl);
         const campaignsResult = [];
 
         if (campsData.data) {

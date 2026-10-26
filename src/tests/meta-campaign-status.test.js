@@ -25,7 +25,7 @@ const graphResponse = (body) => ({ ok: true, json: async () => body });
 
 beforeEach(() => {
   jest.clearAllMocks();
-  MetaIntegration.findOne.mockResolvedValue({ id: 7, business_id: '10', access_token: 'cifrado' });
+  MetaIntegration.findOne.mockResolvedValue({ id: 7, business_id: '10', business_name: 'BM elegido', access_token: 'cifrado' });
   global.fetch = jest.fn()
     .mockResolvedValueOnce(graphResponse({ id: 'act_123', business: { id: '10' } }))
     .mockResolvedValueOnce(graphResponse({ id: '456', account_id: '123', status: 'ACTIVE' }))
@@ -37,6 +37,16 @@ test('el flujo de conexión solicita ads_management', async () => {
   expect(res.status).toBe(302);
   const url = new URL(res.headers.location);
   expect(url.searchParams.get('scope').split(',')).toEqual(['ads_read', 'ads_management', 'business_management']);
+});
+
+test('los filtros consultan solo el BM guardado y sus cuentas', async () => {
+  global.fetch = jest.fn().mockResolvedValue(graphResponse({ data: [{ id: 'act_123', name: 'Cuenta de prueba' }] }));
+  const res = await request(app).post('/api/meta/filters').send({ store_id: 7 });
+  expect(res.status).toBe(200);
+  expect(res.body.businesses).toEqual([{ id: '10', name: 'BM elegido' }]);
+  expect(res.body.ad_accounts).toEqual([{ id: 'act_123', name: 'Cuenta de prueba', business: { id: '10', name: 'BM elegido' } }]);
+  expect(global.fetch).toHaveBeenCalledTimes(1);
+  expect(global.fetch.mock.calls[0][0]).toContain('/10/owned_ad_accounts');
 });
 
 test('solo colaboradores que gestionan Publicidad pueden cambiar el estado', () => {
