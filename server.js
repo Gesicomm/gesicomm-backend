@@ -266,6 +266,7 @@ app.use('/api/landing-templates', landingTemplatesRoutes);
 app.use('/api/mi-tienda', tiendaRoutes);
 app.use('/api/tiendas', tiendasRoutes);
 app.use('/api/educacion', educacionRoutes);
+app.use('/api/tutoriales', require('./src/routes/tutorialesSistema'));
 app.use('/api/admin/educacion', adminEducacionRoutes);
 app.use('/api/admin/auth-tracking', adminAuthTrackingRoutes);
 app.use('/api/publico', publicoRoutes);
@@ -440,6 +441,13 @@ sequelize.authenticate().then(async () => {
     await require('./migrations/20261019120000-partner-certificado').up(sequelize.getQueryInterface());
   } catch (error) {
     logger.error('No se puede iniciar sin las solicitudes de Partner Certificado:', error);
+    process.exit(1);
+  }
+
+  try {
+    await require('./migrations/20261027090000-tutoriales-sistema').up(sequelize.getQueryInterface(), require('sequelize'));
+  } catch (error) {
+    logger.error('No se puede iniciar sin la tabla de tutoriales del sistema:', error);
     process.exit(1);
   }
 
