@@ -14,6 +14,13 @@ test('lista los destinos de e-commerce y Mi negocio con los videos guardados', a
   expect(resultado.videos['ecommerce.inicio']).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
 });
 
+test('ofrece un destino de video para cada modulo del menu del usuario', () => {
+  const modulos = ['negocio', 'depositos', 'productos', 'clientes', 'ecommerce', 'publicidad', 'comercial', 'logistica', 'dashboard_operativo', 'dashboard_general', 'finanzas', 'importacion', 'afiliados', 'partner', 'academia', 'configuracion'];
+  for (const modulo of modulos) {
+    expect(Service.SECCIONES.some(seccion => seccion.clave === `modulo.${modulo}`)).toBe(true);
+  }
+});
+
 test('normaliza YouTube y guarda solo destinos conocidos', async () => {
   const resultado = await Service.guardar('ecommerce.inicio', 'https://youtu.be/dQw4w9WgXcQ?t=20', 31);
   expect(resultado.url).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ');

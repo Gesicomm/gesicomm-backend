@@ -1,6 +1,8 @@
 const TutorialSistema = require('../models/TutorialSistema');
 
 const SECCIONES = Object.freeze([
+  { clave: 'modulo.negocio', grupo: 'Mi negocio', nombre: 'Introducción' },
+  { clave: 'modulo.ecommerce', grupo: 'E-commerce', nombre: 'Introducción' },
   { clave: 'ecommerce.inicio', grupo: 'E-commerce', nombre: 'Inicio' },
   { clave: 'ecommerce.categoria', grupo: 'E-commerce', nombre: 'Categorías' },
   { clave: 'ecommerce.producto', grupo: 'E-commerce', nombre: 'Vista producto' },
@@ -12,6 +14,20 @@ const SECCIONES = Object.freeze([
   { clave: 'mi-negocio.economica', grupo: 'Mi negocio', nombre: 'Costos' },
   { clave: 'mi-negocio.analitica', grupo: 'Mi negocio', nombre: 'Analítica' },
   { clave: 'mi-negocio.raha', grupo: 'Mi negocio', nombre: 'Conexión a proveedor' },
+  { clave: 'modulo.depositos', grupo: 'Depósitos', nombre: 'Introducción' },
+  { clave: 'modulo.productos', grupo: 'Productos', nombre: 'Introducción' },
+  { clave: 'modulo.clientes', grupo: 'Clientes', nombre: 'Introducción' },
+  { clave: 'modulo.publicidad', grupo: 'Publicidad', nombre: 'Introducción' },
+  { clave: 'modulo.comercial', grupo: 'Gestión Comercial', nombre: 'Introducción' },
+  { clave: 'modulo.logistica', grupo: 'Gestión Logística', nombre: 'Introducción' },
+  { clave: 'modulo.dashboard_operativo', grupo: 'Dashboard Operativo', nombre: 'Introducción' },
+  { clave: 'modulo.dashboard_general', grupo: 'Dashboard General', nombre: 'Introducción' },
+  { clave: 'modulo.finanzas', grupo: 'Control Financiero', nombre: 'Introducción' },
+  { clave: 'modulo.importacion', grupo: 'Proveete con Gesicom', nombre: 'Introducción' },
+  { clave: 'modulo.afiliados', grupo: 'Quiero ser afiliado', nombre: 'Introducción' },
+  { clave: 'modulo.partner', grupo: 'Partner certificado', nombre: 'Introducción' },
+  { clave: 'modulo.academia', grupo: 'Academia', nombre: 'Introducción' },
+  { clave: 'modulo.configuracion', grupo: 'Configuración', nombre: 'Introducción' },
 ]);
 const error = (message, status = 400) => Object.assign(new Error(message), { status });
 
