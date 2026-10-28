@@ -72,7 +72,7 @@ function regla(req) {
 }
 
 async function accesoColaborador(req, res, next) {
-  const { Usuario, Tienda, Envio, Courier, MetodoPago } = require('../models');
+  const { Usuario, Rol, Tienda, Envio, Courier, MetodoPago } = require('../models');
   const Miembro = require('../models/TiendaMiembro');
   try {
     const persona = await Usuario.findByPk(req.usuario.id);
@@ -94,9 +94,12 @@ async function accesoColaborador(req, res, next) {
       req.usuario.accesos = miembro.permisos;
       req.comercioId = tienda.usuario_id;
       req.usuario.propietarioId = tienda.usuario_id;
-      const propietario = await Usuario.findByPk(tienda.usuario_id, { attributes: ['inquilino_id'] });
+      const propietario = await Usuario.findByPk(tienda.usuario_id, {
+        attributes: ['inquilino_id'], include: [{ model: Rol, attributes: ['nombre'] }],
+      });
       if (!propietario) return res.status(403).json({ message: 'Tienda no disponible.' });
       req.usuario.tenantId = propietario.inquilino_id;
+      req.usuario.propietarioAdministrador = propietario.Rol?.nombre === 'administrador';
       // No conceder permisos globales del propietario.
       req.usuario.permisos = permisosLegacy(miembro.permisos);
       if (!regla(req)) return res.status(403).json({ message: 'No tenés permiso para esta acción.' });

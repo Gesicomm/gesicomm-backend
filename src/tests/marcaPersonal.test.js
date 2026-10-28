@@ -78,7 +78,7 @@ test.each([
   [true,true,'administrador',null,true],
 ])('valida activo=%s, verificado=%s, rol=%s y plan=%s',async(activo,email_verificado,rol,plan,enabled)=>{
   Usuario.findByPk.mockResolvedValue({id:41,nombre:'Prueba',correo_electronico:'real@example.test',activo,email_verificado,Rol:{nombre:rol}});
-  subscriptions.suscripcionActivaDeUsuario.mockResolvedValue(plan?{Plan:{equivale_plan:plan}}:null);
+  subscriptions.suscripcionActivaDeUsuario.mockResolvedValue(plan?{estado:'activa',Plan:{equivale_plan:plan,acceso_rutas:'ambas'},ruta_acceso:'ambas'}:null);
   expect((await service.identity(41)).enabled).toBe(enabled);
 });
 
@@ -106,4 +106,11 @@ test('usa la identidad firmada, ignora un usuario enviado en el body y evita cac
   const response=await request(app).post('/sso/session').set('Origin',origin).set('Cookie','accessToken='+token).send({user_id:99});
   expect(response.status).toBe(200); expect(service.openSession).toHaveBeenCalledWith(41);
   expect(response.headers['cache-control']).toContain('no-store');
+});
+
+
+test.each([['fisico',false],['personal',true],['ambas',true]])('Marca Personal exige la ruta %s: habilitado=%s',async(ruta,enabled)=>{
+ Usuario.findByPk.mockResolvedValue({id:41,nombre:'Prueba',activo:true,email_verificado:true,Rol:{nombre:'usuario'}});
+ subscriptions.suscripcionActivaDeUsuario.mockResolvedValue({estado:'activa',ruta_acceso:ruta,Plan:{equivale_plan:'pago',acceso_rutas:ruta}});
+ expect((await service.identity(41)).enabled).toBe(enabled);
 });

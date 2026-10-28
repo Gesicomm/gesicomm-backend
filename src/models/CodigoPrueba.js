@@ -5,6 +5,7 @@ module.exports = sequelize.define('CodigoPrueba', {
   id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
   codigo: { type: DataTypes.STRING(40), allowNull: false, unique: true },
   dias: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1, max: 365 } },
+  ruta_acceso: { type: DataTypes.STRING(12), allowNull: true, validate: { isIn: [['fisico', 'personal', 'ambas']] } },
   plan_id: { type: DataTypes.INTEGER, allowNull: false },
   creado_por: { type: DataTypes.INTEGER, allowNull: false },
   email: { type: DataTypes.STRING(255), allowNull: true },

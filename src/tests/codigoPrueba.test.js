@@ -61,3 +61,19 @@ test('genera un código con duración y destinatario elegidos por el admin', asy
   expect(resultado.codigo).toMatch(/^GESI-[A-F0-9]{16}$/);
   expect(resultado).toMatchObject({ dias: 14, creado_por: 9, email: 'ana@example.test', plan_id: 3 });
 });
+
+
+test.each(['fisico','personal'])('el código conserva el acceso elegido a %s', async ruta => {
+  Plan.findOne.mockResolvedValue({id:3,equivale_plan:'pago',acceso_rutas:'elegir'});
+  CodigoPrueba.create.mockImplementation(async data => data);
+  const creado = await Service.crear({dias:20,plan_id:3,ruta_acceso:ruta},9);
+  expect(creado.ruta_acceso).toBe(ruta);
+  codigo.ruta_acceso = ruta;
+  await Service.canjear(codigo.codigo,usuario,transaction);
+  expect(Suscripcion.create).toHaveBeenCalledWith(expect.objectContaining({ruta_acceso:ruta}),expect.anything());
+});
+test('el admin no puede generar ambas rutas con un código de una ruta',async()=>{
+  Plan.findOne.mockResolvedValue({id:3,equivale_plan:'pago',acceso_rutas:'elegir'});
+  await expect(Service.crear({dias:20,plan_id:3,ruta_acceso:'ambas'},9)).rejects.toMatchObject({status:400});
+  expect(CodigoPrueba.create).not.toHaveBeenCalled();
+});

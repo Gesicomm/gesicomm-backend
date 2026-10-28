@@ -1,0 +1,55 @@
+'use strict';
+// Ejecutar sólo contra un clúster temporal local: puerto explícito y sin .env.
+process.env.NODE_ENV = 'test';
+process.env.JWT_SECRET = 'rutas-plan-integration-test-only';
+const assert = require('node:assert/strict');
+const { Sequelize, DataTypes } = require('sequelize');
+const db = new Sequelize('postgres','postgres','',{host:'127.0.0.1',port:55439,dialect:'postgres',logging:false,pool:{max:4,min:0}});
+async function main() {
+  const [[check]] = await db.query("SELECT to_regclass('public.planes') AS tabla");
+  assert.equal(check.tabla,null,'La base de pruebas debe estar vacía; no se tocará un catálogo existente.');
+  await db.query(`
+    CREATE TABLE planes(id SERIAL PRIMARY KEY,codigo VARCHAR(50),nombre TEXT,activo BOOLEAN DEFAULT true,equivale_plan TEXT DEFAULT 'pago');
+    CREATE TABLE checkout_intents(id SERIAL PRIMARY KEY,plan_id INTEGER,metadata JSON);
+    CREATE TABLE suscripciones(id SERIAL PRIMARY KEY,plan_id INTEGER,checkout_intent_id INTEGER,usuario_id INTEGER,email TEXT,nombre TEXT,telefono TEXT,estado TEXT,precio_pagado INTEGER,periodo_inicio TIMESTAMPTZ,periodo_fin TIMESTAMPTZ,created_at TIMESTAMPTZ DEFAULT NOW());
+    CREATE TABLE codigos_prueba(id SERIAL PRIMARY KEY,codigo TEXT UNIQUE,dias INTEGER,plan_id INTEGER,creado_por INTEGER,email TEXT,activo BOOLEAN,vence_en TIMESTAMPTZ,usado_por INTEGER,usado_en TIMESTAMPTZ,suscripcion_id INTEGER,updated_at TIMESTAMPTZ);
+    INSERT INTO planes(codigo,nombre) VALUES ('una-ruta-mensual','Una ruta'),('ambas-rutas-anual','Ambas'),('founders','Legado');
+    INSERT INTO checkout_intents(plan_id,metadata) VALUES(1,'{"ruta":"personal"}');
+    INSERT INTO suscripciones(plan_id,checkout_intent_id) VALUES(1,1),(1,null),(2,null),(3,null);
+  `);
+  const migration=require('../migrations/20261028090000-acceso-rutas-plan');
+  await migration.up(db.getQueryInterface(),Sequelize);
+  const [rows]=await db.query('SELECT ruta_acceso FROM suscripciones ORDER BY id');
+  assert.deepEqual(rows.map(row=>row.ruta_acceso),['personal','fisico','ambas','ambas']);
+  await migration.up(db.getQueryInterface(),Sequelize);
+  const [again]=await db.query('SELECT ruta_acceso FROM suscripciones ORDER BY id');
+  assert.deepEqual(again,rows,'La migración debe ser idempotente');
+  const Plan=db.define('Plan',{id:{type:DataTypes.INTEGER,primaryKey:true},codigo:DataTypes.STRING,nombre:DataTypes.STRING,activo:DataTypes.BOOLEAN,equivale_plan:DataTypes.STRING,acceso_rutas:DataTypes.STRING},{tableName:'planes',timestamps:false});
+  const Suscripcion=db.define('Suscripcion',{id:{type:DataTypes.INTEGER,primaryKey:true,autoIncrement:true},plan_id:DataTypes.INTEGER,usuario_id:DataTypes.INTEGER,email:DataTypes.STRING,nombre:DataTypes.STRING,telefono:DataTypes.STRING,estado:DataTypes.STRING,precio_pagado:DataTypes.INTEGER,periodo_inicio:DataTypes.DATE,periodo_fin:DataTypes.DATE,ruta_acceso:DataTypes.STRING,created_at:DataTypes.DATE},{tableName:'suscripciones',timestamps:false});
+  const CodigoPrueba=db.define('CodigoPrueba',{id:{type:DataTypes.INTEGER,primaryKey:true,autoIncrement:true},codigo:DataTypes.STRING,dias:DataTypes.INTEGER,plan_id:DataTypes.INTEGER,creado_por:DataTypes.INTEGER,email:DataTypes.STRING,activo:DataTypes.BOOLEAN,vence_en:DataTypes.DATE,usado_por:DataTypes.INTEGER,usado_en:DataTypes.DATE,suscripcion_id:DataTypes.INTEGER,updated_at:DataTypes.DATE,ruta_acceso:DataTypes.STRING},{tableName:'codigos_prueba',timestamps:false});
+  Suscripcion.belongsTo(Plan,{foreignKey:'plan_id'});
+  const modelPath=require.resolve('../src/models');
+  require.cache[modelPath]={id:modelPath,filename:modelPath,loaded:true,exports:{sequelize:db,Plan,Suscripcion,CodigoPrueba}};
+  const codes=require('../src/services/codigoPrueba.service');
+  const code=await codes.crear({dias:14,plan_id:1,ruta_acceso:'personal'},1);
+  const user={id:700,nombre:'Prueba aislada',correo_electronico:'rutas@example.test',telefono:'0981123456',update:async()=>{}};
+  const attempts=await Promise.allSettled([1,2].map(()=>db.transaction(t=>codes.canjear(code.codigo,user,t))));
+  assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1,'Un solo canje puede consumir el código');
+  assert.equal(await Suscripcion.count({where:{usuario_id:700}}),1);
+  const subscription=await Suscripcion.findOne({where:{usuario_id:700}});
+  assert.equal(subscription.ruta_acceso,'personal');
+  assert.equal(subscription.periodo_fin-subscription.periodo_inicio,14*86400000);
+  const express=require('express'),request=require('supertest'),jwt=require('jsonwebtoken');
+  const {verificarToken}=require('../src/middleware/autenticacion');
+  const app=express();
+  app.get('/api/productos',verificarToken,(req,res)=>res.json({ok:true}));
+  app.get('/api/auth/marca-personal/meta/status',verificarToken,(req,res)=>res.json({ok:true}));
+  const token=jwt.sign({id:700,rol:'usuario',tiendaId:90},process.env.JWT_SECRET,{expiresIn:'15m'});
+  const auth='Bearer '+token;
+  await request(app).get('/api/productos').set('Authorization',auth).expect(403);
+  await request(app).get('/api/auth/marca-personal/meta/status').set('Authorization',auth).expect(200);
+  await db.query("UPDATE suscripciones SET periodo_fin=NOW()-INTERVAL '1 second' WHERE usuario_id=700");
+  await request(app).get('/api/auth/marca-personal/meta/status').set('Authorization',auth).expect(403);
+  console.log('OK: migración, backfill, idempotencia, canje concurrente, duración, permisos API y vencimiento en PostgreSQL temporal.');
+}
+main().finally(()=>db.close()).catch(error=>{console.error(error);process.exitCode=1;});

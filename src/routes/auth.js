@@ -777,6 +777,7 @@ router.get('/me', verificarToken, asyncHandler(async (req, res) => {
     tiendaId: req.usuario.tiendaId,
     accesos: req.usuario.accesos || null,
     propietarioId: req.usuario.propietarioId || null,
+    rutas: await require('../middleware/accesoRutaNegocio').accesoDeActor(req.usuario),
   });
 }));
 

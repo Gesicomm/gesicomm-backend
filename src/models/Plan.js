@@ -30,6 +30,10 @@ const Plan = sequelize.define('Plan', {
     type: DataTypes.STRING(100),
     allowNull: false,
   },
+  acceso_rutas: {
+    type: DataTypes.STRING(12), allowNull: false, defaultValue: 'elegir',
+    validate: { isIn: [['elegir', 'fisico', 'personal', 'ambas']] },
+  },
   resumen: {
     type: DataTypes.TEXT,
     allowNull: true,

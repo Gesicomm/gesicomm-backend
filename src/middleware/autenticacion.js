@@ -39,9 +39,12 @@ function verificarToken(req, res, next) {
     };
 
     if (req.usuario.rol === 'colaborador') {
-      return require('./accesoColaborador').accesoColaborador(req, res, next);
+      return require('./accesoColaborador').accesoColaborador(req, res, error => {
+        if (error) return next(error);
+        return require('./accesoRutaNegocio').verificarAccesoSolicitud(req, res, next);
+      });
     }
-    next();
+    return require('./accesoRutaNegocio').verificarAccesoSolicitud(req, res, next);
   } catch (err) {
     auditoria('TOKEN_INVALIDO', { ip: req.ip, error: err.message });
     return res.status(401).json({ message: 'Sesión inválida o expirada.' });

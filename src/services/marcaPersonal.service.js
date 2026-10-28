@@ -17,7 +17,7 @@ async function identity(id) {
   const subscription = await require('./suscripcion.service').suscripcionActivaDeUsuario(user.id);
   // Permisos administrativos de Gesicom nunca se trasladan a administración de T2E.
   const enabled = user.activo && user.email_verificado
-    && (user.Rol?.nombre === 'administrador' || subscription?.Plan?.equivale_plan === 'pago');
+    && (user.Rol?.nombre === 'administrador' || (subscription?.Plan?.equivale_plan === 'pago' && require('../utils/rutasPlan').rutasDeSuscripcion(subscription).personal));
   return { id: Number(user.id), nombre: user.nombre, email: user.correo_electronico, enabled: Boolean(enabled) };
 }
 async function provisionUser(id) {

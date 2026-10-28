@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { accesoDelPlan, resolverRuta } = require('../utils/rutasPlan');
 const { CodigoPrueba, Plan, Suscripcion } = require('../models');
 const error = message => Object.assign(new Error(message), { status: 400 });
 
@@ -8,7 +9,7 @@ class CodigoPruebaService {
       CodigoPrueba.findAll({ order: [['id', 'DESC']], limit: 100 }),
       Plan.findAll({ where: { activo: true, equivale_plan: 'pago' }, order: [['orden', 'ASC']] }),
     ]);
-    return { codigos, planes: planes.map(p => ({ id: p.id, nombre: p.nombre })) };
+    return { codigos, planes: planes.map(p => ({ id: p.id, nombre: p.nombre, acceso_rutas: accesoDelPlan(p) })) };
   }
 
   static async crear(datos, adminId) {
@@ -19,6 +20,7 @@ class CodigoPruebaService {
     return CodigoPrueba.create({
       codigo: `GESI-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
       dias: datos.dias, plan_id: plan.id, creado_por: adminId,
+      ruta_acceso: resolverRuta(plan, datos.ruta_acceso),
       email: datos.email?.trim().toLowerCase() || null,
       vence_en: datos.vence_en || null, activo: true,
     });
@@ -49,6 +51,7 @@ class CodigoPruebaService {
       usuario_id: usuario.id, email: usuario.correo_electronico.toLowerCase(), nombre: usuario.nombre,
       telefono: usuario.telefono, plan_id: plan.id, estado: 'activa', precio_pagado: 0,
       periodo_inicio: inicio, periodo_fin: fin,
+      ruta_acceso: resolverRuta(plan, codigo.ruta_acceso),
     }, { transaction });
     await codigo.update({ usado_por: usuario.id, usado_en: inicio, suscripcion_id: suscripcion.id }, { transaction });
     await usuario.update({ plan: plan.equivale_plan }, { transaction });

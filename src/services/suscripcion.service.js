@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { accesoDelPlan, resolverRuta, rutasDeSuscripcion } = require('../utils/rutasPlan');
 const { Op } = require('sequelize');
 const { sequelize, Plan, CheckoutIntent, SubscriptionPurchase, Suscripcion, PagoSuscripcion, Usuario, Tienda } = require('../models');
 const PagoParService = require('./payments/pagoParService');
@@ -110,6 +111,7 @@ class SuscripcionService {
       id: data.codigo,
       codigo: data.codigo,
       nombre: data.nombre,
+      acceso_rutas: accesoDelPlan(data),
       resumen: data.resumen || '',
       precio: Number(data.precio || 0),
       moneda: ['PYG', 'USD'].includes(data.moneda) ? data.moneda : 'PYG',
@@ -129,6 +131,7 @@ class SuscripcionService {
     return {
       codigo: base.codigo,
       nombre: base.nombre,
+      acceso_rutas: accesoDelPlan(base),
       resumen: base.resumen,
       precio: base.precio,
       moneda: ['PYG', 'USD'].includes(base.moneda) ? base.moneda : 'PYG',
@@ -177,9 +180,11 @@ class SuscripcionService {
     if (!codigo || !nombre) {
       throw Object.assign(new Error('Cada plan necesita código y nombre.'), { status: 400 });
     }
+    if (plan.acceso_rutas != null && !['elegir','fisico','personal','ambas'].includes(plan.acceso_rutas)) throw Object.assign(new Error('Acceso del plan inválido.'), { status: 400 });
     return {
       codigo,
       nombre,
+      acceso_rutas: ['elegir','fisico','personal','ambas'].includes(plan.acceso_rutas) ? plan.acceso_rutas : (codigo.startsWith('una-ruta-') ? 'elegir' : codigo.startsWith('ambas-rutas-') ? 'ambas' : 'elegir'),
       resumen: String(plan.resumen || '').trim(),
       precio: Math.max(0, Math.round(Number(plan.precio || 0))),
       moneda: ['PYG', 'USD'].includes(plan.moneda) ? plan.moneda : 'PYG',
@@ -211,13 +216,15 @@ class SuscripcionService {
     }
 
     await sequelize.transaction(async (t) => {
-      for (const plan of limpios) {
-        const [fila] = await Plan.findOrCreate({
+      for (const [indice, plan] of limpios.entries()) {
+        const [fila, creado] = await Plan.findOrCreate({
           where: { codigo: plan.codigo },
           defaults: plan,
           transaction: t,
         });
-        await fila.update(plan, { transaction: t });
+        const cambios = { ...plan };
+        if (!creado && planes[indice].acceso_rutas == null) delete cambios.acceso_rutas;
+        await fila.update(cambios, { transaction: t });
       }
     });
 
@@ -254,9 +261,7 @@ class SuscripcionService {
       throw Object.assign(new Error('Ese plan no existe o ya no se ofrece.'), { status: 404 });
     }
 
-    if (ruta != null && !['fisico', 'personal', 'ambas'].includes(ruta)) throw Object.assign(new Error('Ruta de negocio inválida.'), { status: 400 });
-    if (plan.codigo.startsWith('una-ruta-') && ruta === 'ambas') throw Object.assign(new Error('Elegí una sola ruta para este plan.'), { status: 400 });
-    const rutaSeleccionada = plan.codigo.startsWith('ambas-rutas-') ? 'ambas' : (ruta || null);
+    const rutaSeleccionada = resolverRuta(plan, ruta);
     const usuarioExistente = usuario?.id ? await this.suscripcionActivaDeUsuario(usuario.id) : null;
     const afiliado = usuarioExistente ? null : await AfiliadosService.resolverActivo(afiliado_codigo);
     if (afiliado_codigo && !afiliado && !usuarioExistente) {
@@ -370,6 +375,7 @@ class SuscripcionService {
     if (!plan) {
       throw Object.assign(new Error('Ese plan no existe o ya no se ofrece.'), { status: 404 });
     }
+    const rutaAcceso = resolverRuta(plan, intentExistente?.metadata?.ruta);
     if (plan.precio <= 0) {
       throw Object.assign(new Error('Este plan no requiere pago.'), { status: 400 });
     }
@@ -455,6 +461,7 @@ class SuscripcionService {
           metadata: {
             affiliate_ref_candidate: afiliado_codigo || null,
             source: 'planes_checkout',
+            ruta: rutaAcceso,
           },
         }, { transaction: t });
       }
@@ -462,6 +469,7 @@ class SuscripcionService {
       const suscripcion = await Suscripcion.create({
         plan_id: plan.id,
         checkout_intent_id: intent.id,
+        ruta_acceso: rutaAcceso,
         usuario_id: yaEsUsuario?.id || null,
         email: correo,
         nombre: nombreLimpio,
@@ -932,6 +940,7 @@ class SuscripcionService {
       documento: data.documento,
       periodo_inicio: data.periodo_inicio,
       periodo_fin: data.periodo_fin,
+      ruta_acceso: data.ruta_acceso || null,
       plan: data.Plan ? {
         codigo: data.Plan.codigo,
         nombre: data.Plan.nombre,
@@ -950,6 +959,7 @@ class SuscripcionService {
     ]);
 
     return {
+      rutas: rutasDeSuscripcion(suscripcion),
       tiene_suscripcion_activa: !!suscripcion,
       tiene_plan_pago: suscripcion?.Plan?.equivale_plan === 'pago',
       requiere_pago: !suscripcion || suscripcion?.Plan?.equivale_plan !== 'pago',
@@ -965,7 +975,7 @@ class SuscripcionService {
    * PagoPar y deja la suscripción activa. Cuando se conecte PagoPar real, el
    * guard del frontend seguirá consultando estadoCuenta().
    */
-  static async simularPagoPagopar(usuarioId, planCodigo, afiliadoCodigo = null, { req = null } = {}) {
+  static async simularPagoPagopar(usuarioId, planCodigo, afiliadoCodigo = null, { req = null, ruta = null } = {}) {
     const usuario = await Usuario.findByPk(usuarioId);
     if (!usuario) {
       throw Object.assign(new Error('Usuario no encontrado.'), { status: 404 });
@@ -1003,6 +1013,7 @@ class SuscripcionService {
         precio_pagado: plan.precio,
         periodo_inicio: inicio,
         periodo_fin: fin,
+        ruta_acceso: resolverRuta(plan, ruta),
         afiliado_id: afiliado?.id || null,
         afiliado_codigo: afiliado?.codigo || (afiliadoCodigo || null),
       }, { transaction: t });

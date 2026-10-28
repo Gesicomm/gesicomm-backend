@@ -3,11 +3,13 @@ const request = require('supertest');
 const jwt = require('jsonwebtoken');
 jest.mock('../utils/logger', () => ({ auditoria: jest.fn() }));
 jest.mock('../models', () => ({
-  Usuario: { findByPk: jest.fn() }, Tienda: { findByPk: jest.fn() },
+  Usuario: { findByPk: jest.fn() }, Rol: {}, Tienda: { findByPk: jest.fn() },
   Envio: { findOne: jest.fn() }, Courier: { findOne: jest.fn() },
   MetodoPago: { findOne: jest.fn() },
 }));
 jest.mock('../models/TiendaMiembro', () => ({ findOne: jest.fn() }));
+jest.mock('../services/suscripcion.service', () => ({ suscripcionActivaDeUsuario: jest.fn() }));
+const SuscripcionService = require('../services/suscripcion.service');
 const { Usuario, Tienda, Envio, Courier, MetodoPago } = require('../models');
 const Miembro = require('../models/TiendaMiembro');
 const { verificarToken } = require('../middleware/autenticacion');
@@ -23,6 +25,7 @@ const call = (method, path, body = {}, tiendaId = 7) => request(app)[method](pat
 beforeEach(() => {
   process.env.JWT_SECRET = 'test-access-secret';
   jest.clearAllMocks();
+  SuscripcionService.suscripcionActivaDeUsuario.mockResolvedValue({estado:'activa', periodo_fin:new Date(Date.now()+86400000), ruta_acceso:'fisico', Plan:{acceso_rutas:'fisico'}});
   permisos = { comercial: 'ver' };
   Usuario.findByPk.mockImplementation(async id => id === 100 ? { id, activo: true, email_verificado: true } : { inquilino_id: 1 });
   Tienda.findByPk.mockResolvedValue({ id: 7, usuario_id: 20, nombre: 'Tienda A' });
@@ -83,6 +86,21 @@ test('revocar y reducir permisos afecta al mismo JWT inmediatamente', async () =
 test('sin tienda solo permite recuperar la sesión y elegir una autorizada', async () => {
   expect((await call('post','/api/envios/list',{},null)).status).toBe(403);
   expect((await call('get','/api/tiendas/mias',{},null)).status).toBe(200);
+});
+
+test('al vencer el plan del propietario se cierran las operaciones del colaborador', async () => {
+  expect((await call('post','/api/envios/list')).status).toBe(200);
+  SuscripcionService.suscripcionActivaDeUsuario.mockResolvedValue(null);
+  expect((await call('post','/api/envios/list')).status).toBe(403);
+  expect((await call('get','/api/tiendas/mias',{},null)).status).toBe(200);
+});
+
+test('una tienda de administrador conserva la membresía sin conceder acceso global al colaborador', async () => {
+  Usuario.findByPk.mockImplementation(async id => id === 100 ? {id,activo:true,email_verificado:true} : {inquilino_id:1,Rol:{nombre:'administrador'}});
+  SuscripcionService.suscripcionActivaDeUsuario.mockResolvedValue(null);
+  expect((await call('post','/api/envios/list')).status).toBe(200);
+  expect((await call('post','/api/productos')).status).toBe(403);
+  expect((await call('get','/api/auth/marca-personal/meta/status')).status).toBe(403);
 });
 test('errores de base de datos fallan cerrados',async()=>{
   Miembro.findOne.mockRejectedValue(new Error('offline'));

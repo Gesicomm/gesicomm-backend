@@ -451,6 +451,8 @@ sequelize.authenticate().then(async () => {
     process.exit(1);
   }
 
+  await require('./migrations/20261028090000-acceso-rutas-plan').up(sequelize.getQueryInterface(), require('sequelize'));
+
   // Validar que el esquema de la BD coincide con los modelos
   try {
     await validarEsquema(sequelize);

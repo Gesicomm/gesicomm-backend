@@ -24,6 +24,7 @@ const Suscripcion = sequelize.define('Suscripcion', {
     autoIncrement: true,
     primaryKey: true,
   },
+  ruta_acceso: { type: DataTypes.STRING(12), allowNull: true, validate: { isIn: [['fisico', 'personal', 'ambas']] } },
   plan_id: {
     type: DataTypes.INTEGER,
     allowNull: false,

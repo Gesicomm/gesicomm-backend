@@ -172,6 +172,7 @@ router.get('/admin/codigos-prueba', verificarToken, soloAdmin, asyncHandler(asyn
 }));
 router.post('/admin/codigos-prueba', verificarToken, soloAdmin, validar(z.object({
   dias: z.number().int().min(1).max(365),
+  ruta_acceso: z.enum(['fisico', 'personal', 'ambas']).optional(),
   plan_id: z.number().int().positive(),
   email: z.string().trim().email().max(255).optional(),
   vence_en: z.string().datetime({ offset: true }).optional(),
