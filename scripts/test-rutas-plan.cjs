@@ -11,7 +11,7 @@ async function main() {
   await db.query(`
     CREATE TABLE planes(id SERIAL PRIMARY KEY,codigo VARCHAR(50),nombre TEXT,activo BOOLEAN DEFAULT true,equivale_plan TEXT DEFAULT 'pago');
     CREATE TABLE checkout_intents(id SERIAL PRIMARY KEY,plan_id INTEGER,metadata JSON);
-    CREATE TABLE suscripciones(id SERIAL PRIMARY KEY,plan_id INTEGER,checkout_intent_id INTEGER,usuario_id INTEGER,email TEXT,nombre TEXT,telefono TEXT,estado TEXT,precio_pagado INTEGER,periodo_inicio TIMESTAMPTZ,periodo_fin TIMESTAMPTZ,created_at TIMESTAMPTZ DEFAULT NOW());
+    CREATE TABLE suscripciones(id SERIAL PRIMARY KEY,plan_id INTEGER,checkout_intent_id INTEGER,usuario_id INTEGER,email TEXT,nombre TEXT,telefono TEXT,estado TEXT,precio_pagado INTEGER,periodo_inicio TIMESTAMPTZ,periodo_fin TIMESTAMPTZ,acceso_permanente BOOLEAN NOT NULL DEFAULT false,created_at TIMESTAMPTZ DEFAULT NOW());
     CREATE TABLE codigos_prueba(id SERIAL PRIMARY KEY,codigo TEXT UNIQUE,dias INTEGER,plan_id INTEGER,creado_por INTEGER,email TEXT,activo BOOLEAN,vence_en TIMESTAMPTZ,usado_por INTEGER,usado_en TIMESTAMPTZ,suscripcion_id INTEGER,updated_at TIMESTAMPTZ);
     INSERT INTO planes(codigo,nombre) VALUES ('una-ruta-mensual','Una ruta'),('ambas-rutas-anual','Ambas'),('founders','Legado');
     INSERT INTO checkout_intents(plan_id,metadata) VALUES(1,'{"ruta":"personal"}');

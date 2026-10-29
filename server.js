@@ -452,6 +452,8 @@ sequelize.authenticate().then(async () => {
   }
 
   await require('./migrations/20261028090000-acceso-rutas-plan').up(sequelize.getQueryInterface(), require('sequelize'));
+  const catalogoMigrado = await require('./migrations/20261029120000-catalogo-cuatro-planes').up(sequelize.getQueryInterface(), require('sequelize'));
+  logger.info({mensaje:'Catálogo de cuatro planes verificado.',...catalogoMigrado});
 
   // Validar que el esquema de la BD coincide con los modelos
   try {

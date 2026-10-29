@@ -21,6 +21,7 @@ function rutasDeSuscripcion(suscripcion) {
   if (!suscripcion) return { fisico: false, personal: false };
   const fin = suscripcion.periodo_fin == null ? null : new Date(suscripcion.periodo_fin).getTime();
   if (suscripcion.estado !== 'activa' || (fin !== null && (!Number.isFinite(fin) || fin <= Date.now()))) return { fisico: false, personal: false };
+  if (suscripcion.acceso_permanente === true) return {fisico:true,personal:true};
   const politica = accesoDelPlan(suscripcion.Plan);
   const guardada = suscripcion.ruta_acceso;
   // Una política restrictiva actual nunca se amplía por datos viejos de la suscripción.

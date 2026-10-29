@@ -177,11 +177,17 @@ router.post('/admin/codigos-prueba', verificarToken, soloAdmin, validar(z.object
   email: z.string().trim().email().max(255).optional(),
   vence_en: z.string().datetime({ offset: true }).optional(),
 })), asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
   res.status(201).json(await CodigoPruebaService.crear(req.body, req.usuario.id));
 }));
 router.patch('/admin/codigos-prueba/:id/desactivar', verificarToken, soloAdmin, asyncHandler(async (req, res) => {
   if (!/^[1-9]\d*$/.test(req.params.id)) return res.status(400).json({ message: 'ID inválido.' });
   res.json(await CodigoPruebaService.desactivar(Number(req.params.id)));
+}));
+router.post('/admin/codigos-prueba/:id/enviar-correo', verificarToken, soloAdmin, asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (!/^[1-9]\d*$/.test(req.params.id)) return res.status(400).json({message:'ID inválido.'});
+  res.json(await CodigoPruebaService.enviarCorreo(Number(req.params.id)));
 }));
 
 module.exports = router;

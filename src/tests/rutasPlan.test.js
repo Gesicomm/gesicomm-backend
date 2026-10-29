@@ -61,3 +61,8 @@ test('no bloquea login, planes, perfil o renovación por falta de ruta',()=>{
 test.each(['1970-01-01T00:00:00Z','fecha-invalida'])('un fin inválido o vencido no concede acceso: %s',fin=>{
  expect(rutasDeSuscripcion(active('ambas','ambas',{periodo_fin:fin}))).toEqual({fisico:false,personal:false});
 });
+
+test('un acceso permanente migrado conserva ambas rutas aunque se edite el catálogo comercial',()=>{
+ expect(rutasDeSuscripcion(active('elegir','ambas',{acceso_permanente:true,periodo_fin:null}))).toEqual({fisico:true,personal:true});
+ expect(rutasDeSuscripcion(active('ambas','ambas',{acceso_permanente:true,periodo_fin:null,estado:'cancelada'}))).toEqual({fisico:false,personal:false});
+});

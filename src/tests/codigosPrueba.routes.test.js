@@ -1,5 +1,5 @@
 jest.mock('../models', () => ({}));
-jest.mock('../services/codigoPrueba.service', () => ({ listar: jest.fn(), crear: jest.fn(), desactivar: jest.fn() }));
+jest.mock('../services/codigoPrueba.service', () => ({ listar: jest.fn(), crear: jest.fn(), desactivar: jest.fn(), enviarCorreo:jest.fn() }));
 const express = require('express');
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
@@ -25,4 +25,15 @@ test('el admin genera los días elegidos y la validación rechaza fracciones', a
   expect(Codigos.crear).toHaveBeenCalledWith({ dias: 20, plan_id: 3 }, 8);
   await request(app).post('/api/publico/admin/codigos-prueba').set('Authorization', token('administrador')).send({ dias: 1.5, plan_id: 3 }).expect(400);
   expect(Codigos.crear).toHaveBeenCalledTimes(1);
+});
+
+test('solo admin puede enviar el correo de un código existente y exige un ID entero',async()=>{
+  Codigos.enviarCorreo.mockResolvedValue({emailEnviado:true});
+  await request(app).post('/api/publico/admin/codigos-prueba/4/enviar-correo').expect(401);
+  await request(app).post('/api/publico/admin/codigos-prueba/4/enviar-correo').set('Authorization',token('usuario')).expect(403);
+  await request(app).post('/api/publico/admin/codigos-prueba/abc/enviar-correo').set('Authorization',token('administrador')).expect(400);
+  const res=await request(app).post('/api/publico/admin/codigos-prueba/4/enviar-correo').set('Authorization',token('administrador')).expect(200);
+  expect(res.body.emailEnviado).toBe(true);
+  expect(Codigos.enviarCorreo).toHaveBeenCalledTimes(1);
+  expect(Codigos.enviarCorreo).toHaveBeenCalledWith(4);
 });

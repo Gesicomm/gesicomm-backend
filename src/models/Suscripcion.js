@@ -25,6 +25,8 @@ const Suscripcion = sequelize.define('Suscripcion', {
     primaryKey: true,
   },
   ruta_acceso: { type: DataTypes.STRING(12), allowNull: true, validate: { isIn: [['fisico', 'personal', 'ambas']] } },
+  acceso_permanente: {type:DataTypes.BOOLEAN,allowNull:false,defaultValue:false},
+  origen_plan_anterior_id: {type:DataTypes.INTEGER,allowNull:true},
   plan_id: {
     type: DataTypes.INTEGER,
     allowNull: false,

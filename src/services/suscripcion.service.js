@@ -8,69 +8,7 @@ const AfiliadosService = require('./afiliados.service');
 const AuthTracking = require('./authTracking.service');
 const { logger } = require('../utils/logger');
 
-const PLANES_PAGOS_BASE = [
-  {
-    codigo: 'founders',
-    nombre: 'Miembros Fundadores',
-    resumen: 'Oferta limitada para los primeros 300 clientes pagos en Paraguay, con precio fundador protegido mientras la suscripción permanezca activa.',
-    precio: 47,
-    moneda: 'USD',
-    periodicidad: 'mensual',
-    equivale_plan: 'pago',
-    features: [
-      'Precio Fundador protegido de USD 47/mes',
-      'Acceso al ecosistema Gesicom y mejoras del nivel Fundador',
-      'Onboarding, Academia, Biblioteca Operativa y comunidad privada',
-      'Programa de Afiliados con 40% recurrente sobre suscripciones elegibles',
-      '50% OFF para Gesicom Certified Partner',
-    ],
-    etiqueta: '300 cupos',
-    cta: 'Ser Fundador',
-    destacado: true,
-    orden: 1,
-    activo: true,
-  },
-  {
-    codigo: 'growth',
-    nombre: 'Growth',
-    resumen: 'Para tiendas que quieren más landings, más medición y una operación comercial más completa.',
-    precio: 97,
-    moneda: 'USD',
-    periodicidad: 'mensual',
-    equivale_plan: 'pago',
-    features: [
-      'Todo lo del plan Fundador',
-      'Landings y embudos adicionales',
-      'Configuración avanzada de productos',
-      'Analítica comercial y píxeles',
-    ],
-    etiqueta: 'Más elegido',
-    cta: 'Activar Growth',
-    destacado: false,
-    orden: 2,
-    activo: false,
-  },
-  {
-    codigo: 'scale',
-    nombre: 'Scale',
-    resumen: 'Para operaciones con catálogo grande, equipo y automatización comercial.',
-    precio: 197,
-    moneda: 'USD',
-    periodicidad: 'mensual',
-    equivale_plan: 'pago',
-    features: [
-      'Todo lo del plan Growth',
-      'Productos y pedidos sin límite operativo',
-      'Automatizaciones y canales de venta',
-      'Soporte prioritario',
-    ],
-    etiqueta: null,
-    cta: 'Activar Scale',
-    destacado: false,
-    orden: 3,
-    activo: false,
-  },
-];
+const {PLANES: PLANES_PAGOS_BASE, CODIGOS: CODIGOS_PLANES, planCanonico} = require('../utils/catalogoPlanes');
 
 const CHECKOUT_INTENT_TTL_MS = 48 * 60 * 60 * 1000;
 
@@ -149,8 +87,8 @@ class SuscripcionService {
   static async sembrarPlanesBase(transaction = null) {
     if (!Plan.count || !Plan.findOrCreate) return;
     const opciones = transaction ? { transaction } : {};
-    const total = await Plan.count(opciones);
-    if (total > 0) return;
+    const total = await Plan.count({ ...opciones, where: {codigo:{[Op.in]:CODIGOS_PLANES}} });
+    if (total === CODIGOS_PLANES.length) return;
 
     await Promise.all(PLANES_PAGOS_BASE.map(base => Plan.findOrCreate({
       where: { codigo: base.codigo },
@@ -162,7 +100,7 @@ class SuscripcionService {
   static async listarPlanesPagos() {
     await this.sembrarPlanesBase();
     const planes = await Plan.findAll({
-      where: { activo: true },
+      where: { activo: true, codigo:{[Op.in]:CODIGOS_PLANES} },
       order: [['orden', 'ASC'], ['id', 'ASC']],
     });
     return planes.map(plan => this.serializarPlan(plan));
@@ -170,13 +108,17 @@ class SuscripcionService {
 
   static async listarPlanesAdmin() {
     await this.sembrarPlanesBase();
-    const planes = await Plan.findAll({ order: [['orden', 'ASC'], ['id', 'ASC']] });
+    const planes = await Plan.findAll({ where:{codigo:{[Op.in]:CODIGOS_PLANES}}, order: [['orden', 'ASC'], ['id', 'ASC']] });
     return planes.map(plan => this.serializarPlan(plan));
   }
 
   static limpiarPlanAdmin(plan, indice) {
     const codigo = String(plan.codigo || plan.id || '').trim();
-    const nombre = String(plan.nombre || '').trim();
+    const identidad = planCanonico(codigo);
+    if (!identidad) throw Object.assign(new Error('Solo se admiten los cuatro planes de una ruta o ambas rutas, mensual y anual.'),{status:400});
+    const nombre = identidad.nombre;
+    const precio = Number(plan.precio);
+    if (!Number.isFinite(precio) || !Number.isInteger(precio) || precio <= 0) throw Object.assign(new Error('El precio del plan debe ser un importe entero mayor a cero.'),{status:400});
     if (!codigo || !nombre) {
       throw Object.assign(new Error('Cada plan necesita código y nombre.'), { status: 400 });
     }
@@ -184,12 +126,12 @@ class SuscripcionService {
     return {
       codigo,
       nombre,
-      acceso_rutas: ['elegir','fisico','personal','ambas'].includes(plan.acceso_rutas) ? plan.acceso_rutas : (codigo.startsWith('una-ruta-') ? 'elegir' : codigo.startsWith('ambas-rutas-') ? 'ambas' : 'elegir'),
+      acceso_rutas: identidad.acceso_rutas,
       resumen: String(plan.resumen || '').trim(),
-      precio: Math.max(0, Math.round(Number(plan.precio || 0))),
+      precio,
       moneda: ['PYG', 'USD'].includes(plan.moneda) ? plan.moneda : 'PYG',
-      periodicidad: ['mensual', 'anual', 'unico'].includes(plan.periodicidad) ? plan.periodicidad : 'mensual',
-      equivale_plan: ['free', 'pago'].includes(plan.equivale_plan || plan.equivale) ? (plan.equivale_plan || plan.equivale) : 'pago',
+      periodicidad: identidad.periodicidad,
+      equivale_plan: 'pago',
       features: Array.isArray(plan.features) ? plan.features.map(f => String(f || '').trim()).filter(Boolean) : [],
       etiqueta: String(plan.etiqueta || '').trim() || null,
       cta: String(plan.cta || '').trim() || null,
@@ -205,6 +147,7 @@ class SuscripcionService {
     }
 
     const limpios = planes.map((plan, indice) => this.limpiarPlanAdmin(plan, indice));
+    if (limpios.length !== 4 || new Set(limpios.map(plan=>plan.codigo)).size !== 4) throw Object.assign(new Error('El catálogo debe contener exactamente los cuatro planes, sin duplicados.'),{status:400});
     let destacadoAsignado = false;
     for (const plan of limpios) {
       if (!plan.activo) plan.destacado = false;
@@ -216,15 +159,13 @@ class SuscripcionService {
     }
 
     await sequelize.transaction(async (t) => {
-      for (const [indice, plan] of limpios.entries()) {
-        const [fila, creado] = await Plan.findOrCreate({
+      for (const plan of limpios) {
+        const [fila] = await Plan.findOrCreate({
           where: { codigo: plan.codigo },
           defaults: plan,
           transaction: t,
         });
-        const cambios = { ...plan };
-        if (!creado && planes[indice].acceso_rutas == null) delete cambios.acceso_rutas;
-        await fila.update(cambios, { transaction: t });
+        await fila.update(plan, { transaction: t });
       }
     });
 
@@ -237,6 +178,7 @@ class SuscripcionService {
       throw Object.assign(new Error('Falta el código del plan.'), { status: 400 });
     }
 
+    if (planCanonico(limpio)) throw Object.assign(new Error('Los cuatro planes del catálogo no se eliminan. Podés ocultar un plan para que no se ofrezca.'),{status:400});
     const plan = await Plan.findOne({ where: { codigo: limpio } });
     if (!plan) {
       throw Object.assign(new Error('Ese plan no existe.'), { status: 404 });
@@ -256,6 +198,7 @@ class SuscripcionService {
 
   static async crearCheckoutIntent({ plan_codigo, afiliado_codigo, ruta, usuario = null }) {
     await this.sembrarPlanesBase();
+    if (!planCanonico(plan_codigo)) throw Object.assign(new Error('Ese plan fue retirado. Elegí uno de los cuatro planes disponibles.'),{status:404});
     const plan = await Plan.findOne({ where: { codigo: plan_codigo, activo: true } });
     if (!plan) {
       throw Object.assign(new Error('Ese plan no existe o ya no se ofrece.'), { status: 404 });
@@ -371,6 +314,7 @@ class SuscripcionService {
       plan_codigo = intentExistente.plan_codigo;
     }
 
+    if (!planCanonico(plan_codigo)) throw Object.assign(new Error('Ese plan fue retirado. Elegí uno de los cuatro planes disponibles.'),{status:404});
     const plan = await Plan.findOne({ where: { codigo: plan_codigo, activo: true } });
     if (!plan) {
       throw Object.assign(new Error('Ese plan no existe o ya no se ofrece.'), { status: 404 });
@@ -924,7 +868,7 @@ class SuscripcionService {
         ],
       },
       include: [Plan],
-      order: [['periodo_inicio', 'DESC'], ['created_at', 'DESC']],
+      order: [['acceso_permanente','DESC'], ['periodo_inicio', 'DESC'], ['created_at', 'DESC']],
     });
   }
 
@@ -941,9 +885,10 @@ class SuscripcionService {
       periodo_inicio: data.periodo_inicio,
       periodo_fin: data.periodo_fin,
       ruta_acceso: data.ruta_acceso || null,
+      acceso_permanente: Boolean(data.acceso_permanente),
       plan: data.Plan ? {
         codigo: data.Plan.codigo,
-        nombre: data.Plan.nombre,
+        nombre: data.acceso_permanente ? 'Ambas rutas · Acceso permanente' : data.Plan.nombre,
         precio: data.Plan.precio,
         moneda: ['PYG', 'USD'].includes(data.Plan.moneda) ? data.Plan.moneda : 'PYG',
         periodicidad: data.Plan.periodicidad,

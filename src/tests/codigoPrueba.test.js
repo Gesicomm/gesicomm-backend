@@ -3,12 +3,15 @@ jest.mock('../models', () => ({
   Plan: { findOne: jest.fn(), findAll: jest.fn() },
   Suscripcion: { create: jest.fn() },
 }));
+jest.mock('../services/notificaciones/codigoAcceso.service', () => ({enviarCodigoAcceso:jest.fn()}));
+const {enviarCodigoAcceso} = require('../services/notificaciones/codigoAcceso.service');
 const { CodigoPrueba, Plan, Suscripcion } = require('../models');
 const Service = require('../services/codigoPrueba.service');
 const transaction = { LOCK: { UPDATE: 'UPDATE' } };
 let codigo, usuario;
 beforeEach(() => {
   jest.clearAllMocks();
+  enviarCodigoAcceso.mockResolvedValue({emailEnviado:false,correoEstado:'sin-destinatario'});
   codigo = { id: 1, codigo: 'GESI-ABCDEF', dias: 20, plan_id: 3, activo: true, update: jest.fn(async cambios => Object.assign(codigo, cambios)) };
   usuario = { id: 40, nombre: 'Ana', correo_electronico: 'ana@example.test', telefono: '0981123456', update: jest.fn() };
   CodigoPrueba.findOne.mockResolvedValue(codigo);
@@ -60,6 +63,25 @@ test('genera un código con duración y destinatario elegidos por el admin', asy
   const resultado = await Service.crear({ dias: 14, plan_id: 3, email: 'ANA@example.test' }, 9);
   expect(resultado.codigo).toMatch(/^GESI-[A-F0-9]{16}$/);
   expect(resultado).toMatchObject({ dias: 14, creado_por: 9, email: 'ana@example.test', plan_id: 3 });
+  expect(enviarCodigoAcceso).toHaveBeenCalledWith(expect.objectContaining({email:'ana@example.test',codigo:resultado.codigo}),expect.anything());
+});
+
+test('el fallo de envío conserva el código creado y permite reintentar ese mismo código',async()=>{
+  CodigoPrueba.create.mockImplementation(async data=>({id:12,...data}));
+  enviarCodigoAcceso.mockResolvedValue({emailEnviado:false,correoEstado:'fallido'});
+  const creado=await Service.crear({dias:14,plan_id:3,email:'ana@example.test'},9);
+  expect(creado).toMatchObject({id:12,emailEnviado:false,correoEstado:'fallido'});
+  CodigoPrueba.findByPk.mockResolvedValue(creado);
+  enviarCodigoAcceso.mockResolvedValue({emailEnviado:true,correoEstado:'enviado'});
+  expect(await Service.enviarCorreo(12)).toMatchObject({emailEnviado:true});
+  expect(CodigoPrueba.create).toHaveBeenCalledTimes(1);
+  expect(enviarCodigoAcceso).toHaveBeenLastCalledWith(creado,expect.anything());
+});
+
+test.each([{email:null},{email:'ana@example.test',activo:false},{email:'ana@example.test',usado_en:new Date()},{email:'ana@example.test',vence_en:'2000-01-01'}])('no envía un código sin destinatario o no disponible (%j)',async cambios=>{
+  CodigoPrueba.findByPk.mockResolvedValue({...codigo,...cambios});
+  await expect(Service.enviarCorreo(1)).rejects.toMatchObject({status:400});
+  expect(enviarCodigoAcceso).not.toHaveBeenCalled();
 });
 
 

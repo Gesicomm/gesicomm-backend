@@ -6,6 +6,7 @@ const { sequelize, Usuario, Rol, Tienda } = require('../models');
 const Miembro = require('../models/TiendaMiembro');
 
 const MODULOS = require('./modulosAcceso.json');
+const { enviarBienvenidaEquipo } = require('./notificaciones/accesoEquipo.service');
 function error(status, message) { return Object.assign(new Error(message), { status }); }
 function validarPermisos(permisos) {
   if (!permisos || typeof permisos !== 'object' || Array.isArray(permisos)) throw error(400, 'Seleccioná los permisos.');
@@ -46,7 +47,7 @@ async function crear(usuario, datos) {
   const password = datos.password;
   if (!nombre || nombre.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) throw error(400, 'Indicá nombre y correo válidos.');
   if (typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password, 'utf8') > 72 || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) throw error(400, 'La contraseña debe tener al menos 8 caracteres, una mayúscula y un número, y no superar 72 bytes.');
-  return sequelize.transaction(async transaction => {
+  const alta = await sequelize.transaction(async transaction => {
     const tienda = await propietario(usuario, transaction);
     const rol = await Rol.findOne({ where: { nombre: 'colaborador' }, transaction });
     if (!rol) throw error(503, 'Falta aplicar la migración de personas y permisos.');
@@ -57,8 +58,13 @@ async function crear(usuario, datos) {
       contrasena_hash: await bcrypt.hash(password, 12) }, { transaction });
     const miembro = await Miembro.create({ tienda_id: tienda.id, usuario_id: persona.id, estado: 'activo',
       permisos, invitado_por: usuario.id, token_hash: null, token_expira: null }, { transaction });
-    return { id: miembro.id, message: 'Cuenta creada. La persona ya puede ingresar con el correo y la contraseña que definiste.' };
+    return { id: miembro.id, tienda: tienda.nombre };
   });
+  // Fuera de la transacción: el correo sale solo si el alta quedó guardada.
+  const { enviado } = await enviarBienvenidaEquipo({ nombre, email, password, tienda: alta.tienda, invitante: usuario.nombre, permisos });
+  return { id: alta.id, emailEnviado: enviado, message: enviado
+    ? `Cuenta creada. Le enviamos a ${email} su usuario, contraseña y el enlace para iniciar sesión.`
+    : 'Cuenta creada, pero no pudimos enviar el correo. Compartí el enlace de ingreso y la contraseña con la persona.' };
 }
 async function invitar(usuario, datos) {
   const permisos = validarPermisos(datos.permisos);

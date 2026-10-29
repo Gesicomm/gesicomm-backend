@@ -2,12 +2,15 @@ const crypto = require('crypto');
 const { accesoDelPlan, resolverRuta } = require('../utils/rutasPlan');
 const { CodigoPrueba, Plan, Suscripcion } = require('../models');
 const error = message => Object.assign(new Error(message), { status: 400 });
+const { enviarCodigoAcceso } = require('./notificaciones/codigoAcceso.service');
+const {Op}=require('sequelize');
+const {CODIGOS}=require('../utils/catalogoPlanes');
 
 class CodigoPruebaService {
   static async listar() {
     const [codigos, planes] = await Promise.all([
       CodigoPrueba.findAll({ order: [['id', 'DESC']], limit: 100 }),
-      Plan.findAll({ where: { activo: true, equivale_plan: 'pago' }, order: [['orden', 'ASC']] }),
+      Plan.findAll({ where: { activo: true, equivale_plan: 'pago',codigo:{[Op.in]:CODIGOS} }, order: [['orden', 'ASC']] }),
     ]);
     return { codigos, planes: planes.map(p => ({ id: p.id, nombre: p.nombre, acceso_rutas: accesoDelPlan(p) })) };
   }
@@ -17,13 +20,25 @@ class CodigoPruebaService {
     if (!plan) throw error('Elegí un plan activo para la prueba.');
     if (!Number.isInteger(datos.dias) || datos.dias < 1 || datos.dias > 365) throw error('La duración debe ser de 1 a 365 días.');
     if (datos.vence_en && (!Number.isFinite(new Date(datos.vence_en).getTime()) || new Date(datos.vence_en) <= new Date())) throw error('La fecha límite para usar el código debe ser futura.');
-    return CodigoPrueba.create({
+    const codigo = await CodigoPrueba.create({
       codigo: `GESI-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
       dias: datos.dias, plan_id: plan.id, creado_por: adminId,
       ruta_acceso: resolverRuta(plan, datos.ruta_acceso),
       email: datos.email?.trim().toLowerCase() || null,
       vence_en: datos.vence_en || null, activo: true,
     });
+    // El código queda guardado aunque el proveedor de correo no responda.
+    const correo = await enviarCodigoAcceso(codigo, plan);
+    return { ...(codigo.toJSON ? codigo.toJSON() : codigo), ...correo };
+  }
+
+  static async enviarCorreo(id) {
+    const codigo = await CodigoPrueba.findByPk(id);
+    if (!codigo || !codigo.email) throw error('El código no tiene un destinatario asignado.');
+    if (!codigo.activo || codigo.usado_en || (codigo.vence_en && new Date(codigo.vence_en) <= new Date())) throw error('Solo se pueden enviar códigos disponibles para canjear.');
+    const plan = await Plan.findOne({where:{id:codigo.plan_id,activo:true,equivale_plan:'pago'}});
+    if (!plan) throw error('El plan de este código ya no está disponible.');
+    return enviarCodigoAcceso(codigo, plan);
   }
 
   static async desactivar(id) {

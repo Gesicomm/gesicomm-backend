@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "arial",
+        "createdAt": "2026-10-28T19:00:00.740Z",
+        "reason": "Claude: HTML email; Outlook VML button and email clients only render system fonts, web fonts are unreliable"
+      }
+    ]
+  }
+}
