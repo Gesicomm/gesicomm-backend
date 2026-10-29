@@ -195,6 +195,24 @@ describe('Marca Personal · Instagram y Facebook', () => {
     expect(g.llamadas.filter((l) => l.ruta === '1789/media_publish')).toHaveLength(1);
   });
 
+  test('la bandeja de Instagram trae foto, nombre, último mensaje y si espera respuesta', async () => {
+    const store = memoria(); conInstagram(store);
+    const g = grafo((p, ruta) => {
+      if (ruta === '300/conversations') return { data: [
+        { id: 'c1', updated_time: 't1', participants: { data: [{ id: '1789', username: 'mimarca' }, { id: '55', username: 'ana' }] }, messages: { data: [{ message: 'Hola, ¿precio?', from: { id: '55', username: 'ana' }, created_time: 't1' }] } },
+        { id: 'c2', updated_time: 't2', participants: { data: [{ id: '1789', username: 'mimarca' }, { id: '66', username: 'beto' }] }, messages: { data: [{ message: 'Gracias', from: { id: '1789', username: 'mimarca' }, created_time: 't2' }] } },
+      ] };
+      if (ruta === '55') return { name: 'Ana Pérez', profile_pic: 'https://cdn.test/ana.jpg' };
+      if (ruta === '66') return new Error('sin perfil');
+      return {};
+    });
+    const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
+    const r = await svc.conversaciones(7, {});
+    expect(r.items[0]).toMatchObject({ sin_responder: true, contacto: { username: 'ana', nombre: 'Ana Pérez', foto: 'https://cdn.test/ana.jpg' }, ultimo: { texto: 'Hola, ¿precio?', propio: false } });
+    // Sin perfil de Meta queda el @usuario, sin foto.
+    expect(r.items[1]).toMatchObject({ sin_responder: false, contacto: { username: 'beto', nombre: null, foto: null }, ultimo: { propio: true } });
+  });
+
   test('rechaza archivos que no son de la marca o con rutas manipuladas', async () => {
     const store = memoria(); conInstagram(store);
     const svc = createService({ store, graph: grafo(() => ({})), r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
