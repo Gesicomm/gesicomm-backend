@@ -542,7 +542,9 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     const account = await marca(usuario);
     const c = await conexionLista(account, 'instagram');
     const r = await g().facebook(`${idMeta(body?.media_id, 'Publicación')}/comments`, { token: c.token, params: { fields: 'id,text,username,timestamp,hidden,like_count,replies{id,text,username,timestamp}', limit: 25, after: cursor(body?.after) } });
-    return { items: r.data || [], ...paging(r) };
+    // Sin responder: ninguna respuesta de la cuenta propia en el hilo.
+    const items = (r.data || []).map((x) => ({ ...x, sin_responder: !(x.replies?.data || []).some((y) => y.username === c.username) }));
+    return { items, ...paging(r) };
   }
 
   async function responderComentario(usuario, body) {
@@ -569,17 +571,32 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     return { ...c, pagina: pagina.external_id };
   }
 
+  // Perfil de quien escribió (API de perfil de usuario de Instagram): nombre y foto.
+  // Si Meta no lo da (cuenta privada, sin consentimiento), queda el @usuario.
+  async function perfil(c, contacto) {
+    if (!contacto?.id) return contacto;
+    const p = await g().facebook(idMeta(contacto.id, 'Contacto'), { token: c.token, params: { fields: 'name,username,profile_pic' } }).catch(() => null);
+    const foto = typeof p?.profile_pic === 'string' && p.profile_pic.startsWith('https://') ? p.profile_pic : null;
+    return { ...contacto, username: contacto.username || p?.username || null, nombre: p?.name || null, foto };
+  }
+  const esPropio = (c, de) => de?.username === c.username || String(de?.id) === c.external_id;
+
   async function conversaciones(usuario, body) {
     const account = await marca(usuario);
     const c = await bandeja(account);
-    const r = await g().facebook(`${c.pagina}/conversations`, { token: c.token, params: { platform: 'instagram', fields: 'id,updated_time,participants', limit: 20, after: cursor(body?.after) } });
-    return {
-      items: (r.data || []).map((conv) => ({
+    const r = await g().facebook(`${c.pagina}/conversations`, { token: c.token, params: { platform: 'instagram', fields: 'id,updated_time,participants,messages.limit(1){message,from,created_time}', limit: 20, after: cursor(body?.after) } });
+    const items = await Promise.all((r.data || []).map(async (conv) => {
+      const ultimo = conv.messages?.data?.[0];
+      const contacto = (conv.participants?.data || []).find((p) => p.username !== c.username && String(p.id) !== c.external_id) || null;
+      return {
         id: conv.id, updated_time: conv.updated_time,
-        contacto: (conv.participants?.data || []).find((p) => p.username !== c.username && String(p.id) !== c.external_id) || null,
-      })),
-      ...paging(r),
-    };
+        contacto: await perfil(c, contacto),
+        ultimo: ultimo ? { texto: ultimo.message || '', created_time: ultimo.created_time, propio: esPropio(c, ultimo.from) } : null,
+        // El último mensaje es de la persona: está esperando respuesta.
+        sin_responder: Boolean(ultimo && !esPropio(c, ultimo.from)),
+      };
+    }));
+    return { items, ...paging(r) };
   }
 
   async function leerConversacion(c, conversacionId) {
@@ -593,7 +610,7 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
     })).reverse();
     const ultimoEntrante = [...mensajes].reverse().find((m) => !m.propio);
     const abierta = Boolean(ultimoEntrante && ahora() - new Date(ultimoEntrante.created_time).getTime() < VENTANA_MENSAJES_MS);
-    return { contacto, mensajes, ventana_abierta: abierta };
+    return { contacto: await perfil(c, contacto), mensajes, ventana_abierta: abierta };
   }
 
   async function mensajes(usuario, body) {
