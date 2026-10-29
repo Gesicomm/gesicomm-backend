@@ -11,7 +11,7 @@ async function run(){
   assert.equal(existing.tabla,null,'Solo se ejecuta en una base temporal vacía.');
   await db.query(`
     CREATE TABLE roles(id SERIAL PRIMARY KEY,nombre TEXT);
-    CREATE TABLE usuarios(id SERIAL PRIMARY KEY,rol_id INTEGER REFERENCES roles(id),correo_electronico TEXT,nombre TEXT,telefono TEXT,plan TEXT,activo BOOLEAN DEFAULT true,updated_at TIMESTAMPTZ);
+    CREATE TABLE usuarios(id SERIAL PRIMARY KEY,rol_id INTEGER REFERENCES roles(id),correo_electronico TEXT,nombre TEXT,telefono TEXT,plan TEXT,activo BOOLEAN DEFAULT true,"createdAt" TIMESTAMPTZ DEFAULT NOW(),"updatedAt" TIMESTAMPTZ DEFAULT NOW());
     CREATE TABLE planes(id SERIAL PRIMARY KEY,codigo VARCHAR(50) UNIQUE,nombre TEXT,acceso_rutas TEXT,precio INTEGER,moneda TEXT,periodicidad TEXT,equivale_plan TEXT,resumen TEXT,features JSON,etiqueta TEXT,cta TEXT,destacado BOOLEAN,orden INTEGER,activo BOOLEAN,created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW());
     CREATE TABLE suscripciones(id SERIAL PRIMARY KEY,plan_id INTEGER REFERENCES planes(id),usuario_id INTEGER REFERENCES usuarios(id),email TEXT,nombre TEXT,telefono TEXT,estado TEXT,precio_pagado INTEGER,periodo_inicio TIMESTAMPTZ,periodo_fin TIMESTAMPTZ,ruta_acceso TEXT,created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW());
     CREATE TABLE codigos_prueba(id SERIAL PRIMARY KEY,plan_id INTEGER REFERENCES planes(id),usado_en TIMESTAMPTZ,activo BOOLEAN,updated_at TIMESTAMPTZ);

@@ -44,7 +44,7 @@ module.exports={
           AND (anterior.plan_id IS NOT NULL OR (u.plan='pago' AND NOT EXISTS (SELECT 1 FROM suscripciones s WHERE s.usuario_id=u.id)))
           AND NOT EXISTS(SELECT 1 FROM suscripciones s WHERE s.usuario_id=u.id AND s.acceso_permanente=true)
         RETURNING id`,{...options,replacements:{codigos:CODIGOS}});
-      await qi.sequelize.query(`UPDATE usuarios u SET plan='pago',updated_at=NOW()
+      await qi.sequelize.query(`UPDATE usuarios u SET plan='pago'
         WHERE EXISTS(SELECT 1 FROM suscripciones s WHERE s.usuario_id=u.id AND s.acceso_permanente=true)`,options);
       const [retirados]=await qi.sequelize.query('UPDATE planes SET activo=false,destacado=false,updated_at=NOW() WHERE codigo NOT IN (:codigos) RETURNING id',{...options,replacements:{codigos:CODIGOS}});
       await qi.sequelize.query(`UPDATE codigos_prueba SET activo=false,updated_at=NOW()
