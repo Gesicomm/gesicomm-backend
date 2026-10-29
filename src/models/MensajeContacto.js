@@ -52,6 +52,11 @@ const MensajeContacto = sequelize.define('MensajeContacto', {
     type: DataTypes.STRING(45),
     allowNull: true,
   },
+  datos_proveedor: { type: DataTypes.JSONB, allowNull: true },
+  revision_proveedor: { type: DataTypes.STRING(12), allowNull: false, defaultValue: 'pendiente' },
+  nota_revision: { type: DataTypes.TEXT, allowNull: true },
+  revisado_por: { type: DataTypes.INTEGER, allowNull: true, references: { model: 'usuarios', key: 'id' } },
+  revisado_en: { type: DataTypes.DATE, allowNull: true },
   user_agent: {
     type: DataTypes.STRING(500),
     allowNull: true,

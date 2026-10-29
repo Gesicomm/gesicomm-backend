@@ -24,6 +24,8 @@ const mensajeContactoController = require('../controllers/mensajeContacto.contro
 
 const router = express.Router();
 const CodigoPruebaService = require('../services/codigoPrueba.service');
+const SolicitudProveedorService = require('../services/solicitudProveedor.service');
+const { auditoria } = require('../utils/logger');
 const { asyncHandler } = require('../utils/asyncHandler');
 const soloAdmin = (req, res, next) => req.usuario?.rol === 'administrador' ? next() : res.status(403).json({ message: 'Solo administradores.' });
 
@@ -114,6 +116,43 @@ router.post(
   honeypot('Mensaje recibido. Te respondemos dentro de un día hábil.'),
   mensajeContactoController.crear
 );
+
+router.post('/solicitudes-proveedores', limiteFormulario, validar(z.object({
+  nombre: z.string().trim().min(1).max(70),
+  apellido: z.string().trim().min(1).max(70),
+  email: z.string().trim().email().max(160),
+  documento: z.string().trim().min(1).max(30),
+  ruc: z.string().trim().max(30).optional(),
+  whatsapp: z.string().trim().min(6).max(40).refine(v => v.replace(/\D/g, '').length >= 6, 'Ingresá un número de WhatsApp válido.'),
+  categoria: z.enum(Object.keys(SolicitudProveedorService.CATEGORIAS)),
+  descripcion: z.string().trim().max(500).optional(),
+  sitio_web: z.string().max(200).optional(),
+})), honeypot('Solicitud recibida.'), asyncHandler(async (req, res) => {
+  const mensaje = await SolicitudProveedorService.crear(req.body, { ip: req.ip, userAgent: req.get('user-agent') });
+  auditoria('PROVEEDOR_SOLICITUD_RECIBIDA', { id: mensaje.id });
+  res.status(201).json({ message: 'Solicitud recibida para revisión.', mensaje });
+}));
+
+router.get('/admin/solicitudes-proveedores', verificarToken, soloAdmin, asyncHandler(async (req, res) => {
+  const filtros = z.object({ estado: z.enum(['pendiente', 'aceptada', 'rechazada']).optional(),
+    page: z.coerce.number().int().min(1).max(100000).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  }).safeParse(req.query);
+  if (!filtros.success) return res.status(400).json({ message: 'Filtros de solicitudes inválidos.' });
+  res.set('Cache-Control', 'no-store');
+  res.json(await SolicitudProveedorService.listar(filtros.data));
+}));
+
+router.patch('/admin/solicitudes-proveedores/:id', verificarToken, soloAdmin, validar(z.object({
+  estado: z.enum(['aceptada', 'rechazada']), nota: z.string().trim().max(2000).optional(),
+}).refine(d => d.estado !== 'rechazada' || d.nota?.length >= 3, { path: ['nota'], message: 'Indicá el motivo del rechazo.' })), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!/^[1-9]\d*$/.test(req.params.id) || !Number.isSafeInteger(id)) return res.status(400).json({ message: 'ID inválido.' });
+  const solicitud = await SolicitudProveedorService.revisar(id, req.body, req.usuario.id);
+  auditoria('PROVEEDOR_SOLICITUD_REVISADA', { id, estado: solicitud.estado, usuarioId: req.usuario.id });
+  res.set('Cache-Control', 'no-store');
+  res.json({ solicitud });
+}));
 
 // ============================================================
 // Con sesión iniciada — Configuración → Privacidad y datos

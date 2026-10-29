@@ -456,6 +456,7 @@ sequelize.authenticate().then(async () => {
   logger.info({mensaje:'Catálogo de cuatro planes verificado.',...catalogoMigrado});
 
   // Validar que el esquema de la BD coincide con los modelos
+  await require('./migrations/20261029170000-revision-solicitudes-proveedores').up(sequelize.getQueryInterface());
   try {
     await validarEsquema(sequelize);
   } catch (err) {
