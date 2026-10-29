@@ -486,12 +486,17 @@ function createService({ store, graph, cuentaDe, r2, ahora = () => Date.now() } 
       try { enlace = new URL(body.enlace); } catch { throw error('El enlace no es una URL válida.'); }
       if (enlace.protocol !== 'https:' || enlace.username || enlace.password) throw error('Usá un enlace https:// sin credenciales.');
     }
-    if (medios.length > 1 || medios.some((m) => m.tipo !== 'imagen')) throw error('En Facebook podés publicar texto, un enlace o una imagen JPG.');
+    if (medios.length > 1) throw error('En Facebook podés publicar texto, un enlace, una imagen JPG o un video.');
     if (!mensaje && !medios.length) throw error('Escribí el texto de la publicación.');
-    const formato = medios.length ? 'imagen' : 'texto';
+    const video = medios[0]?.tipo === 'video';
+    // El video de Página se guarda como 'reel', el formato de video que admite la tabla.
+    const formato = video ? 'reel' : medios.length ? 'imagen' : 'texto';
     const pub = await db().crearPublicacion({ account, conexion: c.id, usuario, plataforma: 'facebook', formato, texto: mensaje, medios });
     try {
-      const r = medios.length
+      const r = video
+        // Meta descarga el archivo desde R2 (file_url) y lo publica en la Página.
+        ? await g().facebook(`${c.external_id}/videos`, { method: 'POST', token: c.token, params: { file_url: medios[0].url, description: mensaje || undefined, published: true } })
+        : medios.length
         ? await g().facebook(`${c.external_id}/photos`, { method: 'POST', token: c.token, params: { url: medios[0].url, message: mensaje || undefined, published: true } })
         : await g().facebook(`${c.external_id}/feed`, { method: 'POST', token: c.token, params: { message: mensaje, link: enlace?.href } });
       const externo = String(r.post_id || r.id);

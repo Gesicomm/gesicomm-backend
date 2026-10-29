@@ -195,6 +195,17 @@ describe('Marca Personal · Instagram y Facebook', () => {
     expect(g.llamadas.filter((l) => l.ruta === '1789/media_publish')).toHaveLength(1);
   });
 
+  test('publica un video en la Página de Facebook', async () => {
+    const store = memoria(); conInstagram(store);
+    const g = grafo((p, ruta) => (ruta === '300/videos' ? { id: 'vid-1' } : ruta === 'vid-1' ? { permalink_url: '/mimarca/videos/1' } : {}));
+    const svc = createService({ store, graph: g, r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
+    const r = await svc.publicarFacebook(7, { texto: 'Mirá esto', medios: [medio('marca-1', 'video')] });
+    expect(r.estado).toBe('publicada');
+    const envio = g.llamadas.find((l) => l.ruta === '300/videos');
+    expect(envio).toMatchObject({ method: 'POST', params: { file_url: medio('marca-1', 'video').url, description: 'Mirá esto' } });
+    await expect(svc.publicarFacebook(7, { medios: [medio('marca-1', 'video'), medio('marca-1')] })).rejects.toThrow('un video');
+  });
+
   test('rechaza archivos que no son de la marca o con rutas manipuladas', async () => {
     const store = memoria(); conInstagram(store);
     const svc = createService({ store, graph: grafo(() => ({})), r2, cuentaDe: async () => 'marca-1', ahora: () => AHORA });
