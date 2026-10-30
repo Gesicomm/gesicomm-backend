@@ -15,6 +15,9 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const { z } = require('zod');
+const multer = require('multer');
+const sharp = require('sharp');
+const crypto = require('crypto');
 
 const { validar } = require('../middleware/validacion');
 const { verificarToken } = require('../middleware/autenticacion');
@@ -25,6 +28,7 @@ const mensajeContactoController = require('../controllers/mensajeContacto.contro
 const router = express.Router();
 const CodigoPruebaService = require('../services/codigoPrueba.service');
 const SolicitudProveedorService = require('../services/solicitudProveedor.service');
+const { R2Service, IMMUTABLE_CACHE_CONTROL } = require('../services/r2/r2.service');
 const { auditoria } = require('../utils/logger');
 const { asyncHandler } = require('../utils/asyncHandler');
 const soloAdmin = (req, res, next) => req.usuario?.rol === 'administrador' ? next() : res.status(403).json({ message: 'Solo administradores.' });
@@ -117,7 +121,24 @@ router.post(
   mensajeContactoController.crear
 );
 
-router.post('/solicitudes-proveedores', limiteFormulario, validar(z.object({
+const fotoProveedor = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 14 },
+  fileFilter: (_req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) }).single('foto');
+const recibirFotoProveedor = (req, res, next) => fotoProveedor(req, res, error => {
+  if (error) return res.status(400).json({ message: error.code === 'LIMIT_FILE_SIZE' ? 'La foto puede pesar hasta 5 MB.' : 'No pudimos leer la foto. Subí un JPG, PNG o WebP.' });
+  next();
+});
+
+router.get('/servicios', limiteConsulta, asyncHandler(async (req, res) => {
+  const filtros = z.object({ busqueda: z.string().trim().max(100).default(''),
+    categoria: z.enum(['', ...Object.keys(SolicitudProveedorService.CATEGORIAS)]).default(''),
+    page: z.coerce.number().int().min(1).max(100000).default(1),
+  }).safeParse(req.query);
+  if (!filtros.success) return res.status(400).json({ message: 'Filtros de búsqueda inválidos.' });
+  res.set('Cache-Control', 'public, max-age=60');
+  res.json(await SolicitudProveedorService.buscarPublicados(filtros.data));
+}));
+
+router.post('/solicitudes-proveedores', limiteFormulario, recibirFotoProveedor, validar(z.object({
   nombre: z.string().trim().min(1).max(70),
   apellido: z.string().trim().min(1).max(70),
   email: z.string().trim().email().max(160),
@@ -125,12 +146,27 @@ router.post('/solicitudes-proveedores', limiteFormulario, validar(z.object({
   ruc: z.string().trim().max(30).optional(),
   whatsapp: z.string().trim().min(6).max(40).refine(v => v.replace(/\D/g, '').length >= 6, 'Ingresá un número de WhatsApp válido.'),
   categoria: z.enum(Object.keys(SolicitudProveedorService.CATEGORIAS)),
-  descripcion: z.string().trim().max(500).optional(),
+  oferta: z.string().trim().min(5, 'Contanos qué servicio ofrecés.').max(90),
+  descripcion: z.string().trim().min(30, 'Describí tu servicio en al menos 30 caracteres.').max(500),
   sitio_web: z.string().max(200).optional(),
 })), honeypot('Solicitud recibida.'), asyncHandler(async (req, res) => {
-  const mensaje = await SolicitudProveedorService.crear(req.body, { ip: req.ip, userAgent: req.get('user-agent') });
-  auditoria('PROVEEDOR_SOLICITUD_RECIBIDA', { id: mensaje.id });
-  res.status(201).json({ message: 'Solicitud recibida para revisión.', mensaje });
+  if (!req.file) return res.status(400).json({ message: 'Subí una foto para tu perfil de proveedor (JPG, PNG o WebP).' });
+  let foto;
+  try {
+    const meta = await sharp(req.file.buffer).metadata();
+    if (!['jpeg', 'png', 'webp'].includes(meta.format) || !meta.width || !meta.height || meta.width < 200 || meta.height < 200 || meta.width * meta.height > 30000000) {
+      return res.status(400).json({ message: 'La foto debe tener al menos 200 × 200 píxeles y ser JPG, PNG o WebP.' });
+    }
+    const imagen = await sharp(req.file.buffer).rotate().resize(720, 720, { fit: 'cover', position: 'attention' }).webp({ quality: 84 }).toBuffer();
+    const key = `proveedores/perfiles/${Date.now()}-${crypto.randomBytes(12).toString('hex')}.webp`;
+    foto = await R2Service.uploadObject({ key, body: imagen, contentType: 'image/webp', cacheControl: IMMUTABLE_CACHE_CONTROL, contentLength: imagen.length });
+    const mensaje = await SolicitudProveedorService.crear({ ...req.body, foto_url: foto.url, foto_storage_key: key }, { ip: req.ip, userAgent: req.get('user-agent') });
+    auditoria('PROVEEDOR_SOLICITUD_RECIBIDA', { id: mensaje.id });
+    return res.status(201).json({ message: 'Solicitud recibida para revisión.', mensaje });
+  } catch (error) {
+    if (foto?.key) await R2Service.deleteObject(foto.key).catch(() => {});
+    throw error;
+  }
 }));
 
 router.get('/admin/solicitudes-proveedores', verificarToken, soloAdmin, asyncHandler(async (req, res) => {
