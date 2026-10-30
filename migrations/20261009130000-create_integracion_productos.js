@@ -53,6 +53,20 @@ async function up(qi, S) {
     for (const [name, columns] of Object.entries(definitions)) {
       if (!tables.includes(name)) await qi.createTable(name, columns, { transaction });
     }
+    // La tabla de credenciales ya existe en instalaciones anteriores.
+    // createTable no la modifica, así que agregar el vínculo por separado.
+    const columnasCredenciales = await qi.describeTable('integracion_credenciales', { transaction });
+    if (!columnasCredenciales.proveedor_id) {
+      await qi.addColumn('integracion_credenciales', 'proveedor_id', {
+        type: S.INTEGER, allowNull: true, references: { model: 'proveedores', key: 'id' },
+      }, { transaction });
+    }
+    if (columnasCredenciales.tienda_id?.allowNull === false) {
+      await qi.sequelize.query('ALTER TABLE integracion_credenciales ALTER COLUMN tienda_id DROP NOT NULL', { transaction });
+    }
+    if (columnasCredenciales.usuario_id?.allowNull === false) {
+      await qi.sequelize.query('ALTER TABLE integracion_credenciales ALTER COLUMN usuario_id DROP NOT NULL', { transaction });
+    }
     // Logo chico del proveedor: es lo que la tarjeta del producto muestra
     // en Mi catálogo para reconocer de dónde viene cada producto.
     const columnasProveedores = await qi.describeTable('proveedores', { transaction });
