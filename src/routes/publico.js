@@ -29,6 +29,7 @@ const router = express.Router();
 const CodigoPruebaService = require('../services/codigoPrueba.service');
 const SolicitudProveedorService = require('../services/solicitudProveedor.service');
 const ProveedorPortalService = require('../services/proveedorPortal.service');
+const ProveedorDocumentos = require('../services/proveedorDocumentos.service');
 const { R2Service, IMMUTABLE_CACHE_CONTROL } = require('../services/r2/r2.service');
 const { auditoria } = require('../utils/logger');
 const { asyncHandler } = require('../utils/asyncHandler');
@@ -122,10 +123,10 @@ router.post(
   mensajeContactoController.crear
 );
 
-const fotoProveedor = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 14 },
-  fileFilter: (_req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) }).single('foto');
+const fotoProveedor = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 2, fields: 14 },
+  fileFilter: (_req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) }).fields([{ name: 'foto', maxCount: 1 }, { name: 'cedula_foto', maxCount: 1 }]);
 const recibirFotoProveedor = (req, res, next) => fotoProveedor(req, res, error => {
-  if (error) return res.status(400).json({ message: error.code === 'LIMIT_FILE_SIZE' ? 'La foto puede pesar hasta 5 MB.' : 'No pudimos leer la foto. Subí un JPG, PNG o WebP.' });
+  if (error) return res.status(400).json({ message: error.code === 'LIMIT_FILE_SIZE' ? 'Cada imagen puede pesar hasta 8 MB.' : 'No pudimos leer las fotos. Subí archivos JPG, PNG o WebP.' });
   next();
 });
 
@@ -158,23 +159,59 @@ router.post('/solicitudes-proveedores', limiteFormulario, recibirFotoProveedor, 
   descripcion: z.string().trim().min(30, 'Describí tu servicio en al menos 30 caracteres.').max(500),
   sitio_web: z.string().max(200).optional(),
 })), honeypot('Solicitud recibida.'), asyncHandler(async (req, res) => {
-  if (!req.file) return res.status(400).json({ message: 'Subí una foto para tu perfil de proveedor (JPG, PNG o WebP).' });
-  let foto;
+  const fotoPerfil = req.files?.foto?.[0];
+  const fotoCedula = req.files?.cedula_foto?.[0];
+  if (!fotoPerfil) return res.status(400).json({ message: 'Subí una foto para tu perfil de proveedor (JPG, PNG o WebP).' });
+  if (!fotoCedula) return res.status(400).json({ message: 'Subí una foto legible de tu cédula para la revisión privada.' });
+  if (fotoPerfil.size > 5 * 1024 * 1024) return res.status(400).json({ message: 'La foto de perfil puede pesar hasta 5 MB.' });
+  let foto, cedula;
   try {
-    const meta = await sharp(req.file.buffer).metadata();
+    const meta = await sharp(fotoPerfil.buffer).metadata();
     if (!['jpeg', 'png', 'webp'].includes(meta.format) || !meta.width || !meta.height || meta.width < 200 || meta.height < 200 || meta.width * meta.height > 30000000) {
       return res.status(400).json({ message: 'La foto debe tener al menos 200 × 200 píxeles y ser JPG, PNG o WebP.' });
     }
-    const imagen = await sharp(req.file.buffer).rotate().resize(720, 720, { fit: 'cover', position: 'attention' }).webp({ quality: 84 }).toBuffer();
+    const imagen = await sharp(fotoPerfil.buffer).rotate().resize(720, 720, { fit: 'cover', position: 'attention' }).webp({ quality: 84 }).toBuffer();
     const key = `proveedores/perfiles/${Date.now()}-${crypto.randomBytes(12).toString('hex')}.webp`;
     foto = await R2Service.uploadObject({ key, body: imagen, contentType: 'image/webp', cacheControl: IMMUTABLE_CACHE_CONTROL, contentLength: imagen.length });
-    const mensaje = await SolicitudProveedorService.crear({ ...req.body, foto_url: foto.url, foto_storage_key: key }, { ip: req.ip, userAgent: req.get('user-agent') });
+    cedula = await ProveedorDocumentos.subirPrivado(fotoCedula, 'cedula');
+    const mensaje = await SolicitudProveedorService.crear({ ...req.body, foto_url: foto.url, foto_storage_key: key, cedula_foto: cedula }, { ip: req.ip, userAgent: req.get('user-agent') });
     auditoria('PROVEEDOR_SOLICITUD_RECIBIDA', { id: mensaje.id });
     return res.status(201).json({ message: 'Solicitud recibida para revisión.', mensaje });
   } catch (error) {
     if (foto?.key) await R2Service.deleteObject(foto.key).catch(() => {});
+    if (cedula) await ProveedorDocumentos.eliminarPrivado(cedula).catch(() => {});
     throw error;
   }
+}));
+
+const contratoProveedor = multer({ storage: multer.memoryStorage(), limits: { fileSize: ProveedorDocumentos.MAX_SIZE, files: 1 } }).single('contrato');
+const recibirContratoProveedor = (req, res, next) => contratoProveedor(req, res, err => err
+  ? res.status(400).json({ message: err.code === 'LIMIT_FILE_SIZE' ? 'El contrato puede pesar hasta 8 MB.' : 'No pudimos leer el contrato.' }) : next());
+const idProveedorValido = (req, res, next) => /^[1-9]\d*$/.test(req.params.id) && Number.isSafeInteger(Number(req.params.id))
+  ? next() : res.status(400).json({ message: 'ID inválido.' });
+
+router.get('/admin/solicitudes-proveedores/:id/documentos/:tipo', verificarToken, soloAdmin, idProveedorValido, asyncHandler(async (req, res) => {
+  const doc = await ProveedorDocumentos.leerDocumento(Number(req.params.id), req.params.tipo);
+  res.set('Cache-Control', 'private, no-store');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Content-Disposition', `${req.params.tipo === 'cedula' ? 'inline' : 'attachment'}; filename="${doc.nombre}"`);
+  res.type(doc.mime).send(doc.body);
+}));
+
+router.post('/admin/solicitudes-proveedores/:id/contrato', verificarToken, soloAdmin, idProveedorValido, recibirContratoProveedor, asyncHandler(async (req, res) => {
+  const documentos = await ProveedorDocumentos.guardarDocumento(Number(req.params.id), 'contrato_base', req.file);
+  auditoria('PROVEEDOR_CONTRATO_ADJUNTADO', { solicitudId: Number(req.params.id), adminId: req.usuario.id });
+  res.set('Cache-Control', 'no-store');
+  res.json({ documentos });
+}));
+
+router.patch('/admin/solicitudes-proveedores/:id/contrato', verificarToken, soloAdmin, idProveedorValido, validar(z.object({
+  estado: z.enum(['validado', 'correccion']), nota: z.string().trim().max(1000).optional(),
+})), asyncHandler(async (req, res) => {
+  const documentos = await ProveedorDocumentos.revisarContrato(Number(req.params.id), req.body);
+  auditoria('PROVEEDOR_CONTRATO_REVISADO', { solicitudId: Number(req.params.id), estado: req.body.estado, adminId: req.usuario.id });
+  res.set('Cache-Control', 'no-store');
+  res.json({ documentos });
 }));
 
 router.get('/admin/solicitudes-proveedores', verificarToken, soloAdmin, asyncHandler(async (req, res) => {

@@ -4,6 +4,7 @@ const { Op } = require('sequelize');
 const { MensajeContacto, ProveedorServicio } = require('../models');
 const sequelize = require('../config/database');
 const { QueryTypes } = require('sequelize');
+const { resumenDocumentos } = require('./proveedorDocumentos.service');
 
 const CATEGORIAS = {
   mercaderias: 'Mercaderías', envios: 'Envíos y logística', editor_videos: 'Editor de videos',
@@ -25,7 +26,7 @@ function datosProveedor(m) {
 
 const presentar = m => ({
   id: m.id, nombre: m.nombre, email: m.email, recibido_en: m.created_at,
-  estado: m.revision_proveedor || 'pendiente', datos: datosProveedor(m), mensaje: m.mensaje,
+  estado: m.revision_proveedor || 'pendiente', datos: datosProveedor(m), documentos: resumenDocumentos(datosProveedor(m)), mensaje: m.mensaje,
   nota_revision: m.nota_revision, revisado_por: m.revisado_por, revisado_en: m.revisado_en,
 });
 
@@ -33,7 +34,8 @@ class SolicitudProveedorService {
   static async crear(datos, contexto = {}) {
     const perfil = { documento: datos.documento, ruc: datos.ruc || '', whatsapp: datos.whatsapp,
       categoria: datos.categoria, especialidad: CATEGORIAS[datos.categoria],
-      oferta: datos.oferta, descripcion: datos.descripcion, foto_url: datos.foto_url, foto_storage_key: datos.foto_storage_key };
+      oferta: datos.oferta, descripcion: datos.descripcion, foto_url: datos.foto_url, foto_storage_key: datos.foto_storage_key,
+      documentos: { cedula: datos.cedula_foto } };
     const registro = await MensajeContacto.create({
       area: 'comercial', nombre: `${datos.nombre} ${datos.apellido}`, email: datos.email.toLowerCase(),
       asunto: PREFIJO + perfil.especialidad, datos_proveedor: perfil, revision_proveedor: 'pendiente',
@@ -81,8 +83,8 @@ class SolicitudProveedorService {
     const registro = await MensajeContacto.findOne({ where: { id, ...filtroProveedor() } });
     if (!registro) throw fallo(404, 'Solicitud de proveedor no encontrada.');
     if (registro.revision_proveedor !== 'pendiente') throw fallo(409, 'Esta solicitud ya fue revisada. Actualizá la bandeja para ver la decisión.');
-    if (estado === 'aceptada' && !['foto_url', 'oferta', 'descripcion'].every(campo => String(datosProveedor(registro)[campo] || '').trim())) {
-      throw fallo(400, 'Esta postulación no tiene foto, servicio y descripción. Pedí esos datos antes de publicarla.');
+    if (estado === 'aceptada' && (!['foto_url', 'oferta', 'descripcion'].every(campo => String(datosProveedor(registro)[campo] || '').trim()) || !resumenDocumentos(datosProveedor(registro)).cedula_cargada)) {
+      throw fallo(400, 'Esta postulación necesita foto de perfil, foto de cédula, servicio y descripción antes de aprobarla.');
     }
     return sequelize.transaction(async transaction => {
       // La condición atómica evita que dos administradores se sobrescriban.

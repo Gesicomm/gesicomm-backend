@@ -10,12 +10,17 @@ jest.mock('../services/codigoPrueba.service', () => ({}));
 jest.mock('../utils/logger', () => ({ auditoria: jest.fn(), logger: { error: jest.fn() } }));
 jest.mock('../config/database', () => ({ query: jest.fn(), transaction: jest.fn(fn => fn({})) }));
 jest.mock('../services/r2/r2.service', () => ({ R2Service: { uploadObject: jest.fn(), deleteObject: jest.fn() }, IMMUTABLE_CACHE_CONTROL: 'public, max-age=31536000, immutable' }));
+jest.mock('../services/proveedorDocumentos.service', () => ({
+  MAX_SIZE: 8 * 1024 * 1024, subirPrivado: jest.fn(), eliminarPrivado: jest.fn(), guardarDocumento: jest.fn(), leerDocumento: jest.fn(), revisarContrato: jest.fn(),
+  resumenDocumentos: perfil => ({ cedula_cargada: Boolean(perfil?.documentos?.cedula?.key), contrato_disponible: Boolean(perfil?.documentos?.contrato_base?.key), contrato_firmado: Boolean(perfil?.documentos?.contrato_firmado?.key), contrato_estado: perfil?.documentos?.contrato_estado || 'sin_contrato' }),
+}));
 const express = require('express');
 const request = require('supertest');
 const sharp = require('sharp');
 const { MensajeContacto, ProveedorServicio } = require('../models');
 const sequelize = require('../config/database');
 const { R2Service } = require('../services/r2/r2.service');
+const Documentos = require('../services/proveedorDocumentos.service');
 const { auditoria } = require('../utils/logger');
 const app = express();
 app.use(express.json());
@@ -29,13 +34,14 @@ beforeAll(async () => { imagen = await sharp({ create: { width: 320, height: 320
 const enviar = (campos = datos, conFoto = true) => {
   let req = request(app).post(endpoint);
   for (const [key, value] of Object.entries(campos)) req = req.field(key, value);
-  return conFoto ? req.attach('foto', imagen, { filename: 'ana.png', contentType: 'image/png' }) : req;
+  return conFoto ? req.attach('foto', imagen, { filename: 'ana.png', contentType: 'image/png' }).attach('cedula_foto', imagen, { filename: 'cedula.png', contentType: 'image/png' }) : req;
 };
 let registro;
 beforeEach(() => {
   jest.clearAllMocks();
-  registro = { id: 41, area: 'comercial', nombre: 'Ana Pérez', email: 'ana@example.com', asunto: 'Gesicom · Postulación de proveedor · Envíos y logística', mensaje: 'Documento: 123456\nWhatsApp: +595981123456', datos_proveedor: { ...datos, especialidad: 'Envíos y logística', foto_url: 'https://images.example/ana.webp' }, revision_proveedor: 'pendiente' };
+  registro = { id: 41, area: 'comercial', nombre: 'Ana Pérez', email: 'ana@example.com', asunto: 'Gesicom · Postulación de proveedor · Envíos y logística', mensaje: 'Documento: 123456\nWhatsApp: +595981123456', datos_proveedor: { ...datos, especialidad: 'Envíos y logística', foto_url: 'https://images.example/ana.webp', documentos: { cedula: { key: 'proveedores/documentos/cedula.jpg' } } }, revision_proveedor: 'pendiente' };
   R2Service.uploadObject.mockResolvedValue({ key: 'proveedores/perfiles/ana.webp', url: 'https://images.example/ana.webp' });
+  Documentos.subirPrivado.mockResolvedValue({ key: 'proveedores/documentos/cedula.jpg', mime: 'image/jpeg', nombre: 'cedula.jpg' });
   sequelize.query.mockImplementation(async sql => sql.includes('COUNT(*)') ? [{ total: 1 }] : [{ id: 41, nombre: 'Ana Pérez', categoria: 'envios', titulo: datos.oferta, resumen: datos.descripcion, imagenes: [], datos_proveedor: registro.datos_proveedor }]);
   ProveedorServicio.findOrCreate.mockResolvedValue([{ id: 41 }, true]);
   MensajeContacto.create.mockImplementation(async d => ({ ...d, id: 41, created_at: new Date() }));
@@ -55,6 +61,7 @@ test('el formulario guarda una postulación pendiente y la bandeja conserva las 
   expect(MensajeContacto.create).toHaveBeenCalledWith(expect.objectContaining({ revision_proveedor: 'pendiente', email: 'ana@example.com', datos_proveedor: expect.objectContaining({ categoria: 'envios' }) }));
   expect(MensajeContacto.create.mock.calls[0][0]).not.toHaveProperty('revisado_por');
   expect(res.body.mensaje).not.toHaveProperty('datos_proveedor');
+  expect(Documentos.subirPrivado).toHaveBeenCalledWith(expect.objectContaining({ originalname: 'cedula.png' }), 'cedula');
   const list = await request(app).get(adminEndpoint).set('x-test-role', 'administrador');
   expect(list.status).toBe(200);
   expect(list.headers['cache-control']).toBe('no-store');
@@ -67,6 +74,26 @@ test.each([{ categoria: 'admin' }, { documento: '' }, { whatsapp: 'abcdef' }, { 
 test('exige foto y no guarda una solicitud incompleta', async () => {
   expect((await enviar(datos, false)).status).toBe(400);
   expect(MensajeContacto.create).not.toHaveBeenCalled();
+});
+test('exige foto de cédula y nunca la entrega en el catálogo público', async () => {
+  let req = request(app).post(endpoint);
+  for (const [key, value] of Object.entries(datos)) req = req.field(key, value);
+  const sinCedula = await req.attach('foto', imagen, { filename: 'ana.png', contentType: 'image/png' });
+  expect(sinCedula.status).toBe(400);
+  expect(MensajeContacto.create).not.toHaveBeenCalled();
+  const publico = await request(app).get('/api/publico/servicios');
+  expect(publico.body.servicios[0]).not.toHaveProperty('documentos');
+});
+test('solo un administrador puede descargar la foto de cédula', async () => {
+  Documentos.leerDocumento.mockResolvedValue({ body: Buffer.from('foto'), mime: 'image/jpeg', nombre: 'cedula.jpg' });
+  const ruta = `${adminEndpoint}/41/documentos/cedula`;
+  expect((await request(app).get(ruta)).status).toBe(401);
+  expect((await request(app).get(ruta).set('x-test-role', 'usuario')).status).toBe(403);
+  expect(Documentos.leerDocumento).not.toHaveBeenCalled();
+  const admin = await request(app).get(ruta).set('x-test-role', 'administrador');
+  expect(admin.status).toBe(200);
+  expect(admin.headers['cache-control']).toBe('private, no-store');
+  expect(admin.headers['content-disposition']).toContain('cedula.jpg');
 });
 test('el honeypot no guarda postulaciones', async () => {
   expect((await enviar({ ...datos, sitio_web: 'bot' })).status).toBe(201);

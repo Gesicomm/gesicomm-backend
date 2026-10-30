@@ -7,6 +7,7 @@ const { Op, QueryTypes } = require('sequelize');
 const { sequelize, Usuario, MensajeContacto, ProveedorServicio } = require('../models');
 const { R2Service, IMMUTABLE_CACHE_CONTROL } = require('./r2/r2.service');
 const { CATEGORIAS } = require('./solicitudProveedor.service');
+const { resumenDocumentos } = require('./proveedorDocumentos.service');
 
 const PREFIJO = 'Gesicom · Postulación de proveedor · ';
 const error = (status, message) => Object.assign(new Error(message), { status });
@@ -67,7 +68,7 @@ class ProveedorPortalService {
   static async estado(usuarioId) {
     const { usuario, rolProveedor, postulacion } = await this.cuenta(usuarioId);
     return { rol_proveedor: rolProveedor, nombre: usuario.nombre, email: usuario.correo_electronico,
-      postulacion: postulacion ? { id: postulacion.id, estado: postulacion.revision_proveedor, especialidad: postulacion.datos_proveedor?.especialidad || '', foto_url: postulacion.datos_proveedor?.foto_url || '' } : null };
+      postulacion: postulacion ? { id: postulacion.id, estado: postulacion.revision_proveedor, especialidad: postulacion.datos_proveedor?.especialidad || '', foto_url: postulacion.datos_proveedor?.foto_url || '', documentos: resumenDocumentos(postulacion.datos_proveedor) } : null };
   }
 
   static async aprobada(usuarioId) {
