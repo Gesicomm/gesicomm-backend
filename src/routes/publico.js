@@ -28,6 +28,7 @@ const mensajeContactoController = require('../controllers/mensajeContacto.contro
 const router = express.Router();
 const CodigoPruebaService = require('../services/codigoPrueba.service');
 const SolicitudProveedorService = require('../services/solicitudProveedor.service');
+const ProveedorPortalService = require('../services/proveedorPortal.service');
 const { R2Service, IMMUTABLE_CACHE_CONTROL } = require('../services/r2/r2.service');
 const { auditoria } = require('../utils/logger');
 const { asyncHandler } = require('../utils/asyncHandler');
@@ -136,6 +137,13 @@ router.get('/servicios', limiteConsulta, asyncHandler(async (req, res) => {
   if (!filtros.success) return res.status(400).json({ message: 'Filtros de búsqueda inválidos.' });
   res.set('Cache-Control', 'public, max-age=60');
   res.json(await SolicitudProveedorService.buscarPublicados(filtros.data));
+}));
+
+router.get('/servicios/:id', limiteConsulta, asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!/^[1-9]\d*$/.test(req.params.id) || !Number.isSafeInteger(id)) return res.status(400).json({ message: 'ID inválido.' });
+  res.set('Cache-Control', 'public, max-age=60');
+  res.json({ servicio: await ProveedorPortalService.publico(id) });
 }));
 
 router.post('/solicitudes-proveedores', limiteFormulario, recibirFotoProveedor, validar(z.object({

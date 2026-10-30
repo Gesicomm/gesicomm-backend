@@ -188,6 +188,7 @@ app.use('/api/webhooks/marca-personal/whatsapp', require('./src/routes/marcaPers
 // No subir de 1mb sin tocar nginx: su client_max_body_size por defecto es 1m.
 app.use('/api/mis-landings-simples', express.json({ limit: '1mb' }));
 app.use('/api/mcp', express.json({ limit: '1mb' }));
+app.use('/api/proveedor', express.json({ limit: '100kb' }));
 // Mismo motivo que la línea de arriba: una página del Page Builder manda
 // su HTML/CSS/JS entero en el body. El techo de producto son 600 KB
 // sumando los tres campos (lo valida builderPageVersion.service.js con un
@@ -270,6 +271,7 @@ app.use('/api/tutoriales', require('./src/routes/tutorialesSistema'));
 app.use('/api/admin/educacion', adminEducacionRoutes);
 app.use('/api/admin/auth-tracking', adminAuthTrackingRoutes);
 app.use('/api/publico', publicoRoutes);
+app.use('/api/proveedor', require('./src/routes/proveedorPortal'));
 app.use('/api/l', comprimirPublico, landingPublicaRoutes);
 app.use('/l', comprimirPublico, landingHtmlRoutes);
 app.use('/api/pb', builderPublicaRoutes);
@@ -459,6 +461,7 @@ sequelize.authenticate().then(async () => {
   await require('./migrations/20261029170000-revision-solicitudes-proveedores').up(sequelize.getQueryInterface());
   await require('./migrations/20261030090000-tipo-ingreso-inicial-usuarios').up(sequelize.getQueryInterface());
   await require('./migrations/20261030120000-add-buscar-servicios-modulo').up(sequelize.getQueryInterface());
+  await require('./migrations/20261030160000-proveedor-portal-servicios').up(sequelize.getQueryInterface());
   try {
     await validarEsquema(sequelize);
   } catch (err) {

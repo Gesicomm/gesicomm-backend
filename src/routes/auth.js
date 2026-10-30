@@ -807,6 +807,10 @@ router.post('/primer-ingreso', verificarToken, asyncHandler(async (req, res) => 
     auditoria('PRIMER_INGRESO_ELEGIDO', { usuarioId: usuario.id, tipo, ip: req.ip });
   }
 
+  if (tipo === 'proveedor') {
+    await require('../services/proveedorPortal.service').activar(usuario.id);
+  }
+
   return res.json({ message: 'Elección guardada.', tipo: usuario.tipo_ingreso_inicial || tipo });
 }));
 

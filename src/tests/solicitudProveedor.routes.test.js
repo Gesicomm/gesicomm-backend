@@ -1,6 +1,6 @@
 jest.mock('../models', () => ({ MensajeContacto: {
   create: jest.fn(), findOne: jest.fn(), findAndCountAll: jest.fn(), count: jest.fn(), update: jest.fn(),
-} }));
+}, ProveedorServicio: { findOrCreate: jest.fn(), findOne: jest.fn() } }));
 jest.mock('../middleware/autenticacion', () => ({ verificarToken: (req, res, next) => {
   if (!req.headers['x-test-role']) return res.status(401).json({ message: 'Sin sesión' });
   req.usuario = { id: 8, rol: req.headers['x-test-role'] }; next();
@@ -8,12 +8,12 @@ jest.mock('../middleware/autenticacion', () => ({ verificarToken: (req, res, nex
 jest.mock('../controllers/solicitudEliminacion.controller', () => ({ solicitar: jest.fn(), estado: jest.fn(), solicitarDesdePanel: jest.fn(), listar: jest.fn(), actualizarEstado: jest.fn() }));
 jest.mock('../services/codigoPrueba.service', () => ({}));
 jest.mock('../utils/logger', () => ({ auditoria: jest.fn(), logger: { error: jest.fn() } }));
-jest.mock('../config/database', () => ({ query: jest.fn() }));
+jest.mock('../config/database', () => ({ query: jest.fn(), transaction: jest.fn(fn => fn({})) }));
 jest.mock('../services/r2/r2.service', () => ({ R2Service: { uploadObject: jest.fn(), deleteObject: jest.fn() }, IMMUTABLE_CACHE_CONTROL: 'public, max-age=31536000, immutable' }));
 const express = require('express');
 const request = require('supertest');
 const sharp = require('sharp');
-const { MensajeContacto } = require('../models');
+const { MensajeContacto, ProveedorServicio } = require('../models');
 const sequelize = require('../config/database');
 const { R2Service } = require('../services/r2/r2.service');
 const { auditoria } = require('../utils/logger');
@@ -36,7 +36,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   registro = { id: 41, area: 'comercial', nombre: 'Ana Pérez', email: 'ana@example.com', asunto: 'Gesicom · Postulación de proveedor · Envíos y logística', mensaje: 'Documento: 123456\nWhatsApp: +595981123456', datos_proveedor: { ...datos, especialidad: 'Envíos y logística', foto_url: 'https://images.example/ana.webp' }, revision_proveedor: 'pendiente' };
   R2Service.uploadObject.mockResolvedValue({ key: 'proveedores/perfiles/ana.webp', url: 'https://images.example/ana.webp' });
-  sequelize.query.mockImplementation(async sql => sql.includes('COUNT(*)') ? [{ total: 1 }] : [{ id: 41, nombre: 'Ana Pérez', datos_proveedor: registro.datos_proveedor }]);
+  sequelize.query.mockImplementation(async sql => sql.includes('COUNT(*)') ? [{ total: 1 }] : [{ id: 41, nombre: 'Ana Pérez', categoria: 'envios', titulo: datos.oferta, resumen: datos.descripcion, imagenes: [], datos_proveedor: registro.datos_proveedor }]);
+  ProveedorServicio.findOrCreate.mockResolvedValue([{ id: 41 }, true]);
   MensajeContacto.create.mockImplementation(async d => ({ ...d, id: 41, created_at: new Date() }));
   MensajeContacto.findOne.mockImplementation(async ({ where }) => where.id === registro.id ? { ...registro } : null);
   MensajeContacto.findAndCountAll.mockImplementation(async () => ({ rows: [registro], count: 1 }));
@@ -86,6 +87,7 @@ test('aceptar persiste decisión, fecha y administrador sin alterar el mensaje',
   expect(res.status).toBe(200);
   expect(res.body.solicitud).toMatchObject({ estado: 'aceptada', nota_revision: 'Verificado', revisado_por: 8, mensaje: texto });
   expect(res.body.solicitud.revisado_en).toBeTruthy();
+  expect(ProveedorServicio.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({ where: { solicitud_id: 41 }, defaults: expect.objectContaining({ estado: 'publicado' }) }));
   expect(auditoria).toHaveBeenCalledWith('PROVEEDOR_SOLICITUD_REVISADA', expect.objectContaining({ id: 41, usuarioId: 8 }));
 });
 test('no publica una postulación anterior sin perfil completo', async () => {

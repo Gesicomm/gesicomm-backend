@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op } = require('sequelize');
-const { MensajeContacto } = require('../models');
+const { MensajeContacto, ProveedorServicio } = require('../models');
 const sequelize = require('../config/database');
 const { QueryTypes } = require('sequelize');
 
@@ -60,20 +60,19 @@ class SolicitudProveedorService {
     const termino = busqueda.trim().slice(0, 100);
     const filtroCategoria = categoria && CATEGORIAS[categoria] ? categoria : '';
     const replacements = { prefijo: `${PREFIJO}%`, termino: `%${termino.replace(/[\\%_]/g, '\\$&')}%`, categoria: filtroCategoria, limit, offset: (page - 1) * limit };
-    const where = `area = 'comercial' AND asunto LIKE :prefijo AND revision_proveedor = 'aceptada'
-      AND NULLIF(datos_proveedor->>'foto_url', '') IS NOT NULL
-      AND NULLIF(datos_proveedor->>'oferta', '') IS NOT NULL
-      AND NULLIF(datos_proveedor->>'descripcion', '') IS NOT NULL
-      AND (:categoria = '' OR datos_proveedor->>'categoria' = :categoria)
-      AND (:termino = '%%' OR (nombre ILIKE :termino ESCAPE '\\' OR datos_proveedor->>'oferta' ILIKE :termino ESCAPE '\\' OR datos_proveedor->>'descripcion' ILIKE :termino ESCAPE '\\'))`;
+    const where = `m.area = 'comercial' AND m.asunto LIKE :prefijo AND m.revision_proveedor = 'aceptada'
+      AND s.estado = 'publicado' AND NULLIF(m.datos_proveedor->>'foto_url', '') IS NOT NULL
+      AND (:categoria = '' OR s.categoria = :categoria)
+      AND (:termino = '%%' OR (m.nombre ILIKE :termino ESCAPE '\\' OR s.titulo ILIKE :termino ESCAPE '\\' OR s.resumen ILIKE :termino ESCAPE '\\'))`;
+    const from = 'FROM proveedor_servicios s JOIN mensajes_contacto m ON m.id = s.solicitud_id';
     const [totalRows, rows] = await Promise.all([
-      sequelize.query(`SELECT COUNT(*)::integer AS total FROM mensajes_contacto WHERE ${where}`, { replacements, type: QueryTypes.SELECT }),
-      sequelize.query(`SELECT id, nombre, datos_proveedor FROM mensajes_contacto WHERE ${where} ORDER BY revisado_en DESC NULLS LAST, id DESC LIMIT :limit OFFSET :offset`, { replacements, type: QueryTypes.SELECT }),
+      sequelize.query(`SELECT COUNT(*)::integer AS total ${from} WHERE ${where}`, { replacements, type: QueryTypes.SELECT }),
+      sequelize.query(`SELECT s.id, s.categoria, s.titulo, s.resumen, s.imagenes, m.nombre, m.datos_proveedor ${from} WHERE ${where} ORDER BY s.updated_at DESC, s.id DESC LIMIT :limit OFFSET :offset`, { replacements, type: QueryTypes.SELECT }),
     ]);
     return { servicios: rows.map(row => ({ id: row.id, nombre: row.nombre,
-      categoria: row.datos_proveedor.categoria, especialidad: row.datos_proveedor.categoria === 'partner_certificado' ? 'Otros servicios' : CATEGORIAS[row.datos_proveedor.categoria] || row.datos_proveedor.especialidad,
-      oferta: row.datos_proveedor.oferta, descripcion: row.datos_proveedor.descripcion,
-      foto_url: row.datos_proveedor.foto_url, whatsapp: row.datos_proveedor.whatsapp })),
+      categoria: row.categoria, especialidad: row.categoria === 'partner_certificado' ? 'Otros servicios' : CATEGORIAS[row.categoria] || row.datos_proveedor.especialidad,
+      oferta: row.titulo, descripcion: row.resumen,
+      foto_url: row.datos_proveedor.foto_url, portada_url: row.imagenes?.[0]?.url || null, whatsapp: row.datos_proveedor.whatsapp })),
     total: totalRows[0]?.total || 0, pagina: page, total_paginas: Math.ceil((totalRows[0]?.total || 0) / limit), categorias: CATEGORIAS };
   }
 
@@ -85,12 +84,21 @@ class SolicitudProveedorService {
     if (estado === 'aceptada' && !['foto_url', 'oferta', 'descripcion'].every(campo => String(datosProveedor(registro)[campo] || '').trim())) {
       throw fallo(400, 'Esta postulación no tiene foto, servicio y descripción. Pedí esos datos antes de publicarla.');
     }
-    // La condición atómica evita que dos administradores se sobrescriban.
-    const [cantidad, rows] = await MensajeContacto.update({ revision_proveedor: estado,
-      nota_revision: nota?.trim() || null, revisado_por: adminId, revisado_en: new Date(),
-    }, { where: { id, revision_proveedor: 'pendiente', ...filtroProveedor() }, returning: true });
-    if (!cantidad) throw fallo(409, 'Otro administrador ya revisó esta solicitud. Actualizá la bandeja.');
-    return presentar(rows[0]);
+    return sequelize.transaction(async transaction => {
+      // La condición atómica evita que dos administradores se sobrescriban.
+      const [cantidad, rows] = await MensajeContacto.update({ revision_proveedor: estado,
+        nota_revision: nota?.trim() || null, revisado_por: adminId, revisado_en: new Date(),
+      }, { where: { id, revision_proveedor: 'pendiente', ...filtroProveedor() }, returning: true, transaction });
+      if (!cantidad) throw fallo(409, 'Otro administrador ya revisó esta solicitud. Actualizá la bandeja.');
+      if (estado === 'aceptada') {
+        const perfil = datosProveedor(rows[0]);
+        await ProveedorServicio.findOrCreate({ where: { solicitud_id: id }, defaults: {
+          categoria: CATEGORIAS[perfil.categoria] ? perfil.categoria : 'partner_certificado',
+          titulo: perfil.oferta, resumen: perfil.descripcion, estado: 'publicado',
+        }, transaction });
+      }
+      return presentar(rows[0]);
+    });
   }
 }
 

@@ -86,6 +86,7 @@ const Faq = require('./Faq');
 const LandingBeneficio = require('./LandingBeneficio');
 const SolicitudEliminacion = require('./SolicitudEliminacion');
 const MensajeContacto = require('./MensajeContacto');
+const ProveedorServicio = require('./ProveedorServicio');
 const MetaCampanaInterna = require('./MetaCampanaInterna');
 const MetaReporteImport = require('./MetaReporteImport');
 const MetaReporteFila = require('./MetaReporteFila');
@@ -921,6 +922,7 @@ module.exports = {
   GsqlModulo,
   SolicitudEliminacion,
   MensajeContacto,
+  ProveedorServicio,
   MetaCampanaInterna,
   MetaReporteImport,
   MetaReporteFila,
