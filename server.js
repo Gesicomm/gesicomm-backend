@@ -457,6 +457,7 @@ sequelize.authenticate().then(async () => {
 
   // Validar que el esquema de la BD coincide con los modelos
   await require('./migrations/20261029170000-revision-solicitudes-proveedores').up(sequelize.getQueryInterface());
+  await require('./migrations/20261030090000-tipo-ingreso-inicial-usuarios').up(sequelize.getQueryInterface());
   try {
     await validarEsquema(sequelize);
   } catch (err) {
