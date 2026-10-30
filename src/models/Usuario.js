@@ -97,6 +97,14 @@ const Usuario = sequelize.define('Usuario', {
     allowNull: true,
     comment: 'Aceptación única del aviso de publicación de contenido generado con IA.',
   },
+  tipo_ingreso_inicial: {
+    type: DataTypes.STRING(16),
+    allowNull: true,
+    validate: {
+      isIn: [['usuario', 'proveedor']],
+    },
+    comment: 'Elección hecha al primer acceso: usar Gesicom o postularse como proveedor de servicios.',
+  },
 }, {
   tableName: 'usuarios',
   timestamps: true,

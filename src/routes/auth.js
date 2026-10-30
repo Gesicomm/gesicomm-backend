@@ -305,6 +305,7 @@ router.post('/login', limiteAuth, validar(esquemaLogin), async (req, res) => {
         email: usuario.correo_electronico,
         rol: payload.rol,
         permisos: payload.permisos,
+        tipo_ingreso_inicial: usuario.tipo_ingreso_inicial || null,
       },
       tiendas,
       tienda_activa_id: tiendaId,
@@ -614,6 +615,7 @@ router.post('/verify-email', limiteAuth, async (req, res) => {
         email: usuario.correo_electronico,
         rol: payload.rol,
         permisos: payload.permisos,
+        tipo_ingreso_inicial: usuario.tipo_ingreso_inicial || null,
       },
       tiendas: [],
       tienda_activa_id: null,
@@ -764,7 +766,7 @@ router.post('/refresh', async (req, res) => {
 router.get('/me', verificarToken, asyncHandler(async (req, res) => {
   await AuthTracking.marcarActividad(req, req.usuario.id);
   const usuarioDb = await Usuario.findByPk(req.usuario.id, {
-    attributes: ['id', 'nombre', 'correo_electronico', 'telefono'],
+    attributes: ['id', 'nombre', 'correo_electronico', 'telefono', 'tipo_ingreso_inicial'],
   });
   return res.json({
     id: req.usuario.id,
@@ -778,7 +780,34 @@ router.get('/me', verificarToken, asyncHandler(async (req, res) => {
     accesos: req.usuario.accesos || null,
     propietarioId: req.usuario.propietarioId || null,
     rutas: await require('../middleware/accesoRutaNegocio').accesoDeActor(req.usuario),
+    tipo_ingreso_inicial: usuarioDb?.tipo_ingreso_inicial || null,
   });
+}));
+
+// ============================================================
+// POST /api/auth/primer-ingreso
+// Guarda una sola elección explícita al entrar por primera vez.
+// ============================================================
+router.post('/primer-ingreso', verificarToken, asyncHandler(async (req, res) => {
+  const tipo = String(req.body?.tipo || '').trim().toLowerCase();
+  if (!['usuario', 'proveedor'].includes(tipo)) {
+    return res.status(400).json({ message: 'Elegí si querés usar Gesicom o postularte como proveedor.' });
+  }
+
+  const usuario = await Usuario.findByPk(req.usuario.id);
+  if (!usuario) return res.status(404).json({ message: 'Usuario no encontrado.' });
+
+  // Si ya eligió, no permitimos que una recarga o doble click cambie el
+  // recorrido de la cuenta sin una acción específica posterior.
+  if (usuario.tipo_ingreso_inicial && usuario.tipo_ingreso_inicial !== tipo) {
+    return res.status(409).json({ message: 'Ya registramos tu elección inicial.' });
+  }
+  if (!usuario.tipo_ingreso_inicial) {
+    await usuario.update({ tipo_ingreso_inicial: tipo });
+    auditoria('PRIMER_INGRESO_ELEGIDO', { usuarioId: usuario.id, tipo, ip: req.ip });
+  }
+
+  return res.json({ message: 'Elección guardada.', tipo: usuario.tipo_ingreso_inicial || tipo });
 }));
 
 // ============================================================
