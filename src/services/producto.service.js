@@ -565,6 +565,7 @@ class ProductoService {
       slug: slugManual, meta_titulo, meta_descripcion,
       propuesta_valor, beneficios, confianza, preguntas_frecuentes, sobre_este_producto,
       ficha_rubro, ficha_datos,
+      peso, dimensiones, estado_revision,
     } = datos;
 
     const precioBaseNum = parseFloat(precio_base);
@@ -613,10 +614,19 @@ class ProductoService {
       unidad_medida: unidad_medida || 'unidad',
       activo: activo !== false,
       estado_venta: estado_venta || 'en_venta',
+      // Solo la API de proveedores lo manda ('pendiente'): lo que se carga
+      // desde el panel nace aprobado. Ver Producto.estado_revision.
+      estado_revision: estado_revision || 'aprobado',
       destacado: destacado || false,
       fecha_disponible_desde: fecha_disponible_desde || null,
       fecha_disponible_hasta: fecha_disponible_hasta || null,
       slug, meta_titulo, meta_descripcion,
+      // Logística: ya se podían editar (camposPermitidos de actualizar) pero
+      // el alta los descartaba en silencio, así que un producto creado por
+      // API o importación entraba sin peso y el cálculo de envío lo tomaba
+      // como 0 hasta que alguien lo editara a mano.
+      peso: peso === '' || peso == null ? null : parseFloat(peso),
+      dimensiones: dimensiones || null,
       creado_por: usuario_id,
       modificado_por: usuario_id,
       tienda_id: !esAdmin && tiendaId ? tiendaId : null,
@@ -752,7 +762,9 @@ class ProductoService {
     ];
     // precio_minimo: piso de precio — solo el admin puede fijarlo, incluso
     // sobre productos que no creó (ver serializar()).
-    if (esAdmin) camposPermitidos.push('precio_minimo');
+    // La decisión de moderación la toma el administrador desde la cola de
+    // solicitudes de proveedores, nunca el proveedor en su propio upsert.
+    if (esAdmin) camposPermitidos.push('precio_minimo', 'estado_revision', 'revision_nota', 'revisado_por', 'revisado_en');
 
     for (const campo of camposPermitidos) {
       if (campos[campo] === undefined) continue;

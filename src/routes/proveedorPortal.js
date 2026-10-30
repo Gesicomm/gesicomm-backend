@@ -52,6 +52,16 @@ router.post('/documentos/contrato-firmado', recibirDocumento, asyncHandler(async
   auditoria('PROVEEDOR_CONTRATO_FIRMADO_ADJUNTADO', { solicitudId: postulacion.id, usuarioId: req.usuario.id });
   res.json({ documentos });
 }));
+router.post('/documentos/:tipo', recibirDocumento, asyncHandler(async (req, res) => {
+  if (!['cedula_pdf', 'vida_residencia', 'antecedente_policial', 'constancia_ruc'].includes(req.params.tipo)) return res.status(400).json({ message: 'Tipo de documento inválido.' });
+  const postulacion = await propiaPostulacion(req);
+  const tipoPostulante = postulacion.datos_proveedor?.tipo_postulante || 'persona';
+  if (tipoPostulante === 'empresa' && ['vida_residencia', 'antecedente_policial'].includes(req.params.tipo)) return res.status(400).json({ message: 'Este documento corresponde a personas.' });
+  if (tipoPostulante !== 'empresa' && req.params.tipo === 'constancia_ruc') return res.status(400).json({ message: 'Este documento corresponde a empresas.' });
+  const documentos = await Documentos.guardarDocumento(postulacion.id, req.params.tipo, req.file);
+  auditoria('PROVEEDOR_DOCUMENTO_ADJUNTADO', { solicitudId: postulacion.id, tipo: req.params.tipo, usuarioId: req.usuario.id });
+  res.json({ documentos });
+}));
 router.get('/servicios', asyncHandler(async (req, res) => res.json({ servicios: await Portal.listar(req.usuario.id) })));
 router.post('/servicios', asyncHandler(async (req, res) => res.status(201).json({ servicio: await Portal.crear(req.usuario.id) })));
 router.get('/servicios/:id', idValido, asyncHandler(async (req, res) => res.json({ servicio: await Portal.propio(req.usuario.id, Number(req.params.id)) })));

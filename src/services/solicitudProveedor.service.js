@@ -26,22 +26,44 @@ function datosProveedor(m) {
 
 const presentar = m => ({
   id: m.id, nombre: m.nombre, email: m.email, recibido_en: m.created_at,
-  estado: m.revision_proveedor || 'pendiente', datos: datosProveedor(m), documentos: resumenDocumentos(datosProveedor(m)), mensaje: m.mensaje,
+  estado: m.revision_proveedor || 'pendiente', datos: datosProveedor(m), documentos: resumenDocumentos(datosProveedor(m)), faltantes: faltantes(datosProveedor(m)), mensaje: m.mensaje,
   nota_revision: m.nota_revision, revisado_por: m.revisado_por, revisado_en: m.revisado_en,
 });
+
+function faltantes(perfil = {}) {
+  const docs = resumenDocumentos(perfil);
+  const falta = [];
+  if (!perfil.documento?.trim()) falta.push('número de cédula');
+  if (!perfil.whatsapp?.trim()) falta.push('WhatsApp');
+  if (!perfil.foto_url) falta.push('foto de perfil');
+  if (!perfil.descripcion?.trim()) falta.push('descripción de servicios');
+  if (perfil.tipo_postulante === 'empresa') {
+    if (!perfil.razon_social?.trim()) falta.push('razón social');
+    if (!perfil.ruc?.trim()) falta.push('RUC');
+    if (!perfil.direccion_empresa?.trim()) falta.push('dirección de la empresa');
+    if (!docs.constancia_ruc_cargada) falta.push('constancia de RUC');
+  } else {
+    if (!docs.vida_residencia_cargada) falta.push('vida y residencia');
+    if (!docs.antecedente_policial_cargado) falta.push('antecedente policial');
+  }
+  if (!docs.cedula_pdf_cargada) falta.push('PDF de cédula (frente y dorso)');
+  return falta;
+}
 
 class SolicitudProveedorService {
   static async crear(datos, contexto = {}) {
     const perfil = { documento: datos.documento, ruc: datos.ruc || '', whatsapp: datos.whatsapp,
+      tipo_postulante: datos.tipo_postulante, razon_social: datos.razon_social || '', direccion_empresa: datos.direccion_empresa || '',
       categoria: datos.categoria, especialidad: CATEGORIAS[datos.categoria],
-      oferta: datos.oferta, descripcion: datos.descripcion, foto_url: datos.foto_url, foto_storage_key: datos.foto_storage_key,
-      documentos: { cedula_frente: datos.cedula_frente, cedula_dorso: datos.cedula_dorso } };
+      descripcion: datos.descripcion, foto_url: datos.foto_url, foto_storage_key: datos.foto_storage_key,
+      documentos: datos.documentos };
     const registro = await MensajeContacto.create({
       area: 'comercial', nombre: `${datos.nombre} ${datos.apellido}`, email: datos.email.toLowerCase(),
       asunto: PREFIJO + perfil.especialidad, datos_proveedor: perfil, revision_proveedor: 'pendiente',
       mensaje: ['Origen: landing institucional Gesicom', 'Tipo: Postulación de proveedor',
         `Documento: ${perfil.documento}`, `RUC: ${perfil.ruc || 'No indicado'}`, `WhatsApp: ${perfil.whatsapp}`,
-        `Especialidad: ${perfil.especialidad}`, `Servicio: ${perfil.oferta}`, `Descripción: ${perfil.descripcion}`].join('\n'),
+        `Especialidad: ${perfil.especialidad}`, `Tipo: ${perfil.tipo_postulante}`, `Razón social: ${perfil.razon_social}`,
+        `Dirección de empresa: ${perfil.direccion_empresa}`, `Descripción: ${perfil.descripcion}`].join('\n'),
       ip_solicitante: contexto.ip || null, user_agent: contexto.userAgent?.slice(0, 500) || null,
     });
     return { id: registro.id, recibido_en: registro.created_at };
@@ -83,10 +105,8 @@ class SolicitudProveedorService {
     const registro = await MensajeContacto.findOne({ where: { id, ...filtroProveedor() } });
     if (!registro) throw fallo(404, 'Solicitud de proveedor no encontrada.');
     if (registro.revision_proveedor !== 'pendiente') throw fallo(409, 'Esta solicitud ya fue revisada. Actualizá la bandeja para ver la decisión.');
-    const documentos = resumenDocumentos(datosProveedor(registro));
-    if (estado === 'aceptada' && (!['foto_url', 'oferta', 'descripcion'].every(campo => String(datosProveedor(registro)[campo] || '').trim()) || !documentos.cedula_frente_cargada || !documentos.cedula_dorso_cargada)) {
-      throw fallo(400, 'Esta postulación necesita foto de perfil, frente y dorso de cédula, servicio y descripción antes de aprobarla.');
-    }
+    const faltan = faltantes(datosProveedor(registro));
+    if (estado === 'aceptada' && faltan.length) throw fallo(400, `Falta completar: ${faltan.join(', ')}.`);
     return sequelize.transaction(async transaction => {
       // La condición atómica evita que dos administradores se sobrescriban.
       const [cantidad, rows] = await MensajeContacto.update({ revision_proveedor: estado,
@@ -97,7 +117,7 @@ class SolicitudProveedorService {
         const perfil = datosProveedor(rows[0]);
         await ProveedorServicio.findOrCreate({ where: { solicitud_id: id }, defaults: {
           categoria: CATEGORIAS[perfil.categoria] ? perfil.categoria : 'partner_certificado',
-          titulo: perfil.oferta, resumen: perfil.descripcion, estado: 'publicado',
+          titulo: 'Nuevo servicio', resumen: perfil.descripcion.slice(0, 500), estado: 'borrador',
         }, transaction });
       }
       return presentar(rows[0]);
@@ -107,3 +127,4 @@ class SolicitudProveedorService {
 
 module.exports = SolicitudProveedorService;
 module.exports.CATEGORIAS = CATEGORIAS;
+module.exports.faltantes = faltantes;

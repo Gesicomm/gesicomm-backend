@@ -13,8 +13,14 @@ async function up(qi, S) {
       integracion_credenciales: {
         id: { type: S.INTEGER, autoIncrement: true, primaryKey: true, allowNull: false },
         inquilino_id: { type: S.INTEGER, allowNull: false },
-        tienda_id: { type: S.INTEGER, allowNull: false, references: { model: 'tiendas', key: 'id' }, onDelete: 'CASCADE' },
-        usuario_id: { type: S.INTEGER, allowNull: false, references: { model: 'usuarios', key: 'id' } },
+        // Una credencial de PROVEEDOR no tiene tienda ni usuario: lo que
+        // manda entra al catálogo global, que ve todo comercio (igual que
+        // los productos del administrador). Una credencial de TIENDA, en
+        // cambio, escribe solo en el catálogo de ese comercio. Por eso las
+        // tres columnas son nullable y `proveedor_id` decide cuál es cuál.
+        proveedor_id: { type: S.INTEGER, allowNull: true, references: { model: 'proveedores', key: 'id' } },
+        tienda_id: { type: S.INTEGER, allowNull: true, references: { model: 'tiendas', key: 'id' }, onDelete: 'CASCADE' },
+        usuario_id: { type: S.INTEGER, allowNull: true, references: { model: 'usuarios', key: 'id' } },
         nombre: { type: S.STRING(150), allowNull: false },
         codigo: { type: S.STRING(40), allowNull: false },
         api_key_hash: { type: S.STRING(64), allowNull: false },
@@ -47,10 +53,17 @@ async function up(qi, S) {
     for (const [name, columns] of Object.entries(definitions)) {
       if (!tables.includes(name)) await qi.createTable(name, columns, { transaction });
     }
+    // Logo chico del proveedor: es lo que la tarjeta del producto muestra
+    // en Mi catálogo para reconocer de dónde viene cada producto.
+    const columnasProveedores = await qi.describeTable('proveedores', { transaction });
+    if (!columnasProveedores.logo_url) {
+      await qi.addColumn('proveedores', 'logo_url', { type: S.STRING(500), allowNull: true }, { transaction });
+    }
     for (const [table, fields, unique] of [
       ['integracion_credenciales', ['api_key_hash'], true],
       ['integracion_credenciales', ['codigo'], true],
       ['integracion_credenciales', ['tienda_id'], false],
+      ['integracion_credenciales', ['proveedor_id'], false],
       ['integracion_productos', ['integracion_id', 'sku_externo'], true],
       ['integracion_productos', ['producto_id'], false],
       ['integracion_eventos', ['integracion_id', 'event_key'], true],
@@ -72,6 +85,8 @@ async function down(qi) {
     for (const table of ['integracion_eventos', 'integracion_productos', 'integracion_credenciales']) {
       await qi.dropTable(table, { transaction });
     }
+    const columnas = await qi.describeTable('proveedores', { transaction });
+    if (columnas.logo_url) await qi.removeColumn('proveedores', 'logo_url', { transaction });
   });
 }
 

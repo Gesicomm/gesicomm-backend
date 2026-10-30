@@ -40,6 +40,16 @@ test('la foto anterior queda como frente y se puede completar el dorso', async (
   const archivo = { buffer, size: buffer.length, mimetype: 'image/png' };
   expect((await Documentos.guardarDocumento(41, 'cedula_dorso', archivo))).toMatchObject({ cedula_frente_cargada: true, cedula_dorso_cargada: true });
 });
+test('el PDF único de cédula y los certificados se guardan en privado', async () => {
+  const buffer = Buffer.from('%PDF-1.4\ncontenido\n%%EOF');
+  const archivo = { buffer, size: buffer.length, mimetype: 'application/pdf' };
+  expect((await Documentos.guardarDocumento(41, 'cedula_pdf', archivo)).cedula_pdf_cargada).toBe(true);
+  expect((await Documentos.guardarDocumento(41, 'vida_residencia', archivo)).vida_residencia_cargada).toBe(true);
+  expect((await Documentos.guardarDocumento(41, 'antecedente_policial', archivo)).antecedente_policial_cargado).toBe(true);
+  expect((await Documentos.guardarDocumento(41, 'constancia_ruc', archivo)).constancia_ruc_cargada).toBe(true);
+  expect(send.mock.calls.every(([comando]) => comando.input.Bucket === 'gesicom-private-test')).toBe(true);
+  await expect(Documentos.normalizar({ buffer: Buffer.from('falso'), size: 5, mimetype: 'application/pdf' }, 'cedula_pdf')).rejects.toMatchObject({ status: 400 });
+});
 
 test('el contrato requiere PDF real y el firmado solo se acepta después de adjuntar el contrato base', async () => {
   const falso = { buffer: Buffer.from('hola'), size: 4, mimetype: 'application/pdf' };

@@ -46,4 +46,35 @@ async function revocar(req, res) {
   } catch (err) { manejarError(res, err); }
 }
 
-module.exports = { listar, crear, revocar };
+// ---------------------------------------------------------------
+// Keys de PROVEEDOR (solo administrador). Son las que se le entregan a un
+// proveedor externo para que cargue su catálogo: lo que sube con esa key
+// entra al catálogo global y lo ve todo comercio. Por eso no las puede
+// generar un comercio — a diferencia de las de arriba, que son la
+// integración del ERP propio de cada tienda.
+// ---------------------------------------------------------------
+
+async function listarProveedores(req, res) {
+  try {
+    res.json(await service.listarCredencialesProveedor(req.usuario.tenantId));
+  } catch (err) { manejarError(res, err); }
+}
+
+async function crearProveedor(req, res) {
+  try {
+    res.status(201).json(await service.crearCredencialProveedor({
+      inquilinoId: req.usuario.tenantId,
+      usuarioId: req.usuario.id,
+      nombre: req.body?.nombre,
+      logo_url: req.body?.logo_url,
+    }));
+  } catch (err) { manejarError(res, err); }
+}
+
+async function revocarProveedor(req, res) {
+  try {
+    res.json(await service.revocarCredencialProveedor(req.usuario.tenantId, Number(req.params.id)));
+  } catch (err) { manejarError(res, err); }
+}
+
+module.exports = { listar, crear, revocar, listarProveedores, crearProveedor, revocarProveedor };

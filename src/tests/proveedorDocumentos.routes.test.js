@@ -33,3 +33,15 @@ test('el documento privado exige sesión, rol y postulación propia', async () =
   expect(Documentos.leerDocumento).toHaveBeenCalledWith(41, 'cedula_frente');
   expect(respuesta.headers['cache-control']).toBe('private, no-store');
 });
+test('el proveedor actualiza su PDF de cédula y solo sus documentos correspondientes', async () => {
+  const pdf = Buffer.from('%PDF-1.4\ncontenido\n%%EOF');
+  Documentos.guardarDocumento.mockResolvedValue({ cedula_pdf_cargada: true });
+  const ruta = '/api/proveedor/documentos/cedula_pdf';
+  expect((await request(app).post(ruta).attach('archivo', pdf, { filename: 'cedula.pdf', contentType: 'application/pdf' })).status).toBe(401);
+  const res = await request(app).post(ruta).set('x-user-id', '7').attach('archivo', pdf, { filename: 'cedula.pdf', contentType: 'application/pdf' });
+  expect(res.status).toBe(200);
+  expect(Documentos.guardarDocumento).toHaveBeenCalledWith(41, 'cedula_pdf', expect.objectContaining({ originalname: 'cedula.pdf' }));
+  Portal.cuenta.mockResolvedValue({ rolProveedor: true, postulacion: { id: 41, datos_proveedor: { tipo_postulante: 'empresa' } } });
+  expect((await request(app).post('/api/proveedor/documentos/vida_residencia').set('x-user-id', '7').attach('archivo', pdf, { filename: 'vida.pdf', contentType: 'application/pdf' })).status).toBe(400);
+  expect((await request(app).post('/api/proveedor/documentos/constancia_ruc').set('x-user-id', '7').attach('archivo', pdf, { filename: 'ruc.pdf', contentType: 'application/pdf' })).status).toBe(200);
+});

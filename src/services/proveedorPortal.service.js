@@ -68,7 +68,7 @@ class ProveedorPortalService {
   static async estado(usuarioId) {
     const { usuario, rolProveedor, postulacion } = await this.cuenta(usuarioId);
     return { rol_proveedor: rolProveedor, nombre: usuario.nombre, email: usuario.correo_electronico,
-      postulacion: postulacion ? { id: postulacion.id, estado: postulacion.revision_proveedor, especialidad: postulacion.datos_proveedor?.especialidad || '', foto_url: postulacion.datos_proveedor?.foto_url || '', documentos: resumenDocumentos(postulacion.datos_proveedor) } : null };
+      postulacion: postulacion ? { id: postulacion.id, estado: postulacion.revision_proveedor, tipo_postulante: postulacion.datos_proveedor?.tipo_postulante || 'persona', especialidad: postulacion.datos_proveedor?.especialidad || '', foto_url: postulacion.datos_proveedor?.foto_url || '', documentos: resumenDocumentos(postulacion.datos_proveedor) } : null };
   }
 
   static async aprobada(usuarioId) {

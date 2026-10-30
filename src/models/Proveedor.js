@@ -30,6 +30,11 @@ const Proveedor = sequelize.define('Proveedor', {
     allowNull: true,
     comment: 'Precio del dolar específico para este proveedor',
   },
+  logo_url: {
+    type: DataTypes.STRING(500),
+    allowNull: true,
+    comment: 'Logo chico del proveedor. Se muestra sobre la tarjeta del producto en Mi catálogo para reconocer de un vistazo de qué proveedor viene. URL pública (no se re-hostea).',
+  },
 }, {
   tableName: 'proveedores',
   timestamps: true,

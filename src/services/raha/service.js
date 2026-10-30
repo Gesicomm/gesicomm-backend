@@ -87,6 +87,25 @@ async function save(actor, input) {
   });
   return serialize(solicitud);
 }
+// Solicitudes anteriores a la incorporación del tipo de cuenta: completar solo
+// ese dato, conservando la resolución y los datos que Raha ya recibió.
+async function completarTipoCuenta(actor, input) {
+  const result = z.object({ tipo_cuenta: z.enum(['Caja de ahorro', 'Cuenta corriente']), version: z.number().int().nonnegative() }).strict().safeParse(input);
+  if (!result.success) fail('Elegí si es caja de ahorro o cuenta corriente e indicá la versión de la solicitud.');
+  const solicitud = await sequelize.transaction(async t => {
+    const row = await owned(actor, t);
+    if (!['en_revision', 'enviada_raha', 'aprobada'].includes(row.estado) || String(row.datos?.tipo_cuenta || '').trim()) {
+      fail('Solo se puede completar el tipo de cuenta pendiente de una solicitud enviada o aprobada.', 409);
+    }
+    if (row.version !== result.data.version) fail('La solicitud cambió. Actualizá antes de continuar.', 409);
+    const datos = { ...row.datos, tipo_cuenta: result.data.tipo_cuenta };
+    return row.update({ datos, version: row.version + 1, historial: append(row, actor, row.estado, {
+      evento: 'tipo_cuenta_completado', nota: `El comercio completó el tipo de cuenta: ${datos.tipo_cuenta}.`,
+    }) }, { transaction: t });
+  });
+  await notify(solicitud, actor, true, 'el comercio completó el tipo de cuenta').catch(() => logger.error({ mensaje: 'Raha: notificacion pendiente', solicitudId: solicitud.id }));
+  return serialize(solicitud);
+}
 async function upload(actor, tipo, version, file) {
   if (!TIPOS.includes(tipo)) fail('Tipo de documento invalido.');
   if (tipo === 'contrato' && file?.mimetype !== 'application/pdf') fail('Subí el contrato firmado en un solo PDF con todas sus páginas.');
@@ -483,7 +502,7 @@ async function updatePortalUser(actor, id, input) {
   await usuario.update({ ...resto, ...(password ? { password_hash: await bcrypt.hash(password, 10) } : {}) });
   return portalUsuarioPublico(usuario);
 }
-module.exports = { status, save, upload, remove, submit, contrato, list, review, document, detail, dossier, parse,
+module.exports = { status, save, completarTipoCuenta, upload, remove, submit, contrato, list, review, document, detail, dossier, parse,
   conexionAprobada,
   portalLogin, portalVerify, portalList, portalDetail, portalDocument, portalDossier, portalResolve,
   listPortalUsers, createPortalUser, updatePortalUser };

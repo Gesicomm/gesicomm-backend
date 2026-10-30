@@ -33,6 +33,14 @@ test('guarda version y hora del servidor e ignora porcentaje enviado por el clie
   expect(result.requiere_aceptacion).toBe(false);
 });
 
+test('permite consultar y activar la afiliacion sin exigir el plan Fundador', async () => {
+  m.Suscripcion.findOne.mockResolvedValue(null);
+  await expect(service.obtenerPanel(7)).resolves.toMatchObject({ afiliado: null, terminos: { version: '1.0' } });
+  await expect(service.solicitarParaUsuario(7, { acepta_terminos: true, terminos_version: '1.0' }))
+    .resolves.toMatchObject({ usuario_id: 7, estado: 'activo', requiere_aceptacion: false });
+  expect(m.Suscripcion.findOne).not.toHaveBeenCalled();
+});
+
 test('el panel filtra por afiliado y separa saldos sin exponer correos ni notas', async () => {
   m.Afiliado.findOne.mockResolvedValue({ id: 3, codigo: 'ana', comisiones: [] });
   m.AfiliadoClick.count.mockResolvedValueOnce(12).mockResolvedValueOnce(8);

@@ -10,7 +10,7 @@ const { getR2Client } = require('./r2/r2.client');
 const PREFIJO = 'Gesicom · Postulación de proveedor · ';
 const MAX_SIZE = 8 * 1024 * 1024;
 const error = (status, message) => Object.assign(new Error(message), { status });
-const TIPOS = { cedula_frente: 'cedula_frente', cedula_dorso: 'cedula_dorso', contrato_base: 'contrato_base', contrato_firmado: 'contrato_firmado' };
+const TIPOS = { cedula_pdf: 'cedula_pdf', vida_residencia: 'vida_residencia', antecedente_policial: 'antecedente_policial', constancia_ruc: 'constancia_ruc', cedula_frente: 'cedula_frente', cedula_dorso: 'cedula_dorso', contrato_base: 'contrato_base', contrato_firmado: 'contrato_firmado' };
 
 function privateBucket() {
   const bucket = process.env.PROVEEDOR_PRIVATE_BUCKET || process.env.RAHA_PRIVATE_BUCKET;
@@ -21,6 +21,10 @@ function privateBucket() {
 function resumenDocumentos(perfil = {}) {
   const docs = perfil.documentos || {};
   return {
+    cedula_pdf_cargada: Boolean(docs.cedula_pdf?.key),
+    vida_residencia_cargada: Boolean(docs.vida_residencia?.key),
+    antecedente_policial_cargado: Boolean(docs.antecedente_policial?.key),
+    constancia_ruc_cargada: Boolean(docs.constancia_ruc?.key),
     cedula_frente_cargada: Boolean(docs.cedula_frente?.key || docs.cedula?.key),
     cedula_dorso_cargada: Boolean(docs.cedula_dorso?.key),
     contrato_disponible: Boolean(docs.contrato_base?.key),
@@ -45,7 +49,7 @@ async function normalizar(file, tipo) {
   if (file.mimetype !== 'application/pdf' || !file.buffer.subarray(0, 5).equals(Buffer.from('%PDF-')) || !file.buffer.subarray(-2048).includes(Buffer.from('%%EOF'))) {
     throw error(400, 'Subí un archivo PDF válido de hasta 8 MB.');
   }
-  return { body: file.buffer, mime: 'application/pdf', ext: 'pdf', nombre: tipo === 'contrato_base' ? 'contrato-proveedor.pdf' : 'contrato-firmado.pdf' };
+  return { body: file.buffer, mime: 'application/pdf', ext: 'pdf', nombre: tipo === 'contrato_base' ? 'contrato-proveedor.pdf' : tipo === 'contrato_firmado' ? 'contrato-firmado.pdf' : `${tipo}.pdf` };
 }
 
 async function subirPrivado(file, tipo) {
@@ -72,7 +76,7 @@ async function guardarDocumento(id, tipo, file) {
   try {
     await sequelize.transaction(async transaction => {
       const postulacion = await solicitud(id, { transaction, lock: transaction.LOCK.UPDATE });
-      if (postulacion.revision_proveedor === 'rechazada' && !tipo.startsWith('cedula_')) throw error(409, 'La postulación rechazada requiere una nueva solicitud.');
+      if (postulacion.revision_proveedor === 'rechazada') throw error(409, 'La postulación rechazada requiere una nueva solicitud.');
       const perfil = { ...(postulacion.datos_proveedor || {}) };
       const documentos = { ...(perfil.documentos || {}) };
       if (tipo === 'contrato_firmado' && !documentos.contrato_base?.key) throw error(409, 'El administrador todavía no adjuntó el contrato.');
@@ -119,7 +123,7 @@ async function leerDocumento(id, tipo) {
   const doc = docs[tipo] || (tipo === 'cedula_frente' ? docs.cedula : null);
   if (!doc?.key || !/^proveedores\/documentos\/[0-9]+-[a-f0-9]{24}\.(jpg|pdf)$/.test(doc.key)) throw error(404, 'Documento no disponible.');
   const objeto = await getR2Client().send(new GetObjectCommand({ Bucket: privateBucket(), Key: doc.key }));
-  return { body: Buffer.from(await objeto.Body.transformToByteArray()), mime: doc.mime, nombre: tipo.startsWith('cedula_') ? `${tipo}.jpg` : doc.nombre };
+  return { body: Buffer.from(await objeto.Body.transformToByteArray()), mime: doc.mime, nombre: doc.nombre || `${tipo}.${doc.mime === 'application/pdf' ? 'pdf' : 'jpg'}` };
 }
 
 module.exports = { MAX_SIZE, resumenDocumentos, normalizar, subirPrivado, eliminarPrivado, solicitud, guardarDocumento, revisarContrato, leerDocumento };

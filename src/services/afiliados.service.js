@@ -70,30 +70,6 @@ function resumenComisiones(comisiones = []) {
 }
 
 class AfiliadosService {
-  static async verificarUsuarioFundador(usuarioId) {
-    const suscripcion = await Suscripcion.findOne({
-      where: {
-        usuario_id: usuarioId,
-        estado: 'activa',
-        [Op.or]: [
-          { periodo_fin: null },
-          { periodo_fin: { [Op.gt]: new Date() } },
-        ],
-      },
-      include: [{ model: Plan, where: { codigo: 'founders' }, required: true }],
-      order: [['periodo_inicio', 'DESC'], ['created_at', 'DESC']],
-    });
-
-    if (!suscripcion) {
-      throw Object.assign(
-        new Error('El programa de afiliados está disponible solo para usuarios con plan Fundador.'),
-        { status: 403 },
-      );
-    }
-
-    return suscripcion;
-  }
-
   static async codigoDisponible(base, ignorarId = null) {
     let codigo = slugCodigo(base) || `afiliado-${Date.now()}`;
     const original = codigo;
@@ -190,7 +166,6 @@ class AfiliadosService {
   }
 
   static async obtenerDeUsuario(usuarioId, { baseUrl } = {}) {
-    await this.verificarUsuarioFundador(usuarioId);
     const afiliado = await Afiliado.findOne({
       where: { usuario_id: usuarioId },
       include: [{ model: AfiliadoComision, as: 'comisiones', attributes: ['estado', 'monto_comision'] }],
@@ -252,7 +227,6 @@ class AfiliadosService {
   }
 
   static async solicitarParaUsuario(usuarioId, datos = {}, { baseUrl } = {}) {
-    await this.verificarUsuarioFundador(usuarioId);
     const usuario = await Usuario.findByPk(usuarioId);
     if (!usuario) throw Object.assign(new Error('Usuario no encontrado.'), { status: 404 });
 

@@ -716,7 +716,7 @@ class PrecioUsuarioService {
         include: [
           { association: 'categoria', attributes: ['id', 'nombre'] },
           { model: Marca, attributes: ['id', 'nombre'] },
-          { model: Proveedor, as: 'proveedor', attributes: ['id', 'nombre'] },
+          { model: Proveedor, as: 'proveedor', attributes: ['id', 'nombre', 'logo_url'] },
         ]
       }) : [],
       idsCombos.length ? ProductoCombo.findAll({
@@ -753,7 +753,7 @@ class PrecioUsuarioService {
             include: [
               { association: 'categoria', attributes: ['id', 'nombre'] },
               { model: Marca, attributes: ['id', 'nombre'] },
-          { model: Proveedor, as: 'proveedor', attributes: ['id', 'nombre'] },
+          { model: Proveedor, as: 'proveedor', attributes: ['id', 'nombre', 'logo_url'] },
             ],
           },
         ]
@@ -924,6 +924,10 @@ class PrecioUsuarioService {
         categoria_original: p.categoria?.nombre || null,
         marca: p.Marca?.nombre || null,
         proveedor: p.proveedor?.nombre || null,
+        // Logo chico del proveedor: la tarjeta de Mi catálogo lo muestra
+        // para reconocer de un vistazo de qué proveedor viene el producto
+        // (los que entran por la API de proveedores, sobre todo).
+        proveedor_logo: p.proveedor?.logo_url || null,
         stock: p.creado_por == null || administradoresIds.some(id => Number(id) === Number(p.creado_por)) ? null : p.cantidad_disponible,
         tiene_opciones: idsConOpciones.has(p.id),
         destacado: !!p.destacado,
@@ -968,6 +972,7 @@ class PrecioUsuarioService {
         categoria_original: padre?.categoria?.nombre || null,
         marca: padre?.Marca?.nombre || null,
         proveedor: padre?.proveedor?.nombre || null,
+        proveedor_logo: padre?.proveedor?.logo_url || null,
         stock: padre?.creado_por == null || administradoresIds.some(id => Number(id) === Number(padre.creado_por)) ? null : padre.cantidad_disponible,
         destacado: false,
         creado_en: c.created_at,

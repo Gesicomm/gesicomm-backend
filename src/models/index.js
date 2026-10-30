@@ -650,6 +650,11 @@ CostoGasto.belongsTo(Proveedor, { as: 'proveedor', foreignKey: 'proveedor_id' })
 
 Proveedor.hasMany(Producto, { foreignKey: 'proveedor_id' });
 Producto.belongsTo(Proveedor, { as: 'proveedor', foreignKey: 'proveedor_id' });
+// La API Key de un proveedor externo (ver IntegracionCredencial.js). Va acá
+// y no junto al resto de las asociaciones de integraciones porque Proveedor
+// se declara más abajo en este archivo.
+IntegracionCredencial.belongsTo(Proveedor, { as: 'proveedor', foreignKey: 'proveedor_id' });
+Proveedor.hasMany(IntegracionCredencial, { as: 'integraciones', foreignKey: 'proveedor_id' });
 
 Producto.hasMany(CostoGasto, { foreignKey: 'producto_id' });
 CostoGasto.belongsTo(Producto, { as: 'producto', foreignKey: 'producto_id' });

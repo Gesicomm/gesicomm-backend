@@ -15,7 +15,7 @@ const modulosIniciales = [
   ['finanzas-costos-gastos', 'ecommerce', 'ANÁLISIS', 'Control financiero', '/finanzas/costos-gastos', null, 'Receipt', 'finanzas-costos-gastos', ['usuario', 'administrador'], null, null, null, 120],
   ['finanzas-proveedores', 'ecommerce', 'ANÁLISIS', 'Proveedores', '/finanzas/proveedores', null, 'Truck', 'finanzas-proveedores', ['administrador'], null, null, null, 130],
   ['academia', 'ecommerce', 'APRENDIZAJE', 'Academia & Cursos', '/academia', null, 'GraduationCap', 'academia', ['usuario', 'administrador'], null, 'PRO', null, 140],
-  ['afiliados', 'ecommerce', 'AFILIADOS', 'Quiero ser afiliado', '/afiliados', null, 'BadgeDollarSign', 'afiliados', ['usuario', 'administrador'], 'founders', null, null, 150],
+  ['afiliados', 'ecommerce', 'AFILIADOS', 'Quiero ser afiliado', '/afiliados', null, 'BadgeDollarSign', 'afiliados', ['usuario', 'administrador'], null, null, null, 150],
   ['automatizacion', 'marca_personal', 'MARCA PERSONAL', 'Automation Hub', '/automatizacion', null, 'Bot', 'automatizacion', ['usuario', 'administrador'], null, null, null, 10],
 ];
 

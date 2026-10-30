@@ -23,6 +23,10 @@ async function verificarApiKeyIntegracion(req, res, next) {
   req.integracion = {
     id: credencial.id,
     inquilinoId: credencial.inquilino_id,
+    // Credencial de proveedor: escribe en el catálogo global, sin tienda ni
+    // usuario dueño (ver IntegracionCredencial.js).
+    proveedorId: credencial.proveedor_id || null,
+    esProveedor: credencial.proveedor_id != null,
     tiendaId: credencial.tienda_id,
     usuarioId: credencial.usuario_id,
     codigo: credencial.codigo,

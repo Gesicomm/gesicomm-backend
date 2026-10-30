@@ -462,6 +462,7 @@ sequelize.authenticate().then(async () => {
   await require('./migrations/20261030090000-tipo-ingreso-inicial-usuarios').up(sequelize.getQueryInterface());
   await require('./migrations/20261030120000-add-buscar-servicios-modulo').up(sequelize.getQueryInterface());
   await require('./migrations/20261030160000-proveedor-portal-servicios').up(sequelize.getQueryInterface());
+  await require('./migrations/20261030180000-afiliados-todos-los-planes').up(sequelize.getQueryInterface());
   try {
     await validarEsquema(sequelize);
   } catch (err) {

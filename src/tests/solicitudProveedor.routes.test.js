@@ -12,7 +12,7 @@ jest.mock('../config/database', () => ({ query: jest.fn(), transaction: jest.fn(
 jest.mock('../services/r2/r2.service', () => ({ R2Service: { uploadObject: jest.fn(), deleteObject: jest.fn() }, IMMUTABLE_CACHE_CONTROL: 'public, max-age=31536000, immutable' }));
 jest.mock('../services/proveedorDocumentos.service', () => ({
   MAX_SIZE: 8 * 1024 * 1024, subirPrivado: jest.fn(), eliminarPrivado: jest.fn(), guardarDocumento: jest.fn(), leerDocumento: jest.fn(), revisarContrato: jest.fn(),
-  resumenDocumentos: perfil => ({ cedula_frente_cargada: Boolean(perfil?.documentos?.cedula_frente?.key || perfil?.documentos?.cedula?.key), cedula_dorso_cargada: Boolean(perfil?.documentos?.cedula_dorso?.key), contrato_disponible: Boolean(perfil?.documentos?.contrato_base?.key), contrato_firmado: Boolean(perfil?.documentos?.contrato_firmado?.key), contrato_estado: perfil?.documentos?.contrato_estado || 'sin_contrato' }),
+  resumenDocumentos: perfil => ({ cedula_pdf_cargada: Boolean(perfil?.documentos?.cedula_pdf?.key), vida_residencia_cargada: Boolean(perfil?.documentos?.vida_residencia?.key), antecedente_policial_cargado: Boolean(perfil?.documentos?.antecedente_policial?.key), constancia_ruc_cargada: Boolean(perfil?.documentos?.constancia_ruc?.key), contrato_disponible: Boolean(perfil?.documentos?.contrato_base?.key), contrato_firmado: Boolean(perfil?.documentos?.contrato_firmado?.key), contrato_estado: perfil?.documentos?.contrato_estado || 'sin_contrato' }),
 }));
 const express = require('express');
 const request = require('supertest');
@@ -28,21 +28,22 @@ app.use('/api/publico', require('../routes/publico'));
 app.use((err, req, res, next) => res.status(err.status || 500).json({ message: err.message }));
 const endpoint = '/api/publico/solicitudes-proveedores';
 const adminEndpoint = '/api/publico/admin/solicitudes-proveedores';
-const datos = { nombre: 'Ana', apellido: 'Pérez', email: 'ANA@example.com', documento: '123456', whatsapp: '+595981123456', categoria: 'envios', oferta: 'Envíos para tiendas', descripcion: 'Realizo entregas para tiendas en Asunción y Central.' };
+const datos = { nombre: 'Ana', apellido: 'Pérez', email: 'ANA@example.com', documento: '123456', whatsapp: '+595981123456', categoria: 'envios', tipo_postulante: 'persona', descripcion: 'Realizo entregas para tiendas en Asunción y Central.' };
+const pdf = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF');
 let imagen;
 beforeAll(async () => { imagen = await sharp({ create: { width: 320, height: 320, channels: 3, background: '#208451' } }).png().toBuffer(); });
 const enviar = (campos = datos, conFoto = true) => {
   let req = request(app).post(endpoint);
   for (const [key, value] of Object.entries(campos)) req = req.field(key, value);
-  return conFoto ? req.attach('foto', imagen, { filename: 'ana.png', contentType: 'image/png' }).attach('cedula_frente', imagen, { filename: 'frente.png', contentType: 'image/png' }).attach('cedula_dorso', imagen, { filename: 'dorso.png', contentType: 'image/png' }) : req;
+  return conFoto ? req.attach('foto', imagen, { filename: 'ana.png', contentType: 'image/png' }).attach('cedula_pdf', pdf, { filename: 'cedula.pdf', contentType: 'application/pdf' }).attach('vida_residencia', pdf, { filename: 'vida.pdf', contentType: 'application/pdf' }).attach('antecedente_policial', pdf, { filename: 'antecedente.pdf', contentType: 'application/pdf' }) : req;
 };
 let registro;
 beforeEach(() => {
   jest.clearAllMocks();
-  registro = { id: 41, area: 'comercial', nombre: 'Ana Pérez', email: 'ana@example.com', asunto: 'Gesicom · Postulación de proveedor · Envíos y logística', mensaje: 'Documento: 123456\nWhatsApp: +595981123456', datos_proveedor: { ...datos, especialidad: 'Envíos y logística', foto_url: 'https://images.example/ana.webp', documentos: { cedula_frente: { key: 'proveedores/documentos/frente.jpg' }, cedula_dorso: { key: 'proveedores/documentos/dorso.jpg' } } }, revision_proveedor: 'pendiente' };
+  registro = { id: 41, area: 'comercial', nombre: 'Ana Pérez', email: 'ana@example.com', asunto: 'Gesicom · Postulación de proveedor · Envíos y logística', mensaje: 'Documento: 123456\nWhatsApp: +595981123456', datos_proveedor: { ...datos, especialidad: 'Envíos y logística', foto_url: 'https://images.example/ana.webp', documentos: { cedula_pdf: { key: 'proveedores/documentos/cedula.pdf' }, vida_residencia: { key: 'proveedores/documentos/vida.pdf' }, antecedente_policial: { key: 'proveedores/documentos/antecedente.pdf' } } }, revision_proveedor: 'pendiente' };
   R2Service.uploadObject.mockResolvedValue({ key: 'proveedores/perfiles/ana.webp', url: 'https://images.example/ana.webp' });
-  Documentos.subirPrivado.mockImplementation(async (_file, tipo) => ({ key: `proveedores/documentos/${tipo}.jpg`, mime: 'image/jpeg', nombre: `${tipo}.jpg` }));
-  sequelize.query.mockImplementation(async sql => sql.includes('COUNT(*)') ? [{ total: 1 }] : [{ id: 41, nombre: 'Ana Pérez', categoria: 'envios', titulo: datos.oferta, resumen: datos.descripcion, imagenes: [], datos_proveedor: registro.datos_proveedor }]);
+  Documentos.subirPrivado.mockImplementation(async (_file, tipo) => ({ key: `proveedores/documentos/${tipo}.pdf`, mime: 'application/pdf', nombre: `${tipo}.pdf` }));
+  sequelize.query.mockImplementation(async sql => sql.includes('COUNT(*)') ? [{ total: 1 }] : [{ id: 41, nombre: 'Ana Pérez', categoria: 'envios', titulo: 'Envíos para tiendas', resumen: datos.descripcion, imagenes: [], datos_proveedor: registro.datos_proveedor }]);
   ProveedorServicio.findOrCreate.mockResolvedValue([{ id: 41 }, true]);
   MensajeContacto.create.mockImplementation(async d => ({ ...d, id: 41, created_at: new Date() }));
   MensajeContacto.findOne.mockImplementation(async ({ where }) => where.id === registro.id ? { ...registro } : null);
@@ -61,14 +62,14 @@ test('el formulario guarda una postulación pendiente y la bandeja conserva las 
   expect(MensajeContacto.create).toHaveBeenCalledWith(expect.objectContaining({ revision_proveedor: 'pendiente', email: 'ana@example.com', datos_proveedor: expect.objectContaining({ categoria: 'envios' }) }));
   expect(MensajeContacto.create.mock.calls[0][0]).not.toHaveProperty('revisado_por');
   expect(res.body.mensaje).not.toHaveProperty('datos_proveedor');
-  expect(Documentos.subirPrivado).toHaveBeenCalledWith(expect.objectContaining({ originalname: 'frente.png' }), 'cedula_frente');
-  expect(Documentos.subirPrivado).toHaveBeenCalledWith(expect.objectContaining({ originalname: 'dorso.png' }), 'cedula_dorso');
+  expect(Documentos.subirPrivado).toHaveBeenCalledWith(expect.objectContaining({ originalname: 'cedula.pdf' }), 'cedula_pdf');
+  expect(Documentos.subirPrivado).toHaveBeenCalledWith(expect.objectContaining({ originalname: 'vida.pdf' }), 'vida_residencia');
   const list = await request(app).get(adminEndpoint).set('x-test-role', 'administrador');
   expect(list.status).toBe(200);
   expect(list.headers['cache-control']).toBe('no-store');
   expect(list.body.solicitudes[0]).toMatchObject({ id: 41, estado: 'pendiente', datos: { documento: '123456', whatsapp: '+595981123456', especialidad: 'Envíos y logística' } });
 });
-test.each([{ categoria: 'admin' }, { documento: '' }, { whatsapp: 'abcdef' }, { nombre: 'x'.repeat(71) }, { descripcion: 'Corta' }, { oferta: '' }])('rechaza campos inválidos: %j', async cambio => {
+test.each([{ categoria: 'admin' }, { documento: '' }, { whatsapp: 'abcdef' }, { nombre: 'x'.repeat(71) }, { descripcion: 'Corta' }, { tipo_postulante: 'otro' }])('rechaza campos inválidos: %j', async cambio => {
   expect((await enviar({ ...datos, ...cambio })).status).toBe(400);
   expect(MensajeContacto.create).not.toHaveBeenCalled();
 });
@@ -76,19 +77,41 @@ test('exige foto y no guarda una solicitud incompleta', async () => {
   expect((await enviar(datos, false)).status).toBe(400);
   expect(MensajeContacto.create).not.toHaveBeenCalled();
 });
-test('exige foto de cédula y nunca la entrega en el catálogo público', async () => {
+test('exige PDF de cédula y nunca lo entrega en el catálogo público', async () => {
   let req = request(app).post(endpoint);
   for (const [key, value] of Object.entries(datos)) req = req.field(key, value);
   const sinCedula = await req.attach('foto', imagen, { filename: 'ana.png', contentType: 'image/png' });
   expect(sinCedula.status).toBe(400);
   expect(MensajeContacto.create).not.toHaveBeenCalled();
-  let soloFrente = request(app).post(endpoint);
-  for (const [key, value] of Object.entries(datos)) soloFrente = soloFrente.field(key, value);
-  const sinDorso = await soloFrente.attach('foto', imagen, { filename: 'ana.png', contentType: 'image/png' }).attach('cedula_frente', imagen, { filename: 'frente.png', contentType: 'image/png' });
-  expect(sinDorso.status).toBe(400);
-  expect(MensajeContacto.create).not.toHaveBeenCalled();
   const publico = await request(app).get('/api/publico/servicios');
   expect(publico.body.servicios[0]).not.toHaveProperty('documentos');
+});
+test('empresa exige razón social, dirección, RUC y constancia en PDF', async () => {
+  const empresa = { ...datos, tipo_postulante: 'empresa', razon_social: 'Estudio Creativo S.A.', ruc: '80012345-1', direccion_empresa: 'Av. España 123, Asunción' };
+  let incompleta = request(app).post(endpoint);
+  for (const [key, value] of Object.entries(empresa)) incompleta = incompleta.field(key, value);
+  const sinConstancia = await incompleta.attach('foto', imagen, { filename: 'equipo.png', contentType: 'image/png' })
+    .attach('cedula_pdf', pdf, { filename: 'cedula.pdf', contentType: 'application/pdf' });
+  expect(sinConstancia.status).toBe(400);
+  expect(MensajeContacto.create).not.toHaveBeenCalled();
+  let completa = request(app).post(endpoint);
+  for (const [key, value] of Object.entries(empresa)) completa = completa.field(key, value);
+  const res = await completa.attach('foto', imagen, { filename: 'equipo.png', contentType: 'image/png' })
+    .attach('cedula_pdf', pdf, { filename: 'cedula.pdf', contentType: 'application/pdf' })
+    .attach('constancia_ruc', pdf, { filename: 'ruc.pdf', contentType: 'application/pdf' });
+  expect(res.status).toBe(201);
+  expect(MensajeContacto.create).toHaveBeenCalledWith(expect.objectContaining({ datos_proveedor: expect.objectContaining({ tipo_postulante: 'empresa', razon_social: empresa.razon_social, direccion_empresa: empresa.direccion_empresa }) }));
+  registro.datos_proveedor = MensajeContacto.create.mock.calls[0][0].datos_proveedor;
+  expect((await request(app).patch(adminEndpoint + '/41').set('x-test-role', 'administrador').send({ estado: 'aceptada' })).status).toBe(200);
+});
+test('empresa sin dirección no puede enviarse', async () => {
+  const empresa = { ...datos, tipo_postulante: 'empresa', razon_social: 'Estudio S.A.', ruc: '80012345-1', direccion_empresa: '' };
+  let req = request(app).post(endpoint);
+  for (const [key, value] of Object.entries(empresa)) req = req.field(key, value);
+  const res = await req.attach('foto', imagen, { filename: 'equipo.png', contentType: 'image/png' })
+    .attach('cedula_pdf', pdf, { filename: 'cedula.pdf', contentType: 'application/pdf' })
+    .attach('constancia_ruc', pdf, { filename: 'ruc.pdf', contentType: 'application/pdf' });
+  expect(res.status).toBe(400);
 });
 test('solo un administrador puede descargar la foto de cédula', async () => {
   Documentos.leerDocumento.mockResolvedValue({ body: Buffer.from('foto'), mime: 'image/jpeg', nombre: 'cedula_frente.jpg' });
@@ -120,7 +143,7 @@ test('aceptar persiste decisión, fecha y administrador sin alterar el mensaje',
   expect(res.status).toBe(200);
   expect(res.body.solicitud).toMatchObject({ estado: 'aceptada', nota_revision: 'Verificado', revisado_por: 8, mensaje: texto });
   expect(res.body.solicitud.revisado_en).toBeTruthy();
-  expect(ProveedorServicio.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({ where: { solicitud_id: 41 }, defaults: expect.objectContaining({ estado: 'publicado' }) }));
+  expect(ProveedorServicio.findOrCreate).toHaveBeenCalledWith(expect.objectContaining({ where: { solicitud_id: 41 }, defaults: expect.objectContaining({ estado: 'borrador' }) }));
   expect(auditoria).toHaveBeenCalledWith('PROVEEDOR_SOLICITUD_REVISADA', expect.objectContaining({ id: 41, usuarioId: 8 }));
 });
 test('no publica una postulación anterior sin perfil completo', async () => {
@@ -129,8 +152,8 @@ test('no publica una postulación anterior sin perfil completo', async () => {
   expect(res.status).toBe(400);
   expect(MensajeContacto.update).not.toHaveBeenCalled();
 });
-test('no aprueba una postulación que solo tiene el frente de la cédula', async () => {
-  delete registro.datos_proveedor.documentos.cedula_dorso;
+test('no aprueba una postulación sin vida y residencia', async () => {
+  delete registro.datos_proveedor.documentos.vida_residencia;
   const res = await request(app).patch(adminEndpoint + '/41').set('x-test-role', 'administrador').send({ estado: 'aceptada' });
   expect(res.status).toBe(400);
   expect(MensajeContacto.update).not.toHaveBeenCalled();

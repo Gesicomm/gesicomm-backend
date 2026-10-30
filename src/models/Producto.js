@@ -233,6 +233,34 @@ const Producto = sequelize.define('Producto', {
     defaultValue: 'en_venta',
     allowNull: false,
   },
+  /**
+   * Moderación del catálogo que sube un proveedor por API: nadie publica
+   * mercadería en Gesicom sin que un administrador la mire. Mientras no
+   * esté 'aprobado', el producto va además con `activo: false`, que es lo
+   * que lo mantiene fuera de Mi catálogo, de las landings, del feed y de
+   * la tienda pública. Todo lo cargado desde el panel nace 'aprobado'.
+   */
+  estado_revision: {
+    // VARCHAR con CHECK en la base, igual que `revision_proveedor` en
+    // MensajeContacto: sumar un estado no obliga a migrar un ENUM.
+    type: DataTypes.STRING(12),
+    defaultValue: 'aprobado',
+    allowNull: false,
+  },
+  revision_nota: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    comment: 'Motivo del rechazo, que es lo que se le explica al proveedor.',
+  },
+  revisado_por: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    comment: 'FK a Usuario (el administrador que decidió).',
+  },
+  revisado_en: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
   destacado: {
     type: DataTypes.BOOLEAN,
     defaultValue: false,
