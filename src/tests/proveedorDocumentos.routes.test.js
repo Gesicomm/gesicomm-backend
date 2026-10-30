@@ -19,17 +19,17 @@ app.use((err, req, res, next) => res.status(err.status || 500).json({ message: e
 beforeEach(() => {
   jest.clearAllMocks();
   Portal.cuenta.mockResolvedValue({ rolProveedor: true, postulacion: { id: 41 } });
-  Documentos.leerDocumento.mockResolvedValue({ body: Buffer.from('foto'), mime: 'image/jpeg', nombre: 'cedula.jpg' });
+  Documentos.leerDocumento.mockResolvedValue({ body: Buffer.from('foto'), mime: 'image/jpeg', nombre: 'cedula_frente.jpg' });
 });
 
 test('el documento privado exige sesión, rol y postulación propia', async () => {
-  const path = '/api/proveedor/documentos/cedula';
+  const path = '/api/proveedor/documentos/cedula_frente';
   expect((await request(app).get(path)).status).toBe(401);
   Portal.cuenta.mockResolvedValueOnce({ rolProveedor: false, postulacion: { id: 41 } });
   expect((await request(app).get(path).set('x-user-id', '7')).status).toBe(403);
   expect(Documentos.leerDocumento).not.toHaveBeenCalled();
   const respuesta = await request(app).get(path).set('x-user-id', '7');
   expect(respuesta.status).toBe(200);
-  expect(Documentos.leerDocumento).toHaveBeenCalledWith(41, 'cedula');
+  expect(Documentos.leerDocumento).toHaveBeenCalledWith(41, 'cedula_frente');
   expect(respuesta.headers['cache-control']).toBe('private, no-store');
 });

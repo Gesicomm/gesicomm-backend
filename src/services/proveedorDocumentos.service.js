@@ -10,7 +10,7 @@ const { getR2Client } = require('./r2/r2.client');
 const PREFIJO = 'Gesicom · Postulación de proveedor · ';
 const MAX_SIZE = 8 * 1024 * 1024;
 const error = (status, message) => Object.assign(new Error(message), { status });
-const TIPOS = { cedula: 'cedula', contrato_base: 'contrato_base', contrato_firmado: 'contrato_firmado' };
+const TIPOS = { cedula_frente: 'cedula_frente', cedula_dorso: 'cedula_dorso', contrato_base: 'contrato_base', contrato_firmado: 'contrato_firmado' };
 
 function privateBucket() {
   const bucket = process.env.PROVEEDOR_PRIVATE_BUCKET || process.env.RAHA_PRIVATE_BUCKET;
@@ -21,7 +21,8 @@ function privateBucket() {
 function resumenDocumentos(perfil = {}) {
   const docs = perfil.documentos || {};
   return {
-    cedula_cargada: Boolean(docs.cedula?.key),
+    cedula_frente_cargada: Boolean(docs.cedula_frente?.key || docs.cedula?.key),
+    cedula_dorso_cargada: Boolean(docs.cedula_dorso?.key),
     contrato_disponible: Boolean(docs.contrato_base?.key),
     contrato_firmado: Boolean(docs.contrato_firmado?.key),
     contrato_estado: docs.contrato_estado || (docs.contrato_base?.key ? docs.contrato_firmado?.key ? 'pendiente_revision' : 'pendiente_firma' : 'sin_contrato'),
@@ -31,14 +32,14 @@ function resumenDocumentos(perfil = {}) {
 
 async function normalizar(file, tipo) {
   if (!file?.buffer?.length || file.buffer.length > MAX_SIZE || file.size > MAX_SIZE) throw error(400, 'El archivo debe pesar hasta 8 MB.');
-  if (tipo === 'cedula') {
+  if (tipo === 'cedula_frente' || tipo === 'cedula_dorso') {
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) throw error(400, 'Subí una foto JPG, PNG o WebP de tu cédula.');
     try {
       const imagen = sharp(file.buffer, { limitInputPixels: 30000000, animated: false });
       const meta = await imagen.metadata();
       if (!['jpeg', 'png', 'webp'].includes(meta.format) || meta.width < 500 || meta.height < 300) throw new Error('Dimensiones insuficientes');
       const body = await imagen.rotate().resize({ width: 2400, height: 2400, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 88 }).toBuffer();
-      return { body, mime: 'image/jpeg', ext: 'jpg', nombre: 'cedula.jpg' };
+      return { body, mime: 'image/jpeg', ext: 'jpg', nombre: `${tipo}.jpg` };
     } catch { throw error(400, 'La foto de la cédula debe ser legible y medir al menos 500 × 300 píxeles.'); }
   }
   if (file.mimetype !== 'application/pdf' || !file.buffer.subarray(0, 5).equals(Buffer.from('%PDF-')) || !file.buffer.subarray(-2048).includes(Buffer.from('%%EOF'))) {
@@ -71,12 +72,13 @@ async function guardarDocumento(id, tipo, file) {
   try {
     await sequelize.transaction(async transaction => {
       const postulacion = await solicitud(id, { transaction, lock: transaction.LOCK.UPDATE });
-      if (postulacion.revision_proveedor === 'rechazada' && tipo !== 'cedula') throw error(409, 'La postulación rechazada requiere una nueva solicitud.');
+      if (postulacion.revision_proveedor === 'rechazada' && !tipo.startsWith('cedula_')) throw error(409, 'La postulación rechazada requiere una nueva solicitud.');
       const perfil = { ...(postulacion.datos_proveedor || {}) };
       const documentos = { ...(perfil.documentos || {}) };
       if (tipo === 'contrato_firmado' && !documentos.contrato_base?.key) throw error(409, 'El administrador todavía no adjuntó el contrato.');
-      anterior = documentos[tipo];
+      anterior = documentos[tipo] || (tipo === 'cedula_frente' ? documentos.cedula : null);
       documentos[tipo] = nuevo;
+      if (tipo === 'cedula_frente') delete documentos.cedula;
       if (tipo === 'contrato_base') {
         anteriorFirmado = documentos.contrato_firmado;
         documentos.contrato_firmado = null;
@@ -113,10 +115,11 @@ async function revisarContrato(id, { estado, nota = '' }) {
 async function leerDocumento(id, tipo) {
   if (!TIPOS[tipo]) throw error(400, 'Tipo de documento inválido.');
   const postulacion = await solicitud(id);
-  const doc = postulacion.datos_proveedor?.documentos?.[tipo];
+  const docs = postulacion.datos_proveedor?.documentos || {};
+  const doc = docs[tipo] || (tipo === 'cedula_frente' ? docs.cedula : null);
   if (!doc?.key || !/^proveedores\/documentos\/[0-9]+-[a-f0-9]{24}\.(jpg|pdf)$/.test(doc.key)) throw error(404, 'Documento no disponible.');
   const objeto = await getR2Client().send(new GetObjectCommand({ Bucket: privateBucket(), Key: doc.key }));
-  return { body: Buffer.from(await objeto.Body.transformToByteArray()), mime: doc.mime, nombre: doc.nombre };
+  return { body: Buffer.from(await objeto.Body.transformToByteArray()), mime: doc.mime, nombre: tipo.startsWith('cedula_') ? `${tipo}.jpg` : doc.nombre };
 }
 
 module.exports = { MAX_SIZE, resumenDocumentos, normalizar, subirPrivado, eliminarPrivado, solicitud, guardarDocumento, revisarContrato, leerDocumento };

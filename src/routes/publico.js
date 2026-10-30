@@ -123,8 +123,8 @@ router.post(
   mensajeContactoController.crear
 );
 
-const fotoProveedor = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 2, fields: 14 },
-  fileFilter: (_req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) }).fields([{ name: 'foto', maxCount: 1 }, { name: 'cedula_foto', maxCount: 1 }]);
+const fotoProveedor = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 3, fields: 14 },
+  fileFilter: (_req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) }).fields([{ name: 'foto', maxCount: 1 }, { name: 'cedula_frente', maxCount: 1 }, { name: 'cedula_dorso', maxCount: 1 }]);
 const recibirFotoProveedor = (req, res, next) => fotoProveedor(req, res, error => {
   if (error) return res.status(400).json({ message: error.code === 'LIMIT_FILE_SIZE' ? 'Cada imagen puede pesar hasta 8 MB.' : 'No pudimos leer las fotos. Subí archivos JPG, PNG o WebP.' });
   next();
@@ -160,11 +160,12 @@ router.post('/solicitudes-proveedores', limiteFormulario, recibirFotoProveedor, 
   sitio_web: z.string().max(200).optional(),
 })), honeypot('Solicitud recibida.'), asyncHandler(async (req, res) => {
   const fotoPerfil = req.files?.foto?.[0];
-  const fotoCedula = req.files?.cedula_foto?.[0];
+  const fotoFrente = req.files?.cedula_frente?.[0];
+  const fotoDorso = req.files?.cedula_dorso?.[0];
   if (!fotoPerfil) return res.status(400).json({ message: 'Subí una foto para tu perfil de proveedor (JPG, PNG o WebP).' });
-  if (!fotoCedula) return res.status(400).json({ message: 'Subí una foto legible de tu cédula para la revisión privada.' });
+  if (!fotoFrente || !fotoDorso) return res.status(400).json({ message: 'Subí fotos legibles del frente y dorso de tu cédula para la revisión privada.' });
   if (fotoPerfil.size > 5 * 1024 * 1024) return res.status(400).json({ message: 'La foto de perfil puede pesar hasta 5 MB.' });
-  let foto, cedula;
+  let foto, frente, dorso;
   try {
     const meta = await sharp(fotoPerfil.buffer).metadata();
     if (!['jpeg', 'png', 'webp'].includes(meta.format) || !meta.width || !meta.height || meta.width < 200 || meta.height < 200 || meta.width * meta.height > 30000000) {
@@ -173,13 +174,15 @@ router.post('/solicitudes-proveedores', limiteFormulario, recibirFotoProveedor, 
     const imagen = await sharp(fotoPerfil.buffer).rotate().resize(720, 720, { fit: 'cover', position: 'attention' }).webp({ quality: 84 }).toBuffer();
     const key = `proveedores/perfiles/${Date.now()}-${crypto.randomBytes(12).toString('hex')}.webp`;
     foto = await R2Service.uploadObject({ key, body: imagen, contentType: 'image/webp', cacheControl: IMMUTABLE_CACHE_CONTROL, contentLength: imagen.length });
-    cedula = await ProveedorDocumentos.subirPrivado(fotoCedula, 'cedula');
-    const mensaje = await SolicitudProveedorService.crear({ ...req.body, foto_url: foto.url, foto_storage_key: key, cedula_foto: cedula }, { ip: req.ip, userAgent: req.get('user-agent') });
+    frente = await ProveedorDocumentos.subirPrivado(fotoFrente, 'cedula_frente');
+    dorso = await ProveedorDocumentos.subirPrivado(fotoDorso, 'cedula_dorso');
+    const mensaje = await SolicitudProveedorService.crear({ ...req.body, foto_url: foto.url, foto_storage_key: key, cedula_frente: frente, cedula_dorso: dorso }, { ip: req.ip, userAgent: req.get('user-agent') });
     auditoria('PROVEEDOR_SOLICITUD_RECIBIDA', { id: mensaje.id });
     return res.status(201).json({ message: 'Solicitud recibida para revisión.', mensaje });
   } catch (error) {
     if (foto?.key) await R2Service.deleteObject(foto.key).catch(() => {});
-    if (cedula) await ProveedorDocumentos.eliminarPrivado(cedula).catch(() => {});
+    if (frente) await ProveedorDocumentos.eliminarPrivado(frente).catch(() => {});
+    if (dorso) await ProveedorDocumentos.eliminarPrivado(dorso).catch(() => {});
     throw error;
   }
 }));
@@ -194,7 +197,7 @@ router.get('/admin/solicitudes-proveedores/:id/documentos/:tipo', verificarToken
   const doc = await ProveedorDocumentos.leerDocumento(Number(req.params.id), req.params.tipo);
   res.set('Cache-Control', 'private, no-store');
   res.set('X-Content-Type-Options', 'nosniff');
-  res.set('Content-Disposition', `${req.params.tipo === 'cedula' ? 'inline' : 'attachment'}; filename="${doc.nombre}"`);
+  res.set('Content-Disposition', `${req.params.tipo.startsWith('cedula_') ? 'inline' : 'attachment'}; filename="${doc.nombre}"`);
   res.type(doc.mime).send(doc.body);
 }));
 

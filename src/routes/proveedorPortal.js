@@ -39,10 +39,11 @@ router.get('/documentos/:tipo', asyncHandler(async (req, res) => {
   res.set('Content-Disposition', `attachment; filename="${doc.nombre}"`);
   res.type(doc.mime).send(doc.body);
 }));
-router.post('/documentos/cedula', recibirDocumento, asyncHandler(async (req, res) => {
+router.post('/documentos/cedula-:lado', recibirDocumento, asyncHandler(async (req, res) => {
+  if (!['frente', 'dorso'].includes(req.params.lado)) return res.status(400).json({ message: 'Elegí frente o dorso de la cédula.' });
   const postulacion = await propiaPostulacion(req);
-  const documentos = await Documentos.guardarDocumento(postulacion.id, 'cedula', req.file);
-  auditoria('PROVEEDOR_CEDULA_ADJUNTADA', { solicitudId: postulacion.id, usuarioId: req.usuario.id });
+  const documentos = await Documentos.guardarDocumento(postulacion.id, `cedula_${req.params.lado}`, req.file);
+  auditoria('PROVEEDOR_CEDULA_ADJUNTADA', { solicitudId: postulacion.id, lado: req.params.lado, usuarioId: req.usuario.id });
   res.json({ documentos });
 }));
 router.post('/documentos/contrato-firmado', recibirDocumento, asyncHandler(async (req, res) => {

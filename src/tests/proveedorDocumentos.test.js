@@ -24,13 +24,21 @@ afterAll(() => { delete process.env.PROVEEDOR_PRIVATE_BUCKET; delete process.env
 
 test('la foto de cédula se normaliza y se guarda solo en el bucket privado', async () => {
   const buffer = await sharp({ create: { width: 800, height: 600, channels: 3, background: '#b4c3ab' } }).png().toBuffer();
-  const doc = await Documentos.subirPrivado({ buffer, size: buffer.length, mimetype: 'image/png' }, 'cedula');
+  const doc = await Documentos.subirPrivado({ buffer, size: buffer.length, mimetype: 'image/png' }, 'cedula_frente');
   expect(doc.key).toMatch(/^proveedores\/documentos\/[0-9]+-[a-f0-9]{24}\.jpg$/);
   const comando = send.mock.calls[0][0];
   expect(comando).toBeInstanceOf(PutObjectCommand);
   expect(comando.input.Bucket).toBe('gesicom-private-test');
   expect(comando.input.CacheControl).toBe('private, no-store');
   expect(doc).not.toHaveProperty('url');
+});
+
+test('la foto anterior queda como frente y se puede completar el dorso', async () => {
+  perfil = { documentos: { cedula: { key: 'proveedores/documentos/123-aaaaaaaaaaaaaaaaaaaaaaaa.jpg', mime: 'image/jpeg', nombre: 'cedula.jpg' } } };
+  expect(Documentos.resumenDocumentos(perfil)).toMatchObject({ cedula_frente_cargada: true, cedula_dorso_cargada: false });
+  const buffer = await sharp({ create: { width: 800, height: 600, channels: 3, background: '#b4c3ab' } }).png().toBuffer();
+  const archivo = { buffer, size: buffer.length, mimetype: 'image/png' };
+  expect((await Documentos.guardarDocumento(41, 'cedula_dorso', archivo))).toMatchObject({ cedula_frente_cargada: true, cedula_dorso_cargada: true });
 });
 
 test('el contrato requiere PDF real y el firmado solo se acepta después de adjuntar el contrato base', async () => {

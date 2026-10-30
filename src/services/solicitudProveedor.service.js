@@ -35,7 +35,7 @@ class SolicitudProveedorService {
     const perfil = { documento: datos.documento, ruc: datos.ruc || '', whatsapp: datos.whatsapp,
       categoria: datos.categoria, especialidad: CATEGORIAS[datos.categoria],
       oferta: datos.oferta, descripcion: datos.descripcion, foto_url: datos.foto_url, foto_storage_key: datos.foto_storage_key,
-      documentos: { cedula: datos.cedula_foto } };
+      documentos: { cedula_frente: datos.cedula_frente, cedula_dorso: datos.cedula_dorso } };
     const registro = await MensajeContacto.create({
       area: 'comercial', nombre: `${datos.nombre} ${datos.apellido}`, email: datos.email.toLowerCase(),
       asunto: PREFIJO + perfil.especialidad, datos_proveedor: perfil, revision_proveedor: 'pendiente',
@@ -83,8 +83,9 @@ class SolicitudProveedorService {
     const registro = await MensajeContacto.findOne({ where: { id, ...filtroProveedor() } });
     if (!registro) throw fallo(404, 'Solicitud de proveedor no encontrada.');
     if (registro.revision_proveedor !== 'pendiente') throw fallo(409, 'Esta solicitud ya fue revisada. Actualizá la bandeja para ver la decisión.');
-    if (estado === 'aceptada' && (!['foto_url', 'oferta', 'descripcion'].every(campo => String(datosProveedor(registro)[campo] || '').trim()) || !resumenDocumentos(datosProveedor(registro)).cedula_cargada)) {
-      throw fallo(400, 'Esta postulación necesita foto de perfil, foto de cédula, servicio y descripción antes de aprobarla.');
+    const documentos = resumenDocumentos(datosProveedor(registro));
+    if (estado === 'aceptada' && (!['foto_url', 'oferta', 'descripcion'].every(campo => String(datosProveedor(registro)[campo] || '').trim()) || !documentos.cedula_frente_cargada || !documentos.cedula_dorso_cargada)) {
+      throw fallo(400, 'Esta postulación necesita foto de perfil, frente y dorso de cédula, servicio y descripción antes de aprobarla.');
     }
     return sequelize.transaction(async transaction => {
       // La condición atómica evita que dos administradores se sobrescriban.
