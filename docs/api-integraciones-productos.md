@@ -22,9 +22,10 @@ administrador), `src/controllers/integracionProductosAdmin.controller.js`
 y `src/routes/integracionesProductosApi.js`. Autenticación:
 `src/middleware/autenticacionIntegracion.js`.
 
-Migraciones pendientes de aplicar: `migrations/20261009130000-create_integracion_productos.js`
-y `migrations/20261030210000-revision-productos-proveedor.js` (ver
-"Antes de usar esto en producción" al final).
+Migraciones: `migrations/20261009130000-create_integracion_productos.js` y
+`migrations/20261030210000-revision-productos-proveedor.js`. Las aplica
+`server.js` en cada arranque (son idempotentes), así que se ejecutan solas
+al desplegar — ver "Antes de usar esto en producción" al final.
 
 ---
 
@@ -566,18 +567,22 @@ tienda, no pasa por revisión y ningún otro comercio lo ve.
 
 ## Antes de usar esto en producción
 
-**Faltan aplicar dos migraciones y una semilla.** Ninguna se ejecutó
-todavía: la base de dev de este proyecto es la de producción por túnel SSH,
-así que hace falta luz verde explícita antes de correrlas (ver memoria del
-proyecto: "preguntar antes de tocar la base").
+**Las dos migraciones las aplica `server.js` al arrancar**, así que se
+ejecutan solas en el próximo deploy. Son idempotentes (se probó: correrlas
+dos veces no cambia nada) y ninguna esconde datos existentes — todo lo que
+ya está cargado queda `estado_revision = 'aprobado'`.
 
-1. `migrations/20261009130000-create_integracion_productos.js` — crea
+1. `20261009130000-create_integracion_productos.js` — crea
    `integracion_credenciales`, `integracion_productos` e
-   `integracion_eventos`, y suma `logo_url` a `proveedores`.
-2. `migrations/20261030210000-revision-productos-proveedor.js` — suma a
-   `productos` el estado de revisión (`estado_revision`, `revision_nota`,
-   `revisado_por`, `revisado_en`). Todo lo que ya existe queda en
-   `'aprobado'`: no esconde nada de lo que hay cargado hoy.
-3. `npm run seed` — deja el permiso `gestionar_integraciones` en los roles
-   (solo hace falta para las keys de comercio; las de proveedor las da un
-   administrador, que no necesita ese permiso).
+   `integracion_eventos`, suma `proveedor_id` a las credenciales y
+   `logo_url` a `proveedores`. Si `integracion_eventos` ya existía con
+   `event_key NOT NULL` (de la versión con deduplicación), le saca esa
+   columna: sin eso ningún registro nuevo entraría.
+2. `20261030210000-revision-productos-proveedor.js` — suma a `productos`
+   el estado de revisión (`estado_revision`, `revision_nota`,
+   `revisado_por`, `revisado_en`).
+
+Lo único que queda a mano: **`npm run seed`**, para dejar el permiso
+`gestionar_integraciones` en los roles. Solo hace falta para las keys de
+comercio (su propio ERP); las de proveedor las da un administrador, que no
+necesita ese permiso.
