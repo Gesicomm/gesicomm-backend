@@ -12,6 +12,11 @@ jobs:
     steps:
       - name: Pull latest code and Deploy
         run: |
+          # El servidor comparte recursos con el frontend. Serializamos los
+          # despliegues entre ambos repositorios para evitar que dos builds
+          # de Docker compitan por memoria al mismo tiempo.
+          exec 9>/tmp/gesicomm-deploy.lock
+          flock -w 3600 9
           cd ~/gesicomm/gesicomm-backend
           git fetch https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Gesicomm/gesicomm-backend.git main
           git reset --hard FETCH_HEAD
