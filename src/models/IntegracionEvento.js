@@ -2,11 +2,15 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
 /**
- * Bitácora de idempotencia de la API de integraciones de productos.
- * Mismo patrón que SpeedboxEvento: cada request mutante (upsert, stock,
- * precio, baja) se registra con una `event_key` única por credencial antes
- * de aplicarse, para que un reintento de red del sistema externo nunca
- * duplique el efecto. Ver integracionProductos.service.js#ingest.
+ * Bitácora de la API de integraciones de productos: qué mandó cada
+ * proveedor y cuándo. Sirve para soporte ("¿esto lo cargaron ellos o se
+ * editó desde el panel?"), no para deduplicar.
+ *
+ * No hay clave de idempotencia a propósito. El `sku` ya identifica al
+ * producto y todas las operaciones fijan un valor absoluto (upsert del
+ * producto, stock = N, precio = N, baja): repetir el mismo request deja
+ * exactamente el mismo estado, así que un reintento de red es inofensivo
+ * por construcción y no hace falta que el socio mande un id de evento.
  */
 const IntegracionEvento = sequelize.define('IntegracionEvento', {
   id: {
@@ -17,11 +21,6 @@ const IntegracionEvento = sequelize.define('IntegracionEvento', {
   integracion_id: {
     type: DataTypes.INTEGER,
     allowNull: false,
-  },
-  event_key: {
-    type: DataTypes.STRING(180),
-    allowNull: false,
-    comment: '"id:<event_id>" si lo mandó el cliente, o "hash:<sha256>" del payload si no.',
   },
   tipo: {
     type: DataTypes.STRING(40),
@@ -56,7 +55,6 @@ const IntegracionEvento = sequelize.define('IntegracionEvento', {
   createdAt: 'created_at',
   updatedAt: 'updated_at',
   indexes: [
-    { unique: true, fields: ['integracion_id', 'event_key'] },
     { fields: ['integracion_id', 'tipo'] },
   ],
 });

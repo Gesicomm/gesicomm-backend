@@ -199,7 +199,6 @@ borrar alguno de esos campos, mandalo explícito (`"marca": null`,
 
 ```json
 {
-  "event_id": "evt-2026-10-09-0001",
   "sku": "ABC-123",
   "nombre": "Zapatilla Running Pro",
   "descripcion": "Texto largo de descripción, puede tener varios párrafos.",
@@ -224,11 +223,10 @@ borrar alguno de esos campos, mandalo explícito (`"marca": null`,
 
 | Campo | Obligatorio | Tipo | Notas |
 |---|---|---|---|
-| `event_id` | Recomendado | string (≤150) | Ver sección 11 (idempotencia). Si no lo mandás, un reintento de red puede generar un duplicado lógico menor (ver nota ahí). |
 | `sku` | **Sí** | string (≤100) | Su identificador. Ver sección 4. |
 | `nombre` | **Sí** | string | |
 | `precio` | **Sí** | número ≥ 0 | Guaraníes, **sin decimales** (ej: `450000`, no `450000.00`). |
-| `stock` | **Sí**, salvo que mandes el desglose | entero ≥ 0 | Alternativa: `stock_salon` + `stock_deposito` (ver sección 7). |
+| `stock` | **Sí** | entero ≥ 0 | Las unidades disponibles del producto, un solo número. |
 | `moneda` | No | string | Si se manda, tiene que ser `"PYG"` — es lo único que se acepta hoy. |
 | `descripcion` | No | string | Texto largo (HTML plano, sin tags). |
 | `descripcion_corta` | No | string (≤500) | |
@@ -253,8 +251,7 @@ borrar alguno de esos campos, mandalo explícito (`"marca": null`,
   "producto_id": 4821,
   "sku": "ABC-123",
   "slug": "zapatilla-running-pro",
-  "activo": true,
-  "duplicado": false
+  "activo": true
 }
 ```
 
@@ -272,8 +269,7 @@ borrar alguno de esos campos, mandalo explícito (`"marca": null`,
 | `PRECIO_INVALIDO` | 400 | Falta `precio` o es negativo/no numérico. |
 | `STOCK_INVALIDO` / `STOCK_REQUERIDO` | 400 | Falta `stock` (o el desglose) o es inválido. |
 | `MONEDA_NO_SOPORTADA` | 400 | Mandaste una moneda que no sea `PYG`. |
-| `EVENT_ID_INVALIDO` | 400 | `event_id` no es string, está vacío, o supera 150 caracteres. |
-| `CONFLICTO_CONCURRENCIA` | 409 | Dos requests simultáneos para el mismo `sku`/`event_id`. Reintentá. |
+| `CONFLICTO_CONCURRENCIA` | 409 | Dos operaciones simultáneas sobre el mismo `sku`. Reintentá la misma operación. |
 | `FICHA_INVALIDA` | 400 | `ficha` no es un objeto JSON. |
 | `FICHA_BENEFICIOS_INVALIDOS` / `FICHA_CONFIANZA_INVALIDA` / `FICHA_PREGUNTAS_INVALIDAS` / `FICHA_OPINIONES_INVALIDAS` / `FICHA_INCLUYE_INVALIDO` | 400 | Esa clave de `ficha` tiene que ser un array. |
 | `FICHA_TEXTOS_INVALIDOS` | 400 | `ficha.textos` no es un objeto, o trae un nombre de texto que no existe (el error lista los válidos). |
@@ -368,14 +364,12 @@ catálogo de una vez.
 ```
 
 - Cada elemento de `productos` tiene exactamente la misma forma que el
-  `POST /productos` de la sección 5 (sin `event_id`: no hace falta, ver
-  más abajo).
+  `POST /productos` de la sección 5.
 - **Máximo 200 productos por request.** Si tenés más, mandá varios lotes.
 - Cada producto se procesa en su propia transacción: si uno falla, los
   demás se procesan igual (no se cancela el lote entero).
 - Reenviar el mismo lote dos veces es seguro: cada item es un upsert por
-  su propio `sku`, así que el catálogo queda en el mismo estado (por eso
-  este endpoint no pide `event_id`).
+  su propio `sku`, así que el catálogo queda en el mismo estado.
 
 ### Response
 
@@ -407,14 +401,11 @@ el producto entero.
 `PATCH /api/integraciones/productos/v1/productos/:sku/stock`
 
 ```json
-{ "event_id": "evt-stock-0001", "stock": 18 }
+{ "stock": 18 }
 ```
 
-o con desglose (salón/depósito, si tu sistema lo maneja así):
-
-```json
-{ "event_id": "evt-stock-0002", "stock_salon": 12, "stock_deposito": 6 }
-```
+Un solo número: las unidades disponibles. Gesicom no te pide repartirlas
+entre salón y depósito — eso es asunto interno de cada comercio.
 
 `:sku` es el mismo identificador de la sección 4. Si no hay ningún
 producto sincronizado con ese `sku` todavía (nunca se hizo el upsert
@@ -423,7 +414,7 @@ inicial), responde `404 PRODUCTO_NO_ENCONTRADO`.
 ### Response
 
 ```json
-{ "ok": true, "producto_id": 4821, "sku": "ABC-123", "stock_salon": 12, "stock_deposito": 6, "cantidad_disponible": 18, "duplicado": false }
+{ "ok": true, "producto_id": 4821, "sku": "ABC-123", "stock": 18 }
 ```
 
 ---
@@ -433,11 +424,11 @@ inicial), responde `404 PRODUCTO_NO_ENCONTRADO`.
 `PATCH /api/integraciones/productos/v1/productos/:sku/precio`
 
 ```json
-{ "event_id": "evt-precio-0001", "precio": 480000, "precio_comparacion": 550000 }
+{ "precio": 480000, "precio_comparacion": 550000 }
 ```
 
 ```json
-{ "ok": true, "producto_id": 4821, "sku": "ABC-123", "precio": 480000, "precio_comparacion": 550000, "duplicado": false }
+{ "ok": true, "producto_id": 4821, "sku": "ABC-123", "precio": 480000, "precio_comparacion": 550000 }
 ```
 
 ---
@@ -446,9 +437,7 @@ inicial), responde `404 PRODUCTO_NO_ENCONTRADO`.
 
 `DELETE /api/integraciones/productos/v1/productos/:sku`
 
-```json
-{ "event_id": "evt-baja-0001" }
-```
+Sin body.
 
 Soft-delete: el producto queda `activo: false` y deja de mostrarse en la
 tienda, pero **nunca se borra físicamente** (es la misma convención que el
@@ -457,7 +446,7 @@ mandá de nuevo un `POST /productos` con `activo: true` (o sin el campo,
 que por default es `true`).
 
 ```json
-{ "ok": true, "producto_id": 4821, "sku": "ABC-123", "activo": false, "duplicado": false }
+{ "ok": true, "producto_id": 4821, "sku": "ABC-123", "activo": false }
 ```
 
 ---
@@ -478,8 +467,7 @@ llevar tu propio registro.
   "slug": "zapatilla-running-pro",
   "precio": 480000,
   "precio_comparacion": 550000,
-  "stock_salon": 12,
-  "stock_deposito": 6,
+  "stock": 18,
   "activo": true,
   "sincronizado_en": "2026-10-09T14:05:00.000Z"
 }
@@ -489,23 +477,25 @@ llevar tu propio registro.
 
 ---
 
-## 11. Idempotencia (`event_id`) — por qué importa y cómo usarlo
+## 11. Reintentos
 
 Internet falla: tu sistema puede mandar un request, no recibir la
-respuesta a tiempo (timeout) y reintentar, sin saber si el primero
-realmente llegó a aplicarse. **Mandá un `event_id` propio y único por cada
-operación** (un UUID o tu propio correlation id) en `POST /productos`,
-`PATCH .../stock`, `PATCH .../precio` y `DELETE /productos/:sku`.
+respuesta a tiempo (timeout) y reintentar sin saber si el primero llegó a
+aplicarse. **Reintentá tranquilo.**
 
-- Si reintentás con el **mismo** `event_id`, Gesicomm no vuelve a aplicar
-  el efecto: devuelve el mismo resultado ya guardado con `"duplicado": true`.
-- Si no mandás `event_id`, Gesicomm genera uno a partir de un hash del
-  body — dos requests con el `sku` y los mismos valores exactos también se
-  deduplican, pero si cambia aunque sea un espacio en el JSON, se trata
-  como un evento distinto. **Por eso se recomienda mandar `event_id`
-  explícito.**
-- El endpoint de lote (`/productos/lote`) no usa `event_id`: cada item es
-  un upsert por `sku`, que ya es idempotente por sí mismo (ver sección 6).
+No hace falta que mandes ningún id de evento. El `sku` ya identifica al
+producto y todas las operaciones fijan un valor absoluto —el producto
+entero, `stock = N`, `precio = N`, la baja—, ninguna suma ni resta sobre
+lo que había. Mandar dos veces el mismo request deja exactamente el mismo
+estado que mandarlo una sola vez.
+
+Lo único que conviene: **backoff** entre reintentos, para no comerte el
+rate limit de la sección 12.
+
+Si dos requests tuyos caen al mismo tiempo sobre un `sku` que todavía no
+existe, uno de los dos puede responder `409 CONFLICTO_CONCURRENCIA`:
+reintentá esa operación y queda resuelta (el producto ya va a existir y se
+actualiza).
 
 ---
 
@@ -519,8 +509,7 @@ operación** (un UUID o tu propio correlation id) en `POST /productos`,
   Gesicomm no las descarga ni las re-hostea en esta versión — si tu CDN
   cambia la URL de una imagen, mandá el producto de nuevo con la URL
   nueva.
-- **Reintentos**: con backoff, y siempre con el mismo `event_id` (sección
-  10).
+- **Reintentos**: con backoff (sección 11).
 - **No hay webhooks de Gesicomm hacia ustedes** en esta versión: la
   sincronización es un solo sentido (ustedes → Gesicomm). Si necesitan
   saber el estado de un pedido, eso es otra integración (pedidos/Envio),

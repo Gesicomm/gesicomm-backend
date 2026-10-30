@@ -16,12 +16,6 @@ function limpiar(valor) {
   return typeof valor === 'string' ? valor.trim() : valor;
 }
 
-function canonical(value) {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])]));
-  return value;
-}
-
 // ---------------------------------------------------------------
 // Credenciales (lado admin, panel de Gesicomm con sesión).
 // ---------------------------------------------------------------
@@ -180,6 +174,27 @@ async function obtenerOCrear(Modelo, nombre, inquilinoId, transaction) {
 // Payload de producto que manda el socio externo -> forma interna.
 // ---------------------------------------------------------------
 
+/**
+ * Precio hacia afuera: número entero, nunca el DECIMAL de Sequelize (que
+ * sale como texto, "99000.00"). En guaraníes no hay decimales y el socio
+ * no tendría que parsear un string para leer un precio.
+ */
+function guaranies(valor) {
+  return valor == null ? null : Math.round(Number(valor));
+}
+
+/**
+ * El socio manda UN stock por producto y listo. Puertas adentro Gesicom
+ * reparte entre salón y depósito (de dónde sale primero una venta), pero
+ * eso es asunto del comercio: un proveedor no tiene por qué saberlo, así
+ * que todo entra como stock de salón y el total queda igual.
+ */
+function validarStock(valor) {
+  const numero = Number(valor);
+  if (!Number.isFinite(numero) || numero < 0) fail('El campo "stock" debe ser un número >= 0.', 400, 'STOCK_INVALIDO');
+  return Math.max(0, parseInt(numero, 10) || 0);
+}
+
 function validarPayloadProducto(datos) {
   if (!datos || typeof datos !== 'object' || Array.isArray(datos)) fail('El body debe ser un objeto JSON.', 400, 'PAYLOAD_INVALIDO');
   const sku = limpiar(datos.sku);
@@ -190,18 +205,8 @@ function validarPayloadProducto(datos) {
   if (!Number.isFinite(precio) || precio < 0) fail('El campo "precio" es obligatorio y debe ser un número >= 0 (guaraníes, sin decimales).', 400, 'PRECIO_INVALIDO');
   if (datos.moneda && datos.moneda !== 'PYG') fail('Por ahora solo se acepta moneda "PYG".', 400, 'MONEDA_NO_SOPORTADA');
 
-  let stock_salon;
-  let stock_deposito;
-  if (datos.stock_salon !== undefined || datos.stock_deposito !== undefined) {
-    stock_salon = Math.max(0, parseInt(datos.stock_salon, 10) || 0);
-    stock_deposito = Math.max(0, parseInt(datos.stock_deposito, 10) || 0);
-  } else if (datos.stock !== undefined) {
-    if (!Number.isFinite(Number(datos.stock)) || Number(datos.stock) < 0) fail('El campo "stock" debe ser un número >= 0.', 400, 'STOCK_INVALIDO');
-    stock_salon = Math.max(0, parseInt(datos.stock, 10) || 0);
-    stock_deposito = 0;
-  } else {
-    fail('Mandá "stock" (o el desglose "stock_salon"/"stock_deposito").', 400, 'STOCK_REQUERIDO');
-  }
+  if (datos.stock === undefined) fail('El campo "stock" es obligatorio.', 400, 'STOCK_REQUERIDO');
+  const stock = validarStock(datos.stock);
 
   const imagenes = Array.isArray(datos.imagenes)
     ? datos.imagenes.filter(url => typeof url === 'string' && /^https?:\/\//i.test(url.trim())).slice(0, 20)
@@ -218,7 +223,7 @@ function validarPayloadProducto(datos) {
     marca: limpiar(datos.marca) || null,
     precio_base: precio,
     precio_tachado: datos.precio_comparacion != null ? Number(datos.precio_comparacion) : null,
-    stock_salon, stock_deposito,
+    stock,
     peso: datos.peso_kg != null ? Number(datos.peso_kg) : null,
     dimensiones: datos.dimensiones != null ? limpiar(datos.dimensiones).slice(0, 100) || null : null,
     destacado: datos.destacado === true,
@@ -493,7 +498,7 @@ async function actualizarProducto(integracion, productoId, campos, transaction) 
 async function aplicarUpsert(integracion, payload, transaction) {
   const datos = validarPayloadProducto(payload);
   const mapeo = await IntegracionProducto.findOne({ where: { integracion_id: integracion.id, sku_externo: datos.sku }, transaction });
-  const estado_venta = datos.activo ? (datos.stock_salon + datos.stock_deposito > 0 ? 'en_venta' : 'fuera_de_stock') : 'no_disponible';
+  const estado_venta = datos.activo ? (datos.stock > 0 ? 'en_venta' : 'fuera_de_stock') : 'no_disponible';
 
   if (mapeo) {
     // A diferencia de la creación, en una actualización un campo OPCIONAL
@@ -504,8 +509,8 @@ async function aplicarUpsert(integracion, payload, transaction) {
     const campos = {
       nombre: datos.nombre,
       precio_base: datos.precio_base,
-      stock_salon: datos.stock_salon,
-      stock_deposito: datos.stock_deposito,
+      stock_salon: datos.stock,
+      stock_deposito: 0,
       activo: datos.activo,
       estado_venta,
     };
@@ -546,7 +551,7 @@ async function aplicarUpsert(integracion, payload, transaction) {
     nombre: datos.nombre, sku, categoria_id, marca_id, tags: datos.tags,
     descripcion_corta: datos.descripcion_corta, descripcion_larga: datos.descripcion_larga,
     precio_base: datos.precio_base, precio_tachado: datos.precio_tachado,
-    stock_salon: datos.stock_salon, stock_deposito: datos.stock_deposito,
+    stock_salon: datos.stock, stock_deposito: 0,
     peso: datos.peso, dimensiones: datos.dimensiones, destacado: datos.destacado,
     activo: datos.activo, estado_venta,
     // Un producto de proveedor nace esperando la aprobación de un
@@ -576,21 +581,12 @@ async function resolverMapeo(integracion, skuExterno, transaction) {
 
 async function aplicarStock(integracion, skuExterno, body, transaction) {
   const mapeo = await resolverMapeo(integracion, skuExterno, transaction);
-  const campos = {};
-  if (body.stock_salon !== undefined || body.stock_deposito !== undefined) {
-    campos.stock_salon = Math.max(0, parseInt(body.stock_salon, 10) || 0);
-    campos.stock_deposito = Math.max(0, parseInt(body.stock_deposito, 10) || 0);
-  } else if (body.stock !== undefined) {
-    if (!Number.isFinite(Number(body.stock)) || Number(body.stock) < 0) fail('El campo "stock" debe ser un número >= 0.', 400, 'STOCK_INVALIDO');
-    campos.stock_salon = Math.max(0, parseInt(body.stock, 10) || 0);
-    campos.stock_deposito = 0;
-  } else {
-    fail('Mandá "stock" (o el desglose "stock_salon"/"stock_deposito").', 400, 'STOCK_REQUERIDO');
-  }
-  campos.estado_venta = (campos.stock_salon + campos.stock_deposito) > 0 ? 'en_venta' : 'fuera_de_stock';
+  if (body.stock === undefined) fail('El campo "stock" es obligatorio.', 400, 'STOCK_REQUERIDO');
+  const stock = validarStock(body.stock);
+  const campos = { stock_salon: stock, stock_deposito: 0, estado_venta: stock > 0 ? 'en_venta' : 'fuera_de_stock' };
 
   const producto = await actualizarProducto(integracion, mapeo.producto_id, campos, transaction);
-  return { producto_id: mapeo.producto_id, sku: skuExterno, stock_salon: producto.stock_salon, stock_deposito: producto.stock_deposito, cantidad_disponible: producto.cantidad_disponible };
+  return { producto_id: mapeo.producto_id, sku: skuExterno, stock: producto.cantidad_disponible };
 }
 
 async function aplicarPrecio(integracion, skuExterno, body, transaction) {
@@ -601,7 +597,7 @@ async function aplicarPrecio(integracion, skuExterno, body, transaction) {
   if (body.precio_comparacion != null) campos.precio_tachado = Number(body.precio_comparacion);
 
   const producto = await actualizarProducto(integracion, mapeo.producto_id, campos, transaction);
-  return { producto_id: mapeo.producto_id, sku: skuExterno, precio: producto.precio_base, precio_comparacion: producto.precio_tachado };
+  return { producto_id: mapeo.producto_id, sku: skuExterno, precio: guaranies(producto.precio_base), precio_comparacion: guaranies(producto.precio_tachado) };
 }
 
 async function aplicarBaja(integracion, skuExterno, transaction) {
@@ -617,68 +613,63 @@ async function consultarProducto(integracion, skuExterno) {
   const producto = await ProductoService.detalle(mapeo.producto_id, integracion.inquilinoId, esAdmin, usuarioId, tiendaId);
   return {
     sku: skuExterno, producto_id: mapeo.producto_id, nombre: producto.nombre, slug: producto.slug,
-    precio: producto.precio_base, precio_comparacion: producto.precio_tachado,
-    stock_salon: producto.stock_salon, stock_deposito: producto.stock_deposito,
+    precio: guaranies(producto.precio_base), precio_comparacion: guaranies(producto.precio_tachado),
+    stock: producto.cantidad_disponible,
     activo: producto.activo, sincronizado_en: mapeo.updated_at,
   };
 }
 
 // ---------------------------------------------------------------
-// Idempotencia: cada mutación se registra con una event_key única por
-// integración ANTES de darse por confirmada. Un reintento de red del
-// socio (mismo event_id) nunca vuelve a aplicar el efecto: devuelve el
-// resultado ya guardado con `duplicado: true`. Si no viene event_id, la
-// key es un hash del payload (igual criterio que el ingest de Speedbox).
+// Aplicar + registrar. No hay deduplicación por id de evento: el `sku`
+// identifica al producto y toda operación fija un valor absoluto (el
+// producto entero, stock = N, precio = N, baja), así que repetir el mismo
+// request deja exactamente el mismo estado. Un reintento de red del socio
+// es inofensivo por construcción.
 // ---------------------------------------------------------------
 
-async function ingest(integracion, tipo, eventId, logPayload, aplicar) {
-  if (eventId != null && (typeof eventId !== 'string' || !eventId.trim() || eventId.length > 150)) {
-    fail('"event_id" inválido: debe ser texto, no vacío, máx. 150 caracteres.', 400, 'EVENT_ID_INVALIDO');
-  }
-  const eventKey = eventId ? `id:${eventId.trim()}` : `hash:${crypto.createHash('sha256').update(JSON.stringify(canonical(logPayload))).digest('hex')}`;
-
+async function aplicarYRegistrar(integracion, tipo, logPayload, aplicar) {
   try {
     return await sequelize.transaction(async (transaction) => {
       const resultado = await aplicar(transaction);
       await IntegracionEvento.create({
-        integracion_id: integracion.id, event_key: eventKey, tipo,
+        integracion_id: integracion.id, tipo,
         sku_externo: logPayload?.sku || null,
         producto_id: resultado?.producto_id || null,
         estado: 'procesado',
         payload: { request: logPayload, resultado },
       }, { transaction });
-      return { ...resultado, duplicado: false };
+      return resultado;
     });
   } catch (error) {
+    // Dos requests a la vez para un sku que todavía no existe: los dos
+    // intentan crear el mapeo y el segundo choca con el índice único.
+    // Reintentar resuelve solo (ya va a encontrar el producto y actualizarlo).
     if (error.name === 'SequelizeUniqueConstraintError') {
-      const previo = await IntegracionEvento.findOne({ where: { integracion_id: integracion.id, event_key: eventKey } });
-      if (previo) return { ...(previo.payload?.resultado || {}), duplicado: true };
-      fail('Conflicto de concurrencia (dos requests simultáneos para lo mismo). Reintentá la misma operación.', 409, 'CONFLICTO_CONCURRENCIA');
+      fail('Dos operaciones simultáneas sobre el mismo sku. Reintentá la misma operación.', 409, 'CONFLICTO_CONCURRENCIA');
     }
     throw error;
   }
 }
 
 async function upsertProducto(integracion, payload) {
-  return ingest(integracion, 'producto.upsert', payload?.event_id, payload, transaction => aplicarUpsert(integracion, payload, transaction));
+  return aplicarYRegistrar(integracion, 'producto.upsert', payload, transaction => aplicarUpsert(integracion, payload, transaction));
 }
 
 async function actualizarStock(integracion, skuExterno, body) {
-  return ingest(integracion, 'producto.stock', body?.event_id, { sku: skuExterno, ...body }, transaction => aplicarStock(integracion, skuExterno, body, transaction));
+  return aplicarYRegistrar(integracion, 'producto.stock', { sku: skuExterno, ...body }, transaction => aplicarStock(integracion, skuExterno, body, transaction));
 }
 
 async function actualizarPrecio(integracion, skuExterno, body) {
-  return ingest(integracion, 'producto.precio', body?.event_id, { sku: skuExterno, ...body }, transaction => aplicarPrecio(integracion, skuExterno, body, transaction));
+  return aplicarYRegistrar(integracion, 'producto.precio', { sku: skuExterno, ...body }, transaction => aplicarPrecio(integracion, skuExterno, body, transaction));
 }
 
-async function darDeBaja(integracion, skuExterno, body = {}) {
-  return ingest(integracion, 'producto.baja', body?.event_id, { sku: skuExterno }, transaction => aplicarBaja(integracion, skuExterno, transaction));
+async function darDeBaja(integracion, skuExterno) {
+  return aplicarYRegistrar(integracion, 'producto.baja', { sku: skuExterno }, transaction => aplicarBaja(integracion, skuExterno, transaction));
 }
 
-// El lote de carga inicial no usa event_id: cada item es un upsert por su
-// propio sku, que ya es idempotente de por sí (reenviar el mismo lote dos
-// veces deja el catálogo en el mismo estado). Cada item va en su propia
-// transacción para que un item con error no tumbe a los demás.
+// Cada item del lote va en su propia transacción, para que uno con error
+// no tumbe a los demás. Reenviar el mismo lote es seguro: cada item es un
+// upsert por su sku y el catálogo queda igual.
 async function sincronizarLote(integracion, productos) {
   if (!Array.isArray(productos) || productos.length === 0) fail('"productos" debe ser un array con al menos un elemento.', 400, 'PAYLOAD_INVALIDO');
   if (productos.length > MAX_LOTE) fail(`Máximo ${MAX_LOTE} productos por lote.`, 400, 'LOTE_DEMASIADO_GRANDE');

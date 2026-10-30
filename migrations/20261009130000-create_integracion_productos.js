@@ -40,7 +40,6 @@ async function up(qi, S) {
       integracion_eventos: {
         id: { type: S.INTEGER, autoIncrement: true, primaryKey: true, allowNull: false },
         integracion_id: { type: S.INTEGER, allowNull: false, references: { model: 'integracion_credenciales', key: 'id' }, onDelete: 'CASCADE' },
-        event_key: { type: S.STRING(180), allowNull: false },
         tipo: { type: S.STRING(40), allowNull: false },
         sku_externo: { type: S.STRING(100), allowNull: true },
         producto_id: { type: S.INTEGER, allowNull: true },
@@ -67,6 +66,16 @@ async function up(qi, S) {
     if (columnasCredenciales.usuario_id?.allowNull === false) {
       await qi.sequelize.query('ALTER TABLE integracion_credenciales ALTER COLUMN usuario_id DROP NOT NULL', { transaction });
     }
+    // `integracion_eventos` dejó de ser una bitácora de idempotencia para
+    // pasar a ser un simple registro de lo que mandó cada proveedor: el
+    // `sku` ya identifica al producto y toda operación fija un valor
+    // absoluto, así que no hay nada que deduplicar. Donde la tabla ya se
+    // creó con `event_key NOT NULL`, la columna hay que sacarla o ningún
+    // registro nuevo entra.
+    const columnasEventos = await qi.describeTable('integracion_eventos', { transaction });
+    if (columnasEventos.event_key) {
+      await qi.removeColumn('integracion_eventos', 'event_key', { transaction });
+    }
     // Logo chico del proveedor: es lo que la tarjeta del producto muestra
     // en Mi catálogo para reconocer de dónde viene cada producto.
     const columnasProveedores = await qi.describeTable('proveedores', { transaction });
@@ -80,7 +89,6 @@ async function up(qi, S) {
       ['integracion_credenciales', ['proveedor_id'], false],
       ['integracion_productos', ['integracion_id', 'sku_externo'], true],
       ['integracion_productos', ['producto_id'], false],
-      ['integracion_eventos', ['integracion_id', 'event_key'], true],
       ['integracion_eventos', ['integracion_id', 'tipo'], false],
     ]) {
       const name = `${table}_${fields.join('_')}`;

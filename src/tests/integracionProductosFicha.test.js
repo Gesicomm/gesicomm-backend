@@ -192,6 +192,55 @@ describe('credencial de proveedor', () => {
   });
 });
 
+// El socio manda UN stock y listo: el desglose salón/depósito es asunto
+// interno del comercio, un proveedor no tiene por qué saber que existe.
+describe('stock', () => {
+  it('el stock que manda el socio es el stock del producto', async () => {
+    await Service.upsertProducto(INTEGRACION, { ...BASE, stock: 25 });
+    const datos = ProductoService.crear.mock.calls[0][0];
+    expect(datos.stock_salon).toBe(25);
+    expect(datos.stock_deposito).toBe(0);
+    expect(datos.estado_venta).toBe('en_venta');
+  });
+
+  it('stock 0 deja el producto fuera de stock', async () => {
+    await Service.upsertProducto(INTEGRACION, { ...BASE, stock: 0 });
+    expect(ProductoService.crear.mock.calls[0][0].estado_venta).toBe('fuera_de_stock');
+  });
+
+  it('sin stock no se da por válido', async () => {
+    const { stock, ...sinStock } = BASE;
+    await expect(Service.upsertProducto(INTEGRACION, sinStock))
+      .rejects.toMatchObject({ codigo: 'STOCK_REQUERIDO' });
+    await expect(Service.upsertProducto(INTEGRACION, { ...BASE, stock: -3 }))
+      .rejects.toMatchObject({ codigo: 'STOCK_INVALIDO' });
+  });
+
+  it('el PATCH de stock responde un solo número', async () => {
+    IntegracionProducto.findOne.mockResolvedValue({ producto_id: 99, sku_externo: 'ABC-1' });
+    ProductoService.actualizar.mockResolvedValue({ id: 99, slug: 'p-99', activo: true, cantidad_disponible: 18 });
+
+    const res = await Service.actualizarStock(INTEGRACION, 'ABC-1', { stock: 18 });
+
+    expect(ProductoService.actualizar.mock.calls[0][1]).toMatchObject({ stock_salon: 18, stock_deposito: 0, estado_venta: 'en_venta' });
+    expect(res).toEqual({ producto_id: 99, sku: 'ABC-1', stock: 18 });
+  });
+});
+
+// Sin id de evento: el sku identifica al producto y toda operación fija un
+// valor absoluto, así que repetir el request deja el mismo estado.
+describe('reintentos', () => {
+  it('mandar dos veces lo mismo deja el mismo estado, sin pedir event_id', async () => {
+    await Service.upsertProducto(INTEGRACION, BASE);
+    IntegracionProducto.findOne.mockResolvedValue({ producto_id: 99, sku_externo: 'ABC-1' });
+    const segundo = await Service.upsertProducto(INTEGRACION, BASE);
+
+    expect(segundo.accion).toBe('actualizado');
+    expect(segundo).not.toHaveProperty('duplicado');
+    expect(ProductoService.actualizar.mock.calls[0][1]).toMatchObject({ nombre: BASE.nombre, precio_base: BASE.precio });
+  });
+});
+
 describe('logística', () => {
   it('peso y dimensiones llegan al alta', async () => {
     await Service.upsertProducto(INTEGRACION, { ...BASE, peso_kg: 1.2, dimensiones: '30x20x10 cm' });

@@ -43,7 +43,7 @@ async function actualizarPrecio(req, res) {
 
 async function darDeBaja(req, res) {
   try {
-    res.json({ ok: true, ...(await service.darDeBaja(req.integracion, req.params.sku, req.body || {})) });
+    res.json({ ok: true, ...(await service.darDeBaja(req.integracion, req.params.sku)) });
   } catch (err) { manejarError(res, err); }
 }
 
